@@ -239,6 +239,10 @@ class MainWindow(QMainWindow):
         return datetime.now().strftime("%H:%M:%S")
 
     def _on_start_requested(self):
+        ready, reason = self.experiments_tab.is_ready_to_run()
+        if not ready:
+            QMessageBox.warning(self, "Cannot Start Queue", reason)
+            return
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
 
