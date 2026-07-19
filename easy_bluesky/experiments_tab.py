@@ -630,6 +630,14 @@ class ExperimentsTab(QWidget):
 
     # ── Public setters ─────────────────────────────────────────────────────────
 
+    def is_ready_to_run(self) -> tuple:
+        """Return (ok: bool, reason: str). ok is False if prerequisites are missing."""
+        if not self._active_exp_path:
+            return False, "No active experiment — create or open one first."
+        if not self._sample_name:
+            return False, "Sample name is required before starting the queue.\n\nEnter a sample name in the Experiments tab."
+        return True, ""
+
     def set_plans(self, plans: dict):
         self._plans = plans
 
