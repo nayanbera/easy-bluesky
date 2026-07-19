@@ -1,37 +1,44 @@
 #!/usr/bin/env bash
 # scripts/start_services.sh
-# Start all services required by the EasyBluesky
+# Start all services required by EasyBluesky
 # Usage: bash scripts/start_services.sh
 
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "Starting Bluesky services..."
 
-# 1. RE Manager
-echo "[1/3] Starting RE Manager..."
-start-re-manager --zmq-publish-console ON &
+# 1. Tiled server (MongoDB backend)
+echo "[1/4] Starting Tiled server (port 8000)..."
+cd "$PROJECT_DIR"
+tiled serve pyobject scripts.tiled_adapter:adapter \
+    --public \
+    --api-key "${BLUESKY_TILED_API_KEY:-bluesky}" \
+    --port 8000 &
+TILED_PID=$!
+echo "  Tiled PID: $TILED_PID"
+sleep 3
+
+# 2. RE Manager (with MongoDB/TiledWriter startup script)
+echo "[2/4] Starting RE Manager..."
+start-re-manager \
+    --zmq-publish-console ON \
+    --startup-script "$PROJECT_DIR/scripts/re_startup_mongo.py" &
 RE_PID=$!
 echo "  RE Manager PID: $RE_PID"
 sleep 2
 
-# 2. HTTP Server (optional — only needed for web access)
-# echo "[2/3] Starting HTTP Server..."
-# export QSERVER_SINGLE_USER_API_KEY=mystaticapikey
-# export QSERVER_ZMQ_CONTROL_ADDRESS=tcp://localhost:60615
-# export QSERVER_ZMQ_INFO_ADDRESS=tcp://localhost:60625
-# start-bluesky-httpserver --host 0.0.0.0 --port 60610 &
-# HTTP_PID=$!
-
-# 3. ZMQ to Kafka bridge
-echo "[2/3] Starting ZMQ → Kafka bridge..."
+# 3. ZMQ → Kafka bridge (live viewer)
+echo "[3/4] Starting ZMQ → Kafka bridge..."
 python3 scripts/zmq_to_kafka.py &
 BRIDGE_PID=$!
 echo "  Bridge PID: $BRIDGE_PID"
 sleep 1
 
 # 4. Launch the app
-echo "[3/3] Launching EasyBluesky..."
+echo "[4/4] Launching EasyBluesky..."
 python3 -m easy_bluesky.main
 
 # Cleanup on exit
-trap "kill $RE_PID $BRIDGE_PID 2>/dev/null; echo 'Services stopped.'" EXIT
+trap "kill $TILED_PID $RE_PID $BRIDGE_PID 2>/dev/null; echo 'Services stopped.'" EXIT

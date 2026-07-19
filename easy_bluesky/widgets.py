@@ -5,9 +5,113 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QDialogButtonBox, QFormLayout, QScrollArea,
     QListWidget, QListWidgetItem, QComboBox, QLineEdit, QDoubleSpinBox,
     QSpinBox, QCheckBox, QLabel, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QAbstractItemView, QMessageBox,
+    QAbstractItemView, QMessageBox, QPushButton,
 )
 from PyQt6.QtCore import Qt
+
+class ScanArgsWidget(QWidget):
+    """Editor for VAR_POSITIONAL scan args: repeating (motor, start, stop) groups."""
+
+    def __init__(self, devices, parent=None):
+        super().__init__(parent)
+        self.devices = list(devices) if devices else []
+        self._rows = []  # list of (motor_combo, start_spin, stop_spin, row_widget)
+        self._build()
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+
+        self._rows_widget = QWidget()
+        self._rows_layout = QVBoxLayout(self._rows_widget)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(4)
+        outer.addWidget(self._rows_widget)
+
+        btn = QPushButton("+ Add Motor Axis")
+        btn.clicked.connect(self._add_row)
+        outer.addWidget(btn)
+
+        self._add_row()
+
+    def _add_row(self, motor="", start=0.0, stop=1.0):
+        row_w = QWidget()
+        row_lay = QHBoxLayout(row_w)
+        row_lay.setContentsMargins(0, 0, 0, 0)
+        row_lay.setSpacing(6)
+
+        motor_combo = QComboBox()
+        motor_combo.addItems(["-- motor --"] + self.devices)
+        if motor:
+            idx = motor_combo.findText(str(motor))
+            if idx >= 0:
+                motor_combo.setCurrentIndex(idx)
+
+        start_spin = QDoubleSpinBox()
+        start_spin.setRange(-1e9, 1e9)
+        start_spin.setDecimals(4)
+        start_spin.setSingleStep(0.1)
+        start_spin.setPrefix("start ")
+        start_spin.setValue(start)
+
+        stop_spin = QDoubleSpinBox()
+        stop_spin.setRange(-1e9, 1e9)
+        stop_spin.setDecimals(4)
+        stop_spin.setSingleStep(0.1)
+        stop_spin.setPrefix("stop ")
+        stop_spin.setValue(stop)
+
+        rm_btn = QPushButton("✕")
+        rm_btn.setMaximumWidth(28)
+        rm_btn.setToolTip("Remove this axis")
+
+        row_lay.addWidget(motor_combo, 3)
+        row_lay.addWidget(start_spin, 2)
+        row_lay.addWidget(stop_spin, 2)
+        row_lay.addWidget(rm_btn)
+
+        entry = (motor_combo, start_spin, stop_spin, row_w)
+        self._rows.append(entry)
+        self._rows_layout.addWidget(row_w)
+
+        rm_btn.clicked.connect(lambda: self._remove_row(entry))
+
+    def _remove_row(self, entry):
+        if len(self._rows) <= 1:
+            return
+        mc, ss, es, rw = entry
+        self._rows.remove(entry)
+        self._rows_layout.removeWidget(rw)
+        rw.deleteLater()
+
+    def populate(self, flat_args):
+        """Fill from a flat list [motor1, start1, stop1, motor2, ...]."""
+        for _, _, _, rw in list(self._rows):
+            self._rows_layout.removeWidget(rw)
+            rw.deleteLater()
+        self._rows.clear()
+
+        triplets = [flat_args[i:i+3] for i in range(0, len(flat_args) - 2, 3)]
+        for triplet in triplets:
+            motor, start, stop = triplet[0], triplet[1], triplet[2]
+            try:
+                self._add_row(motor=str(motor), start=float(start), stop=float(stop))
+            except (TypeError, ValueError):
+                self._add_row()
+
+        if not self._rows:
+            self._add_row()
+
+    def get_value(self):
+        """Return flat list [motor1, start1, stop1, ...] or None if empty."""
+        result = []
+        for mc, ss, es, _ in self._rows:
+            motor = mc.currentText()
+            if motor and motor != "-- motor --":
+                result.extend([motor, ss.value(), es.value()])
+        return result if result else None
+
 
 class ParamForm(QWidget):
     def __init__(self, params, devices, parent=None):
@@ -46,6 +150,11 @@ class ParamForm(QWidget):
 
     def _make_widget(self, name, typ, default, param):
         convert = param.get("convert_device_names", False)
+        kind    = param.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
+
+        # VAR_POSITIONAL with movable type → (motor, start, stop, ...) groups
+        if kind == "VAR_POSITIONAL" and "__MOVABLE__" in typ:
+            return ScanArgsWidget(self.devices)
 
         # Detector list (multi-select)
         if "__READABLE__" in typ or (convert and "Sequence" in typ):
@@ -57,13 +166,7 @@ class ParamForm(QWidget):
                 w.addItem(item)
             return w
 
-        # Single device (motor etc.)
-        if "__MOVABLE__" in typ or ("__SETTABLE__" in typ) or (convert and "Sequence" not in typ):
-            w = QComboBox()
-            w.addItems(["-- select --"] + self.devices)
-            return w
-
-        # Float
+        # Float / int — check BEFORE broad convert fallback to avoid mis-routing
         if typ in ("float", "int") or "float" in typ or "int" in typ:
             if "int" in typ and "float" not in typ:
                 w = QSpinBox()
@@ -85,6 +188,12 @@ class ParamForm(QWidget):
                         pass
             return w
 
+        # Single device (motor etc.)
+        if "__MOVABLE__" in typ or "__SETTABLE__" in typ or (convert and "Sequence" not in typ):
+            w = QComboBox()
+            w.addItems(["-- select --"] + self.devices)
+            return w
+
         # Bool
         if typ == "bool":
             w = QCheckBox()
@@ -100,32 +209,83 @@ class ParamForm(QWidget):
             w.addItems(opts)
             return w
 
-        # Generic / args
+        # Generic fallback
         w = QLineEdit()
         w.setPlaceholderText(typ or "value")
         if default not in (None, "None"):
             w.setText(str(default))
         return w
 
+    def set_values(self, args, kwargs):
+        """Pre-fill form widgets from existing args/kwargs."""
+        arg_iter = iter(args)
+        for p in self.params:
+            name = p["name"]
+            if name in ("per_step", "md", "cycler") or name not in self.widgets:
+                continue
+            kind = p.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
+            w = self.widgets[name]
+            if kind == "VAR_POSITIONAL":
+                remaining = list(arg_iter)  # consume all remaining positional args
+                if isinstance(w, ScanArgsWidget) and remaining:
+                    w.populate(remaining)
+                break  # nothing positional after VAR_POSITIONAL
+            elif kind == "KEYWORD_ONLY":
+                val = kwargs.get(name)
+            else:
+                val = next(arg_iter, kwargs.get(name))
+            if val is None:
+                continue
+            self._set_widget(w, val)
+
+    def _set_widget(self, w, val):
+        if isinstance(w, QListWidget):
+            items = val if isinstance(val, list) else [val]
+            for i in range(w.count()):
+                w.item(i).setSelected(w.item(i).text() in items)
+        elif isinstance(w, QComboBox):
+            idx = w.findText(str(val))
+            if idx >= 0:
+                w.setCurrentIndex(idx)
+        elif isinstance(w, QDoubleSpinBox):
+            try:
+                w.setValue(float(val))
+            except (TypeError, ValueError):
+                pass
+        elif isinstance(w, QSpinBox):
+            try:
+                w.setValue(int(val))
+            except (TypeError, ValueError):
+                pass
+        elif isinstance(w, QCheckBox):
+            w.setChecked(bool(val))
+        elif isinstance(w, QLineEdit):
+            w.setText(json.dumps(val) if not isinstance(val, str) else val)
+
     def get_values(self):
         """Return (args, kwargs) for the plan."""
         args   = []
         kwargs = {}
         for p in self.params:
-            name    = p["name"]
+            name = p["name"]
             if name in ("per_step", "md", "cycler"):
                 continue
             if name not in self.widgets:
                 continue
-            w   = self.widgets[name]
-            val = self._read_widget(w, p)
-            if val is None:
-                continue
+            w    = self.widgets[name]
             kind = p.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
-            if kind == "KEYWORD_ONLY":
-                kwargs[name] = val
+            if kind == "VAR_POSITIONAL":
+                val = w.get_value() if isinstance(w, ScanArgsWidget) else self._read_widget(w, p)
+                if val:
+                    args.extend(val)
+            elif kind == "KEYWORD_ONLY":
+                val = self._read_widget(w, p)
+                if val is not None:
+                    kwargs[name] = val
             else:
-                args.append(val)
+                val = self._read_widget(w, p)
+                if val is not None:
+                    args.append(val)
         return args, kwargs
 
     def _read_widget(self, w, param):
@@ -239,6 +399,9 @@ class PlanDialog(QDialog):
         idx  = self.plan_combo.findText(name)
         if idx >= 0:
             self.plan_combo.setCurrentIndex(idx)
+        args   = item.get("args", [])
+        kwargs = {k: v for k, v in item.get("kwargs", {}).items() if k != "md"}
+        self.param_form.set_values(args, kwargs)
         md = item.get("kwargs", {}).get("md", {})
         if md:
             self.meta_edit.setText(json.dumps(md))

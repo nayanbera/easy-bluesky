@@ -15,8 +15,10 @@ ZMQ_INFO     = os.getenv("BLUESKY_ZMQ_INFO",     "tcp://localhost:60625")
 KAFKA_SERVER = os.getenv("BLUESKY_KAFKA_SERVER", "localhost:9092")
 KAFKA_TOPIC  = os.getenv("BLUESKY_KAFKA_TOPIC",  "bluesky.runengine.documents")
 
-# ── Databroker ────────────────────────────────────────────────────────────────
+# ── Databroker / Tiled ────────────────────────────────────────────────────────
 CATALOG_NAME = os.getenv("BLUESKY_CATALOG",      "bluesky_local")
+TILED_URI    = os.getenv("BLUESKY_TILED_URI",    "http://localhost:8000")
+TILED_API_KEY = os.getenv("BLUESKY_TILED_API_KEY", "bluesky")
 
 # ── UI Colors ─────────────────────────────────────────────────────────────────
 ACCENT   = "#1f77b4"

@@ -126,6 +126,9 @@ class QueueManager(QWidget):
 
         self.history_list = QListWidget()
         self.history_list.setMaximumHeight(160)
+        self.history_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self._history_context_menu)
+        self.history_list.itemDoubleClicked.connect(self._requeue_from_history)
         llay.addWidget(self.history_list)
 
         splitter.addWidget(left)
@@ -328,7 +331,25 @@ class QueueManager(QWidget):
             color  = SUCCESS if status == "success" else DANGER
             li     = QListWidgetItem(f"{icon}  {t}  {name}")
             li.setForeground(QColor(color))
+            li.setData(Qt.ItemDataRole.UserRole, item)
+            li.setToolTip("Double-click to add to queue")
             self.history_list.addItem(li)
+
+    def _history_context_menu(self, pos):
+        item = self.history_list.itemAt(pos)
+        if not item:
+            return
+        menu = QMenu(self)
+        menu.addAction("Add to Queue", lambda: self._requeue_from_history(item))
+        menu.exec(self.history_list.viewport().mapToGlobal(pos))
+
+    def _requeue_from_history(self, list_item):
+        item = list_item.data(Qt.ItemDataRole.UserRole)
+        if not item:
+            return
+        new_item = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
+        ok, msg = self.worker.add_item(new_item)
+        self._log(f"{'✓' if ok else '✗'} Re-queue '{item.get('name', '?')}': {msg}")
 
     def append_console(self, text):
         self.console.appendPlainText(text)
