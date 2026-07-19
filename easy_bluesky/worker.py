@@ -27,12 +27,12 @@ class ZMQWorker(QObject):
         self._re_proc        = None
         self._is_connecting  = False   # blocks poll while connect() runs
 
-    def connect(self):
+    def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
         try:
             self.rm = REManagerAPI(
-                zmq_control_addr=ZMQ_CONTROL,
-                zmq_info_addr=ZMQ_INFO,
+                zmq_control_addr=zmq_control or ZMQ_CONTROL,
+                zmq_info_addr=zmq_info or ZMQ_INFO,
             )
             status = self.rm.status()
             self.connected.emit()

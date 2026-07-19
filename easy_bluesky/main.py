@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
-from .config import ZMQ_CONTROL, APP_NAME, ACCENT
+from .config import APP_NAME, ACCENT
+from .connection_settings import load_connection, make_zmq_addrs, ConnectionDialog
 from .themes import (
     build_stylesheet, build_palette, load_saved_theme, save_theme,
     theme_names, THEMES,
@@ -29,6 +30,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("EasyBluesky")
         self.setMinimumSize(1200, 800)
         self._current_theme = load_saved_theme()
+        self._conn_settings = load_connection()
         self.worker = ZMQWorker()
         self._setup_ui()
         self._setup_worker()
@@ -75,7 +77,8 @@ class MainWindow(QMainWindow):
         self.conn_label = QLabel("⬤  Connecting...")
         self.conn_label.setStyleSheet("color: #ffcc00;")
         self.status_bar.addPermanentWidget(self.conn_label)
-        self.status_bar.showMessage("EasyBluesky  |  ZMQ: " + ZMQ_CONTROL)
+        ctrl_addr, _, _ = make_zmq_addrs(self._conn_settings)
+        self.status_bar.showMessage("EasyBluesky  |  ZMQ: " + ctrl_addr)
 
     def _build_menu(self):
         from PyQt6.QtGui import QActionGroup
@@ -83,6 +86,9 @@ class MainWindow(QMainWindow):
 
         # ── File menu ──────────────────────────────────────────────────────────
         file_menu = menubar.addMenu("File")
+        act_conn = file_menu.addAction("Connection Settings…")
+        act_conn.triggered.connect(self._on_connection_settings)
+        file_menu.addSeparator()
         self._recent_menu = file_menu.addMenu("Recent Experiments")
         self._refresh_recent_menu()
         file_menu.addSeparator()
@@ -198,7 +204,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, self._do_connect)
 
     def _do_connect(self):
-        ok = self.worker.connect()
+        ctrl, info, _ = make_zmq_addrs(self._conn_settings)
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
         if not ok:
             self.re_bar.set_disconnected()
 
@@ -207,7 +214,8 @@ class MainWindow(QMainWindow):
     def _on_connected(self):
         self.conn_label.setText("⬤  Connected")
         self.conn_label.setStyleSheet("color: #2ca02c;")
-        self.status_bar.showMessage("Connected to RE Manager at " + ZMQ_CONTROL)
+        ctrl_addr, _, _ = make_zmq_addrs(self._conn_settings)
+        self.status_bar.showMessage("Connected to RE Manager at " + ctrl_addr)
 
     def _on_re_manager_started(self, pid):
         self.conn_label.setText("⬤  RE Manager starting…")
@@ -298,7 +306,8 @@ class MainWindow(QMainWindow):
 
     def _on_reconnect_requested(self):
         self._log(f"[{self._ts()}] Reconnecting to RE Manager…")
-        ok = self.worker.connect()
+        ctrl, info, _ = make_zmq_addrs(self._conn_settings)
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
         if ok:
             self._log(f"[{self._ts()}] ✓ Reconnected")
         else:
@@ -318,6 +327,23 @@ class MainWindow(QMainWindow):
             if self.tabs.widget(i) is self.hdf5_viewer:
                 self.tabs.setCurrentIndex(i)
                 break
+
+    def _on_connection_settings(self):
+        dlg = ConnectionDialog(self)
+        if dlg.exec() != ConnectionDialog.DialogCode.Accepted:
+            return
+        self._conn_settings = dlg.get_settings()
+        ctrl, info, doc = make_zmq_addrs(self._conn_settings)
+        self.status_bar.showMessage(f"Reconnecting to {self._conn_settings['host']}…")
+        # Reconnect worker
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        if ok:
+            self._log(f"[{self._ts()}] ✓ Connected to {self._conn_settings['host']}")
+        else:
+            self.re_bar.set_disconnected()
+            self._log(f"[{self._ts()}] ✗ Connection failed — check host and ports")
+        # Restart live ZMQ doc stream
+        self.experiments_tab.live_viewer.restart_zmq(doc)
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
