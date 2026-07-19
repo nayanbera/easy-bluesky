@@ -28,6 +28,7 @@ from .config import (
 )
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
+from .queue_manager import RunDetailDialog
 
 
 # ── Embedded single-run history plot ──────────────────────────────────────────
@@ -283,6 +284,7 @@ class ExperimentsTab(QWidget):
         self.plan_log_list.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection)
         self.plan_log_list.itemClicked.connect(self._on_plan_log_clicked)
+        self.plan_log_list.itemDoubleClicked.connect(self._on_plan_log_double_clicked)
         vlay.addWidget(self.plan_log_list, 1)
 
         return w
@@ -860,3 +862,30 @@ class ExperimentsTab(QWidget):
             return
         self.history_widget.load_jsonl_file(str(filepath))
         self.plot_tabs.setCurrentIndex(1)
+
+    def _on_plan_log_double_clicked(self, li: QListWidgetItem):
+        entry = li.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+        ts_str = entry.get("timestamp", "")
+        dur    = entry.get("duration_s")
+        try:
+            t_stop = datetime.fromisoformat(ts_str).timestamp()
+        except Exception:
+            t_stop = 0.0
+        t_start = (t_stop - dur) if (t_stop and dur) else t_stop
+
+        # Build the format RunDetailDialog expects
+        item = {
+            "name":     entry.get("name", "?"),
+            "kwargs":   entry.get("kwargs", {}) or {},
+            "_run_file": entry.get("run_file", ""),
+            "result": {
+                "exit_status": entry.get("exit_status", "?"),
+                "time_start":  t_start,
+                "time_stop":   t_stop,
+                "run_uids":    entry.get("run_uids", []),
+            },
+        }
+        dlg = RunDetailDialog(item, worker=self.worker, parent=self)
+        dlg.exec()
