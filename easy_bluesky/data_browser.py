@@ -163,9 +163,10 @@ class DataBrowser(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._run     = None
-        self._df      = None
-        self._loader  = None
+        self._run         = None
+        self._df          = None
+        self._loader      = None
+        self._pending_uid = ""   # auto-select this run UID after next load
         self._build()
 
     def _build(self):
@@ -270,10 +271,15 @@ class DataBrowser(QWidget):
         main.addWidget(splitter, 1)
 
     def set_runs_dir(self, path: str):
-        """Switch the browser to a specific local runs directory and reload."""
+        """Switch to a local runs directory and reload."""
         self.source_combo.setCurrentIndex(0)
         self.source_edit.setText(path)
         self._load_catalog()
+
+    def load_and_select(self, runs_dir: str, uid: str):
+        """Load runs from directory and auto-select the run matching uid."""
+        self._pending_uid = uid
+        self.set_runs_dir(runs_dir)
 
     def _on_source_changed(self, idx):
         if idx == 0:  # Local JSONL
@@ -320,6 +326,16 @@ class DataBrowser(QWidget):
         n = len(runs)
         self.status_label.setText(f"Connected — {n} run{'s' if n != 1 else ''} loaded")
         self.status_label.setStyleSheet(f"color: {SUCCESS}; font-size: 12px;")
+
+        if self._pending_uid:
+            want = self._pending_uid
+            self._pending_uid = ""
+            for i in range(self.run_list.count()):
+                item = self.run_list.item(i)
+                item_uid = item.data(Qt.ItemDataRole.UserRole) if item else ""
+                if item_uid and (item_uid == want or item_uid.startswith(want[:8])):
+                    self.run_list.setCurrentItem(item)
+                    break
 
     def _on_load_error(self, msg):
         self.status_label.setText(f"Error: {msg}")

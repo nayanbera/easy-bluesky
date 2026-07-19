@@ -15,9 +15,8 @@ from .worker import ZMQWorker
 from .re_control_bar import REControlBar
 from .queue_manager import QueueManager
 from .plan_builder import PlanBuilder
-from .live_viewer import LiveViewer
-from .data_browser import DataBrowser
 from .experiments_tab import ExperimentsTab
+from .devices_plans_tab import DevicesPlansTab
 
 
 class MainWindow(QMainWindow):
@@ -37,17 +36,15 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
 
-        self.experiments_tab = ExperimentsTab()
-        self.queue_mgr       = QueueManager(self.worker)
-        self.plan_builder    = PlanBuilder(self.worker)
-        self.live_viewer     = LiveViewer()
-        self.data_browser    = DataBrowser()
+        self.experiments_tab    = ExperimentsTab()
+        self.queue_mgr          = QueueManager(self.worker)
+        self.plan_builder       = PlanBuilder(self.worker)
+        self.devices_plans_tab  = DevicesPlansTab()
 
-        self.tabs.addTab(self.experiments_tab, "🧪  Experiments")
-        self.tabs.addTab(self.queue_mgr,       "⚙  Queue Manager")
-        self.tabs.addTab(self.plan_builder,    "🔧  Plan Builder")
-        self.tabs.addTab(self.live_viewer,     "📡  Live Viewer")
-        self.tabs.addTab(self.data_browser,    "📂  Data Browser")
+        self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
+        self.tabs.addTab(self.queue_mgr,         "⚙  Queue Manager")
+        self.tabs.addTab(self.plan_builder,      "🔧  Plan Builder")
+        self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
 
         # RE control bar sits above the tabs
         self.re_bar = REControlBar()
@@ -90,10 +87,13 @@ class MainWindow(QMainWindow):
 
         # Worker → experiments_tab
         self.worker.history_updated.connect(self.experiments_tab.update_history)
-        self.worker.plans_updated.connect(self.experiments_tab.update_plans)
-        self.worker.devices_updated.connect(self.experiments_tab.update_devices)
+        self.worker.queue_updated.connect(self.experiments_tab.update_compact_queue)
 
-        # Worker → plan/device handlers
+        # Worker → devices_plans_tab
+        self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
+        self.worker.devices_updated.connect(self.devices_plans_tab.update_devices)
+
+        # Worker → plan/device handlers (queue_mgr + plan_builder)
         self.worker.plans_updated.connect(self._on_plans_updated)
         self.worker.devices_updated.connect(self._on_devices_updated)
 
@@ -241,7 +241,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_experiment_changed(self, runs_dir: str):
-        self.data_browser.set_runs_dir(runs_dir)
+        # data_browser lives inside experiments_tab and is updated there directly
         self.queue_mgr.append_console(
             f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}"
         )
