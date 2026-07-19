@@ -32,7 +32,7 @@ dependencies = [
     "pandas>=2.0",
     "pyzmq>=25.0",
     "h5py>=3.8",
-    "suitcase-jsonl>=0.7",
+    "suitcase-jsonl>=0.2",
     "bluesky-queueserver-api>=0.0.13",
 ]
 
