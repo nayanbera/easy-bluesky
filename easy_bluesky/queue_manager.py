@@ -19,10 +19,12 @@ from .widgets import PlanDialog
 class RunDetailDialog(QDialog):
     """Shows full plan metadata + run data from the saved JSONL file."""
 
-    def __init__(self, item: dict, worker=None, parent=None):
+    def __init__(self, item: dict, worker=None, plans=None, devices=None, parent=None):
         super().__init__(parent)
-        self._item   = item
-        self._worker = worker
+        self._item    = item
+        self._worker  = worker
+        self._plans   = plans  or {}
+        self._devices = devices or {}
         name = item.get("name", "unknown")
         self.setWindowTitle(f"Run Detail — {name}")
         self.setMinimumSize(820, 560)
@@ -194,14 +196,15 @@ class RunDetailDialog(QDialog):
     def _requeue(self):
         if not self._worker:
             return
-        new_item = {k: v for k, v in self._item.items()
-                    if k not in ("item_uid", "result", "_run_file")}
-        new_item.setdefault("item_type", "plan")
-        ok, msg = self._worker.add_item(new_item)
-        QMessageBox.information(
-            self, "Re-queue",
-            f"{'✓' if ok else '✗'} {msg}"
-        )
+        base = {k: v for k, v in self._item.items()
+                if k not in ("item_uid", "result", "_run_file")}
+        base.setdefault("item_type", "plan")
+        # Always open PlanDialog so the user can fill in any missing required
+        # fields (e.g. detectors not stored when plan used server defaults)
+        dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
+            ok, msg = self._worker.add_item(dlg.result_item)
+            QMessageBox.information(self, "Re-queue", f"{'✓' if ok else '✗'} {msg}")
 
 
 class QueueManager(QWidget):
@@ -477,7 +480,8 @@ class QueueManager(QWidget):
         item = list_item.data(Qt.ItemDataRole.UserRole)
         if not item:
             return
-        dlg = RunDetailDialog(item, worker=self.worker, parent=self)
+        dlg = RunDetailDialog(item, worker=self.worker,
+                              plans=self.plans, devices=self.devices, parent=self)
         dlg.exec()
 
     def _history_context_menu(self, pos):

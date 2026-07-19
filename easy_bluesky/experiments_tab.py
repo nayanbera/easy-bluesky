@@ -887,5 +887,6 @@ class ExperimentsTab(QWidget):
                 "run_uids":    entry.get("run_uids", []),
             },
         }
-        dlg = RunDetailDialog(item, worker=self.worker, parent=self)
+        dlg = RunDetailDialog(item, worker=self.worker,
+                              plans=self._plans, devices=self._devices, parent=self)
         dlg.exec()
