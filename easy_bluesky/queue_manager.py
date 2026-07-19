@@ -13,6 +13,15 @@ from PyQt6.QtGui import QColor, QFont
 from .config import SUCCESS, DANGER, DATA_RUNS_DIR, EXPERIMENTS_DIR
 from .widgets import PlanDialog
 
+_MOTION_PLANS = frozenset({
+    "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
+    "kickoff", "complete", "collect", "null",
+})
+_NEUTRAL_COLOR = "#aaaaaa"
+
+def _is_motion_only(name: str, kwargs: dict) -> bool:
+    return name.lower() in _MOTION_PLANS
+
 
 # ── Run-detail dialog ──────────────────────────────────────────────────────────
 
@@ -96,12 +105,14 @@ class RunDetailDialog(QDialog):
     def _populate(self):
         item     = self._item
         name     = item.get("name", "?")
+        args     = item.get("args", []) or []
         kwargs   = item.get("kwargs", {}) or {}
         result   = item.get("result", {}) or {}
         status   = result.get("exit_status", "?")
         t_start  = result.get("time_start", 0)
         t_stop   = result.get("time_stop",  0)
         run_uids = result.get("run_uids", [])
+        md       = kwargs.get("md", {}) or {}
 
         ok_status = status in ("completed", "success")
         icon = "✓" if ok_status else "✗"
@@ -115,14 +126,62 @@ class RunDetailDialog(QDialog):
         ]
         if t_start and t_stop:
             lines.append(f"Duration:  {t_stop - t_start:.2f} s")
-        lines += ["", "Parameters:"]
-        if kwargs:
-            for k, v in kwargs.items():
+
+        # ── Sample & experiment metadata ───────────────────────────────────────
+        sample_name = md.get("sample_name", "")
+        sample_desc = md.get("sample_description", "")
+        exp_dir     = md.get("exp_dir", "")
+        if sample_name or sample_desc or exp_dir:
+            lines += ["", "── Experiment / Sample ──────────────────────"]
+            if sample_name:
+                lines.append(f"  sample_name:        {sample_name}")
+            if sample_desc:
+                lines.append(f"  sample_description: {sample_desc}")
+            if exp_dir:
+                short = exp_dir if len(exp_dir) <= 72 else "…" + exp_dir[-71:]
+                lines.append(f"  exp_dir:            {short}")
+
+        # ── Detectors ──────────────────────────────────────────────────────────
+        dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
+        if isinstance(dets, str):
+            dets = [dets]
+        if dets:
+            lines += ["", "── Detectors ────────────────────────────────"]
+            lines.append(f"  {', '.join(str(d) for d in dets)}")
+
+        # ── Motor / scan ───────────────────────────────────────────────────────
+        motor  = kwargs.get("motor")
+        motors = kwargs.get("motors")
+        if not motor and isinstance(motors, list) and motors:
+            motor = motors[0]
+        start = kwargs.get("start")
+        stop  = kwargs.get("stop")
+        num   = kwargs.get("num")
+        if motor or start is not None or stop is not None or num is not None or (args and not dets):
+            lines += ["", "── Motor / Scan ─────────────────────────────"]
+            if motor:
+                lines.append(f"  motor: {motor}")
+            if start is not None:
+                lines.append(f"  start: {start}")
+            if stop is not None:
+                lines.append(f"  stop:  {stop}")
+            if num is not None:
+                lines.append(f"  num:   {num}")
+            if args and not motor:
+                lines.append(f"  args:  {args}")
+
+        # ── Other parameters ───────────────────────────────────────────────────
+        _shown = {"motor", "motors", "detectors", "detector_list",
+                  "start", "stop", "num", "md"}
+        other = {k: v for k, v in kwargs.items() if k not in _shown}
+        if other:
+            lines += ["", "── Other Parameters ─────────────────────────"]
+            for k, v in other.items():
                 lines.append(f"  {k}: {v}")
-        else:
-            lines.append("  (none)")
+
+        # ── Run UIDs ───────────────────────────────────────────────────────────
         if run_uids:
-            lines += ["", "Run UIDs:"]
+            lines += ["", "── Run UIDs ─────────────────────────────────"]
             for u in run_uids:
                 lines.append(f"  {u}")
 
@@ -465,9 +524,10 @@ class QueueManager(QWidget):
             if t_stop and t_start:
                 secs = t_stop - t_start
                 dur_str = f"  ({secs:.1f}s)"
-            ok_   = status in ("completed", "success")
-            icon  = "✓" if ok_ else "✗"
-            color = SUCCESS if ok_ else DANGER
+            ok_    = status in ("completed", "success")
+            motion = _is_motion_only(name, kwargs)
+            icon   = "✓" if ok_ else "✗"
+            color  = _NEUTRAL_COLOR if motion else (SUCCESS if ok_ else DANGER)
             summary = self._plan_summary(name, kwargs)
             label = f"{icon}  {t_str}  {name}{summary}{dur_str}"
             li = QListWidgetItem(label)

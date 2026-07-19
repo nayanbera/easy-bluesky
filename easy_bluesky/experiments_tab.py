@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
-    QMainWindow,
+    QMainWindow, QLineEdit, QFormLayout, QGroupBox,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor, QFont
@@ -29,20 +29,33 @@ from .config import (
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
 from .queue_manager import RunDetailDialog
+from .plot_tools import setup_crosshair
+
+# Plans that never produce detector data — shown in neutral color in logs
+_MOTION_PLANS = frozenset({
+    "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
+    "kickoff", "complete", "collect", "null",
+})
+_NEUTRAL_COLOR = "#aaaaaa"  # light grey for motion-only plans
+
+
+def _is_motion_only(name: str, kwargs: dict) -> bool:
+    return name.lower() in _MOTION_PLANS
 
 
 # ── Embedded single-run history plot ──────────────────────────────────────────
 
 class ExperimentHistoryWidget(QWidget):
-    """Plots one run's data loaded directly from a JSONL file.
-    No run list — the plan log in ExperimentsTab serves as the selector.
-    """
+    """Plots one or more runs' data loaded directly from JSONL files."""
 
     COLORS = PLOT_COLORS
+    move_requested = pyqtSignal(str, float)   # (motor_name, position)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._df = None
+        self._dfs: list = []    # list of (pd.DataFrame, label_str)
+        self._curves: dict = {}
+        self._crosshair_cleanup = None
         self._build()
 
     def _build(self):
@@ -80,16 +93,34 @@ class ExperimentHistoryWidget(QWidget):
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.addLegend()
             main.addWidget(self.plot_widget, 1)
+
+            self.plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
         else:
             main.addWidget(
                 QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
 
+        # Bottom bar: stats left, cursor coords right
+        bot = QHBoxLayout()
+        bot.setContentsMargins(0, 0, 0, 0)
         self.stats_label = QLabel("")
         self.stats_label.setObjectName("dim_text")
-        main.addWidget(self.stats_label)
+        bot.addWidget(self.stats_label, 1)
 
-    def load_jsonl_file(self, filepath: str):
-        """Parse a suitcase-jsonl file and auto-plot it."""
+        self.coord_label = QLabel("")
+        self.coord_label.setObjectName("dim_text")
+        self.coord_label.setStyleSheet("font-size: 11px; padding: 2px 4px; font-family: monospace;")
+        bot.addWidget(self.coord_label)
+        main.addLayout(bot)
+
+        if PG_AVAILABLE:
+            self._crosshair_cleanup = setup_crosshair(
+                self.plot_widget, self.coord_label, lambda: self._curves
+            )
+
+    # ── Data loading ────────────────────────────────────────────────────────────
+
+    def _parse_jsonl(self, filepath: str):
+        """Parse one JSONL file. Returns (DataFrame, label) or (None, '')."""
         events: list = []
         start_doc: dict = {}
         try:
@@ -102,8 +133,7 @@ class ExperimentHistoryWidget(QWidget):
                     if name == "start":
                         start_doc = doc
                     elif name == "event":
-                        row = {"seq_num": doc.get("seq_num"),
-                               "time":    doc.get("time")}
+                        row = {"seq_num": doc.get("seq_num"), "time": doc.get("time")}
                         row.update(doc.get("data", {}))
                         events.append(row)
                     elif name == "event_page":
@@ -117,27 +147,50 @@ class ExperimentHistoryWidget(QWidget):
                                         if i < len(v)})
                             events.append(row)
         except Exception as e:
-            self.run_label.setText(f"Load error: {e}")
-            return
+            return None, f"Error: {e}"
 
         if not events:
-            self.run_label.setText("No events found in this run file")
-            return
+            return None, "no events"
 
         try:
             import pandas as pd
-            self._df = pd.DataFrame(events)
+            df = pd.DataFrame(events)
         except ImportError:
-            self.run_label.setText("pandas not available — pip install pandas")
+            return None, "pandas missing"
+
+        plan  = start_doc.get("plan_name", "?")
+        uid8  = start_doc.get("uid", filepath)[:8]
+        label = f"{plan} [{uid8}]  {len(events)} pts"
+        return df, label
+
+    def load_jsonl_file(self, filepath: str):
+        """Load a single JSONL file and plot it."""
+        df, label = self._parse_jsonl(filepath)
+        if df is None:
+            self.run_label.setText(label)
             return
+        self._dfs = [(df, label)]
+        self._setup_axes(df)
+        self.run_label.setText(label)
 
-        plan = start_doc.get("plan_name", "?")
-        uid8 = start_doc.get("uid", filepath)[:8]
-        self.run_label.setText(
-            f"{plan}  [{uid8}]  —  {len(events)} events")
+    def load_jsonl_files(self, filepaths: list):
+        """Load multiple JSONL files and overlay them."""
+        self._dfs = []
+        for fp in filepaths[:8]:
+            df, label = self._parse_jsonl(str(fp))
+            if df is not None:
+                self._dfs.append((df, label))
 
-        cols = [c for c in self._df.columns
-                if self._df[c].dtype.kind in ("f", "i", "u")]
+        if not self._dfs:
+            self.run_label.setText("No data found in selected runs")
+            return
+        self._setup_axes(self._dfs[0][0])
+        if len(self._dfs) > 1:
+            self.run_label.setText(f"{len(self._dfs)} runs overlaid")
+
+    def _setup_axes(self, df):
+        """Populate X/Y combos from the first DataFrame."""
+        cols = [c for c in df.columns if df[c].dtype.kind in ("f", "i", "u")]
         self.x_combo.clear()
         self.x_combo.addItems(cols)
         self.y_list.clear()
@@ -145,8 +198,7 @@ class ExperimentHistoryWidget(QWidget):
             self.y_list.addItem(QListWidgetItem(c))
 
         motor_cols = [c for c in cols
-                      if any(w in c.lower()
-                             for w in ("motor", "pos", "stage", "enc"))]
+                      if any(w in c.lower() for w in ("motor", "pos", "stage", "enc"))]
         det_cols   = [c for c in cols
                       if c not in motor_cols and c not in ("seq_num", "time")]
         x_default  = motor_cols[0] if motor_cols else (cols[0] if cols else "")
@@ -159,45 +211,90 @@ class ExperimentHistoryWidget(QWidget):
         self._plot()
 
     def _plot(self):
-        if self._df is None or not PG_AVAILABLE:
+        if not self._dfs or not PG_AVAILABLE:
             return
-        self.plot_widget.clear()
+        # Remove existing curves without clearing the whole widget (which would
+        # destroy the crosshair InfiniteLines added by setup_crosshair).
+        for curve in self._curves.values():
+            try:
+                self.plot_widget.removeItem(curve)
+            except Exception:
+                pass
+        pi = self.plot_widget.getPlotItem()
+        if pi.legend:
+            pi.legend.clear()
+        self._curves = {}
         xc  = self.x_combo.currentText()
         ycs = [self.y_list.item(i).text()
                for i in range(self.y_list.count())
                if self.y_list.item(i).isSelected()]
-        if not xc or not ycs or xc not in self._df.columns:
+        if not xc or not ycs:
             return
 
-        x = self._df[xc].values.astype(float)
+        color_idx = 0
         stats = []
-        for idx, yc in enumerate(ycs):
-            if yc not in self._df.columns:
+        for df, df_label in self._dfs:
+            if xc not in df.columns:
                 continue
-            y    = self._df[yc].values.astype(float)
-            mask = np.isfinite(x) & np.isfinite(y)
-            x_, y_ = x[mask], y[mask]
-            if not len(x_):
-                continue
-            color = self.COLORS[idx % len(self.COLORS)]
-            pen   = pg.mkPen(color=color, width=2)
-            self.plot_widget.plot(x_, y_, pen=pen, name=yc,
-                                  symbol="o", symbolSize=5,
-                                  symbolBrush=color, symbolPen=None)
-            stats.append(
-                f"{yc}: min={y_.min():.4g}  max={y_.max():.4g}"
-                f"  mean={y_.mean():.4g}")
+            x = df[xc].values.astype(float)
+            for yc in ycs:
+                if yc not in df.columns:
+                    continue
+                y    = df[yc].values.astype(float)
+                mask = np.isfinite(x) & np.isfinite(y)
+                x_, y_ = x[mask], y[mask]
+                if not len(x_):
+                    continue
+                color = self.COLORS[color_idx % len(self.COLORS)]
+                pen   = pg.mkPen(color=color, width=2)
+                curve_name = yc if len(self._dfs) == 1 else f"{yc}  [{df_label[:20]}]"
+                curve = self.plot_widget.plot(x_, y_, pen=pen, name=curve_name,
+                                              symbol="o", symbolSize=5,
+                                              symbolBrush=color, symbolPen=None)
+                self._curves[curve_name] = curve
+                color_idx += 1
+                stats.append(
+                    f"{yc}: min={y_.min():.4g}  max={y_.max():.4g}")
+
         self.plot_widget.setLabel("bottom", xc)
         self.plot_widget.setLabel("left",   ", ".join(ycs))
         self.stats_label.setText("   ".join(stats))
+
+    # ── Double-click: move motor ───────────────────────────────────────────────
+
+    def _on_plot_clicked(self, event):
+        if not event.double():
+            return
+        pos = event.scenePos()
+        if not self.plot_widget.sceneBoundingRect().contains(pos):
+            return
+
+        vb = self.plot_widget.getPlotItem().vb
+        mp = vb.mapSceneToView(pos)
+        x_val   = mp.x()
+        x_label = self.x_combo.currentText() or ""
+
+        motor_guess = x_label
+        for suffix in ("_readback", "_setpoint", "_user_readback", "_user_setpoint"):
+            if motor_guess.endswith(suffix):
+                motor_guess = motor_guess[: -len(suffix)]
+                break
+
+        r = QMessageBox.question(
+            self, "Move Motor",
+            f"Move  '{motor_guess}'  to  {x_val:.5g} ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if r == QMessageBox.StandardButton.Yes:
+            self.move_requested.emit(motor_guess, x_val)
 
 
 # ── Main experiments tab ───────────────────────────────────────────────────────
 
 class ExperimentsTab(QWidget):
     """Three-panel layout:
-      Left  — experiment info, recent list, plan log
-      Middle — compact queue with add/remove/clear + console output
+      Left  — experiment info, sample fields, plan log
+      Middle — compact queue + console
       Right  — Live / History plot tabs (detachable)
     """
 
@@ -210,10 +307,13 @@ class ExperimentsTab(QWidget):
         self._devices: dict    = {}
         self._active_exp_path  = ""
         self._logged_uids: set = set()
+        self._shown_error_uids: set = set()
         self._exp_created_at: float = 0.0
-        self._exp_end_time: float   = 0.0   # creation time of the next experiment
+        self._exp_end_time: float   = 0.0
         self._detached_win     = None
         self._plot_placeholder = None
+        self._sample_name: str = ""
+        self._sample_description: str = ""
         self._build()
         self._load_active_experiment()
 
@@ -228,10 +328,10 @@ class ExperimentsTab(QWidget):
         splitter.addWidget(self._build_left())
         splitter.addWidget(self._build_middle())
         splitter.addWidget(self._build_right())
-        splitter.setSizes([220, 260, 720])
+        splitter.setSizes([240, 260, 720])
         lay.addWidget(splitter)
 
-    # ── Left panel: experiment info + recent + plan log ────────────────────────
+    # ── Left panel: experiment info + sample + plan log ────────────────────────
 
     def _build_left(self) -> QWidget:
         w = QWidget()
@@ -262,29 +362,43 @@ class ExperimentsTab(QWidget):
         btn_new  = QPushButton("New Experiment")
         btn_new.setObjectName("btn_primary")
         btn_new.clicked.connect(self.new_experiment)
-        btn_open = QPushButton("Open Experiment")
+        btn_open = QPushButton("Open…")
         btn_open.clicked.connect(self.open_experiment)
         btn_row.addWidget(btn_new)
         btn_row.addWidget(btn_open)
         vlay.addLayout(btn_row)
 
-        lbl_recent = QLabel("RECENT EXPERIMENTS")
-        lbl_recent.setObjectName("section_title")
-        vlay.addWidget(lbl_recent)
+        # ── Sample fields ──────────────────────────────────────────────────────
+        sample_grp = QGroupBox("Sample")
+        sample_lay = QFormLayout(sample_grp)
+        sample_lay.setSpacing(4)
 
-        self.recent_list = QListWidget()
-        self.recent_list.setMaximumHeight(130)
-        self.recent_list.itemClicked.connect(self._on_recent_clicked)
-        vlay.addWidget(self.recent_list)
+        self.sample_name_edit = QLineEdit()
+        self.sample_name_edit.setPlaceholderText("e.g. Si_wafer_01")
+        self.sample_name_edit.editingFinished.connect(self._on_sample_name_commit)
+        sample_lay.addRow("Name:", self.sample_name_edit)
 
-        lbl_log = QLabel("PLAN LOG  (click to plot in History)")
+        self.sample_desc_edit = QLineEdit()
+        self.sample_desc_edit.setPlaceholderText("optional description")
+        self.sample_desc_edit.editingFinished.connect(self._on_sample_desc_commit)
+        sample_lay.addRow("Desc:", self.sample_desc_edit)
+
+        self.sample_dir_label = QLabel("—")
+        self.sample_dir_label.setObjectName("dim_text")
+        self.sample_dir_label.setStyleSheet("font-size: 10px;")
+        self.sample_dir_label.setWordWrap(True)
+        sample_lay.addRow("Folder:", self.sample_dir_label)
+
+        vlay.addWidget(sample_grp)
+
+        lbl_log = QLabel("PLAN LOG  (click to plot · multi-select to overlay)")
         lbl_log.setObjectName("section_title")
         vlay.addWidget(lbl_log)
 
         self.plan_log_list = QListWidget()
         self.plan_log_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection)
-        self.plan_log_list.itemClicked.connect(self._on_plan_log_clicked)
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.plan_log_list.itemSelectionChanged.connect(self._on_plan_log_selection_changed)
         self.plan_log_list.itemDoubleClicked.connect(self._on_plan_log_double_clicked)
         vlay.addWidget(self.plan_log_list, 1)
 
@@ -298,7 +412,6 @@ class ExperimentsTab(QWidget):
         vlay.setContentsMargins(4, 8, 4, 8)
         vlay.setSpacing(4)
 
-        # Queue header
         q_hdr = QHBoxLayout()
         lbl_q = QLabel("QUEUE")
         lbl_q.setObjectName("section_title")
@@ -309,7 +422,6 @@ class ExperimentsTab(QWidget):
         q_hdr.addWidget(self.queue_count_label)
         vlay.addLayout(q_hdr)
 
-        # Queue list (single-click opens editor)
         self.queue_compact = QListWidget()
         self.queue_compact.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection)
@@ -317,7 +429,6 @@ class ExperimentsTab(QWidget):
         self.queue_compact.itemClicked.connect(self._on_queue_item_clicked)
         vlay.addWidget(self.queue_compact, 1)
 
-        # Queue action buttons
         q_btns = QHBoxLayout()
         q_btns.setSpacing(4)
         btn_add = QPushButton("＋ Add")
@@ -334,7 +445,6 @@ class ExperimentsTab(QWidget):
         q_btns.addWidget(btn_clr)
         vlay.addLayout(q_btns)
 
-        # Console
         lbl_con = QLabel("CONSOLE")
         lbl_con.setObjectName("section_title")
         vlay.addWidget(lbl_con)
@@ -356,19 +466,18 @@ class ExperimentsTab(QWidget):
         lay.setContentsMargins(4, 8, 8, 8)
         lay.setSpacing(0)
 
-        # Stable container so we can swap plot_tabs in/out without touching `w`
         self._plot_container = QWidget()
         self._plot_container_lay = QVBoxLayout(self._plot_container)
         self._plot_container_lay.setContentsMargins(0, 0, 0, 0)
         self._plot_container_lay.setSpacing(0)
 
         self.plot_tabs = QTabWidget()
-        self.live_viewer    = LiveViewer()
+        self.live_viewer    = LiveViewer(worker=self.worker)
         self.history_widget = ExperimentHistoryWidget()
+        self.history_widget.move_requested.connect(self._on_move_requested)
         self.plot_tabs.addTab(self.live_viewer,    "📡  Live")
         self.plot_tabs.addTab(self.history_widget, "📂  History")
 
-        # Detach button in top-right corner of the tab bar
         self._detach_btn = QPushButton("⊔  Detach")
         self._detach_btn.setFixedHeight(22)
         self._detach_btn.setStyleSheet("font-size: 11px; padding: 0 8px; margin: 1px;")
@@ -389,9 +498,7 @@ class ExperimentsTab(QWidget):
             self._do_reattach()
 
     def _do_detach(self):
-        # Remove plot_tabs from container and add placeholder
         self._plot_container_lay.removeWidget(self.plot_tabs)
-
         self._plot_placeholder = QLabel(
             "Plots are in a floating window.\nClose it to re-attach.")
         self._plot_placeholder.setObjectName("dim_text")
@@ -399,12 +506,10 @@ class ExperimentsTab(QWidget):
         self._plot_placeholder.setStyleSheet("font-size: 14px;")
         self._plot_container_lay.addWidget(self._plot_placeholder)
 
-        # Floating window
         win = QMainWindow()
         win.setWindowTitle("EasyBluesky — Plots")
         win.setMinimumSize(900, 600)
         win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
-
         cw  = QWidget()
         cl  = QVBoxLayout(cw)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -424,29 +529,60 @@ class ExperimentsTab(QWidget):
     def _do_reattach(self):
         if not self._detached_win:
             return
-
-        # Remove placeholder
         if self._plot_placeholder:
             self._plot_container_lay.removeWidget(self._plot_placeholder)
             self._plot_placeholder.deleteLater()
             self._plot_placeholder = None
-
-        # Move plot_tabs back into container
         self.plot_tabs.setParent(self._plot_container)
         self._plot_container_lay.addWidget(self.plot_tabs)
-
         self._detached_win.hide()
         self._detached_win = None
         self._detach_btn.setText("⊔  Detach")
 
+    # ── Motor move (from history plot double-click) ────────────────────────────
+
+    def _on_move_requested(self, motor: str, position: float):
+        if not self.worker:
+            return
+        item = {
+            "name":      "mv",
+            "args":      [motor, position],
+            "kwargs":    {},
+            "item_type": "plan",
+        }
+        ok, msg = self.worker.execute_item(item)
+        self._log(f"{'✓' if ok else '✗'} Move {motor} → {position:.5g}: {msg}")
+
     # ── Queue operations ───────────────────────────────────────────────────────
+
+    def _build_metadata(self) -> dict:
+        """Build md dict injected automatically into every submitted plan."""
+        md: dict = {}
+        if self._active_exp_path:
+            md["exp_dir"] = self._active_exp_path
+        if self._sample_name:
+            md["sample_name"] = self._sample_name
+        if self._sample_description:
+            md["sample_description"] = self._sample_description
+        return md
+
+    def _inject_metadata(self, result_item: dict):
+        """Inject experiment/sample metadata into a plan item's md key."""
+        auto_md = self._build_metadata()
+        if not auto_md:
+            return result_item
+        existing_md = result_item.get("kwargs", {}).get("md", {}) or {}
+        merged = {**auto_md, **existing_md}   # user-supplied md wins
+        result_item.setdefault("kwargs", {})["md"] = merged
+        return result_item
 
     def _add_plan(self):
         if not self.worker:
             return
         dlg = PlanDialog(self._plans, self._devices, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-            ok, msg = self.worker.add_item(dlg.result_item)
+            item = self._inject_metadata(dlg.result_item)
+            ok, msg = self.worker.add_item(item)
             self._log(f"{'✓' if ok else '✗'} Add plan: {msg}")
 
     def _remove_plan(self):
@@ -477,7 +613,8 @@ class ExperimentsTab(QWidget):
             return
         dlg = PlanDialog(self._plans, self._devices, item=item, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-            ok, msg = self.worker.update_item(dlg.result_item)
+            updated = self._inject_metadata(dlg.result_item)
+            ok, msg = self.worker.update_item(updated)
             self._log(f"{'✓' if ok else '✗'} Update plan: {msg}")
 
     # ── Console ────────────────────────────────────────────────────────────────
@@ -491,13 +628,58 @@ class ExperimentsTab(QWidget):
         ts = datetime.now().strftime("%H:%M:%S")
         self.append_console(f"[{ts}] {msg}")
 
-    # ── Public setters for plans/devices (needed by PlanDialog) ────────────────
+    # ── Public setters ─────────────────────────────────────────────────────────
 
     def set_plans(self, plans: dict):
         self._plans = plans
 
     def set_devices(self, devices: dict):
         self._devices = devices
+
+    # ── Sample management ──────────────────────────────────────────────────────
+
+    def _on_sample_name_commit(self):
+        name = self.sample_name_edit.text().strip()
+        if not name or name == self._sample_name:
+            return
+        if not self._active_exp_path:
+            QMessageBox.warning(self, "No Experiment",
+                                "Open or create an experiment first.")
+            self.sample_name_edit.setText(self._sample_name)
+            return
+        safe = re.sub(r"[^\w\-]", "_", name)
+        sample_dir = Path(self._active_exp_path) / "samples" / safe
+        if sample_dir.exists():
+            r = QMessageBox.question(
+                self, "Sample Exists",
+                f"Sample folder '{safe}' already exists.\nUse it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                self.sample_name_edit.setText(self._sample_name)
+                return
+        else:
+            try:
+                sample_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error",
+                                     f"Could not create sample folder:\n{e}")
+                self.sample_name_edit.setText(self._sample_name)
+                return
+        self._sample_name = name
+        display = str(sample_dir) if len(str(sample_dir)) <= 55 else "…" + str(sample_dir)[-54:]
+        self.sample_dir_label.setText(display)
+        self._log(f"✓ Sample: {safe}")
+
+    def _on_sample_desc_commit(self):
+        self._sample_description = self.sample_desc_edit.text().strip()
+
+    def _clear_sample(self):
+        self._sample_name = ""
+        self._sample_description = ""
+        self.sample_name_edit.clear()
+        self.sample_desc_edit.clear()
+        self.sample_dir_label.setText("—")
 
     # ── Experiment management ──────────────────────────────────────────────────
 
@@ -533,8 +715,8 @@ class ExperimentsTab(QWidget):
         active_info = {"name": name, "path": str(exp_dir), "created": ts.isoformat()}
         self._write_active_experiment(active_info)
         self._set_active_experiment(str(exp_dir), active_info)
+        self._clear_sample()
         self.experiment_changed.emit(str(runs_dir))
-        # Recompute _exp_end_time now visible to other experiments too
         self._exp_end_time = self._compute_exp_end_time()
 
     def open_experiment(self):
@@ -560,9 +742,55 @@ class ExperimentsTab(QWidget):
         }
         self._write_active_experiment(active_info)
         self._set_active_experiment(path, active_info)
+        self._clear_sample()
         runs_dir = Path(path) / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         self.experiment_changed.emit(str(runs_dir))
+
+    def load_experiment(self, path: str, info: dict = None):
+        """Public entry point called from File → Recent Experiments menu."""
+        if not Path(path).exists():
+            QMessageBox.warning(self, "Not Found",
+                                f"Experiment folder not found:\n{path}")
+            return
+        if info is None:
+            exp_json = Path(path) / "experiment.json"
+            try:
+                info = json.loads(exp_json.read_text())
+            except Exception:
+                info = {"name": Path(path).name, "path": path, "created": ""}
+
+        active_info = {
+            "name":    info.get("name", Path(path).name),
+            "path":    path,
+            "created": info.get("created", ""),
+        }
+        self._write_active_experiment(active_info)
+        self._set_active_experiment(path, active_info)
+        self._clear_sample()
+        runs_dir = Path(path) / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        self.experiment_changed.emit(str(runs_dir))
+
+    def get_recent_experiments(self, limit: int = 10) -> list:
+        """Return list of (path, info) tuples, most-recent first."""
+        exps_dir = Path(EXPERIMENTS_DIR)
+        if not exps_dir.exists():
+            return []
+        entries = []
+        for d in exps_dir.iterdir():
+            if not d.is_dir():
+                continue
+            exp_json = d / "experiment.json"
+            if not exp_json.exists():
+                continue
+            try:
+                info = json.loads(exp_json.read_text())
+                entries.append((d.stat().st_mtime, str(d), info))
+            except Exception:
+                pass
+        entries.sort(key=lambda x: x[0], reverse=True)
+        return [(path, info) for _, path, info in entries[:limit]]
 
     def _write_active_experiment(self, info: dict):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
@@ -570,7 +798,6 @@ class ExperimentsTab(QWidget):
         active_file.write_text(json.dumps(info, indent=2))
 
     def _compute_exp_end_time(self) -> float:
-        """Return the creation timestamp of the next experiment after this one, or 0."""
         if not self._exp_created_at:
             return 0.0
         exps_dir = Path(EXPERIMENTS_DIR)
@@ -608,7 +835,6 @@ class ExperimentsTab(QWidget):
         self.exp_path_label.setText(display_path)
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
         self._load_plan_log(path)
-        self._load_recent_experiments()
 
     def _load_active_experiment(self):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
@@ -621,34 +847,6 @@ class ExperimentsTab(QWidget):
                 self._set_active_experiment(path, info)
         except Exception:
             pass
-
-    def _load_recent_experiments(self):
-        exps_dir = Path(EXPERIMENTS_DIR)
-        if not exps_dir.exists():
-            return
-        entries = []
-        for d in exps_dir.iterdir():
-            if not d.is_dir():
-                continue
-            exp_json = d / "experiment.json"
-            if not exp_json.exists():
-                continue
-            try:
-                info = json.loads(exp_json.read_text())
-                entries.append((d.stat().st_mtime, str(d), info))
-            except Exception:
-                pass
-        entries.sort(key=lambda x: x[0], reverse=True)
-        self.recent_list.clear()
-        for _, path, info in entries[:20]:
-            name    = info.get("name", Path(path).name)
-            created = info.get("created", "")[:10]
-            li = QListWidgetItem(f"{name}  ({created})")
-            li.setData(Qt.ItemDataRole.UserRole,     path)
-            li.setData(Qt.ItemDataRole.UserRole + 1, info)
-            if path == self._active_exp_path:
-                li.setForeground(QColor(ACCENT))
-            self.recent_list.addItem(li)
 
     # ── Plan log ───────────────────────────────────────────────────────────────
 
@@ -684,6 +882,12 @@ class ExperimentsTab(QWidget):
         dirs = []
         if self._active_exp_path:
             dirs.append(Path(self._active_exp_path) / "runs")
+        exps = Path(EXPERIMENTS_DIR)
+        if exps.exists():
+            for d in sorted(exps.iterdir(), reverse=True):
+                rd = d / "runs"
+                if rd.is_dir() and rd not in dirs:
+                    dirs.append(rd)
         dirs.append(Path(DATA_RUNS_DIR))
         return dirs
 
@@ -755,8 +959,6 @@ class ExperimentsTab(QWidget):
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
 
-        # Seed _logged_uids from every experiment log so plans already attributed
-        # to one experiment are never re-logged when switching to another.
         self._logged_uids = set()
         exps_dir = Path(EXPERIMENTS_DIR)
         if exps_dir.exists():
@@ -796,14 +998,18 @@ class ExperimentsTab(QWidget):
                         pass
 
             for entry in reversed(entries):
-                status  = entry.get("exit_status", "")
-                ok      = status in ("completed", "success")
-                icon    = "✓" if ok else "✗"
-                color   = SUCCESS if ok else DANGER
-                ts      = entry.get("timestamp", "")
-                t_str   = ts[11:19] if len(ts) >= 19 else ts[:19]
                 name    = entry.get("name", "?")
                 kwargs  = entry.get("kwargs", {}) or {}
+                status  = entry.get("exit_status", "")
+                ok      = status in ("completed", "success")
+                motion  = _is_motion_only(name, kwargs)
+                icon    = "✓" if ok else ("✗" if status else "?")
+                if motion:
+                    color = _NEUTRAL_COLOR
+                else:
+                    color = SUCCESS if ok else DANGER
+                ts      = entry.get("timestamp", "")
+                t_str   = ts[11:19] if len(ts) >= 19 else ts[:19]
                 dur     = entry.get("duration_s")
                 summary = self._plan_summary(name, kwargs)
                 dur_str = f"  ({dur:.1f}s)" if dur is not None else ""
@@ -835,7 +1041,6 @@ class ExperimentsTab(QWidget):
             t_start  = result.get("time_start", 0)
             run_uids = result.get("run_uids", [])
 
-            # Skip plans outside this experiment's time window
             if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
                 self._logged_uids.add(uid)
                 continue
@@ -868,6 +1073,15 @@ class ExperimentsTab(QWidget):
             except Exception:
                 pass
 
+            # Show error dialog for newly failed plans
+            if exit_status == "failed" and uid not in self._shown_error_uids:
+                self._shown_error_uids.add(uid)
+                err_msg = result.get("msg", "") or result.get("traceback", "") or "(no details)"
+                QMessageBox.warning(
+                    self, f"Plan Failed — {item.get('name', '?')}",
+                    f"Plan  '{item.get('name', '?')}'  failed.\n\n{err_msg[:1000]}",
+                )
+
         if changed:
             self._load_plan_log(self._active_exp_path)
 
@@ -887,30 +1101,33 @@ class ExperimentsTab(QWidget):
 
     # ── Internal slots ─────────────────────────────────────────────────────────
 
-    def _on_recent_clicked(self, li: QListWidgetItem):
-        path = li.data(Qt.ItemDataRole.UserRole)
-        info = li.data(Qt.ItemDataRole.UserRole + 1)
-        if not path or not info:
+    def _on_plan_log_selection_changed(self):
+        """Called whenever selection changes in the plan log list."""
+        selected = self.plan_log_list.selectedItems()
+        if not selected:
             return
-        active_info = {
-            "name":    info.get("name", ""),
-            "path":    path,
-            "created": info.get("created", ""),
-        }
-        self._write_active_experiment(active_info)
-        self._set_active_experiment(path, active_info)
-        runs_dir = Path(path) / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        self.experiment_changed.emit(str(runs_dir))
 
-    def _on_plan_log_clicked(self, li: QListWidgetItem):
-        entry = li.data(Qt.ItemDataRole.UserRole)
-        if not entry or not self._active_exp_path:
+        entries = []
+        for li in selected:
+            entry = li.data(Qt.ItemDataRole.UserRole)
+            if entry:
+                entries.append(entry)
+
+        # Skip motion-only plans (nothing to plot)
+        plottable = [e for e in entries
+                     if not _is_motion_only(e.get("name", ""), e.get("kwargs", {}) or {})]
+        if not plottable:
             return
-        filepath = self._find_run_file_for_entry(entry)
-        if not filepath:
+
+        paths = [self._find_run_file_for_entry(e) for e in plottable]
+        paths = [p for p in paths if p]
+        if not paths:
             return
-        self.history_widget.load_jsonl_file(str(filepath))
+
+        if len(paths) == 1:
+            self.history_widget.load_jsonl_file(str(paths[0]))
+        else:
+            self.history_widget.load_jsonl_files(paths)
         self.plot_tabs.setCurrentIndex(1)
 
     def _on_plan_log_double_clicked(self, li: QListWidgetItem):
@@ -925,7 +1142,6 @@ class ExperimentsTab(QWidget):
             t_stop = 0.0
         t_start = (t_stop - dur) if (t_stop and dur) else t_stop
 
-        # Build the format RunDetailDialog expects
         item = {
             "name":     entry.get("name", "?"),
             "kwargs":   entry.get("kwargs", {}) or {},

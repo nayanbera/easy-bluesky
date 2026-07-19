@@ -3,6 +3,7 @@
 import sys
 import threading
 from datetime import datetime
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QStatusBar, QLabel,
     QWidget, QVBoxLayout, QMessageBox,
@@ -77,6 +78,12 @@ class MainWindow(QMainWindow):
         from PyQt6.QtGui import QActionGroup
         menubar = self.menuBar()
 
+        # ── File menu ──────────────────────────────────────────────────────────
+        file_menu = menubar.addMenu("File")
+        self._recent_menu = file_menu.addMenu("Recent Experiments")
+        self._refresh_recent_menu()
+
+        # ── View menu ──────────────────────────────────────────────────────────
         view_menu = menubar.addMenu("View")
         theme_menu = view_menu.addMenu("Theme")
 
@@ -90,6 +97,25 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda checked, n=name: self.apply_theme(n))
             group.addAction(act)
             self._theme_actions[name] = act
+
+    def _refresh_recent_menu(self):
+        self._recent_menu.clear()
+        try:
+            recent = self.experiments_tab.get_recent_experiments(10)
+        except Exception:
+            return
+        if not recent:
+            self._recent_menu.addAction("(none)").setEnabled(False)
+            return
+        for path, info in recent:
+            name    = info.get("name", Path(path).name)
+            created = info.get("created", "")[:10]
+            label   = f"{name}  ({created})" if created else name
+            act = self._recent_menu.addAction(label)
+            act.triggered.connect(
+                lambda checked, p=path, i=info:
+                    self.experiments_tab.load_experiment(p, i)
+            )
 
     def apply_theme(self, name: str):
         if name not in THEMES:
@@ -271,6 +297,7 @@ class MainWindow(QMainWindow):
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
+        self._refresh_recent_menu()
 
     def closeEvent(self, event):
         self.worker.stop()

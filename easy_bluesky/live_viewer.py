@@ -17,10 +17,11 @@ except ImportError:
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QListWidget, QListWidgetItem, QAbstractItemView,
+    QComboBox, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox,
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_PORT
+from .plot_tools import setup_crosshair
 
 
 class ZMQDocThread(QThread):
@@ -58,14 +59,14 @@ class ZMQDocThread(QThread):
 class LiveViewer(QWidget):
     COLORS = PLOT_COLORS
 
-    def __init__(self, parent=None):
+    def __init__(self, worker=None, parent=None):
         super().__init__(parent)
-        # All signal data stored independently: {key: [float, ...]}
-        # "time" and "seq_num" are always present after the first event.
+        self.worker    = worker
         self._data     = {}   # key → list of float values
         self._curves   = {}   # y_signal → PlotDataItem
         self._run_uid  = None
         self._x_signal = None
+        self._crosshair_cleanup = None
         self._build()
         self._start_zmq()
 
@@ -106,13 +107,30 @@ class LiveViewer(QWidget):
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.addLegend()
             main.addWidget(self.plot_widget, 1)
+
+            # Double-click to move motor
+            self.plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
         else:
             main.addWidget(QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
 
+        # Bottom bar: status left, cursor coords right
+        bot = QHBoxLayout()
+        bot.setContentsMargins(0, 0, 0, 0)
         self.status_bar = QLabel("Waiting for run…")
         self.status_bar.setObjectName("dim_text")
         self.status_bar.setStyleSheet("font-size: 12px; padding: 4px;")
-        main.addWidget(self.status_bar)
+        bot.addWidget(self.status_bar, 1)
+
+        self.coord_label = QLabel("")
+        self.coord_label.setObjectName("dim_text")
+        self.coord_label.setStyleSheet("font-size: 11px; padding: 4px; font-family: monospace;")
+        bot.addWidget(self.coord_label)
+        main.addLayout(bot)
+
+        if PYQTGRAPH_AVAILABLE:
+            self._crosshair_cleanup = setup_crosshair(
+                self.plot_widget, self.coord_label, lambda: self._curves
+            )
 
     # ── ZMQ thread ─────────────────────────────────────────────────────────────
 
@@ -137,7 +155,6 @@ class LiveViewer(QWidget):
 
         elif name == "descriptor":
             keys = list(doc.get("data_keys", {}).keys())
-            # Build display list: data signals first, then time
             all_cols = keys + ["time"]
             self.x_combo.blockSignals(True)
             self.x_combo.clear()
@@ -150,26 +167,17 @@ class LiveViewer(QWidget):
                 self.y_list.addItem(QListWidgetItem(k))
             self.y_list.blockSignals(False)
 
-            # Auto-select: first non-detector signal as X, detectors as Y
-            # Heuristic: motor-like = has "motor" or "pos" in name, else first key
             motor_keys = [k for k in keys if any(w in k.lower() for w in ("motor", "pos", "stage", "enc"))]
             det_keys   = [k for k in keys if k not in motor_keys]
 
-            if motor_keys:
-                x_default = motor_keys[0]
-            elif keys:
-                x_default = keys[0]
-            else:
-                x_default = "time"
-
+            x_default = motor_keys[0] if motor_keys else (keys[0] if keys else "time")
             self.x_combo.setCurrentText(x_default)
             self._x_signal = x_default
 
-            # Auto-select Y: detector signals (exclude x and time)
             for i in range(self.y_list.count()):
                 sig = self.y_list.item(i).text()
-                should_select = (sig in det_keys) or (not det_keys and sig != x_default and sig != "time")
-                self.y_list.item(i).setSelected(should_select)
+                self.y_list.item(i).setSelected(
+                    sig in det_keys or (not det_keys and sig != x_default and sig != "time"))
 
             self.status_bar.setText(f"Signals: {', '.join(all_cols)}")
 
@@ -194,12 +202,10 @@ class LiveViewer(QWidget):
         elif name == "stop":
             status = doc.get("exit_status", "unknown")
             n      = doc.get("num_events", "?")
-            self.run_label.setText(
-                f"Run complete — {status}  ({n} events)")
+            self.run_label.setText(f"Run complete — {status}  ({n} events)")
             self.status_bar.setText("Run finished — waiting for next run…")
 
     def _ingest_event(self, seq, t, data):
-        """Store one event's data and refresh the plot."""
         self._data.setdefault("seq_num", []).append(float(seq))
         self._data.setdefault("time",    []).append(float(t))
         for k, v in data.items():
@@ -231,7 +237,6 @@ class LiveViewer(QWidget):
             if self.y_list.item(i).isSelected()
         ]
 
-        # Remove curves for deselected signals
         for sig in list(self._curves):
             if sig not in y_signals:
                 self.plot_widget.removeItem(self._curves.pop(sig))
@@ -258,10 +263,59 @@ class LiveViewer(QWidget):
         self.plot_widget.setLabel("left",   ", ".join(y_signals) if y_signals else "Y")
 
     def _reset_run(self):
-        self._data   = {}
-        self._curves = {}
+        self._data = {}
         if PYQTGRAPH_AVAILABLE:
-            self.plot_widget.clear()
+            for curve in self._curves.values():
+                try:
+                    self.plot_widget.removeItem(curve)
+                except Exception:
+                    pass
+            pi = self.plot_widget.getPlotItem()
+            if pi.legend:
+                pi.legend.clear()
+        self._curves = {}
+
+    # ── Double-click: move motor ───────────────────────────────────────────────
+
+    def _on_plot_clicked(self, event):
+        if not event.double():
+            return
+        if not self.worker:
+            return
+        pos = event.scenePos()
+        if not self.plot_widget.sceneBoundingRect().contains(pos):
+            return
+
+        vb = self.plot_widget.getPlotItem().vb
+        mp = vb.mapSceneToView(pos)
+        x_val  = mp.x()
+        x_label = self._x_signal or self.plot_widget.getAxis("bottom").labelText or ""
+
+        # Strip common readback suffixes to get motor name
+        motor_guess = x_label
+        for suffix in ("_readback", "_setpoint", "_user_readback", "_user_setpoint"):
+            if motor_guess.endswith(suffix):
+                motor_guess = motor_guess[: -len(suffix)]
+                break
+
+        r = QMessageBox.question(
+            self, "Move Motor",
+            f"Move  '{motor_guess}'  to  {x_val:.5g} ?\n\n"
+            f"(X-axis signal: {x_label})",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
+
+        item = {
+            "name":      "mv",
+            "args":      [motor_guess, x_val],
+            "kwargs":    {},
+            "item_type": "plan",
+        }
+        ok, msg = self.worker.execute_item(item)
+        if not ok:
+            QMessageBox.warning(self, "Move Failed", msg)
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
@@ -269,4 +323,6 @@ class LiveViewer(QWidget):
         if hasattr(self, "zmq_thread"):
             self.zmq_thread.requestInterruption()
             self.zmq_thread.wait(2000)
+        if self._crosshair_cleanup:
+            self._crosshair_cleanup()
         super().closeEvent(event)
