@@ -65,7 +65,7 @@ class ZMQWorker(QObject):
     # ── Queue operations ───────────────────────────────────────────────────────
     def add_item(self, item):
         try:
-            r = self.rm.queue_item_add(item=item)
+            r = self.rm.item_add(item=item)
             if r.get("success"):
                 return True, "Plan added to queue"
             return False, r.get("msg", "Unknown error")
@@ -74,7 +74,7 @@ class ZMQWorker(QObject):
 
     def update_item(self, item):
         try:
-            r = self.rm.queue_item_update(item=item, replace=True)
+            r = self.rm.item_update(item=item, replace=True)
             if r.get("success"):
                 return True, "Plan updated"
             return False, r.get("msg", "Unknown error")
@@ -83,7 +83,7 @@ class ZMQWorker(QObject):
 
     def remove_item(self, uid):
         try:
-            r = self.rm.queue_item_remove(uid=uid)
+            r = self.rm.item_remove(uid=uid)
             if r.get("success"):
                 return True, "Plan removed"
             return False, r.get("msg", "Unknown error")
@@ -92,7 +92,7 @@ class ZMQWorker(QObject):
 
     def move_item(self, uid, pos_dest):
         try:
-            r = self.rm.queue_item_move(uid=uid, pos_dest=pos_dest)
+            r = self.rm.item_move(uid=uid, pos_dest=pos_dest)
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)

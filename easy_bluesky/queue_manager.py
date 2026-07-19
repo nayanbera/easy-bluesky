@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QMessageBox, QMenu, QDialog,
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 from .config import SUCCESS, DANGER, WARNING, ACCENT
 from .widgets import PlanDialog
 
