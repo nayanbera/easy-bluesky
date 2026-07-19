@@ -2,7 +2,7 @@
 
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import pyqtSignal
-from .config import SUCCESS, DANGER, WARNING, ACCENT
+from .themes import ACCENT, SUCCESS, DANGER, WARNING, THEMES, DEFAULT_THEME
 
 
 class REControlBar(QFrame):
@@ -26,32 +26,34 @@ class REControlBar(QFrame):
         self._build()
         self._apply_style()
 
-    def _apply_style(self):
+    def _apply_style(self, t: dict = None):
+        if t is None:
+            t = THEMES[DEFAULT_THEME]
         self.setStyleSheet(f"""
             QFrame#re_control_bar {{
-                background: #252526;
-                border: 1px solid #3c3c3c;
+                background: {t["panel"]};
+                border: 1px solid {t["border"]};
             }}
             QFrame#re_control_bar QPushButton {{
                 padding: 2px 8px;
                 min-width: 0;
                 font-size: 12px;
-                background: #3c3c3c;
-                border: 1px solid #555;
+                background: {t["btn_bg"]};
+                border: 1px solid {t["btn_border"]};
                 border-radius: 3px;
-                color: #d4d4d4;
+                color: {t["text"]};
             }}
             QFrame#re_control_bar QPushButton:hover {{
-                background: #4c4c4c;
-                border-color: #888;
+                background: {t["btn_hover"]};
+                border-color: {t["text_dim"]};
             }}
             QFrame#re_control_bar QPushButton:pressed {{
-                background: #2c2c2c;
+                background: {t["btn_press"]};
             }}
             QFrame#re_control_bar QPushButton:disabled {{
-                background: #2a2a2a;
-                color: #555;
-                border-color: #3c3c3c;
+                background: {t["bg"]};
+                color: {t["text_dim"]};
+                border-color: {t["border"]};
             }}
             QFrame#re_control_bar QPushButton#btn_primary {{
                 background: {ACCENT};
@@ -94,6 +96,15 @@ class REControlBar(QFrame):
             }}
         """)
 
+    def apply_theme(self, theme_name: str):
+        t = THEMES.get(theme_name, THEMES[DEFAULT_THEME])
+        self._apply_style(t)
+        # Update env_label text color
+        self.env_label.setStyleSheet(
+            f"color: {t['text_dim']}; font-size: 11px; padding: 0 4px;")
+        self.queue_label.setStyleSheet(
+            f"color: {t['text_dim']}; font-size: 11px; padding: 0 6px;")
+
     def _build(self):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 4, 8, 4)
@@ -109,7 +120,7 @@ class REControlBar(QFrame):
 
         # Env state label
         self.env_label = QLabel("Env: —")
-        self.env_label.setStyleSheet("color: #888; font-size: 11px; padding: 0 4px;")
+        self.env_label.setStyleSheet("font-size: 11px; padding: 0 4px;")
         lay.addWidget(self.env_label)
 
         lay.addWidget(self._separator())
@@ -146,7 +157,7 @@ class REControlBar(QFrame):
         lay.addStretch()
 
         self.queue_label   = QLabel("Queue: —")
-        self.queue_label.setStyleSheet("color: #888; font-size: 11px; padding: 0 6px;")
+        self.queue_label.setStyleSheet("font-size: 11px; padding: 0 6px;")
         self.running_label = QLabel("")
         self.running_label.setStyleSheet(f"color: {ACCENT}; font-size: 11px; padding: 0 6px;")
         lay.addWidget(self.queue_label)

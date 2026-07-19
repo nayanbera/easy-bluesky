@@ -68,7 +68,8 @@ class ExperimentHistoryWidget(QWidget):
         axis_row.addWidget(btn_plot)
 
         self.run_label = QLabel("← Click a plan in the log to view its data")
-        self.run_label.setStyleSheet("color: #888; font-size: 12px; padding: 0 8px;")
+        self.run_label.setObjectName("dim_text")
+        self.run_label.setStyleSheet("font-size: 12px; padding: 0 8px;")
         axis_row.addWidget(self.run_label)
         axis_row.addStretch()
         main.addLayout(axis_row)
@@ -83,8 +84,7 @@ class ExperimentHistoryWidget(QWidget):
                 QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
 
         self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet(
-            "color: #888; font-size: 11px; padding: 2px;")
+        self.stats_label.setObjectName("dim_text")
         main.addWidget(self.stats_label)
 
     def load_jsonl_file(self, filepath: str):
@@ -242,17 +242,18 @@ class ExperimentsTab(QWidget):
         vlay.addWidget(lbl_active)
 
         self.exp_name_label = QLabel("—")
-        self.exp_name_label.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #d4d4d4;")
+        self.exp_name_label.setStyleSheet("font-size: 13px; font-weight: bold;")
         vlay.addWidget(self.exp_name_label)
 
         self.exp_path_label = QLabel("")
-        self.exp_path_label.setStyleSheet("font-size: 10px; color: #888;")
+        self.exp_path_label.setObjectName("dim_text")
+        self.exp_path_label.setStyleSheet("font-size: 10px;")
         self.exp_path_label.setWordWrap(True)
         vlay.addWidget(self.exp_path_label)
 
         self.exp_date_label = QLabel("")
-        self.exp_date_label.setStyleSheet("font-size: 10px; color: #666;")
+        self.exp_date_label.setObjectName("dim_text")
+        self.exp_date_label.setStyleSheet("font-size: 10px;")
         vlay.addWidget(self.exp_date_label)
 
         btn_row = QHBoxLayout()
@@ -301,7 +302,7 @@ class ExperimentsTab(QWidget):
         q_hdr.addWidget(lbl_q)
         q_hdr.addStretch()
         self.queue_count_label = QLabel("0 items")
-        self.queue_count_label.setStyleSheet("color: #888; font-size: 11px;")
+        self.queue_count_label.setObjectName("dim_text")
         q_hdr.addWidget(self.queue_count_label)
         vlay.addLayout(q_hdr)
 
@@ -367,10 +368,7 @@ class ExperimentsTab(QWidget):
         # Detach button in top-right corner of the tab bar
         self._detach_btn = QPushButton("⊔  Detach")
         self._detach_btn.setFixedHeight(22)
-        self._detach_btn.setStyleSheet(
-            "font-size: 11px; padding: 0 8px; margin: 1px;"
-            "background: #3c3c3c; border: 1px solid #555; border-radius: 3px;"
-        )
+        self._detach_btn.setStyleSheet("font-size: 11px; padding: 0 8px; margin: 1px;")
         self._detach_btn.setToolTip("Detach plots into a floating window")
         self._detach_btn.clicked.connect(self._toggle_detach)
         self.plot_tabs.setCornerWidget(self._detach_btn, Qt.Corner.TopRightCorner)
@@ -393,9 +391,9 @@ class ExperimentsTab(QWidget):
 
         self._plot_placeholder = QLabel(
             "Plots are in a floating window.\nClose it to re-attach.")
+        self._plot_placeholder.setObjectName("dim_text")
         self._plot_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._plot_placeholder.setStyleSheet(
-            "color: #666; font-size: 14px; background: #1e1e1e;")
+        self._plot_placeholder.setStyleSheet("font-size: 14px;")
         self._plot_container_lay.addWidget(self._plot_placeholder)
 
         # Floating window

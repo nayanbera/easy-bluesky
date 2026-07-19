@@ -8,9 +8,11 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
-from PyQt6.QtGui import QPalette, QColor
 from .config import ZMQ_CONTROL, APP_NAME, ACCENT
-from .styles import APP_STYLE
+from .themes import (
+    build_stylesheet, build_palette, load_saved_theme, save_theme,
+    theme_names, THEMES,
+)
 from .worker import ZMQWorker
 from .re_control_bar import REControlBar
 from .queue_manager import QueueManager
@@ -24,13 +26,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("EasyBluesky")
         self.setMinimumSize(1200, 800)
+        self._current_theme = load_saved_theme()
         self.worker = ZMQWorker()
         self._setup_ui()
         self._setup_worker()
         self._connect()
+        # Apply saved theme after UI is fully built
+        self.apply_theme(self._current_theme)
 
     def _setup_ui(self):
-        self.setStyleSheet(APP_STYLE)
+        self.setStyleSheet(build_stylesheet(self._current_theme))
 
         # Tabs
         self.tabs = QTabWidget()
@@ -57,6 +62,9 @@ class MainWindow(QMainWindow):
         vlay.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
 
+        # Menu bar — View > Theme
+        self._build_menu()
+
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -64,6 +72,41 @@ class MainWindow(QMainWindow):
         self.conn_label.setStyleSheet("color: #ffcc00;")
         self.status_bar.addPermanentWidget(self.conn_label)
         self.status_bar.showMessage("EasyBluesky  |  ZMQ: " + ZMQ_CONTROL)
+
+    def _build_menu(self):
+        from PyQt6.QtGui import QActionGroup
+        menubar = self.menuBar()
+
+        view_menu = menubar.addMenu("View")
+        theme_menu = view_menu.addMenu("Theme")
+
+        self._theme_actions = {}
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for name in theme_names():
+            act = theme_menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == self._current_theme)
+            act.triggered.connect(lambda checked, n=name: self.apply_theme(n))
+            group.addAction(act)
+            self._theme_actions[name] = act
+
+    def apply_theme(self, name: str):
+        if name not in THEMES:
+            return
+        self._current_theme = name
+        # Update checkmark
+        if hasattr(self, "_theme_actions"):
+            for n, act in self._theme_actions.items():
+                act.setChecked(n == name)
+        # Apply stylesheet + palette
+        self.setStyleSheet(build_stylesheet(name))
+        QApplication.instance().setPalette(build_palette(name))
+        # Update the RE control bar (has its own stylesheet)
+        self.re_bar.apply_theme(name)
+        # Persist selection
+        save_theme(name)
+        self.status_bar.showMessage(f"Theme: {name}", 2000)
 
     def _setup_worker(self):
         self.worker_thread = QThread()
@@ -242,21 +285,8 @@ def main():
     app.setApplicationName("EasyBluesky")
     app.setStyle("Fusion")
 
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window,          QColor("#1e1e1e"))
-    palette.setColor(QPalette.ColorRole.WindowText,      QColor("#d4d4d4"))
-    palette.setColor(QPalette.ColorRole.Base,            QColor("#1e1e1e"))
-    palette.setColor(QPalette.ColorRole.AlternateBase,   QColor("#252526"))
-    palette.setColor(QPalette.ColorRole.ToolTipBase,     QColor("#252526"))
-    palette.setColor(QPalette.ColorRole.ToolTipText,     QColor("#d4d4d4"))
-    palette.setColor(QPalette.ColorRole.Text,            QColor("#d4d4d4"))
-    palette.setColor(QPalette.ColorRole.Button,          QColor("#3c3c3c"))
-    palette.setColor(QPalette.ColorRole.ButtonText,      QColor("#d4d4d4"))
-    palette.setColor(QPalette.ColorRole.BrightText,      QColor("#ffffff"))
-    palette.setColor(QPalette.ColorRole.Link,            QColor("#1f77b4"))
-    palette.setColor(QPalette.ColorRole.Highlight,       QColor("#1f77b4"))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-    app.setPalette(palette)
+    # Initial palette set from saved theme; MainWindow.apply_theme() updates it after startup
+    app.setPalette(build_palette(load_saved_theme()))
 
     win = MainWindow()
     win.show()

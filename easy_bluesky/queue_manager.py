@@ -40,7 +40,7 @@ class QueueManager(QWidget):
         queue_hdr.addWidget(lbl)
         queue_hdr.addStretch()
         self.queue_count = QLabel("0 items")
-        self.queue_count.setStyleSheet("color: #888; font-size: 12px;")
+        self.queue_count.setObjectName("dim_text")
         queue_hdr.addWidget(self.queue_count)
         llay.addLayout(queue_hdr)
 
