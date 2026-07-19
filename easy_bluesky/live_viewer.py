@@ -97,7 +97,7 @@ class LiveViewer(QWidget):
         ctrl.addStretch()
 
         self.run_label = QLabel("No active run")
-        self.run_label.setStyleSheet("color: #888;")
+        self.run_label.setObjectName("dim_text")
         ctrl.addWidget(self.run_label)
         main.addLayout(ctrl)
 
@@ -110,7 +110,8 @@ class LiveViewer(QWidget):
             main.addWidget(QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
 
         self.status_bar = QLabel("Waiting for run…")
-        self.status_bar.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
+        self.status_bar.setObjectName("dim_text")
+        self.status_bar.setStyleSheet("font-size: 12px; padding: 4px;")
         main.addWidget(self.status_bar)
 
     # ── ZMQ thread ─────────────────────────────────────────────────────────────

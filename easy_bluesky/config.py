@@ -35,11 +35,12 @@ EXPERIMENTS_DIR = os.getenv(
 )
 ACTIVE_EXPERIMENT_FILE = str(_pl.Path(__file__).parent.parent / "data" / "active_experiment.json")
 
-# ── UI Colors ─────────────────────────────────────────────────────────────────
+# ── UI Colors (semantic — constant across themes) ─────────────────────────────
 ACCENT   = "#1f77b4"
 SUCCESS  = "#2ca02c"
 WARNING  = "#ff7f0e"
 DANGER   = "#d62728"
+# Dark-theme structural colors (kept for backwards compat; themes.py is canonical)
 DARK_BG  = "#1e1e1e"
 PANEL_BG = "#252526"
 BORDER   = "#3c3c3c"
