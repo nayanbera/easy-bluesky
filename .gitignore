@@ -29,6 +29,12 @@ env/
 *.log
 bluesky_data/
 
+# Runtime data (suitcase-jsonl runs, tiled catalog)
+data/runs/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
 # Distribution
 *.tar.gz
 *.whl
