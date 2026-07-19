@@ -36,7 +36,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
 
-        self.experiments_tab    = ExperimentsTab()
+        self.experiments_tab    = ExperimentsTab(self.worker)
         self.queue_mgr          = QueueManager(self.worker)
         self.plan_builder       = PlanBuilder(self.worker)
         self.devices_plans_tab  = DevicesPlansTab()
@@ -93,6 +93,10 @@ class MainWindow(QMainWindow):
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
         self.worker.devices_updated.connect(self.devices_plans_tab.update_devices)
 
+        # Worker → experiments_tab plans/devices (for PlanDialog)
+        self.worker.plans_updated.connect(self.experiments_tab.set_plans)
+        self.worker.devices_updated.connect(self.experiments_tab.set_devices)
+
         # Worker → plan/device handlers (queue_mgr + plan_builder)
         self.worker.plans_updated.connect(self._on_plans_updated)
         self.worker.devices_updated.connect(self._on_devices_updated)
@@ -143,10 +147,14 @@ class MainWindow(QMainWindow):
         self.conn_label.setStyleSheet("color: #d62728;")
         self.re_bar.set_disconnected()
 
+    def _log(self, msg: str):
+        self.queue_mgr.append_console(msg)
+        self.experiments_tab.append_console(msg)
+
     def _on_error(self, msg):
         self.conn_label.setText("⬤  Error")
         self.conn_label.setStyleSheet("color: #ff7f0e;")
-        self.queue_mgr.append_console(f"[ERROR] {msg}")
+        self._log(f"[ERROR] {msg}")
 
     def _on_plans_updated(self, plans):
         self.queue_mgr.plans = plans
@@ -163,88 +171,63 @@ class MainWindow(QMainWindow):
 
     def _on_start_requested(self):
         ok, msg = self.worker.queue_start()
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}"
-        )
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
 
     def _on_pause_requested(self):
         ok, msg = self.worker.re_pause()
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] {'✓' if ok else '✗'} Pause: {msg}"
-        )
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Pause: {msg}")
 
     def _on_resume_requested(self):
         ok, msg = self.worker.re_resume()
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] {'✓' if ok else '✗'} Resume: {msg}"
-        )
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Resume: {msg}")
 
     def _on_abort_requested(self):
         r = QMessageBox.question(self, "Abort", "Abort the currently running plan?")
         if r != QMessageBox.StandardButton.Yes:
             return
         ok, msg = self.worker.re_abort()
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] {'✓' if ok else '✗'} Abort: {msg}"
-        )
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Abort: {msg}")
 
     def _on_stop_requested(self):
         ok, msg = self.worker.re_stop()
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}"
-        )
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}")
 
     def _on_open_env_requested(self):
         ok, msg = self.worker.open_environment()
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] {'✓' if ok else '✗'} Open environment: {msg}"
-        )
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Open environment: {msg}")
 
     def _on_close_env_requested(self):
         ok, msg = self.worker.close_environment()
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] {'✓' if ok else '✗'} Close environment: {msg}"
-        )
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Close environment: {msg}")
 
     def _on_start_manager_requested(self):
         ok = self.worker.start_re_manager()
         if ok:
-            self.queue_mgr.append_console(
-                f"[{self._ts()}] ✓ RE Manager starting — reconnecting in 5 s…"
-            )
+            self._log(f"[{self._ts()}] ✓ RE Manager starting — reconnecting in 5 s…")
             QTimer.singleShot(5000, self._auto_reconnect)
         else:
-            self.queue_mgr.append_console(
-                f"[{self._ts()}] ✗ Start RE Manager failed"
-            )
+            self._log(f"[{self._ts()}] ✗ Start RE Manager failed")
 
     def _auto_reconnect(self):
-        self.queue_mgr.append_console(f"[{self._ts()}] Auto-reconnecting…")
+        self._log(f"[{self._ts()}] Auto-reconnecting…")
         ok = self.worker.connect()
         if ok:
-            self.queue_mgr.append_console(f"[{self._ts()}] ✓ Connected")
+            self._log(f"[{self._ts()}] ✓ Connected")
         else:
             self.re_bar.set_disconnected()
-            self.queue_mgr.append_console(
-                f"[{self._ts()}] ✗ Still starting — click Reconnect when ready"
-            )
+            self._log(f"[{self._ts()}] ✗ Still starting — click Reconnect when ready")
 
     def _on_reconnect_requested(self):
-        self.queue_mgr.append_console(f"[{self._ts()}] Reconnecting to RE Manager…")
+        self._log(f"[{self._ts()}] Reconnecting to RE Manager…")
         ok = self.worker.connect()
         if ok:
-            self.queue_mgr.append_console(f"[{self._ts()}] ✓ Reconnected")
+            self._log(f"[{self._ts()}] ✓ Reconnected")
         else:
             self.re_bar.set_disconnected()
-            self.queue_mgr.append_console(
-                f"[{self._ts()}] ✗ Reconnect failed — RE Manager may still be starting"
-            )
+            self._log(f"[{self._ts()}] ✗ Reconnect failed — RE Manager may still be starting")
 
     def _on_experiment_changed(self, runs_dir: str):
-        # data_browser lives inside experiments_tab and is updated there directly
-        self.queue_mgr.append_console(
-            f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}"
-        )
+        self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
 
     def closeEvent(self, event):
         self.worker.stop()
