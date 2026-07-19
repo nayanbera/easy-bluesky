@@ -7,7 +7,22 @@ try:
 except ImportError:
     PG_AVAILABLE = False
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QEvent
+
+
+class _LeaveFilter(QObject):
+    """Event filter that hides crosshair items when mouse leaves the viewport."""
+    def __init__(self, items, label, parent=None):
+        super().__init__(parent)
+        self._items = items
+        self._label = label
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Leave:
+            for item in self._items:
+                item.hide()
+            self._label.setText("")
+        return False
 
 
 _TOOLTIP_PX = 18   # pixel-space threshold for point-hover tooltip
@@ -105,12 +120,20 @@ def setup_crosshair(plot_widget, coord_label, get_curves_fn=None):
 
     plot_widget.scene().sigMouseMoved.connect(on_mouse_moved)
 
+    # Install a Leave-event filter on the viewport so both lines hide
+    # reliably when the mouse exits regardless of exit direction.
+    _leave_filter = _LeaveFilter((vline, hline, tooltip), coord_label)
+    plot_widget.viewport().installEventFilter(_leave_filter)
+
     def cleanup():
         try:
             plot_widget.scene().sigMouseMoved.disconnect(on_mouse_moved)
+            plot_widget.viewport().removeEventFilter(_leave_filter)
             for item in (vline, hline, tooltip):
                 plot_widget.removeItem(item)
         except Exception:
             pass
 
+    # Keep a reference so the filter isn't garbage-collected
+    cleanup._leave_filter = _leave_filter
     return cleanup
