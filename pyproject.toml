@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "bluesky-app"
+version = "0.1.0"
+description = "PyQt6 desktop app for controlling Bluesky experiments via the queue server"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [
+    { name = "Your Name", email = "you@example.com" },
+]
+keywords = ["bluesky", "queueserver", "PyQt6", "beamline", "synchrotron"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+
+dependencies = [
+    "PyQt6>=6.4",
+    "pyqtgraph>=0.13",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "bluesky-queueserver-api>=0.0.13",
+    "confluent-kafka>=2.0",
+    "msgpack>=1.0",
+    "msgpack-numpy>=0.4",
+    "databroker>=1.2",
+    "intake>=0.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-qt>=4",
+    "black",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+bluesky-app = "bluesky_app.main:main"
+
+[project.urls]
+Homepage   = "https://github.com/yourorg/bluesky-app"
+Repository = "https://github.com/yourorg/bluesky-app"
+Issues     = "https://github.com/yourorg/bluesky-app/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bluesky_app*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
