@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self.worker.connected.connect(self._on_connected)
         self.worker.disconnected.connect(self._on_disconnected)
         self.worker.error_occurred.connect(self._on_error)
+        self.worker.re_manager_started.connect(self._on_re_manager_started)
         self.worker.status_updated.connect(self.queue_mgr.update_status)
         self.worker.queue_updated.connect(self.queue_mgr.update_queue)
         self.worker.history_updated.connect(self.queue_mgr.update_history)
@@ -68,24 +69,30 @@ class MainWindow(QMainWindow):
         self.worker_thread.start()
 
     def _connect(self):
+        # Start the poll loop immediately; it waits for self.rm to be set.
+        poll_thread = threading.Thread(target=self.worker.poll, daemon=True)
+        poll_thread.start()
         QTimer.singleShot(100, self._do_connect)
 
     def _do_connect(self):
         ok = self.worker.connect()
-        if ok:
-            # Start polling in background
-            poll_thread = threading.Thread(
-                target=self.worker.poll, daemon=True)
-            poll_thread.start()
+        if not ok:
+            self.queue_mgr.set_disconnected()
 
     def _on_connected(self):
         self.conn_label.setText("⬤  Connected")
         self.conn_label.setStyleSheet("color: #2ca02c;")
         self.status_bar.showMessage("Connected to RE Manager at " + ZMQ_CONTROL)
 
+    def _on_re_manager_started(self, pid):
+        self.conn_label.setText("⬤  RE Manager starting…")
+        self.conn_label.setStyleSheet("color: #ffcc00;")
+        self.status_bar.showMessage(f"RE Manager started (PID {pid}) — click Reconnect when ready")
+
     def _on_disconnected(self):
         self.conn_label.setText("⬤  Disconnected")
         self.conn_label.setStyleSheet("color: #d62728;")
+        self.queue_mgr.set_disconnected()
 
     def _on_error(self, msg):
         self.conn_label.setText("⬤  Error")
@@ -93,8 +100,7 @@ class MainWindow(QMainWindow):
         self.queue_mgr.append_console(f"[ERROR] {msg}")
 
     def _on_plans_updated(self, plans):
-        self.queue_mgr.plans   = plans
-        self.queue_mgr.devices = self.worker.rm.devices_allowed().get("devices_allowed", {}) if self.worker.rm else {}
+        self.queue_mgr.plans = plans
         self.plan_builder.update_plans(plans)
 
     def _on_devices_updated(self, devices):
@@ -103,6 +109,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.worker.stop()
+        self.worker.stop_re_manager()
         self.worker_thread.quit()
         self.worker_thread.wait(2000)
         event.accept()

@@ -55,10 +55,13 @@ class QueueManager(QWidget):
         self.btn_stop_re = QPushButton("⬛  Stop")
         self.btn_env_open  = QPushButton("Open Env")
         self.btn_env_close = QPushButton("Close Env")
+        self.btn_start_mgr = QPushButton("⚡ Start RE Manager")
+        self.btn_reconnect = QPushButton("↺ Reconnect")
 
         self.btn_start.setObjectName("btn_primary")
         self.btn_abort.setObjectName("btn_danger")
         self.btn_resume.setObjectName("btn_success")
+        self.btn_start_mgr.setObjectName("btn_warning")
 
         self.btn_start.clicked.connect(self._queue_start)
         self.btn_pause.clicked.connect(self._re_pause)
@@ -67,14 +70,18 @@ class QueueManager(QWidget):
         self.btn_stop_re.clicked.connect(self._re_stop)
         self.btn_env_open.clicked.connect(self._env_open)
         self.btn_env_close.clicked.connect(self._env_close)
+        self.btn_start_mgr.clicked.connect(self._start_re_manager)
+        self.btn_reconnect.clicked.connect(self._reconnect)
 
-        ctrl_lay.addWidget(self.btn_start,   0, 0)
-        ctrl_lay.addWidget(self.btn_pause,   0, 1)
-        ctrl_lay.addWidget(self.btn_resume,  0, 2)
-        ctrl_lay.addWidget(self.btn_abort,   1, 0)
-        ctrl_lay.addWidget(self.btn_stop_re, 1, 1)
+        ctrl_lay.addWidget(self.btn_start,     0, 0)
+        ctrl_lay.addWidget(self.btn_pause,     0, 1)
+        ctrl_lay.addWidget(self.btn_resume,    0, 2)
+        ctrl_lay.addWidget(self.btn_abort,     1, 0)
+        ctrl_lay.addWidget(self.btn_stop_re,   1, 1)
         ctrl_lay.addWidget(self.btn_env_open,  1, 2)
         ctrl_lay.addWidget(self.btn_env_close, 2, 0)
+        ctrl_lay.addWidget(self.btn_start_mgr, 2, 1)
+        ctrl_lay.addWidget(self.btn_reconnect, 2, 2)
         llay.addWidget(ctrl_grp)
 
         # Queue list
@@ -276,10 +283,44 @@ class QueueManager(QWidget):
         ok, msg = self.worker.close_environment()
         self._log(f"{'✓' if ok else '✗'} Close environment: {msg}")
 
+    def _start_re_manager(self):
+        ok = self.worker.start_re_manager()
+        if ok:
+            self._log("✓ RE Manager starting — reconnecting in 5 s…")
+            QTimer.singleShot(5000, self._auto_reconnect)
+
+    def _auto_reconnect(self):
+        self._log("Auto-reconnecting…")
+        ok = self.worker.connect()
+        if ok:
+            self._log("✓ Connected")
+        else:
+            self.set_disconnected()
+            self._log("✗ Still starting — click Reconnect when ready")
+
+    def _reconnect(self):
+        self._log("Reconnecting to RE Manager…")
+        ok = self.worker.connect()
+        if ok:
+            self._log("✓ Reconnected")
+        else:
+            self.set_disconnected()
+            self._log("✗ Reconnect failed — RE Manager may still be starting")
+
     # ── Data update slots ──────────────────────────────────────────────────────
+    def set_disconnected(self):
+        self.re_state_label.setText("● DISCONNECTED")
+        self.re_state_label.setStyleSheet(
+            f"color: {DANGER}; background: #3a1a1a; border-radius:4px; padding: 4px 10px;")
+        self.env_label.setText("Env: —")
+
     def update_status(self, status):
-        re_state = status.get("re_state", "unknown").upper()
-        mgr_state = status.get("manager_state", "unknown")
+        re_state_raw = status.get("re_state")
+        if re_state_raw is not None:
+            re_state = re_state_raw.upper()
+        else:
+            # Environment not open — show manager state instead
+            re_state = status.get("manager_state", "unknown").upper()
         env_state = status.get("worker_environment_state", "unknown")
 
         colors = {
