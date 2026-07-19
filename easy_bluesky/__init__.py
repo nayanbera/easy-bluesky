@@ -1,5 +1,5 @@
 """
-Bluesky Desktop App
+EasyBluesky
 -------------------
 A PyQt6 desktop application for controlling and monitoring
 Bluesky experiments via the queue server (ZMQ transport).

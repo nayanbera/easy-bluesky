@@ -3,7 +3,7 @@
 ## Overview
 
 ```
-bluesky-app
+easy-bluesky
 ├── UI Layer (PyQt6)
 │   ├── QueueManager    — queue control, RE buttons, history
 │   ├── PlanBuilder     — visual canvas + code editor
@@ -82,6 +82,6 @@ def my_command(self, arg):
 Add a branch in `ParamForm._make_widget()` in `widgets.py`.
 
 ### New tab
-1. Create `bluesky_app/my_tab.py` with a `QWidget` subclass
+1. Create `easy_bluesky/my_tab.py` with a `QWidget` subclass
 2. In `main.py`: `from .my_tab import MyTab`
 3. In `MainWindow._setup_ui()`: `self.tabs.addTab(MyTab(), "My Tab")`

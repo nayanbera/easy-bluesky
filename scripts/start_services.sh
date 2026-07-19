@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/start_services.sh
-# Start all services required by the Bluesky Desktop App
+# Start all services required by the EasyBluesky
 # Usage: bash scripts/start_services.sh
 
 set -e
@@ -30,8 +30,8 @@ echo "  Bridge PID: $BRIDGE_PID"
 sleep 1
 
 # 4. Launch the app
-echo "[3/3] Launching Bluesky App..."
-python3 -m bluesky_app.main
+echo "[3/3] Launching EasyBluesky..."
+python3 -m easy_bluesky.main
 
 # Cleanup on exit
 trap "kill $RE_PID $BRIDGE_PID 2>/dev/null; echo 'Services stopped.'" EXIT

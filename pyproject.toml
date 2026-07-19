@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "bluesky-app"
+name = "easy-bluesky"
 version = "0.1.0"
 description = "PyQt6 desktop app for controlling Bluesky experiments via the queue server"
 readme = "README.md"
@@ -49,16 +49,16 @@ dev = [
 ]
 
 [project.scripts]
-bluesky-app = "bluesky_app.main:main"
+easy-bluesky = "easy_bluesky.main:main"
 
 [project.urls]
-Homepage   = "https://github.com/yourorg/bluesky-app"
-Repository = "https://github.com/yourorg/bluesky-app"
-Issues     = "https://github.com/yourorg/bluesky-app/issues"
+Homepage   = "https://github.com/yourorg/easy-bluesky"
+Repository = "https://github.com/yourorg/easy-bluesky"
+Issues     = "https://github.com/yourorg/easy-bluesky/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bluesky_app*"]
+include = ["easy_bluesky*"]
 
 [tool.black]
 line-length = 100

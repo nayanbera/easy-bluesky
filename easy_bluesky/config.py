@@ -1,7 +1,7 @@
 """
 config.py
 ---------
-All configuration constants for the Bluesky Desktop App.
+All configuration constants for the EasyBluesky.
 Override via environment variables or a local config file.
 """
 
@@ -33,5 +33,5 @@ PLOT_COLORS = [
 ]
 
 # ── App ────────────────────────────────────────────────────────────────────────
-APP_NAME    = "Bluesky Control App"
+APP_NAME    = "EasyBluesky"
 APP_VERSION = "0.1.0"

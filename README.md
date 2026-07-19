@@ -1,4 +1,4 @@
-# Bluesky Desktop App
+# EasyBluesky
 
 A PyQt6 desktop application for controlling and monitoring Bluesky experiments via the Run Engine queue server (ZMQ transport).
 
@@ -21,8 +21,8 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourorg/bluesky-app.git
-cd bluesky-app
+git clone https://github.com/yourorg/easy-bluesky.git
+cd easy-bluesky
 
 # Install in editable mode
 conda activate pydm
@@ -32,9 +32,9 @@ pip install -e ".[dev]"
 ## Running
 
 ```bash
-bluesky-app
+easy-bluesky
 # or
-python -m bluesky_app.main
+python -m easy_bluesky.main
 ```
 
 ## Configuration
@@ -54,14 +54,14 @@ Example — connecting to a remote RE Manager:
 ```bash
 BLUESKY_ZMQ_CONTROL=tcp://192.168.1.100:60615 \
 BLUESKY_ZMQ_INFO=tcp://192.168.1.100:60625 \
-bluesky-app
+easy-bluesky
 ```
 
 ## Project Structure
 
 ```
-bluesky-app/
-├── bluesky_app/
+easy-bluesky/
+├── easy_bluesky/
 │   ├── __init__.py      # Package metadata
 │   ├── config.py        # Configuration constants (env-overridable)
 │   ├── styles.py        # Qt stylesheet
@@ -92,17 +92,17 @@ bluesky-app/
 pytest tests/
 
 # Format code
-black bluesky_app/
+black easy_bluesky/
 
 # Lint
-ruff check bluesky_app/
+ruff check easy_bluesky/
 ```
 
 ## Adding a New Tab
 
-1. Create `bluesky_app/my_tab.py` with a `QWidget` subclass
-2. Import and add it in `bluesky_app/main.py`
-3. Add any config constants to `bluesky_app/config.py`
+1. Create `easy_bluesky/my_tab.py` with a `QWidget` subclass
+2. Import and add it in `easy_bluesky/main.py`
+3. Add any config constants to `easy_bluesky/config.py`
 
 ## License
 

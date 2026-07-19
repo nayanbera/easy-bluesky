@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 
 def test_config_defaults():
-    from bluesky_app.config import ZMQ_CONTROL, ZMQ_INFO, KAFKA_SERVER
+    from easy_bluesky.config import ZMQ_CONTROL, ZMQ_INFO, KAFKA_SERVER
     assert ZMQ_CONTROL.startswith("tcp://")
     assert ZMQ_INFO.startswith("tcp://")
     assert ":" in KAFKA_SERVER
@@ -19,13 +19,13 @@ def test_config_defaults():
 def test_config_env_override(monkeypatch):
     monkeypatch.setenv("BLUESKY_ZMQ_CONTROL", "tcp://10.0.0.1:60615")
     import importlib
-    import bluesky_app.config as cfg
+    import easy_bluesky.config as cfg
     importlib.reload(cfg)
     assert cfg.ZMQ_CONTROL == "tcp://10.0.0.1:60615"
 
 
 def test_plot_colors_defined():
-    from bluesky_app.config import PLOT_COLORS
+    from easy_bluesky.config import PLOT_COLORS
     assert len(PLOT_COLORS) >= 4
     for c in PLOT_COLORS:
         assert c.startswith("#")
@@ -35,7 +35,7 @@ def test_plot_colors_defined():
     True, reason="Requires running RE Manager — integration test only"
 )
 def test_zmq_worker_connect():
-    from bluesky_app.worker import ZMQWorker
+    from easy_bluesky.worker import ZMQWorker
     w = ZMQWorker()
     ok = w.connect()
     assert ok
@@ -44,7 +44,7 @@ def test_zmq_worker_connect():
 
 def test_paramform_numeric(qtbot):
     """ParamForm generates a QDoubleSpinBox for float params."""
-    from bluesky_app.widgets import ParamForm
+    from easy_bluesky.widgets import ParamForm
     params = [
         {
             "name": "start",
@@ -62,7 +62,7 @@ def test_paramform_numeric(qtbot):
 
 def test_paramform_device_list(qtbot):
     """ParamForm generates a QListWidget for READABLE device params."""
-    from bluesky_app.widgets import ParamForm
+    from easy_bluesky.widgets import ParamForm
     params = [
         {
             "name": "detectors",

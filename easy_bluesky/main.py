@@ -18,7 +18,7 @@ from .data_browser import DataBrowser
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Bluesky Control App")
+        self.setWindowTitle("EasyBluesky")
         self.setMinimumSize(1200, 800)
         self.worker = ZMQWorker()
         self._setup_ui()
@@ -50,7 +50,7 @@ class MainWindow(QMainWindow):
         self.conn_label = QLabel("⬤  Connecting...")
         self.conn_label.setStyleSheet("color: #ffcc00;")
         self.status_bar.addPermanentWidget(self.conn_label)
-        self.status_bar.showMessage("Bluesky Desktop App  |  ZMQ: " + ZMQ_CONTROL)
+        self.status_bar.showMessage("EasyBluesky  |  ZMQ: " + ZMQ_CONTROL)
 
     def _setup_worker(self):
         self.worker_thread = QThread()
@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Bluesky Control App")
+    app.setApplicationName("EasyBluesky")
     app.setStyle("Fusion")
 
     # Dark palette base

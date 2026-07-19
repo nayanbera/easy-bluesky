@@ -29,7 +29,7 @@ class KafkaThread(QThread):
             return
         c = KafkaConsumer({
             "bootstrap.servers": KAFKA_SERVER,
-            "group.id":          f"bluesky-app-{int(time.time())}",
+            "group.id":          f"easy-bluesky-{int(time.time())}",
             "auto.offset.reset": "latest",
         })
         c.subscribe([KAFKA_TOPIC])

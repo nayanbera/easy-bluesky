@@ -1,4 +1,4 @@
-"""styles.py — Qt stylesheet for the Bluesky App."""
+"""styles.py — Qt stylesheet for the EasyBluesky."""
 
 from .config import ACCENT, SUCCESS, WARNING, DANGER, DARK_BG, PANEL_BG, BORDER
 
