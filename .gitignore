@@ -30,10 +30,9 @@ env/
 bluesky_data/
 
 # Runtime data (suitcase-jsonl runs, tiled catalog)
-data/runs/
-data/*.db
-data/*.db-shm
-data/*.db-wal
+data/
+experiments/
+.claude/
 
 # Distribution
 *.tar.gz
