@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox,
 )
 from PyQt6.QtCore import QThread, pyqtSignal
-from .config import PLOT_COLORS, ZMQ_DOC_PORT
+from .config import PLOT_COLORS, ZMQ_DOC_ADDR
 from .plot_tools import setup_crosshair
 
 
@@ -36,11 +36,11 @@ class ZMQDocThread(QThread):
 
         ctx  = zmq.Context()
         sock = ctx.socket(zmq.SUB)
-        sock.connect(f"tcp://localhost:{ZMQ_DOC_PORT}")
+        sock.connect(ZMQ_DOC_ADDR)
         sock.subscribe(b"")
         sock.setsockopt(zmq.RCVTIMEO, 500)
 
-        self.status_changed.emit(f"Listening on ZMQ port {ZMQ_DOC_PORT}…")
+        self.status_changed.emit(f"Listening on {ZMQ_DOC_ADDR}…")
 
         while not self.isInterruptionRequested():
             try:

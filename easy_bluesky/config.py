@@ -11,6 +11,8 @@ import os
 ZMQ_CONTROL  = os.getenv("BLUESKY_ZMQ_CONTROL",  "tcp://localhost:60615")
 ZMQ_INFO     = os.getenv("BLUESKY_ZMQ_INFO",     "tcp://localhost:60625")
 ZMQ_DOC_PORT = int(os.getenv("BLUESKY_ZMQ_PUB_PORT", "60630"))
+ZMQ_DOC_HOST = os.getenv("BLUESKY_ZMQ_PUB_HOST", "localhost")
+ZMQ_DOC_ADDR = f"tcp://{ZMQ_DOC_HOST}:{ZMQ_DOC_PORT}"
 
 # ── Kafka ──────────────────────────────────────────────────────────────────────
 KAFKA_SERVER = os.getenv("BLUESKY_KAFKA_SERVER", "localhost:9092")
