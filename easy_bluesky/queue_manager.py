@@ -2,15 +2,200 @@
 
 import json
 from datetime import datetime
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QPlainTextEdit,
-    QAbstractItemView, QMessageBox, QMenu, QDialog,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QMessageBox, QMenu, QDialog, QTabWidget, QHeaderView,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QFont
-from .config import SUCCESS, DANGER
+from .config import SUCCESS, DANGER, DATA_RUNS_DIR, EXPERIMENTS_DIR
 from .widgets import PlanDialog
+
+
+# ── Run-detail dialog ──────────────────────────────────────────────────────────
+
+class RunDetailDialog(QDialog):
+    """Shows full plan metadata + run data from the saved JSONL file."""
+
+    def __init__(self, item: dict, worker=None, parent=None):
+        super().__init__(parent)
+        self._item   = item
+        self._worker = worker
+        name = item.get("name", "unknown")
+        self.setWindowTitle(f"Run Detail — {name}")
+        self.setMinimumSize(820, 560)
+        self._build()
+        self._populate()
+
+    # ── UI ─────────────────────────────────────────────────────────────────────
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        self.tabs = QTabWidget()
+
+        # Summary tab
+        self.summary = QPlainTextEdit()
+        self.summary.setReadOnly(True)
+        self.summary.setFont(QFont("Courier New", 11))
+        self.tabs.addTab(self.summary, "📋  Summary")
+
+        # Data table tab
+        self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tabs.addTab(self.table, "📊  Data")
+
+        lay.addWidget(self.tabs, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_requeue = QPushButton("Re-queue")
+        btn_requeue.clicked.connect(self._requeue)
+        btn_close   = QPushButton("Close")
+        btn_close.setDefault(True)
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_requeue)
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
+
+    # ── Data loading ────────────────────────────────────────────────────────────
+
+    def _find_jsonl(self) -> "Path | None":
+        result   = self._item.get("result", {}) or {}
+        run_uids = result.get("run_uids", [])
+        if not run_uids:
+            return None
+        search = [Path(DATA_RUNS_DIR)]
+        exps = Path(EXPERIMENTS_DIR)
+        if exps.exists():
+            for d in exps.iterdir():
+                rd = d / "runs"
+                if rd.is_dir():
+                    search.append(rd)
+        for uid in run_uids:
+            for d in search:
+                f = d / f"{uid}.jsonl"
+                if f.exists():
+                    return f
+        return None
+
+    def _populate(self):
+        item     = self._item
+        name     = item.get("name", "?")
+        kwargs   = item.get("kwargs", {}) or {}
+        result   = item.get("result", {}) or {}
+        status   = result.get("exit_status", "?")
+        t_start  = result.get("time_start", 0)
+        t_stop   = result.get("time_stop",  0)
+        run_uids = result.get("run_uids", [])
+
+        ok_status = status in ("completed", "success")
+        icon = "✓" if ok_status else "✗"
+
+        fmt = lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "—"
+        lines = [
+            f"Plan:      {name}",
+            f"Status:    {icon} {status}",
+            f"Started:   {fmt(t_start)}",
+            f"Finished:  {fmt(t_stop)}",
+        ]
+        if t_start and t_stop:
+            lines.append(f"Duration:  {t_stop - t_start:.2f} s")
+        lines += ["", "Parameters:"]
+        if kwargs:
+            for k, v in kwargs.items():
+                lines.append(f"  {k}: {v}")
+        else:
+            lines.append("  (none)")
+        if run_uids:
+            lines += ["", "Run UIDs:"]
+            for u in run_uids:
+                lines.append(f"  {u}")
+
+        jsonl = self._find_jsonl()
+        lines += ["", f"Data file: {jsonl if jsonl else 'not found'}"]
+        self.summary.setPlainText("\n".join(lines))
+
+        if jsonl:
+            self._load_table(jsonl)
+        else:
+            self.tabs.setTabEnabled(1, False)
+
+    def _load_table(self, path: Path):
+        start_doc = {}
+        rows = []
+        cols_order = []
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    doc_name, doc = json.loads(line)
+                    if doc_name == "start":
+                        start_doc = doc
+                    elif doc_name == "event":
+                        data = doc.get("data", {})
+                        if not cols_order:
+                            cols_order = list(data.keys())
+                        rows.append({k: data.get(k) for k in cols_order})
+                    elif doc_name == "event_page":
+                        data = doc.get("data", {})
+                        if not cols_order:
+                            cols_order = list(data.keys())
+                        n = len(next(iter(data.values()), []))
+                        for i in range(n):
+                            rows.append({k: v[i] for k, v in data.items()
+                                         if i < len(v)})
+        except Exception as e:
+            self.table.setColumnCount(1)
+            self.table.setHorizontalHeaderLabels(["Error"])
+            self.table.setRowCount(1)
+            self.table.setItem(0, 0, QTableWidgetItem(str(e)))
+            return
+
+        if not rows:
+            self.tabs.setTabText(1, "📊  Data (empty)")
+            return
+
+        MAX_ROWS = 500
+        display_rows = rows[:MAX_ROWS]
+        self.table.setColumnCount(len(cols_order))
+        self.table.setHorizontalHeaderLabels(cols_order)
+        self.table.setRowCount(len(display_rows))
+
+        for r, row in enumerate(display_rows):
+            for c, col in enumerate(cols_order):
+                val = row.get(col)
+                cell = QTableWidgetItem(
+                    f"{val:.6g}" if isinstance(val, float) else str(val)
+                )
+                cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.table.setItem(r, c, cell)
+
+        label = f"📊  Data ({len(rows)} rows"
+        if len(rows) > MAX_ROWS:
+            label += f", showing {MAX_ROWS}"
+        label += ")"
+        self.tabs.setTabText(1, label)
+
+    def _requeue(self):
+        if not self._worker:
+            return
+        new_item = {k: v for k, v in self._item.items()
+                    if k not in ("item_uid", "result")}
+        ok, msg = self._worker.add_item(new_item)
+        QMessageBox.information(
+            self, "Re-queue",
+            f"{'✓' if ok else '✗'} {msg}"
+        )
 
 
 class QueueManager(QWidget):
@@ -84,7 +269,7 @@ class QueueManager(QWidget):
         self.history_list.setMaximumHeight(160)
         self.history_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.history_list.customContextMenuRequested.connect(self._history_context_menu)
-        self.history_list.itemDoubleClicked.connect(self._requeue_from_history)
+        self.history_list.itemDoubleClicked.connect(self._show_run_detail)
         llay.addWidget(self.history_list)
 
         splitter.addWidget(left)
@@ -271,25 +456,34 @@ class QueueManager(QWidget):
             if t_stop and t_start:
                 secs = t_stop - t_start
                 dur_str = f"  ({secs:.1f}s)"
-            icon  = "✓" if status == "success" else "✗"
-            color = SUCCESS if status == "success" else DANGER
+            ok_   = status in ("completed", "success")
+            icon  = "✓" if ok_ else "✗"
+            color = SUCCESS if ok_ else DANGER
             summary = self._plan_summary(name, kwargs)
             label = f"{icon}  {t_str}  {name}{summary}{dur_str}"
             li = QListWidgetItem(label)
             li.setForeground(QColor(color))
             li.setData(Qt.ItemDataRole.UserRole, item)
-            li.setToolTip(f"Exit: {status}\nDouble-click to re-queue")
+            li.setToolTip(f"Exit: {status}\nDouble-click to view data  |  Right-click to re-queue")
             self.history_list.addItem(li)
 
-    def _history_context_menu(self, pos):
-        item = self.history_list.itemAt(pos)
+    def _show_run_detail(self, list_item: QListWidgetItem):
+        item = list_item.data(Qt.ItemDataRole.UserRole)
         if not item:
             return
+        dlg = RunDetailDialog(item, worker=self.worker, parent=self)
+        dlg.exec()
+
+    def _history_context_menu(self, pos):
+        list_item = self.history_list.itemAt(pos)
+        if not list_item:
+            return
         menu = QMenu(self)
-        menu.addAction("Add to Queue", lambda: self._requeue_from_history(item))
+        menu.addAction("View Details",  lambda: self._show_run_detail(list_item))
+        menu.addAction("Add to Queue",  lambda: self._requeue_from_history(list_item))
         menu.exec(self.history_list.viewport().mapToGlobal(pos))
 
-    def _requeue_from_history(self, list_item):
+    def _requeue_from_history(self, list_item: QListWidgetItem):
         item = list_item.data(Qt.ItemDataRole.UserRole)
         if not item:
             return
