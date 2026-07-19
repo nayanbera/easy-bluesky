@@ -13,6 +13,12 @@ try:
 except ImportError:
     PG_AVAILABLE = False
 
+try:
+    import h5py
+    H5PY_AVAILABLE = True
+except ImportError:
+    H5PY_AVAILABLE = False
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
@@ -170,7 +176,7 @@ class ExperimentHistoryWidget(QWidget):
             self.run_label.setText(label)
             return
         self._dfs = [(df, label)]
-        self._setup_axes(df)
+        self._setup_axes([df])
         self.run_label.setText(label)
 
     def load_jsonl_files(self, filepaths: list):
@@ -184,13 +190,25 @@ class ExperimentHistoryWidget(QWidget):
         if not self._dfs:
             self.run_label.setText("No data found in selected runs")
             return
-        self._setup_axes(self._dfs[0][0])
+        self._setup_axes([df for df, _ in self._dfs])
         if len(self._dfs) > 1:
             self.run_label.setText(f"{len(self._dfs)} runs overlaid")
 
-    def _setup_axes(self, df):
-        """Populate X/Y combos from the first DataFrame."""
-        cols = [c for c in df.columns if df[c].dtype.kind in ("f", "i", "u")]
+    def _setup_axes(self, dfs: list):
+        """Populate X/Y combos with columns common to all DataFrames."""
+        if not dfs:
+            return
+
+        # Numeric columns in each DataFrame
+        def numeric_cols(df):
+            return [c for c in df.columns if df[c].dtype.kind in ("f", "i", "u")]
+
+        # Intersection: only columns present in ALL DataFrames
+        col_sets = [set(numeric_cols(df)) for df in dfs]
+        common   = col_sets[0].intersection(*col_sets[1:]) if len(col_sets) > 1 else col_sets[0]
+        # Preserve order from the first DataFrame
+        cols = [c for c in numeric_cols(dfs[0]) if c in common]
+
         self.x_combo.clear()
         self.x_combo.addItems(cols)
         self.y_list.clear()
@@ -310,6 +328,7 @@ class ExperimentsTab(QWidget):
         self._shown_error_uids: set = set()
         self._exp_created_at: float = 0.0
         self._exp_end_time: float   = 0.0
+        self._next_scan_num: int    = 1
         self._detached_win     = None
         self._plot_placeholder = None
         self._sample_name: str = ""
@@ -401,6 +420,15 @@ class ExperimentsTab(QWidget):
         self.plan_log_list.itemSelectionChanged.connect(self._on_plan_log_selection_changed)
         self.plan_log_list.itemDoubleClicked.connect(self._on_plan_log_double_clicked)
         vlay.addWidget(self.plan_log_list, 1)
+
+        self._btn_export_h5 = QPushButton("Export HDF5…")
+        self._btn_export_h5.setObjectName("btn_primary")
+        self._btn_export_h5.setToolTip("Save all scan data to a single HDF5 file")
+        self._btn_export_h5.clicked.connect(self._export_hdf5)
+        if not H5PY_AVAILABLE:
+            self._btn_export_h5.setEnabled(False)
+            self._btn_export_h5.setToolTip("pip install h5py to enable HDF5 export")
+        vlay.addWidget(self._btn_export_h5)
 
         return w
 
@@ -800,6 +828,123 @@ class ExperimentsTab(QWidget):
         entries.sort(key=lambda x: x[0], reverse=True)
         return [(path, info) for _, path, info in entries[:limit]]
 
+    # ── HDF5 export / import ───────────────────────────────────────────────────
+
+    def _export_hdf5(self):
+        if not H5PY_AVAILABLE:
+            QMessageBox.warning(self, "h5py Missing",
+                                "Install h5py first:\n  pip install h5py")
+            return
+        if not self._active_exp_path:
+            QMessageBox.warning(self, "No Experiment",
+                                "Open or create an experiment first.")
+            return
+
+        exp_name     = self.exp_name_label.text()
+        default_path = str(Path(self._active_exp_path) / f"{exp_name}.h5")
+        path, _      = QFileDialog.getSaveFileName(
+            self, "Export Experiment to HDF5", default_path,
+            "HDF5 Files (*.h5 *.hdf5)"
+        )
+        if not path:
+            return
+
+        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
+        if not log_file.exists():
+            QMessageBox.warning(self, "No Data",
+                                "No plan log found for this experiment.")
+            return
+
+        try:
+            entries: list = []
+            with open(log_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(json.loads(line))
+                        except Exception:
+                            pass
+
+            # Back-fill scan numbers for old entries without the field
+            next_n = 1
+            for e in entries:
+                if e.get("scan_num") is None:
+                    e["scan_num"] = next_n
+                next_n = max(next_n, e.get("scan_num", 0)) + 1
+
+            with h5py.File(path, "w") as hf:
+                # ── Experiment-level metadata ──────────────────────────────
+                meta = hf.create_group("metadata")
+                meta.attrs["experiment_name"] = exp_name
+                meta.attrs["exp_dir"]         = self._active_exp_path
+                meta.attrs["n_scans"]         = len(entries)
+                if self._sample_name:
+                    meta.attrs["sample_name"] = self._sample_name
+                if self._sample_description:
+                    meta.attrs["sample_description"] = self._sample_description
+
+                # ── One group per plan ─────────────────────────────────────
+                for entry in entries:
+                    scan_num   = entry.get("scan_num", 0)
+                    name       = entry.get("name", "?")
+                    args       = entry.get("args", []) or []
+                    kwargs     = entry.get("kwargs", {}) or {}
+                    md         = kwargs.get("md", {}) or {}
+                    group_name = f"scan_{scan_num:04d}"
+
+                    grp = hf.create_group(group_name)
+                    grp.attrs["plan_name"]   = name
+                    grp.attrs["scan_num"]    = scan_num
+                    grp.attrs["timestamp"]   = entry.get("timestamp", "")
+                    grp.attrs["exit_status"] = entry.get("exit_status", "")
+                    if entry.get("duration_s") is not None:
+                        grp.attrs["duration_s"] = float(entry["duration_s"])
+                    for attr in ("sample_name", "sample_description", "exp_dir"):
+                        val = md.get(attr, "")
+                        if val:
+                            grp.attrs[attr] = val
+
+                    motor = kwargs.get("motor") or (
+                        args[0] if name.lower() in _MOTION_PLANS and args else "")
+                    if motor:
+                        grp.attrs["motor"] = str(motor)
+                    dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
+                    if isinstance(dets, str):
+                        dets = [dets]
+                    if dets:
+                        grp.attrs["detectors"] = ",".join(str(d) for d in dets)
+
+                    # ── Event data ─────────────────────────────────────────
+                    run_file = entry.get("run_file", "")
+                    if not run_file:
+                        found = self._find_run_file_for_entry(entry)
+                        run_file = str(found) if found else ""
+
+                    if run_file and Path(run_file).exists():
+                        df, _ = self.history_widget._parse_jsonl(run_file)
+                        if df is not None:
+                            for col in df.columns:
+                                try:
+                                    arr = df[col].to_numpy(dtype=float,
+                                                           na_value=float("nan"))
+                                    grp.create_dataset(col, data=arr,
+                                                       compression="gzip")
+                                except Exception:
+                                    pass
+                            grp.attrs["n_events"] = len(df)
+
+            n_scans = len(entries)
+            self._log(f"✓ Exported {n_scans} scans → {Path(path).name}")
+            QMessageBox.information(
+                self, "Export Complete",
+                f"Exported {n_scans} plans to:\n{path}"
+            )
+
+        except Exception as e:
+            self._log(f"✗ HDF5 export failed: {e}")
+            QMessageBox.critical(self, "Export Failed", str(e))
+
     def _write_active_experiment(self, info: dict):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
         active_file.parent.mkdir(parents=True, exist_ok=True)
@@ -859,32 +1004,51 @@ class ExperimentsTab(QWidget):
     # ── Plan log ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _plan_summary(name: str, kwargs: dict) -> str:
+    def _plan_summary(name: str, kwargs: dict, args: list = None) -> str:
+        args  = list(args or [])
         parts = []
-        motor  = kwargs.get("motor")
-        motors = kwargs.get("motors")
-        if not motor and isinstance(motors, list) and motors:
-            motor = motors[0]
-        if motor:
-            start = kwargs.get("start")
-            stop  = kwargs.get("stop")
-            num   = kwargs.get("num")
-            s = str(motor)
-            if start is not None and stop is not None:
-                s += f": {start}→{stop}"
-            if num is not None:
-                s += f"  {num}pts"
-            parts.append(s)
+
+        # Detectors
         dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
         if isinstance(dets, str):
             dets = [dets]
         if dets:
-            parts.append(", ".join(str(d) for d in dets[:3]))
+            parts.append("det:" + ",".join(str(d) for d in dets[:3]))
+
+        # Motor
+        motor  = kwargs.get("motor")
+        motors = kwargs.get("motors")
+        if not motor and isinstance(motors, list) and motors:
+            motor = motors[0]
+        if not motor and name.lower() in _MOTION_PLANS and args:
+            motor = args[0]
+
+        if motor:
+            start = kwargs.get("start")
+            stop  = kwargs.get("stop")
+            num   = kwargs.get("num")
+            s = f"mot:{motor}"
+            if start is not None and stop is not None:
+                s += f"[{start}→{stop}"
+                if num is not None:
+                    s += f",{num}pts"
+                s += "]"
+            elif name.lower() in ("mv", "mvr") and len(args) >= 2:
+                try:
+                    s += f"→{float(args[1]):.4g}"
+                except (TypeError, ValueError):
+                    s += f"→{args[1]}"
+            parts.insert(0, s)
+
         if not parts:
             num = kwargs.get("num")
             if num is not None:
                 parts.append(f"{num}pts")
-        return "  |  " + "  ".join(parts) if parts else ""
+            delay = kwargs.get("delay")
+            if delay is not None:
+                parts.append(f"delay={delay}s")
+
+        return "  " + "  ".join(parts) if parts else ""
 
     def _search_dirs(self) -> list:
         dirs = []
@@ -1005,8 +1169,20 @@ class ExperimentsTab(QWidget):
                     except Exception:
                         pass
 
+            # Back-fill scan_num for old entries that predate this field.
+            # Entries are in file order (chronological), so assign 1, 2, 3…
+            next_backfill = 1
+            for e in entries:
+                if e.get("scan_num") is None:
+                    e["scan_num"] = next_backfill
+                next_backfill = max(next_backfill, e.get("scan_num", 0)) + 1
+
+            max_num = max((e.get("scan_num", 0) for e in entries), default=0)
+            self._next_scan_num = max_num + 1
+
             for entry in reversed(entries):
                 name    = entry.get("name", "?")
+                args    = entry.get("args", []) or []
                 kwargs  = entry.get("kwargs", {}) or {}
                 status  = entry.get("exit_status", "")
                 ok      = status in ("completed", "success")
@@ -1016,13 +1192,15 @@ class ExperimentsTab(QWidget):
                     color = _NEUTRAL_COLOR
                 else:
                     color = SUCCESS if ok else DANGER
-                ts      = entry.get("timestamp", "")
-                t_str   = ts[11:19] if len(ts) >= 19 else ts[:19]
-                dur     = entry.get("duration_s")
-                summary = self._plan_summary(name, kwargs)
-                dur_str = f"  ({dur:.1f}s)" if dur is not None else ""
+                ts       = entry.get("timestamp", "")
+                t_str    = ts[11:19] if len(ts) >= 19 else ts[:19]
+                dur      = entry.get("duration_s")
+                scan_num = entry.get("scan_num")
+                summary  = self._plan_summary(name, kwargs, args)
+                dur_str  = f"  ({dur:.1f}s)" if dur is not None else ""
+                prefix   = f"#{scan_num:<3} " if scan_num is not None else "     "
                 li = QListWidgetItem(
-                    f"{icon}  {t_str}  {name}{summary}{dur_str}")
+                    f"{prefix}{icon}  {t_str}  {name}{summary}{dur_str}")
                 li.setForeground(QColor(color))
                 li.setData(Qt.ItemDataRole.UserRole, entry)
                 self.plan_log_list.addItem(li)
@@ -1066,10 +1244,12 @@ class ExperimentsTab(QWidget):
                 "uid":         uid,
                 "run_uids":    run_uids,
                 "name":        item.get("name", ""),
+                "args":        item.get("args", []) or [],
                 "kwargs":      item.get("kwargs", {}) or {},
                 "exit_status": exit_status,
                 "duration_s":  round(dur, 2) if dur else None,
                 "run_file":    "",
+                "scan_num":    self._next_scan_num,
             }
             found = self._find_run_file_for_entry(tmp_entry)
             entry = {**tmp_entry, "run_file": str(found) if found else ""}
@@ -1077,6 +1257,7 @@ class ExperimentsTab(QWidget):
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
+                self._next_scan_num += 1
                 changed = True
             except Exception:
                 pass
@@ -1097,9 +1278,10 @@ class ExperimentsTab(QWidget):
         self.queue_compact.clear()
         for i, item in enumerate(items):
             name    = item.get("name", "unknown")
+            args    = item.get("args", []) or []
             kwargs  = item.get("kwargs", {}) or {}
             uid     = item.get("item_uid", "")
-            summary = self._plan_summary(name, kwargs)
+            summary = self._plan_summary(name, kwargs, args)
             li = QListWidgetItem(f"{i + 1}.  {name}{summary}")
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
@@ -1151,9 +1333,11 @@ class ExperimentsTab(QWidget):
         t_start = (t_stop - dur) if (t_stop and dur) else t_stop
 
         item = {
-            "name":     entry.get("name", "?"),
-            "kwargs":   entry.get("kwargs", {}) or {},
+            "name":      entry.get("name", "?"),
+            "args":      entry.get("args", []) or [],
+            "kwargs":    entry.get("kwargs", {}) or {},
             "_run_file": entry.get("run_file", ""),
+            "_scan_num": entry.get("scan_num"),
             "result": {
                 "exit_status": entry.get("exit_status", "?"),
                 "time_start":  t_start,

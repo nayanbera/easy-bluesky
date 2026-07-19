@@ -34,8 +34,10 @@ class RunDetailDialog(QDialog):
         self._worker  = worker
         self._plans   = plans  or {}
         self._devices = devices or {}
-        name = item.get("name", "unknown")
-        self.setWindowTitle(f"Run Detail — {name}")
+        name     = item.get("name", "unknown")
+        scan_num = item.get("_scan_num")
+        title = f"Scan #{scan_num} — {name}" if scan_num is not None else f"Run Detail — {name}"
+        self.setWindowTitle(title)
         self.setMinimumSize(820, 560)
         self._build()
         self._populate()
@@ -103,22 +105,26 @@ class RunDetailDialog(QDialog):
         return None
 
     def _populate(self):
-        item     = self._item
-        name     = item.get("name", "?")
-        args     = item.get("args", []) or []
-        kwargs   = item.get("kwargs", {}) or {}
-        result   = item.get("result", {}) or {}
-        status   = result.get("exit_status", "?")
-        t_start  = result.get("time_start", 0)
-        t_stop   = result.get("time_stop",  0)
-        run_uids = result.get("run_uids", [])
-        md       = kwargs.get("md", {}) or {}
+        item      = self._item
+        name      = item.get("name", "?")
+        args      = item.get("args", []) or []
+        kwargs    = item.get("kwargs", {}) or {}
+        result    = item.get("result", {}) or {}
+        status    = result.get("exit_status", "?")
+        t_start   = result.get("time_start", 0)
+        t_stop    = result.get("time_stop",  0)
+        run_uids  = result.get("run_uids", [])
+        md        = kwargs.get("md", {}) or {}
+        scan_num  = item.get("_scan_num")
 
         ok_status = status in ("completed", "success")
         icon = "✓" if ok_status else "✗"
 
         fmt = lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "—"
-        lines = [
+        lines = []
+        if scan_num is not None:
+            lines.append(f"Scan #:    {scan_num}")
+        lines += [
             f"Plan:      {name}",
             f"Status:    {icon} {status}",
             f"Started:   {fmt(t_start)}",
@@ -154,21 +160,27 @@ class RunDetailDialog(QDialog):
         motors = kwargs.get("motors")
         if not motor and isinstance(motors, list) and motors:
             motor = motors[0]
+        # For mv/mvr: motor and target position are in args, not kwargs
+        if not motor and name.lower() in _MOTION_PLANS and args:
+            motor = args[0]
         start = kwargs.get("start")
         stop  = kwargs.get("stop")
         num   = kwargs.get("num")
-        if motor or start is not None or stop is not None or num is not None or (args and not dets):
+        if motor or start is not None or stop is not None or num is not None:
             lines += ["", "── Motor / Scan ─────────────────────────────"]
             if motor:
                 lines.append(f"  motor: {motor}")
+                if name.lower() in ("mv", "mvr") and len(args) >= 2:
+                    try:
+                        lines.append(f"  target: {float(args[1]):.6g}")
+                    except (TypeError, ValueError):
+                        lines.append(f"  target: {args[1]}")
             if start is not None:
                 lines.append(f"  start: {start}")
             if stop is not None:
                 lines.append(f"  stop:  {stop}")
             if num is not None:
                 lines.append(f"  num:   {num}")
-            if args and not motor:
-                lines.append(f"  args:  {args}")
 
         # ── Other parameters ───────────────────────────────────────────────────
         _shown = {"motor", "motors", "detectors", "detector_list",
@@ -463,12 +475,12 @@ class QueueManager(QWidget):
         self.queue_list.blockSignals(True)
         self.queue_list.clear()
         for i, item in enumerate(items):
-            name  = item.get("name", "unknown")
-            args  = item.get("args", [])
-            uid   = item.get("item_uid", "")
-            label = f"{i+1:2d}.  {name}"
-            if args:
-                label += f"  {args[:2]}"
+            name   = item.get("name", "unknown")
+            args   = item.get("args", []) or []
+            kwargs = item.get("kwargs", {}) or {}
+            uid    = item.get("item_uid", "")
+            summary = self._plan_summary(name, kwargs, args)
+            label   = f"{i+1:2d}.  {name}{summary}"
             li = QListWidgetItem(label)
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
@@ -480,27 +492,42 @@ class QueueManager(QWidget):
         self.queue_count.setText(f"{len(items)} item{'s' if len(items) != 1 else ''}")
 
     @staticmethod
-    def _plan_summary(name: str, kwargs: dict) -> str:
+    def _plan_summary(name: str, kwargs: dict, args: list = None) -> str:
+        args  = list(args or [])
         parts = []
-        motor = kwargs.get("motor")
-        motors = kwargs.get("motors")
-        if not motor and isinstance(motors, list) and motors:
-            motor = motors[0]
-        if motor:
-            start = kwargs.get("start")
-            stop  = kwargs.get("stop")
-            num   = kwargs.get("num")
-            s = str(motor)
-            if start is not None and stop is not None:
-                s += f": {start}→{stop}"
-            if num is not None:
-                s += f"  {num}pts"
-            parts.append(s)
+
+        # Detectors
         dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
         if isinstance(dets, str):
             dets = [dets]
         if dets:
-            parts.append(", ".join(str(d) for d in dets[:3]))
+            parts.append("det:" + ",".join(str(d) for d in dets[:3]))
+
+        # Motor
+        motor  = kwargs.get("motor")
+        motors = kwargs.get("motors")
+        if not motor and isinstance(motors, list) and motors:
+            motor = motors[0]
+        if not motor and name.lower() in _MOTION_PLANS and args:
+            motor = args[0]
+
+        if motor:
+            start = kwargs.get("start")
+            stop  = kwargs.get("stop")
+            num   = kwargs.get("num")
+            s = f"mot:{motor}"
+            if start is not None and stop is not None:
+                s += f"[{start}→{stop}"
+                if num is not None:
+                    s += f",{num}pts"
+                s += "]"
+            elif name.lower() in ("mv", "mvr") and len(args) >= 2:
+                try:
+                    s += f"→{float(args[1]):.4g}"
+                except (TypeError, ValueError):
+                    s += f"→{args[1]}"
+            parts.insert(0, s)
+
         if not parts:
             num = kwargs.get("num")
             if num is not None:
@@ -508,12 +535,14 @@ class QueueManager(QWidget):
             delay = kwargs.get("delay")
             if delay is not None:
                 parts.append(f"delay={delay}s")
-        return "  |  " + "  ".join(parts) if parts else ""
+
+        return "  " + "  ".join(parts) if parts else ""
 
     def update_history(self, items):
         self.history_list.clear()
         for item in reversed(items[-30:]):
             name   = item.get("name", "unknown")
+            args   = item.get("args", []) or []
             kwargs = item.get("kwargs", {}) or {}
             result = item.get("result", {}) or {}
             status = result.get("exit_status", "?")
@@ -528,7 +557,7 @@ class QueueManager(QWidget):
             motion = _is_motion_only(name, kwargs)
             icon   = "✓" if ok_ else "✗"
             color  = _NEUTRAL_COLOR if motion else (SUCCESS if ok_ else DANGER)
-            summary = self._plan_summary(name, kwargs)
+            summary = self._plan_summary(name, kwargs, args)
             label = f"{icon}  {t_str}  {name}{summary}{dur_str}"
             li = QListWidgetItem(label)
             li.setForeground(QColor(color))
