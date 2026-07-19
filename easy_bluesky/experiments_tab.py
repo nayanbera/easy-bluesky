@@ -316,10 +316,19 @@ class ExperimentsTab(QWidget):
         if not ok or not name.strip():
             return
         name = name.strip()
+
+        # Ask user where to create the experiment folder
+        parent_dir = QFileDialog.getExistingDirectory(
+            self, "Choose parent folder for experiment",
+            EXPERIMENTS_DIR,
+        )
+        if not parent_dir:
+            return
+
         ts   = datetime.now()
         sanitized   = re.sub(r"[^\w\-]", "_", name)
         folder_name = ts.strftime("%Y%m%d_%H%M%S_") + sanitized
-        exp_dir     = Path(EXPERIMENTS_DIR) / folder_name
+        exp_dir     = Path(parent_dir) / folder_name
         runs_dir    = exp_dir / "runs"
         try:
             runs_dir.mkdir(parents=True, exist_ok=True)
