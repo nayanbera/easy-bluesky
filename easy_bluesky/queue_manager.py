@@ -68,6 +68,11 @@ class RunDetailDialog(QDialog):
     # ── Data loading ────────────────────────────────────────────────────────────
 
     def _find_jsonl(self) -> "Path | None":
+        # Fast path: stored run_file (set when launched from plan log)
+        direct = self._item.get("_run_file", "")
+        if direct and Path(direct).exists():
+            return Path(direct)
+
         result   = self._item.get("result", {}) or {}
         run_uids = result.get("run_uids", [])
         if not run_uids:
