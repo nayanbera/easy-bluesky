@@ -10,7 +10,9 @@ Defines:
   - RE: RunEngine instance
   - Simulated ophyd devices (motor1, motor2, det1, det2, det, motor)
   - Standard bluesky plans (scan, count, rel_scan, etc.)
-  - Subscribes suitcase.jsonl serializer to write data to data/runs/
+  - Subscribes suitcase.jsonl serializer; routes each run's JSONL data to
+    <active_experiment>/runs/ (reads data/active_experiment.json per run).
+    Falls back to data/runs/ when no experiment is active.
   - Publishes documents on ZMQ PUB port 60630 for the Live Viewer
 
 Environment variables:
@@ -43,27 +45,31 @@ _script_dir = Path(__file__).parent
 _default_data_dir = _script_dir.parent / "data" / "runs"
 _DATA_DIR = Path(os.getenv("BLUESKY_DATA_DIR", str(_default_data_dir)))
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
+_ACTIVE_EXP_FILE = _script_dir.parent / "data" / "active_experiment.json"
 
 try:
     import suitcase.jsonl
     from event_model import RunRouter
 
     def _jsonl_factory(name, doc):
-        _active_file = Path(__file__).parent.parent / "data" / "active_experiment.json"
         runs_dir = _DATA_DIR  # fallback
         try:
-            if _active_file.exists():
+            if _ACTIVE_EXP_FILE.exists():
                 import json as _j
-                info = _j.loads(_active_file.read_text())
+                info = _j.loads(_ACTIVE_EXP_FILE.read_text())
                 candidate = Path(info["path"]) / "runs"
                 candidate.mkdir(parents=True, exist_ok=True)
                 runs_dir = candidate
-        except Exception:
-            pass
+                print(f"[re_startup_mongo] run → {runs_dir}")
+            else:
+                print(f"[re_startup_mongo] no active experiment — run → {runs_dir}")
+        except Exception as e:
+            print(f"[re_startup_mongo] routing error ({e}) — falling back to {runs_dir}")
         return [suitcase.jsonl.Serializer(str(runs_dir))], []
 
     RE.subscribe(RunRouter([_jsonl_factory]))
-    print(f"[re_startup_mongo] suitcase.jsonl (RunRouter) writing to {_DATA_DIR}")
+    print(f"[re_startup_mongo] suitcase.jsonl (RunRouter) ready"
+          f" — fallback dir: {_DATA_DIR}")
 except Exception as e:
     print(f"[re_startup_mongo] WARNING: suitcase.jsonl not subscribed: {e}")
 

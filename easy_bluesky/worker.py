@@ -111,6 +111,16 @@ class ZMQWorker(QObject):
         self._active = False
 
     # ── Queue operations ───────────────────────────────────────────────────────
+    def execute_item(self, item):
+        """Execute an item immediately, bypassing queue waiting."""
+        try:
+            r = self.rm.item_execute(item=item)
+            if r.get("success"):
+                return True, "Executing immediately"
+            return False, r.get("msg", "Unknown error")
+        except Exception as e:
+            return False, str(e)
+
     def add_item(self, item):
         try:
             r = self.rm.item_add(item=item)
