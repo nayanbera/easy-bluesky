@@ -1,6 +1,9 @@
 """worker.py — ZMQ worker thread for RE Manager communication."""
 
+import shutil
+import subprocess
 import time
+from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO
@@ -14,14 +17,18 @@ class ZMQWorker(QObject):
     error_occurred  = pyqtSignal(str)
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
+    re_manager_started = pyqtSignal(int)   # pid
 
     def __init__(self):
         super().__init__()
-        self.rm      = None
-        self._active = True
-        self._poll_interval = 1.0
+        self.rm              = None
+        self._active         = True
+        self._poll_interval  = 1.0
+        self._re_proc        = None
+        self._is_connecting  = False   # blocks poll while connect() runs
 
     def connect(self):
+        self._is_connecting = True
         try:
             self.rm = REManagerAPI(
                 zmq_control_addr=ZMQ_CONTROL,
@@ -33,8 +40,47 @@ class ZMQWorker(QObject):
             self._load_plans_devices()
             return True
         except Exception as e:
+            self.rm = None
             self.error_occurred.emit(f"Connection failed: {e}")
             return False
+        finally:
+            self._is_connecting = False
+
+    def start_re_manager(self):
+        """Launch start-re-manager manually (called from the UI button)."""
+        exe = shutil.which("start-re-manager")
+        if not exe:
+            self.error_occurred.emit("start-re-manager not found — install bluesky-queueserver")
+            return False
+
+        if self._re_proc and self._re_proc.poll() is None:
+            self.error_occurred.emit("RE Manager is already running")
+            return False
+
+        scripts_dir    = Path(__file__).parent.parent / "scripts"
+        startup_script = scripts_dir / "re_startup_mongo.py"
+        existing_pd    = scripts_dir / "existing_plans_and_devices.yaml"
+        permissions    = scripts_dir / "user_group_permissions.yaml"
+
+        cmd = [exe, "--zmq-publish-console", "ON",
+               "--existing-plans-devices", str(existing_pd),
+               "--user-group-permissions", str(permissions)]
+        if startup_script.exists():
+            cmd += ["--startup-script", str(startup_script)]
+
+        try:
+            self._re_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
+            self.re_manager_started.emit(self._re_proc.pid)
+            return True
+        except Exception as e:
+            self.error_occurred.emit(f"Failed to start RE Manager: {e}")
+            return False
+
+    def stop_re_manager(self):
+        """Terminate the RE Manager process started by this app."""
+        if self._re_proc and self._re_proc.poll() is None:
+            self._re_proc.terminate()
+            self._re_proc = None
 
     def _load_plans_devices(self):
         try:
@@ -47,16 +93,18 @@ class ZMQWorker(QObject):
 
     def poll(self):
         while self._active:
-            try:
-                if self.rm:
-                    status = self.rm.status()
+            if self.rm and not self._is_connecting:
+                try:
+                    status  = self.rm.status()
                     self.status_updated.emit(status)
                     queue   = self.rm.queue_get()
                     history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
                     self.history_updated.emit(history.get("items", []))
-            except Exception as e:
-                self.disconnected.emit()
+                except Exception:
+                    if not self._is_connecting:
+                        self.rm = None
+                        self.disconnected.emit()
             time.sleep(self._poll_interval)
 
     def stop(self):

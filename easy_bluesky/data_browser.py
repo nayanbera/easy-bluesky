@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
-from .config import CATALOG_NAME, TILED_URI, TILED_API_KEY, SUCCESS, DANGER, ACCENT, PLOT_COLORS
+from .config import CATALOG_NAME, TILED_URI, TILED_API_KEY, DATA_RUNS_DIR, SUCCESS, DANGER, ACCENT, PLOT_COLORS
 
 
 # ── Background loader thread ───────────────────────────────────────────────────
@@ -41,6 +41,8 @@ class CatalogLoader(QThread):
             runs = []
             if self.source_type == "tiled":
                 runs = self._load_tiled(self.source_value)
+            elif self.source_type == "local":
+                runs = self._load_local_jsonl(self.source_value)
             else:
                 runs = self._load_databroker(self.source_value)
             self.runs_ready.emit(runs)
@@ -105,6 +107,54 @@ class CatalogLoader(QThread):
                 pass
         return runs
 
+    def _load_local_jsonl(self, directory):
+        import json
+        from pathlib import Path
+        runs = []
+        files = sorted(Path(directory).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for fpath in files[:50]:
+            try:
+                docs_by_name = {}
+                events = []
+                with open(fpath) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        name, doc = json.loads(line)
+                        if name in ("start", "stop"):
+                            docs_by_name[name] = doc
+                        elif name == "event":
+                            events.append(doc)
+                        elif name == "event_page":
+                            # Unpack event_page into individual event dicts
+                            times = doc.get("time", [])
+                            seq_nums = doc.get("seq_num", [])
+                            data_cols = doc.get("data", {})
+                            n = len(times)
+                            for i in range(n):
+                                ev = {
+                                    "time": times[i] if i < len(times) else None,
+                                    "seq_num": seq_nums[i] if i < len(seq_nums) else None,
+                                    "data": {k: v[i] for k, v in data_cols.items() if i < len(v)},
+                                }
+                                events.append(ev)
+                s    = docs_by_name.get("start", {})
+                stop = docs_by_name.get("stop",  {})
+                uid  = s.get("uid", fpath.stem)
+                ts   = s.get("time", 0)
+                t    = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else "?"
+                plan = s.get("plan_name", "?")
+                ok   = stop.get("exit_status", "") == "success" if stop else False
+                icon = "✓" if ok else "✗"
+                color = SUCCESS if ok else DANGER
+                label = f"{icon} {t}  {plan}  [{uid[:8]}]"
+                run_obj = {"_jsonl_events": events, "_start": s, "_stop": stop}
+                runs.append((uid, label, color, run_obj))
+            except Exception:
+                pass
+        return runs
+
 
 # ── Main widget ────────────────────────────────────────────────────────────────
 
@@ -131,13 +181,13 @@ class DataBrowser(QWidget):
 
         conn_lay.addWidget(QLabel("Source:"))
         self.source_combo = QComboBox()
-        self.source_combo.addItems(["Tiled server", "Databroker catalog"])
+        self.source_combo.addItems(["Local JSONL files", "Tiled server", "Databroker catalog"])
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         conn_lay.addWidget(self.source_combo)
 
         self.source_edit = QLineEdit()
-        self.source_edit.setPlaceholderText("http://localhost:8000  or  catalog-name")
-        self.source_edit.setText(TILED_URI or CATALOG_NAME)
+        self.source_edit.setPlaceholderText("directory path  or  http://localhost:8000  or  catalog-name")
+        self.source_edit.setText(DATA_RUNS_DIR)
         conn_lay.addWidget(self.source_edit, 1)
 
         btn_connect = QPushButton("Connect")
@@ -220,20 +270,22 @@ class DataBrowser(QWidget):
         main.addWidget(splitter, 1)
 
     def _on_source_changed(self, idx):
-        if idx == 0:  # Tiled
+        if idx == 0:  # Local JSONL
+            self.source_edit.setPlaceholderText("path/to/runs/directory")
+            self.source_edit.setText(DATA_RUNS_DIR)
+        elif idx == 1:  # Tiled
             self.source_edit.setPlaceholderText("http://localhost:8000")
-            if not self.source_edit.text() or self.source_edit.text() == CATALOG_NAME:
-                self.source_edit.setText(TILED_URI or "")
+            self.source_edit.setText(TILED_URI or "")
         else:  # Databroker
             self.source_edit.setPlaceholderText("catalog-name")
-            if not self.source_edit.text() or self.source_edit.text() == TILED_URI:
-                self.source_edit.setText(CATALOG_NAME)
+            self.source_edit.setText(CATALOG_NAME)
 
     def _load_catalog(self):
         if self._loader and self._loader.isRunning():
             return
 
-        source_type  = "tiled" if self.source_combo.currentIndex() == 0 else "databroker"
+        idx = self.source_combo.currentIndex()
+        source_type  = ["local", "tiled", "databroker"][idx]
         source_value = self.source_edit.text().strip()
 
         if not source_value:
@@ -294,7 +346,22 @@ class DataBrowser(QWidget):
             self.stats_label.setText(f"Load error: {e}")
 
     def _read_run(self, run):
-        """Try multiple access patterns across tiled and databroker APIs."""
+        """Try multiple access patterns across tiled, databroker, and local JSONL."""
+        # Local JSONL dict
+        if isinstance(run, dict) and "_jsonl_events" in run:
+            events = run["_jsonl_events"]
+            if not events:
+                return None
+            rows = []
+            for ev in events:
+                row = {"seq_num": ev.get("seq_num"), "time": ev.get("time")}
+                row.update(ev.get("data", {}))
+                rows.append(row)
+            if PANDAS_AVAILABLE and rows:
+                import pandas as pd
+                return pd.DataFrame(rows)
+            return None
+
         # Tiled: run['primary']['data'].read() or run.primary.read()
         for accessor in [
             lambda r: r['primary']['data'].read().to_dataframe().reset_index(drop=True),
