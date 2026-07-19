@@ -1,0 +1,23 @@
+# Core runtime dependencies
+PyQt6>=6.4
+pyqtgraph>=0.13
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+pyzmq>=25.0
+bluesky-queueserver-api>=0.0.13
+confluent-kafka>=2.0
+msgpack>=1.0
+msgpack-numpy>=0.4
+databroker>=1.2
+intake>=0.6
+
+# Script dependencies (scripts/kafka_to_epics.py)
+caproto>=1.0
+
+# Development / testing
+pytest>=7
+pytest-qt>=4
+black
+ruff
+mypy
