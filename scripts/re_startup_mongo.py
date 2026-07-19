@@ -49,7 +49,18 @@ try:
     from event_model import RunRouter
 
     def _jsonl_factory(name, doc):
-        return [suitcase.jsonl.Serializer(str(_DATA_DIR))], []
+        _active_file = Path(__file__).parent.parent / "data" / "active_experiment.json"
+        runs_dir = _DATA_DIR  # fallback
+        try:
+            if _active_file.exists():
+                import json as _j
+                info = _j.loads(_active_file.read_text())
+                candidate = Path(info["path"]) / "runs"
+                candidate.mkdir(parents=True, exist_ok=True)
+                runs_dir = candidate
+        except Exception:
+            pass
+        return [suitcase.jsonl.Serializer(str(runs_dir))], []
 
     RE.subscribe(RunRouter([_jsonl_factory]))
     print(f"[re_startup_mongo] suitcase.jsonl (RunRouter) writing to {_DATA_DIR}")

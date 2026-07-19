@@ -28,6 +28,13 @@ DATA_RUNS_DIR = os.getenv(
     str(_pl.Path(__file__).parent.parent / "data" / "runs"),
 )
 
+# ── Experiments ───────────────────────────────────────────────────────────────
+EXPERIMENTS_DIR = os.getenv(
+    "BLUESKY_EXPERIMENTS_DIR",
+    str(_pl.Path(__file__).parent.parent / "experiments"),
+)
+ACTIVE_EXPERIMENT_FILE = str(_pl.Path(__file__).parent.parent / "data" / "active_experiment.json")
+
 # ── UI Colors ─────────────────────────────────────────────────────────────────
 ACCENT   = "#1f77b4"
 SUCCESS  = "#2ca02c"
