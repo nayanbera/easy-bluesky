@@ -29,6 +29,10 @@ class ZMQDocThread(QThread):
     doc_received   = pyqtSignal(str, dict)
     status_changed = pyqtSignal(str)
 
+    def __init__(self, addr=None, parent=None):
+        super().__init__(parent)
+        self._addr = addr or ZMQ_DOC_ADDR
+
     def run(self):
         if not ZMQ_AVAILABLE:
             self.status_changed.emit("pyzmq not installed")
@@ -36,11 +40,11 @@ class ZMQDocThread(QThread):
 
         ctx  = zmq.Context()
         sock = ctx.socket(zmq.SUB)
-        sock.connect(ZMQ_DOC_ADDR)
+        sock.connect(self._addr)
         sock.subscribe(b"")
         sock.setsockopt(zmq.RCVTIMEO, 500)
 
-        self.status_changed.emit(f"Listening on {ZMQ_DOC_ADDR}…")
+        self.status_changed.emit(f"Listening on {self._addr}…")
 
         while not self.isInterruptionRequested():
             try:
@@ -134,14 +138,21 @@ class LiveViewer(QWidget):
 
     # ── ZMQ thread ─────────────────────────────────────────────────────────────
 
-    def _start_zmq(self):
+    def _start_zmq(self, addr=None):
         if not ZMQ_AVAILABLE:
             self.status_bar.setText("pyzmq not installed — pip install pyzmq")
             return
-        self.zmq_thread = ZMQDocThread()
+        self.zmq_thread = ZMQDocThread(addr=addr)
         self.zmq_thread.doc_received.connect(self._on_doc)
         self.zmq_thread.status_changed.connect(self.status_bar.setText)
         self.zmq_thread.start()
+
+    def restart_zmq(self, addr: str):
+        """Stop the current ZMQ thread and start a new one with a new address."""
+        if hasattr(self, "zmq_thread") and self.zmq_thread.isRunning():
+            self.zmq_thread.requestInterruption()
+            self.zmq_thread.wait(2000)
+        self._start_zmq(addr)
 
     # ── Document handler ───────────────────────────────────────────────────────
 
