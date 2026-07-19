@@ -208,10 +208,12 @@ class REControlBar(QFrame):
         running  = re_state == "RUNNING"
         paused   = re_state == "PAUSED"
         idle     = re_state == "IDLE"
-        env_open = env_state == "opened"
+        # queueserver returns "idle"/"executing_plan"/"paused" when env is open,
+        # NOT "opened" — "opened" is never actually emitted
+        env_open = env_state in ("idle", "executing_plan", "paused")
 
         self._set_re_buttons_enabled(running, paused, idle, env_open)
-        self.btn_open_env.setEnabled(env_state == "closed")
+        self.btn_open_env.setEnabled(env_state in ("closed", "failed") or not env_state)
         self.btn_close_env.setEnabled(env_open)
 
         running_item = status.get("running_item") or {}

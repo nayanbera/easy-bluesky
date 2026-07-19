@@ -26,6 +26,7 @@ class ExperimentsTab(QWidget):
         super().__init__(parent)
         self._active_exp_path = ""
         self._logged_uids: set = set()
+        self._exp_created_at: float = 0.0   # Unix timestamp of experiment creation
         self._plans: dict = {}
         self._build()
         self._load_active_experiment()
@@ -205,8 +206,12 @@ class ExperimentsTab(QWidget):
     def _set_active_experiment(self, path: str, info: dict):
         self._active_exp_path = path
         self._logged_uids = set()
-        name    = info.get("name", Path(path).name)
         created = info.get("created", "")
+        try:
+            self._exp_created_at = datetime.fromisoformat(created).timestamp()
+        except Exception:
+            self._exp_created_at = 0.0
+        name    = info.get("name", Path(path).name)
         self.exp_name_label.setText(name)
         # Truncate long paths from the left
         display_path = path if len(path) <= 60 else "…" + path[-59:]
@@ -256,6 +261,34 @@ class ExperimentsTab(QWidget):
                 li.setForeground(QColor(ACCENT))
             self.recent_list.addItem(li)
 
+    @staticmethod
+    def _plan_summary(name: str, kwargs: dict) -> str:
+        parts = []
+        motor = kwargs.get("motor")
+        motors = kwargs.get("motors")
+        if not motor and isinstance(motors, list) and motors:
+            motor = motors[0]
+        if motor:
+            start = kwargs.get("start")
+            stop  = kwargs.get("stop")
+            num   = kwargs.get("num")
+            s = str(motor)
+            if start is not None and stop is not None:
+                s += f": {start}→{stop}"
+            if num is not None:
+                s += f"  {num}pts"
+            parts.append(s)
+        dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
+        if isinstance(dets, str):
+            dets = [dets]
+        if dets:
+            parts.append(", ".join(str(d) for d in dets[:3]))
+        if not parts:
+            num = kwargs.get("num")
+            if num is not None:
+                parts.append(f"{num}pts")
+        return "  |  " + "  ".join(parts) if parts else ""
+
     def _load_plan_log(self, exp_path: str):
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
@@ -278,14 +311,18 @@ class ExperimentsTab(QWidget):
                     except Exception:
                         pass
             for entry in reversed(entries):
-                status = entry.get("exit_status", "")
-                ok     = status in ("completed", "success")
-                icon   = "✓" if ok else "✗"
-                color  = SUCCESS if ok else DANGER
-                ts     = entry.get("timestamp", "")[:19]
-                name   = entry.get("name", "?")
-                uid    = entry.get("uid", "")[:8]
-                li     = QListWidgetItem(f"{icon}  {ts}  {name}  [{uid}]")
+                status  = entry.get("exit_status", "")
+                ok      = status in ("completed", "success")
+                icon    = "✓" if ok else "✗"
+                color   = SUCCESS if ok else DANGER
+                ts      = entry.get("timestamp", "")
+                t_str   = ts[11:19] if len(ts) >= 19 else ts[:19]
+                name    = entry.get("name", "?")
+                kwargs  = entry.get("kwargs", {}) or {}
+                dur     = entry.get("duration_s")
+                summary = self._plan_summary(name, kwargs)
+                dur_str = f"  ({dur:.1f}s)" if dur is not None else ""
+                li      = QListWidgetItem(f"{icon}  {t_str}  {name}{summary}{dur_str}")
                 li.setForeground(QColor(color))
                 self.plan_log_list.addItem(li)
         except Exception:
@@ -305,17 +342,25 @@ class ExperimentsTab(QWidget):
             result = item.get("result") or {}
             exit_status = result.get("exit_status", "")
             if not exit_status:
-                continue  # Not yet completed
-            ts_float = result.get("time_stop", 0)
+                continue  # not yet completed
+            t_stop  = result.get("time_stop",  0)
+            t_start = result.get("time_start", 0)
+            # Skip plans that completed before this experiment was created
+            if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
+                self._logged_uids.add(uid)  # mark seen; don't re-check
+                continue
             timestamp = (
-                datetime.fromtimestamp(ts_float).isoformat()
-                if ts_float else datetime.now().isoformat()
+                datetime.fromtimestamp(t_stop).isoformat()
+                if t_stop else datetime.now().isoformat()
             )
+            dur = (t_stop - t_start) if (t_stop and t_start) else None
             entry = {
                 "timestamp":   timestamp,
                 "uid":         uid,
                 "name":        item.get("name", ""),
+                "kwargs":      item.get("kwargs", {}) or {},
                 "exit_status": exit_status,
+                "duration_s":  round(dur, 2) if dur else None,
             }
             try:
                 with open(log_file, "a") as f:

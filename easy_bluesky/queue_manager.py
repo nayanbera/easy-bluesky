@@ -226,20 +226,59 @@ class QueueManager(QWidget):
         self.queue_list.blockSignals(False)
         self.queue_count.setText(f"{len(items)} item{'s' if len(items) != 1 else ''}")
 
+    @staticmethod
+    def _plan_summary(name: str, kwargs: dict) -> str:
+        parts = []
+        motor = kwargs.get("motor")
+        motors = kwargs.get("motors")
+        if not motor and isinstance(motors, list) and motors:
+            motor = motors[0]
+        if motor:
+            start = kwargs.get("start")
+            stop  = kwargs.get("stop")
+            num   = kwargs.get("num")
+            s = str(motor)
+            if start is not None and stop is not None:
+                s += f": {start}→{stop}"
+            if num is not None:
+                s += f"  {num}pts"
+            parts.append(s)
+        dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
+        if isinstance(dets, str):
+            dets = [dets]
+        if dets:
+            parts.append(", ".join(str(d) for d in dets[:3]))
+        if not parts:
+            num = kwargs.get("num")
+            if num is not None:
+                parts.append(f"{num}pts")
+            delay = kwargs.get("delay")
+            if delay is not None:
+                parts.append(f"delay={delay}s")
+        return "  |  " + "  ".join(parts) if parts else ""
+
     def update_history(self, items):
         self.history_list.clear()
-        for item in reversed(items[-20:]):
+        for item in reversed(items[-30:]):
             name   = item.get("name", "unknown")
-            result = item.get("result", {})
-            status = result.get("exit_status", "?") if result else "?"
-            ts     = result.get("time_stop", 0) if result else 0
-            t      = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "?"
-            icon   = "✓" if status == "success" else "✗"
-            color  = SUCCESS if status == "success" else DANGER
-            li     = QListWidgetItem(f"{icon}  {t}  {name}")
+            kwargs = item.get("kwargs", {}) or {}
+            result = item.get("result", {}) or {}
+            status = result.get("exit_status", "?")
+            t_stop  = result.get("time_stop",  0)
+            t_start = result.get("time_start", 0)
+            t_str  = datetime.fromtimestamp(t_stop).strftime("%H:%M:%S") if t_stop else "?"
+            dur_str = ""
+            if t_stop and t_start:
+                secs = t_stop - t_start
+                dur_str = f"  ({secs:.1f}s)"
+            icon  = "✓" if status == "success" else "✗"
+            color = SUCCESS if status == "success" else DANGER
+            summary = self._plan_summary(name, kwargs)
+            label = f"{icon}  {t_str}  {name}{summary}{dur_str}"
+            li = QListWidgetItem(label)
             li.setForeground(QColor(color))
             li.setData(Qt.ItemDataRole.UserRole, item)
-            li.setToolTip("Double-click to add to queue")
+            li.setToolTip(f"Exit: {status}\nDouble-click to re-queue")
             self.history_list.addItem(li)
 
     def _history_context_menu(self, pos):
