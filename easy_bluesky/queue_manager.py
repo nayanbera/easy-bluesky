@@ -195,7 +195,8 @@ class RunDetailDialog(QDialog):
         if not self._worker:
             return
         new_item = {k: v for k, v in self._item.items()
-                    if k not in ("item_uid", "result")}
+                    if k not in ("item_uid", "result", "_run_file")}
+        new_item.setdefault("item_type", "plan")
         ok, msg = self._worker.add_item(new_item)
         QMessageBox.information(
             self, "Re-queue",
