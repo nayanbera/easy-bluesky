@@ -771,7 +771,6 @@ class ExperimentsTab(QWidget):
     def update_history(self, items: list):
         if not self._active_exp_path:
             return
-        runs_dir = Path(self._active_exp_path) / "runs"
         log_file = Path(self._active_exp_path) / "plans_log.jsonl"
         changed  = False
 
@@ -787,14 +786,10 @@ class ExperimentsTab(QWidget):
             t_start  = result.get("time_start", 0)
             run_uids = result.get("run_uids", [])
 
-            if run_uids:
-                if not self._run_file_exists(runs_dir, run_uids):
-                    self._logged_uids.add(uid)
-                    continue
-            else:
-                if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
-                    self._logged_uids.add(uid)
-                    continue
+            # Timing is the primary gate: skip plans that finished before this experiment
+            if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
+                self._logged_uids.add(uid)
+                continue
 
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
