@@ -20,6 +20,7 @@ from .queue_manager import QueueManager
 from .plan_builder import PlanBuilder
 from .experiments_tab import ExperimentsTab
 from .devices_plans_tab import DevicesPlansTab
+from .hdf5_viewer import HDF5Viewer
 
 
 class MainWindow(QMainWindow):
@@ -46,11 +47,13 @@ class MainWindow(QMainWindow):
         self.queue_mgr          = QueueManager(self.worker)
         self.plan_builder       = PlanBuilder(self.worker)
         self.devices_plans_tab  = DevicesPlansTab()
+        self.hdf5_viewer        = HDF5Viewer()
 
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
         self.tabs.addTab(self.queue_mgr,         "⚙  Queue Manager")
         self.tabs.addTab(self.plan_builder,      "🔧  Plan Builder")
         self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
+        self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
 
         # RE control bar sits above the tabs
         self.re_bar = REControlBar()
@@ -82,6 +85,9 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("File")
         self._recent_menu = file_menu.addMenu("Recent Experiments")
         self._refresh_recent_menu()
+        file_menu.addSeparator()
+        act_open_h5 = file_menu.addAction("Open HDF5 Export…")
+        act_open_h5.triggered.connect(self._on_open_hdf5)
 
         # ── View menu ──────────────────────────────────────────────────────────
         view_menu = menubar.addMenu("View")
@@ -298,6 +304,20 @@ class MainWindow(QMainWindow):
         else:
             self.re_bar.set_disconnected()
             self._log(f"[{self._ts()}] ✗ Reconnect failed — RE Manager may still be starting")
+
+    def _on_open_hdf5(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open HDF5 Archive", "", "HDF5 Files (*.h5 *.hdf5)"
+        )
+        if not path:
+            return
+        self.hdf5_viewer.load_file(path)
+        # Switch to the HDF5 Viewer tab
+        for i in range(self.tabs.count()):
+            if self.tabs.widget(i) is self.hdf5_viewer:
+                self.tabs.setCurrentIndex(i)
+                break
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
