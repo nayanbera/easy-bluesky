@@ -269,6 +269,12 @@ class DataBrowser(QWidget):
         splitter.setSizes([240, 560])
         main.addWidget(splitter, 1)
 
+    def set_runs_dir(self, path: str):
+        """Switch the browser to a specific local runs directory and reload."""
+        self.source_combo.setCurrentIndex(0)
+        self.source_edit.setText(path)
+        self._load_catalog()
+
     def _on_source_changed(self, idx):
         if idx == 0:  # Local JSONL
             self.source_edit.setPlaceholderText("path/to/runs/directory")

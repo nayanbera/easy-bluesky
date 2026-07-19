@@ -4,13 +4,14 @@ import json
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QGroupBox, QGridLayout, QPlainTextEdit,
+    QListWidget, QListWidgetItem, QPlainTextEdit,
     QAbstractItemView, QMessageBox, QMenu, QDialog,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QFont
-from .config import SUCCESS, DANGER, WARNING, ACCENT
+from .config import SUCCESS, DANGER
 from .widgets import PlanDialog
+
 
 class QueueManager(QWidget):
     def __init__(self, worker, parent=None):
@@ -27,62 +28,10 @@ class QueueManager(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # ── Left: RE Controls + Queue ──────────────────────────────────────────
+        # ── Left: Queue + History ──────────────────────────────────────────────
         left = QWidget()
         llay = QVBoxLayout(left)
         llay.setContentsMargins(8, 8, 8, 8)
-
-        # RE State indicator
-        re_row = QHBoxLayout()
-        self.re_state_label = QLabel("● IDLE")
-        self.re_state_label.setObjectName("re_state")
-        self.re_state_label.setStyleSheet(f"color: {SUCCESS}; background: #1a3a1a; border-radius:4px;")
-        re_row.addWidget(QLabel("RE:"))
-        re_row.addWidget(self.re_state_label)
-        re_row.addStretch()
-        self.env_label = QLabel("Env: unknown")
-        self.env_label.setStyleSheet("color: #888; font-size: 12px;")
-        re_row.addWidget(self.env_label)
-        llay.addLayout(re_row)
-
-        # RE Control buttons
-        ctrl_grp = QGroupBox("Run Engine Controls")
-        ctrl_lay = QGridLayout(ctrl_grp)
-        self.btn_start   = QPushButton("▶  Start Queue")
-        self.btn_pause   = QPushButton("⏸  Pause")
-        self.btn_resume  = QPushButton("▶  Resume")
-        self.btn_abort   = QPushButton("✕  Abort")
-        self.btn_stop_re = QPushButton("⬛  Stop")
-        self.btn_env_open  = QPushButton("Open Env")
-        self.btn_env_close = QPushButton("Close Env")
-        self.btn_start_mgr = QPushButton("⚡ Start RE Manager")
-        self.btn_reconnect = QPushButton("↺ Reconnect")
-
-        self.btn_start.setObjectName("btn_primary")
-        self.btn_abort.setObjectName("btn_danger")
-        self.btn_resume.setObjectName("btn_success")
-        self.btn_start_mgr.setObjectName("btn_warning")
-
-        self.btn_start.clicked.connect(self._queue_start)
-        self.btn_pause.clicked.connect(self._re_pause)
-        self.btn_resume.clicked.connect(self._re_resume)
-        self.btn_abort.clicked.connect(self._re_abort)
-        self.btn_stop_re.clicked.connect(self._re_stop)
-        self.btn_env_open.clicked.connect(self._env_open)
-        self.btn_env_close.clicked.connect(self._env_close)
-        self.btn_start_mgr.clicked.connect(self._start_re_manager)
-        self.btn_reconnect.clicked.connect(self._reconnect)
-
-        ctrl_lay.addWidget(self.btn_start,     0, 0)
-        ctrl_lay.addWidget(self.btn_pause,     0, 1)
-        ctrl_lay.addWidget(self.btn_resume,    0, 2)
-        ctrl_lay.addWidget(self.btn_abort,     1, 0)
-        ctrl_lay.addWidget(self.btn_stop_re,   1, 1)
-        ctrl_lay.addWidget(self.btn_env_open,  1, 2)
-        ctrl_lay.addWidget(self.btn_env_close, 2, 0)
-        ctrl_lay.addWidget(self.btn_start_mgr, 2, 1)
-        ctrl_lay.addWidget(self.btn_reconnect, 2, 2)
-        llay.addWidget(ctrl_grp)
 
         # Queue list
         queue_hdr = QHBoxLayout()
@@ -106,12 +55,12 @@ class QueueManager(QWidget):
 
         # Queue action buttons
         q_btns = QHBoxLayout()
-        btn_add  = QPushButton("+ Add Plan")
+        btn_add = QPushButton("+ Add Plan")
         btn_add.setObjectName("btn_primary")
         btn_add.clicked.connect(self._add_plan)
-        btn_del  = QPushButton("Remove")
+        btn_del = QPushButton("Remove")
         btn_del.clicked.connect(self._remove_selected)
-        btn_clr  = QPushButton("Clear All")
+        btn_clr = QPushButton("Clear All")
         btn_clr.setObjectName("btn_danger")
         btn_clr.clicked.connect(self._clear_queue)
         q_btns.addWidget(btn_add)
@@ -199,7 +148,7 @@ class QueueManager(QWidget):
 
     def _clear_queue(self):
         r = QMessageBox.question(self, "Clear Queue",
-            "Remove all items from the queue?")
+                                 "Remove all items from the queue?")
         if r == QMessageBox.StandardButton.Yes:
             ok, msg = self.worker.clear_queue()
             self._log(f"{'✓' if ok else '✗'} Clear queue: {msg}")
@@ -209,7 +158,6 @@ class QueueManager(QWidget):
         self._log(f"{'✓' if ok else '✗'} Clear history: {msg}")
 
     def _on_queue_reorder(self, parent, start, end, dest, row):
-        # After drag-reorder, sync with server
         QTimer.singleShot(100, self._sync_queue_order)
 
     def _sync_queue_order(self):
@@ -251,89 +199,7 @@ class QueueManager(QWidget):
         if item:
             self.detail_text.setPlainText(json.dumps(item, indent=2, default=str))
 
-    # ── RE Controls ───────────────────────────────────────────────────────────
-    def _queue_start(self):
-        ok, msg = self.worker.queue_start()
-        self._log(f"{'✓' if ok else '✗'} Start queue: {msg}")
-
-    def _re_pause(self):
-        ok, msg = self.worker.re_pause()
-        self._log(f"{'✓' if ok else '✗'} Pause: {msg}")
-
-    def _re_resume(self):
-        ok, msg = self.worker.re_resume()
-        self._log(f"{'✓' if ok else '✗'} Resume: {msg}")
-
-    def _re_abort(self):
-        r = QMessageBox.question(self, "Abort",
-            "Abort the currently running plan?")
-        if r == QMessageBox.StandardButton.Yes:
-            ok, msg = self.worker.re_abort()
-            self._log(f"{'✓' if ok else '✗'} Abort: {msg}")
-
-    def _re_stop(self):
-        ok, msg = self.worker.re_stop()
-        self._log(f"{'✓' if ok else '✗'} Stop: {msg}")
-
-    def _env_open(self):
-        ok, msg = self.worker.open_environment()
-        self._log(f"{'✓' if ok else '✗'} Open environment: {msg}")
-
-    def _env_close(self):
-        ok, msg = self.worker.close_environment()
-        self._log(f"{'✓' if ok else '✗'} Close environment: {msg}")
-
-    def _start_re_manager(self):
-        ok = self.worker.start_re_manager()
-        if ok:
-            self._log("✓ RE Manager starting — reconnecting in 5 s…")
-            QTimer.singleShot(5000, self._auto_reconnect)
-
-    def _auto_reconnect(self):
-        self._log("Auto-reconnecting…")
-        ok = self.worker.connect()
-        if ok:
-            self._log("✓ Connected")
-        else:
-            self.set_disconnected()
-            self._log("✗ Still starting — click Reconnect when ready")
-
-    def _reconnect(self):
-        self._log("Reconnecting to RE Manager…")
-        ok = self.worker.connect()
-        if ok:
-            self._log("✓ Reconnected")
-        else:
-            self.set_disconnected()
-            self._log("✗ Reconnect failed — RE Manager may still be starting")
-
     # ── Data update slots ──────────────────────────────────────────────────────
-    def set_disconnected(self):
-        self.re_state_label.setText("● DISCONNECTED")
-        self.re_state_label.setStyleSheet(
-            f"color: {DANGER}; background: #3a1a1a; border-radius:4px; padding: 4px 10px;")
-        self.env_label.setText("Env: —")
-
-    def update_status(self, status):
-        re_state_raw = status.get("re_state")
-        if re_state_raw is not None:
-            re_state = re_state_raw.upper()
-        else:
-            # Environment not open — show manager state instead
-            re_state = status.get("manager_state", "unknown").upper()
-        env_state = status.get("worker_environment_state", "unknown")
-
-        colors = {
-            "IDLE":    (SUCCESS, "#1a3a1a"),
-            "RUNNING": (ACCENT,  "#1a2a3a"),
-            "PAUSED":  (WARNING, "#3a2a1a"),
-            "UNKNOWN": ("#888",  "#2a2a2a"),
-        }
-        color, bg = colors.get(re_state, colors["UNKNOWN"])
-        self.re_state_label.setText(f"● {re_state}")
-        self.re_state_label.setStyleSheet(
-            f"color: {color}; background: {bg}; border-radius:4px; padding: 4px 10px;")
-        self.env_label.setText(f"Env: {env_state}")
 
     def update_queue(self, items):
         current_uid = None
@@ -358,7 +224,7 @@ class QueueManager(QWidget):
                 self.queue_list.setCurrentItem(li)
 
         self.queue_list.blockSignals(False)
-        self.queue_count.setText(f"{len(items)} item{'s' if len(items)!=1 else ''}")
+        self.queue_count.setText(f"{len(items)} item{'s' if len(items) != 1 else ''}")
 
     def update_history(self, items):
         self.history_list.clear()

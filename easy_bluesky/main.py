@@ -2,18 +2,23 @@
 
 import sys
 import threading
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QStatusBar, QLabel,
+    QWidget, QVBoxLayout, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QPalette, QColor
 from .config import ZMQ_CONTROL, APP_NAME, ACCENT
 from .styles import APP_STYLE
 from .worker import ZMQWorker
+from .re_control_bar import REControlBar
 from .queue_manager import QueueManager
 from .plan_builder import PlanBuilder
 from .live_viewer import LiveViewer
 from .data_browser import DataBrowser
+from .experiments_tab import ExperimentsTab
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -28,21 +33,32 @@ class MainWindow(QMainWindow):
     def _setup_ui(self):
         self.setStyleSheet(APP_STYLE)
 
-        # Central tabs
+        # Tabs
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
 
-        self.queue_mgr   = QueueManager(self.worker)
-        self.plan_builder = PlanBuilder(self.worker)
-        self.live_viewer  = LiveViewer()
-        self.data_browser = DataBrowser()
+        self.experiments_tab = ExperimentsTab()
+        self.queue_mgr       = QueueManager(self.worker)
+        self.plan_builder    = PlanBuilder(self.worker)
+        self.live_viewer     = LiveViewer()
+        self.data_browser    = DataBrowser()
 
-        self.tabs.addTab(self.queue_mgr,    "⚙  Queue Manager")
-        self.tabs.addTab(self.plan_builder, "🔧  Plan Builder")
-        self.tabs.addTab(self.live_viewer,  "📡  Live Viewer")
-        self.tabs.addTab(self.data_browser, "📂  Data Browser")
+        self.tabs.addTab(self.experiments_tab, "🧪  Experiments")
+        self.tabs.addTab(self.queue_mgr,       "⚙  Queue Manager")
+        self.tabs.addTab(self.plan_builder,    "🔧  Plan Builder")
+        self.tabs.addTab(self.live_viewer,     "📡  Live Viewer")
+        self.tabs.addTab(self.data_browser,    "📂  Data Browser")
 
-        self.setCentralWidget(self.tabs)
+        # RE control bar sits above the tabs
+        self.re_bar = REControlBar()
+
+        central = QWidget()
+        vlay = QVBoxLayout(central)
+        vlay.setContentsMargins(0, 0, 0, 0)
+        vlay.setSpacing(0)
+        vlay.addWidget(self.re_bar)
+        vlay.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -56,20 +72,48 @@ class MainWindow(QMainWindow):
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
 
+        # Worker → window
         self.worker.connected.connect(self._on_connected)
         self.worker.disconnected.connect(self._on_disconnected)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.re_manager_started.connect(self._on_re_manager_started)
-        self.worker.status_updated.connect(self.queue_mgr.update_status)
+
+        # Worker → re_bar
+        self.worker.status_updated.connect(self.re_bar.update_status)
+        self.worker.queue_updated.connect(
+            lambda items: self.re_bar.update_queue_count(len(items))
+        )
+
+        # Worker → queue_mgr
         self.worker.queue_updated.connect(self.queue_mgr.update_queue)
         self.worker.history_updated.connect(self.queue_mgr.update_history)
+
+        # Worker → experiments_tab
+        self.worker.history_updated.connect(self.experiments_tab.update_history)
+        self.worker.plans_updated.connect(self.experiments_tab.update_plans)
+        self.worker.devices_updated.connect(self.experiments_tab.update_devices)
+
+        # Worker → plan/device handlers
         self.worker.plans_updated.connect(self._on_plans_updated)
         self.worker.devices_updated.connect(self._on_devices_updated)
+
+        # RE bar → MainWindow action handlers
+        self.re_bar.start_requested.connect(self._on_start_requested)
+        self.re_bar.pause_requested.connect(self._on_pause_requested)
+        self.re_bar.resume_requested.connect(self._on_resume_requested)
+        self.re_bar.abort_requested.connect(self._on_abort_requested)
+        self.re_bar.stop_requested.connect(self._on_stop_requested)
+        self.re_bar.open_env_requested.connect(self._on_open_env_requested)
+        self.re_bar.close_env_requested.connect(self._on_close_env_requested)
+        self.re_bar.start_manager_requested.connect(self._on_start_manager_requested)
+        self.re_bar.reconnect_requested.connect(self._on_reconnect_requested)
+
+        # Experiments tab → MainWindow
+        self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
 
         self.worker_thread.start()
 
     def _connect(self):
-        # Start the poll loop immediately; it waits for self.rm to be set.
         poll_thread = threading.Thread(target=self.worker.poll, daemon=True)
         poll_thread.start()
         QTimer.singleShot(100, self._do_connect)
@@ -77,7 +121,9 @@ class MainWindow(QMainWindow):
     def _do_connect(self):
         ok = self.worker.connect()
         if not ok:
-            self.queue_mgr.set_disconnected()
+            self.re_bar.set_disconnected()
+
+    # ── Worker signal handlers ─────────────────────────────────────────────────
 
     def _on_connected(self):
         self.conn_label.setText("⬤  Connected")
@@ -87,12 +133,15 @@ class MainWindow(QMainWindow):
     def _on_re_manager_started(self, pid):
         self.conn_label.setText("⬤  RE Manager starting…")
         self.conn_label.setStyleSheet("color: #ffcc00;")
-        self.status_bar.showMessage(f"RE Manager started (PID {pid}) — click Reconnect when ready")
+        self.status_bar.showMessage(
+            f"RE Manager started (PID {pid}) — click Reconnect when ready"
+        )
+        self.re_bar.set_disconnected()
 
     def _on_disconnected(self):
         self.conn_label.setText("⬤  Disconnected")
         self.conn_label.setStyleSheet("color: #d62728;")
-        self.queue_mgr.set_disconnected()
+        self.re_bar.set_disconnected()
 
     def _on_error(self, msg):
         self.conn_label.setText("⬤  Error")
@@ -107,6 +156,96 @@ class MainWindow(QMainWindow):
         self.queue_mgr.devices = devices
         self.plan_builder.update_devices(devices)
 
+    # ── RE control action handlers ─────────────────────────────────────────────
+
+    def _ts(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
+
+    def _on_start_requested(self):
+        ok, msg = self.worker.queue_start()
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}"
+        )
+
+    def _on_pause_requested(self):
+        ok, msg = self.worker.re_pause()
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] {'✓' if ok else '✗'} Pause: {msg}"
+        )
+
+    def _on_resume_requested(self):
+        ok, msg = self.worker.re_resume()
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] {'✓' if ok else '✗'} Resume: {msg}"
+        )
+
+    def _on_abort_requested(self):
+        r = QMessageBox.question(self, "Abort", "Abort the currently running plan?")
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        ok, msg = self.worker.re_abort()
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] {'✓' if ok else '✗'} Abort: {msg}"
+        )
+
+    def _on_stop_requested(self):
+        ok, msg = self.worker.re_stop()
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}"
+        )
+
+    def _on_open_env_requested(self):
+        ok, msg = self.worker.open_environment()
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] {'✓' if ok else '✗'} Open environment: {msg}"
+        )
+
+    def _on_close_env_requested(self):
+        ok, msg = self.worker.close_environment()
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] {'✓' if ok else '✗'} Close environment: {msg}"
+        )
+
+    def _on_start_manager_requested(self):
+        ok = self.worker.start_re_manager()
+        if ok:
+            self.queue_mgr.append_console(
+                f"[{self._ts()}] ✓ RE Manager starting — reconnecting in 5 s…"
+            )
+            QTimer.singleShot(5000, self._auto_reconnect)
+        else:
+            self.queue_mgr.append_console(
+                f"[{self._ts()}] ✗ Start RE Manager failed"
+            )
+
+    def _auto_reconnect(self):
+        self.queue_mgr.append_console(f"[{self._ts()}] Auto-reconnecting…")
+        ok = self.worker.connect()
+        if ok:
+            self.queue_mgr.append_console(f"[{self._ts()}] ✓ Connected")
+        else:
+            self.re_bar.set_disconnected()
+            self.queue_mgr.append_console(
+                f"[{self._ts()}] ✗ Still starting — click Reconnect when ready"
+            )
+
+    def _on_reconnect_requested(self):
+        self.queue_mgr.append_console(f"[{self._ts()}] Reconnecting to RE Manager…")
+        ok = self.worker.connect()
+        if ok:
+            self.queue_mgr.append_console(f"[{self._ts()}] ✓ Reconnected")
+        else:
+            self.re_bar.set_disconnected()
+            self.queue_mgr.append_console(
+                f"[{self._ts()}] ✗ Reconnect failed — RE Manager may still be starting"
+            )
+
+    def _on_experiment_changed(self, runs_dir: str):
+        self.data_browser.set_runs_dir(runs_dir)
+        self.queue_mgr.append_console(
+            f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}"
+        )
+
     def closeEvent(self, event):
         self.worker.stop()
         self.worker.stop_re_manager()
@@ -120,7 +259,6 @@ def main():
     app.setApplicationName("EasyBluesky")
     app.setStyle("Fusion")
 
-    # Dark palette base
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window,          QColor("#1e1e1e"))
     palette.setColor(QPalette.ColorRole.WindowText,      QColor("#d4d4d4"))
