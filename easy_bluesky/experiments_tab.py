@@ -23,7 +23,7 @@ from PyQt6.QtGui import QColor
 
 from .config import (
     SUCCESS, DANGER, ACCENT,
-    EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS,
+    EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS, DATA_RUNS_DIR,
 )
 from .live_viewer import LiveViewer
 
@@ -461,16 +461,85 @@ class ExperimentsTab(QWidget):
                 parts.append(f"{num}pts")
         return "  |  " + "  ".join(parts) if parts else ""
 
+    def _search_dirs(self) -> list:
+        """Directories to search for run JSONL files, most specific first."""
+        dirs = []
+        if self._active_exp_path:
+            dirs.append(Path(self._active_exp_path) / "runs")
+        dirs.append(Path(DATA_RUNS_DIR))
+        return dirs
+
     @staticmethod
     def _run_file_exists(runs_dir: Path, run_uids: list) -> bool:
         return any((runs_dir / f"{r}.jsonl").exists() for r in run_uids)
 
+    def _find_run_file_for_entry(self, entry: dict) -> "Path | None":
+        """Locate the JSONL file for a log entry.
+
+        Tries in order:
+          1. Stored 'run_file' path
+          2. run_uids[0].jsonl in known search dirs
+          3. Timestamp + plan-name scan across search dirs
+        """
+        # 1. Stored path (new entries)
+        stored = entry.get("run_file", "")
+        if stored and Path(stored).exists():
+            return Path(stored)
+
+        # 2. run_uids → filename
+        run_uids = entry.get("run_uids", [])
+        for ruid in run_uids:
+            for d in self._search_dirs():
+                f = d / f"{ruid}.jsonl"
+                if f.exists():
+                    return f
+
+        # 3. Timestamp + plan name fallback (handles entries without run_uids)
+        plan_name = entry.get("name", "")
+        ts_str    = entry.get("timestamp", "")
+        if not ts_str:
+            return None
+        try:
+            entry_ts = datetime.fromisoformat(ts_str).timestamp()
+        except Exception:
+            return None
+
+        for search_dir in self._search_dirs():
+            if not search_dir.exists():
+                continue
+            # Sort by mtime descending so recent files are checked first
+            candidates = sorted(
+                search_dir.glob("*.jsonl"),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )[:60]
+            for fpath in candidates:
+                try:
+                    mtime = fpath.stat().st_mtime
+                    if abs(mtime - entry_ts) > 180:   # within 3 minutes
+                        continue
+                    with open(fpath) as f:
+                        first_line = f.readline()
+                    _, doc = json.loads(first_line)
+                    if doc.get("plan_name") == plan_name:
+                        return fpath
+                except Exception:
+                    pass
+        return None
+
     def _entry_belongs_here(self, entry: dict, runs_dir: Path) -> bool:
         """Return True if this log entry belongs to the current experiment."""
+        # Stored file path (most reliable for new entries)
+        stored = entry.get("run_file", "")
+        if stored and Path(stored).exists():
+            return True
         run_uids = entry.get("run_uids", [])
         if run_uids:
-            return self._run_file_exists(runs_dir, run_uids)
-        # Fallback for old entries without run_uids: timestamp check
+            # Check experiment runs/ AND the data/runs fallback
+            for d in self._search_dirs():
+                if self._run_file_exists(d, run_uids):
+                    return True
+            return False
+        # Old entries without run_uids: timestamp check
         ts_str = entry.get("timestamp", "")
         try:
             ts = datetime.fromisoformat(ts_str).timestamp()
@@ -515,13 +584,10 @@ class ExperimentsTab(QWidget):
                 dur     = entry.get("duration_s")
                 summary = self._plan_summary(name, kwargs)
                 dur_str = f"  ({dur:.1f}s)" if dur is not None else ""
-                # Store the first run UID so clicking can find the JSONL file
-                run_uids  = entry.get("run_uids", [])
-                click_uid = run_uids[0] if run_uids else ""
                 li = QListWidgetItem(
                     f"{icon}  {t_str}  {name}{summary}{dur_str}")
                 li.setForeground(QColor(color))
-                li.setData(Qt.ItemDataRole.UserRole, click_uid)
+                li.setData(Qt.ItemDataRole.UserRole, entry)  # full entry for click
                 self.plan_log_list.addItem(li)
         except Exception:
             pass
@@ -563,7 +629,8 @@ class ExperimentsTab(QWidget):
                 if t_stop else datetime.now().isoformat()
             )
             dur = (t_stop - t_start) if (t_stop and t_start) else None
-            entry = {
+            # Try to locate the actual JSONL run file now so clicking works later
+            tmp_entry = {
                 "timestamp":   timestamp,
                 "uid":         uid,
                 "run_uids":    run_uids,
@@ -571,7 +638,10 @@ class ExperimentsTab(QWidget):
                 "kwargs":      item.get("kwargs", {}) or {},
                 "exit_status": exit_status,
                 "duration_s":  round(dur, 2) if dur else None,
+                "run_file":    "",
             }
+            found = self._find_run_file_for_entry(tmp_entry)
+            entry = {**tmp_entry, "run_file": str(found) if found else ""}
             try:
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
@@ -610,11 +680,11 @@ class ExperimentsTab(QWidget):
         self.experiment_changed.emit(str(runs_dir))
 
     def _on_plan_log_clicked(self, li: QListWidgetItem):
-        click_uid = li.data(Qt.ItemDataRole.UserRole)
-        if not click_uid or not self._active_exp_path:
+        entry = li.data(Qt.ItemDataRole.UserRole)
+        if not entry or not self._active_exp_path:
             return
-        filepath = Path(self._active_exp_path) / "runs" / f"{click_uid}.jsonl"
-        if not filepath.exists():
+        filepath = self._find_run_file_for_entry(entry)
+        if not filepath:
             return
         self.history_widget.load_jsonl_file(str(filepath))
-        self.plot_tabs.setCurrentIndex(1)   # switch to History tab
+        self.plot_tabs.setCurrentIndex(1)
