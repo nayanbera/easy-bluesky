@@ -211,6 +211,7 @@ class ExperimentsTab(QWidget):
         self._active_exp_path  = ""
         self._logged_uids: set = set()
         self._exp_created_at: float = 0.0
+        self._exp_end_time: float   = 0.0   # creation time of the next experiment
         self._detached_win     = None
         self._plot_placeholder = None
         self._build()
@@ -533,6 +534,8 @@ class ExperimentsTab(QWidget):
         self._write_active_experiment(active_info)
         self._set_active_experiment(str(exp_dir), active_info)
         self.experiment_changed.emit(str(runs_dir))
+        # Recompute _exp_end_time now visible to other experiments too
+        self._exp_end_time = self._compute_exp_end_time()
 
     def open_experiment(self):
         path = QFileDialog.getExistingDirectory(self, "Open Experiment Folder")
@@ -566,6 +569,29 @@ class ExperimentsTab(QWidget):
         active_file.parent.mkdir(parents=True, exist_ok=True)
         active_file.write_text(json.dumps(info, indent=2))
 
+    def _compute_exp_end_time(self) -> float:
+        """Return the creation timestamp of the next experiment after this one, or 0."""
+        if not self._exp_created_at:
+            return 0.0
+        exps_dir = Path(EXPERIMENTS_DIR)
+        if not exps_dir.exists():
+            return 0.0
+        next_t = float("inf")
+        for d in exps_dir.iterdir():
+            if not d.is_dir() or str(d) == self._active_exp_path:
+                continue
+            exp_json = d / "experiment.json"
+            if not exp_json.exists():
+                continue
+            try:
+                info = json.loads(exp_json.read_text())
+                ct = datetime.fromisoformat(info.get("created", "")).timestamp()
+                if ct > self._exp_created_at and ct < next_t:
+                    next_t = ct
+            except Exception:
+                pass
+        return next_t if next_t != float("inf") else 0.0
+
     def _set_active_experiment(self, path: str, info: dict):
         self._active_exp_path = path
         self._logged_uids     = set()
@@ -574,6 +600,7 @@ class ExperimentsTab(QWidget):
             self._exp_created_at = datetime.fromisoformat(created).timestamp()
         except Exception:
             self._exp_created_at = 0.0
+        self._exp_end_time = self._compute_exp_end_time()
 
         name = info.get("name", Path(path).name)
         display_path = path if len(path) <= 60 else "…" + path[-59:]
@@ -727,7 +754,27 @@ class ExperimentsTab(QWidget):
         runs_dir = Path(exp_path) / "runs"
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
+
+        # Seed _logged_uids from every experiment log so plans already attributed
+        # to one experiment are never re-logged when switching to another.
         self._logged_uids = set()
+        exps_dir = Path(EXPERIMENTS_DIR)
+        if exps_dir.exists():
+            for d in exps_dir.iterdir():
+                other_log = d / "plans_log.jsonl"
+                if other_log.exists():
+                    try:
+                        with open(other_log) as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                uid = json.loads(line).get("uid", "")
+                                if uid:
+                                    self._logged_uids.add(uid)
+                    except Exception:
+                        pass
+
         if not log_file.exists():
             return
         try:
@@ -788,8 +835,11 @@ class ExperimentsTab(QWidget):
             t_start  = result.get("time_start", 0)
             run_uids = result.get("run_uids", [])
 
-            # Timing is the primary gate: skip plans that finished before this experiment
+            # Skip plans outside this experiment's time window
             if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
+                self._logged_uids.add(uid)
+                continue
+            if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
                 self._logged_uids.add(uid)
                 continue
 
