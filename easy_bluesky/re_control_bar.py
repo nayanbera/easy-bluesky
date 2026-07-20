@@ -17,6 +17,7 @@ class REControlBar(QFrame):
     close_env_requested     = pyqtSignal()
     start_manager_requested = pyqtSignal()
     reconnect_requested     = pyqtSignal()
+    sim_mode_toggled        = pyqtSignal(bool)   # True = sim, False = real
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -154,6 +155,18 @@ class REControlBar(QFrame):
         lay.addWidget(self.btn_start_mgr)
         lay.addWidget(self.btn_reconnect)
 
+        lay.addWidget(self._separator())
+
+        self.btn_sim = QPushButton("🔬 Real")
+        self.btn_sim.setCheckable(True)
+        self.btn_sim.setChecked(False)
+        self.btn_sim.setToolTip(
+            "Toggle simulation mode.\n"
+            "Sim uses re_startup_sim.py (auto-generated virtual devices).\n"
+            "Switching mode restarts the RE Manager environment.")
+        self.btn_sim.clicked.connect(self._on_sim_toggled)
+        lay.addWidget(self.btn_sim)
+
         lay.addStretch()
 
         self.queue_label   = QLabel("Queue: —")
@@ -176,6 +189,17 @@ class REControlBar(QFrame):
 
         # Start in a neutral state
         self._set_re_buttons_enabled(False, False)
+
+    def _on_sim_toggled(self, checked: bool):
+        if checked:
+            self.btn_sim.setText("🧪 Sim")
+            self.btn_sim.setStyleSheet(
+                "background: #c77400; color: white; border-color: #c77400;"
+                " font-weight: bold;")
+        else:
+            self.btn_sim.setText("🔬 Real")
+            self.btn_sim.setStyleSheet("")
+        self.sim_mode_toggled.emit(checked)
 
     @staticmethod
     def _separator():

@@ -27,6 +27,7 @@ class ZMQWorker(QObject):
         self._poll_interval  = 1.0
         self._re_proc        = None
         self._is_connecting  = False   # blocks poll while connect() runs
+        self._sim_mode       = False   # use re_startup_sim.py when True
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -52,8 +53,16 @@ class ZMQWorker(QObject):
         finally:
             self._is_connecting = False
 
-    def start_re_manager(self):
-        """Launch start-re-manager manually (called from the UI button)."""
+    @property
+    def sim_mode(self) -> bool:
+        return self._sim_mode
+
+    @sim_mode.setter
+    def sim_mode(self, value: bool):
+        self._sim_mode = value
+
+    def start_re_manager(self, sim: bool | None = None):
+        """Launch start-re-manager. Pass sim=True/False to override current mode."""
         exe = shutil.which("start-re-manager")
         if not exe:
             self.error_occurred.emit("start-re-manager not found — install bluesky-queueserver")
@@ -63,10 +72,12 @@ class ZMQWorker(QObject):
             self.error_occurred.emit("RE Manager is already running")
             return False
 
-        scripts_dir    = Path(__file__).parent.parent / "scripts"
-        startup_script = scripts_dir / "re_startup_mongo.py"
-        existing_pd    = scripts_dir / "existing_plans_and_devices.yaml"
-        permissions    = scripts_dir / "user_group_permissions.yaml"
+        use_sim = self._sim_mode if sim is None else sim
+        scripts_dir = Path(__file__).parent.parent / "scripts"
+        startup_script = scripts_dir / ("re_startup_sim.py" if use_sim
+                                        else "re_startup_mongo.py")
+        existing_pd = scripts_dir / "existing_plans_and_devices.yaml"
+        permissions = scripts_dir / "user_group_permissions.yaml"
 
         cmd = [exe, "--zmq-publish-console", "ON",
                "--existing-plans-devices", str(existing_pd),
