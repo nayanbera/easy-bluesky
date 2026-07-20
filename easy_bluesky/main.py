@@ -446,13 +446,10 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] ✓ Connected to {mode} RE Manager")
         else:
             self._log(
-                f"[{self._ts()}] ✗ Could not reach {mode} RE Manager at {ctrl}\n"
-                f"              Start it first with '⚡ Start RE Mgr', then toggle."
+                f"[{self._ts()}] ✗ {mode} RE Manager not running at {ctrl}\n"
+                f"              Click '⚡ Start RE Mgr' to start it."
             )
-            # Revert toggle on failure
-            self.re_bar.btn_sim.setChecked(not sim)
-            self.re_bar._on_sim_toggled(not sim)
-            self.worker.sim_mode = not sim
+            self.re_bar.set_disconnected()
         self.experiments_tab.live_viewer.restart_zmq(doc)
 
     def _on_connection_settings(self):
