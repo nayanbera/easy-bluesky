@@ -710,9 +710,15 @@ class PlanBuilder(QWidget):
         tmpl_row.addWidget(QLabel("Template:"))
         self.tmpl_combo = QComboBox()
         self.tmpl_combo.addItems([
-            "-- select --", "Simple scan", "Scan with per-step",
-            "Scan with shutter + AD", "Grid scan", "Count",
-            "Move and count", "Custom loop",
+            "-- select --",
+            "Simple scan",
+            "Multi-motor scan",
+            "Scan with per-step",
+            "Scan with shutter + AD",
+            "Grid scan",
+            "Count",
+            "Move and count",
+            "Custom loop",
         ])
         self.tmpl_combo.currentTextChanged.connect(self._insert_template)
         tmpl_row.addWidget(self.tmpl_combo, 1)
@@ -746,44 +752,88 @@ class PlanBuilder(QWidget):
         return w
 
     def _insert_template(self, name):
+        _ANN = (
+            "from typing import List\n"
+            "from bluesky.protocols import Readable, Movable\n"
+        )
         templates = {
             "Simple scan": (
-                "import bluesky.plans as bp\n\n"
-                "def my_scan(detector, motor, start, stop, num):\n"
-                "    yield from bp.scan([detector], motor, start, stop, num)\n"
+                _ANN + "\n"
+                "def my_scan(\n"
+                "        detectors: List[Readable],\n"
+                "        motor: Movable,\n"
+                "        start: float,\n"
+                "        stop: float,\n"
+                "        num: int):\n"
+                "    import bluesky.plans as bp\n"
+                "    yield from bp.scan(detectors, motor, start, stop, num)\n"
+            ),
+            "Multi-motor scan": (
+                _ANN + "\n"
+                "def multi_motor_scan(\n"
+                "        detectors: List[Readable],\n"
+                "        motor1: Movable, start1: float, stop1: float,\n"
+                "        motor2: Movable, start2: float, stop2: float,\n"
+                "        num: int):\n"
+                "    import bluesky.plans as bp\n"
+                "    yield from bp.scan(\n"
+                "        detectors,\n"
+                "        motor1, start1, stop1,\n"
+                "        motor2, start2, stop2,\n"
+                "        num)\n"
             ),
             "Grid scan": (
-                "import bluesky.plans as bp\n\n"
-                "def my_grid_scan(detector, motor1, s1, e1, n1, motor2, s2, e2, n2):\n"
+                _ANN + "\n"
+                "def my_grid_scan(\n"
+                "        detectors: List[Readable],\n"
+                "        motor1: Movable, start1: float, stop1: float, num1: int,\n"
+                "        motor2: Movable, start2: float, stop2: float, num2: int,\n"
+                "        snake_axes: bool = False):\n"
+                "    import bluesky.plans as bp\n"
                 "    yield from bp.grid_scan(\n"
-                "        [detector], motor1, s1, e1, n1, motor2, s2, e2, n2)\n"
+                "        detectors,\n"
+                "        motor1, start1, stop1, num1,\n"
+                "        motor2, start2, stop2, num2,\n"
+                "        snake_axes=snake_axes)\n"
             ),
             "Count": (
-                "import bluesky.plans as bp\n\n"
-                "def my_count(detector, num=10, delay=0.1):\n"
-                "    yield from bp.count([detector], num=num, delay=delay)\n"
+                _ANN + "\n"
+                "def my_count(\n"
+                "        detectors: List[Readable],\n"
+                "        num: int = 10,\n"
+                "        delay: float = 0.1):\n"
+                "    import bluesky.plans as bp\n"
+                "    yield from bp.count(detectors, num=num, delay=delay)\n"
             ),
             "Move and count": (
-                "import bluesky.plans as bp\nimport bluesky.plan_stubs as bps\n\n"
-                "def move_and_count(detector, motor, position, num=5):\n"
+                _ANN + "\n"
+                "def move_and_count(\n"
+                "        detectors: List[Readable],\n"
+                "        motor: Movable,\n"
+                "        position: float,\n"
+                "        num: int = 5):\n"
+                "    import bluesky.plans as bp\n"
+                "    import bluesky.plan_stubs as bps\n"
                 "    yield from bps.mv(motor, position)\n"
-                "    yield from bp.count([detector], num=num)\n"
+                "    yield from bp.count(detectors, num=num)\n"
             ),
             "Scan with per-step": (
-                "import bluesky.plans as bp\n"
-                "import bluesky.plan_stubs as bps\n\n"
+                _ANN + "\n"
                 "def scan_with_per_step(\n"
-                "        detectors, motor, start, stop, num,\n"
-                "        exposure_time=1.0, sleep_time=0.0):\n"
-                "    # Set exposure time on all detectors before scan\n"
+                "        detectors: List[Readable],\n"
+                "        motor: Movable,\n"
+                "        start: float,\n"
+                "        stop: float,\n"
+                "        num: int,\n"
+                "        exposure_time: float = 1.0,\n"
+                "        sleep_time: float = 0.0):\n"
+                "    import bluesky.plans as bp\n"
+                "    import bluesky.plan_stubs as bps\n\n"
                 "    for det in detectors:\n"
                 "        yield from bps.mv(det.cam.acquire_time, exposure_time)\n\n"
                 "    def _per_step(detectors, step, pos_cache):\n"
-                "        # Move motors to the next position\n"
                 "        yield from bps.move_per_step(step, pos_cache)\n"
-                "        # Trigger all detectors and read\n"
                 "        yield from bps.trigger_and_read(detectors)\n"
-                "        # Optional sleep between points\n"
                 "        if sleep_time > 0:\n"
                 "            yield from bps.sleep(sleep_time)\n\n"
                 "    yield from bp.scan(\n"
@@ -791,39 +841,46 @@ class PlanBuilder(QWidget):
                 "        per_step=_per_step)\n"
             ),
             "Scan with shutter + AD": (
-                "import bluesky.plans as bp\n"
-                "import bluesky.plan_stubs as bps\n\n"
+                _ANN + "\n"
                 "def scan_with_shutter_ad(\n"
-                "        detectors, motor, start, stop, num,\n"
-                "        shutter,\n"
-                "        file_path='/data/', file_name='scan',\n"
-                "        exposure_time=1.0, sleep_time=0.5):\n"
-                "    # Pre-scan: set exposure time and file paths\n"
+                "        detectors: List[Readable],\n"
+                "        motor: Movable,\n"
+                "        start: float,\n"
+                "        stop: float,\n"
+                "        num: int,\n"
+                "        shutter: Movable,\n"
+                "        file_path: str = '/data/',\n"
+                "        file_name: str = 'scan',\n"
+                "        exposure_time: float = 1.0,\n"
+                "        sleep_time: float = 0.5):\n"
+                "    import bluesky.plans as bp\n"
+                "    import bluesky.plan_stubs as bps\n\n"
                 "    for det in detectors:\n"
                 "        yield from bps.mv(det.cam.acquire_time, exposure_time)\n"
                 "        yield from bps.abs_set(det.hdf1.file_path, file_path, wait=True)\n"
                 "        yield from bps.abs_set(det.hdf1.file_name, file_name, wait=True)\n\n"
                 "    def _per_step(detectors, step, pos_cache):\n"
-                "        # Move to position\n"
                 "        yield from bps.move_per_step(step, pos_cache)\n"
-                "        # Open shutter\n"
                 "        yield from bps.mv(shutter, 'open')\n"
-                "        # Trigger all detectors and read\n"
                 "        yield from bps.trigger_and_read(detectors)\n"
-                "        # Close shutter\n"
                 "        yield from bps.mv(shutter, 'closed')\n"
-                "        # Sleep between points\n"
                 "        yield from bps.sleep(sleep_time)\n\n"
                 "    yield from bp.scan(\n"
                 "        detectors, motor, start, stop, num,\n"
                 "        per_step=_per_step)\n"
             ),
             "Custom loop": (
-                "import bluesky.plans as bp\nimport bluesky.plan_stubs as bps\n\n"
-                "def custom_loop(detector, motor, positions):\n"
+                _ANN + "\n"
+                "def custom_loop(\n"
+                "        detectors: List[Readable],\n"
+                "        motor: Movable,\n"
+                "        positions: List[float],\n"
+                "        num: int = 3):\n"
+                "    import bluesky.plans as bp\n"
+                "    import bluesky.plan_stubs as bps\n"
                 "    for pos in positions:\n"
                 "        yield from bps.mv(motor, pos)\n"
-                "        yield from bp.count([detector], num=3)\n"
+                "        yield from bp.count(detectors, num=num)\n"
             ),
         }
         if name in templates:
