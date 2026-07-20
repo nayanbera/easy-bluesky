@@ -95,20 +95,32 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             script       = "re_startup_sim.py" if sim else "re_startup_mongo.py"
             scripts_path = "$HOME/.easy_bluesky/scripts"
 
-            stop_cmd  = "pkill -f start-re-manager; sleep 1"
-            start_cmd = (
-                f"nohup {exe}"
+            # Write a launcher script via SFTP so we avoid all shell-quoting
+            # issues. The script sources .bash_profile to get EPICS vars, then
+            # runs start-re-manager in the background.
+            script_body = (
+                "#!/bin/bash\n"
+                "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
+                f"exec {exe}"
                 f" --zmq-publish-console ON"
                 f" --startup-script {scripts_path}/{script}"
                 f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
                 f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
-                f" > /tmp/re-manager.log 2>&1 &"
+                f" >> /tmp/re-manager.log 2>&1\n"
             )
-            # Wrap in a bash login shell so .bash_profile is sourced,
-            # giving the process EPICS_CA_ADDR_LIST, LD_LIBRARY_PATH, etc.
-            inner = f"{stop_cmd}; {start_cmd}"
-            cmd   = f"bash -l -c '{inner}'"
-            _, stdout, stderr = client.exec_command(cmd, timeout=15)
+            remote_script = "/tmp/_easy_bluesky_start.sh"
+            sftp = client.open_sftp()
+            with sftp.open(remote_script, "w") as f:
+                f.write(script_body)
+            sftp.chmod(remote_script, 0o755)
+            sftp.close()
+
+            # Kill existing instance, then launch via the script
+            stop_cmd = "pkill -f start-re-manager; sleep 1"
+            run_cmd  = f"nohup bash {remote_script} > /dev/null 2>&1 &"
+            _, stdout, stderr = client.exec_command(
+                f"{stop_cmd}; {run_cmd}", timeout=15
+            )
             stdout.channel.recv_exit_status()
             client.close()
             env_note = f" (conda env: {settings['conda_env']})" if settings.get("conda_env") else ""
