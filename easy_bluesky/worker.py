@@ -18,6 +18,7 @@ class ZMQWorker(QObject):
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
     re_manager_started = pyqtSignal(int)   # pid
+    console_updated = pyqtSignal(str)      # new console text since last poll
 
     def __init__(self):
         super().__init__()
@@ -26,6 +27,7 @@ class ZMQWorker(QObject):
         self._poll_interval  = 1.0
         self._re_proc        = None
         self._is_connecting  = False   # blocks poll while connect() runs
+        self._console_pos    = 0       # tracks how much console text we've already emitted
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -38,6 +40,12 @@ class ZMQWorker(QObject):
             self.connected.emit()
             self.status_updated.emit(status)
             self._load_plans_devices()
+            # Enable console monitor permanently after connecting
+            try:
+                self.rm.console_monitor.enable()
+                self._console_pos = 0
+            except Exception:
+                self._console_pos = 0
             return True
         except Exception as e:
             self.rm = None
@@ -96,36 +104,6 @@ class ZMQWorker(QObject):
         if self.rm:
             self._load_plans_devices()
 
-    # ── Console monitor ────────────────────────────────────────────────────────
-
-    def console_monitor_enable(self):
-        try:
-            if self.rm:
-                self.rm.console_monitor.enable()
-        except Exception:
-            pass
-
-    def console_monitor_disable(self):
-        try:
-            if self.rm:
-                self.rm.console_monitor.disable()
-        except Exception:
-            pass
-
-    def console_monitor_clear(self):
-        try:
-            if self.rm:
-                self.rm.console_monitor.clear()
-        except Exception:
-            pass
-
-    def console_monitor_text(self) -> str:
-        try:
-            if self.rm:
-                return self.rm.console_monitor.text or ""
-        except Exception:
-            pass
-        return ""
 
     def poll(self):
         while self._active:
@@ -137,6 +115,15 @@ class ZMQWorker(QObject):
                     history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
                     self.history_updated.emit(history.get("items", []))
+                    # Emit any new console output
+                    try:
+                        text = self.rm.console_monitor.text or ""
+                        if len(text) > self._console_pos:
+                            new_text = text[self._console_pos:]
+                            self._console_pos = len(text)
+                            self.console_updated.emit(new_text)
+                    except Exception:
+                        pass
                 except Exception:
                     if not self._is_connecting:
                         self.rm = None
