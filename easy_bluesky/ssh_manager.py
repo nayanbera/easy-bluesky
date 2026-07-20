@@ -140,8 +140,8 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         run_cmd = (
             f"if command -v procServ &>/dev/null; then "
             f"  procServ --noautorestart -n RE-Manager"
-            f" -l {log_file} -p {pid_file} {procserv_port}"
-            f" bash {remote_script}; "
+            f" -L {log_file} -p {pid_file} {procserv_port}"
+            f" /bin/bash {remote_script}; "
             f"elif command -v systemd-run &>/dev/null; then "
             f"  systemd-run --user --scope bash {remote_script} > /dev/null 2>&1 & "
             f"else "
