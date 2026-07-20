@@ -195,7 +195,7 @@ def generate_sim_script(real_script_path: str | Path,
         '',
         '',
         '# ── Simulated devices (auto-mapped from real script) ───────────────────────',
-        'from ophyd.sim import SynAxis, SynGauss, SynNoise',
+        'from ophyd.sim import SynAxis, SynGauss',
         '',
     ]
 
@@ -215,15 +215,17 @@ def generate_sim_script(real_script_path: str | Path,
                     f"center=0, Imax=1000, sigma=0.5, noise='poisson')"
                 )
             else:
-                lines.append(f"{var} = SynNoise(name='{name}')")
+                lines.append(
+                    f"{var} = SynGauss('{name}', motor1, 'motor1', "
+                    f"center=0, Imax=1000, sigma=0.5, noise='poisson')"
+                )
 
     if not devices:
         lines += [
             '# No devices detected — adding generic defaults',
-            "motor  = SynAxis(name='motor')",
             "motor1 = SynAxis(name='motor1')",
             "motor2 = SynAxis(name='motor2')",
-            "det    = SynGauss('det', motor, 'motor', center=0, Imax=1000, sigma=0.5)",
+            "det    = SynGauss('det', motor1, 'motor1', center=0, Imax=1000, sigma=0.5)",
             "sim_ad = SimAreaDetector(name='sim_ad')",
         ]
 
