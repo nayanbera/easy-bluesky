@@ -2,11 +2,16 @@
 # start_re_managers.sh — Start real and sim RE Manager instances side by side.
 #
 # Ports used (configurable via env vars):
-#   Real:  CTRL=60615  INFO=60625  DOC=60630
-#   Sim:   CTRL=60616  INFO=60626  DOC=60631
+#   Real:  CTRL=60615  INFO=60625
+#   Sim:   CTRL=60616  INFO=60626
+#
+# Conda environment (optional):
+#   Set CONDA_ENV and CONDA_PATH to run inside a specific conda environment.
+#   Example:
+#     CONDA_ENV=bluesky CONDA_PATH=~/miniconda3 ./start_re_managers.sh
 #
 # Logs written to $LOG_DIR (default /tmp).
-# Run with --real-only or --sim-only to start a single instance.
+# Options: --real-only | --sim-only
 
 set -euo pipefail
 
@@ -17,6 +22,9 @@ REAL_CTRL="${REAL_CTRL_PORT:-60615}"
 REAL_INFO="${REAL_INFO_PORT:-60625}"
 SIM_CTRL="${SIM_CTRL_PORT:-60616}"
 SIM_INFO="${SIM_INFO_PORT:-60626}"
+
+CONDA_ENV="${CONDA_ENV:-}"
+CONDA_PATH="${CONDA_PATH:-$HOME/miniconda3}"
 
 START_REAL=true
 START_SIM=true
@@ -29,16 +37,43 @@ for arg in "$@"; do
             echo "Usage: $(basename "$0") [--real-only | --sim-only]"
             echo "  --real-only  Start only the real hardware instance"
             echo "  --sim-only   Start only the simulation instance"
+            echo ""
+            echo "Environment variables:"
+            echo "  CONDA_ENV    Conda environment name (e.g. bluesky)"
+            echo "  CONDA_PATH   Conda base directory (default: ~/miniconda3)"
+            echo "  REAL_CTRL_PORT / REAL_INFO_PORT  (default: 60615 / 60625)"
+            echo "  SIM_CTRL_PORT  / SIM_INFO_PORT   (default: 60616 / 60626)"
+            echo "  LOG_DIR      Log directory (default: /tmp)"
             exit 0 ;;
     esac
 done
 
-if ! command -v start-re-manager &>/dev/null; then
-    echo "[ERROR] start-re-manager not found."
-    echo "        Install it with:  pip install bluesky-queueserver"
-    exit 1
+# ── Resolve the start-re-manager executable ────────────────────────────────────
+if [ -n "$CONDA_ENV" ]; then
+    CONDA_BIN="${CONDA_PATH}/bin/conda"
+    if [ ! -x "$CONDA_BIN" ]; then
+        echo "[ERROR] conda not found at: ${CONDA_BIN}"
+        echo "        Set CONDA_PATH to your conda base directory."
+        exit 1
+    fi
+    # Verify the env exists
+    if ! "$CONDA_BIN" env list | grep -q "^${CONDA_ENV} \|^${CONDA_ENV}$"; then
+        echo "[ERROR] conda env '${CONDA_ENV}' not found."
+        echo "        Available envs:"; "$CONDA_BIN" env list
+        exit 1
+    fi
+    RUN_PREFIX="${CONDA_BIN} run -n ${CONDA_ENV} --no-capture-output "
+    echo "[INFO]  Using conda env: ${CONDA_ENV} (${CONDA_PATH})"
+else
+    RUN_PREFIX=""
+    if ! command -v start-re-manager &>/dev/null; then
+        echo "[ERROR] start-re-manager not found on PATH."
+        echo "        Activate your environment first, or set CONDA_ENV."
+        exit 1
+    fi
 fi
 
+# ── Start a single instance ────────────────────────────────────────────────────
 start_instance() {
     local name="$1"
     local script="$2"
@@ -64,7 +99,8 @@ start_instance() {
     local existing_pd="${SCRIPTS_DIR}/existing_plans_and_devices.yaml"
     local permissions="${SCRIPTS_DIR}/user_group_permissions.yaml"
 
-    nohup start-re-manager \
+    # shellcheck disable=SC2086
+    nohup ${RUN_PREFIX}start-re-manager \
         --zmq-control-addr "tcp://*:${ctrl_port}" \
         --zmq-info-addr    "tcp://*:${info_port}" \
         --zmq-publish-console ON \

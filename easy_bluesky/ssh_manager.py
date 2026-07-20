@@ -44,15 +44,32 @@ def _get_client(settings: dict):
     return client
 
 
+def _conda_prefix(settings: dict) -> str:
+    """
+    Return a shell prefix that runs a command inside the configured conda env.
+
+    With conda_env='bluesky' and conda_path='~/miniconda3' this produces:
+        ~/miniconda3/bin/conda run -n bluesky --no-capture-output
+
+    Returns '' when conda_env is not configured (command runs on PATH as-is).
+    """
+    env  = settings.get("conda_env", "").strip()
+    base = settings.get("conda_path", "~/miniconda3").strip() or "~/miniconda3"
+    if not env:
+        return ""
+    # --no-capture-output keeps stdout/stderr visible in the SSH channel
+    return f"{base}/bin/conda run -n {env} --no-capture-output "
+
+
 def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
     """
     SSH into the remote RE Manager host and restart it.
 
-    If settings['ssh_service'] is set (e.g. 're-manager'), restarts via systemd:
-        sudo systemctl restart <service>
+    If settings['ssh_service'] is set restarts via:
+        systemctl --user restart <service>
+    Otherwise uses pkill + nohup start-re-manager.
 
-    Otherwise uses a direct pkill + nohup approach, assuming the remote machine
-    has easy-bluesky installed and scripts in ~/.easy_bluesky/scripts/.
+    Conda env is handled automatically when settings['conda_env'] is set.
 
     Returns (success, message).
     """
@@ -62,25 +79,27 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         return False, str(e)
 
     service = settings.get("ssh_service", "").strip()
+    prefix  = _conda_prefix(settings)
     try:
         if service:
-            # systemd path
-            cmd = f"sudo systemctl restart {service}"
+            # systemd --user services don't need conda; they use the ExecStart
+            # path already. We still support it in case the user sets it up
+            # differently.
+            cmd = f"systemctl --user restart {service}"
             _, stdout, stderr = client.exec_command(cmd, timeout=15)
             stdout.channel.recv_exit_status()
             err = stderr.read().decode().strip()
             client.close()
             if err:
                 return False, f"systemctl: {err}"
-            return True, f"systemctl restart {service} OK"
+            return True, f"systemctl --user restart {service} OK"
         else:
-            # Direct path: kill existing process, start fresh
-            script = "re_startup_sim.py" if sim else "re_startup_mongo.py"
+            script       = "re_startup_sim.py" if sim else "re_startup_mongo.py"
             scripts_path = "~/.easy_bluesky/scripts"
 
-            stop_cmd = "pkill -f start-re-manager; sleep 1"
+            stop_cmd  = "pkill -f start-re-manager; sleep 1"
             start_cmd = (
-                f"nohup start-re-manager"
+                f"nohup {prefix}start-re-manager"
                 f" --zmq-publish-console ON"
                 f" --startup-script {scripts_path}/{script}"
                 f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
@@ -91,7 +110,8 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             _, stdout, stderr = client.exec_command(cmd, timeout=15)
             stdout.channel.recv_exit_status()
             client.close()
-            return True, "RE Manager restarted on remote host"
+            env_note = f" (conda env: {settings['conda_env']})" if settings.get("conda_env") else ""
+            return True, f"RE Manager restarted on remote host{env_note}"
 
     except Exception as e:
         try:
@@ -102,12 +122,44 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
 
 
 def test_ssh_connection(settings: dict) -> tuple[bool, str]:
-    """Return (success, message) for a quick SSH connectivity check."""
+    """
+    Verify SSH connectivity and optionally check that the conda env exists.
+    Returns (success, message).
+    """
     try:
         client = _get_client(settings)
-        _, stdout, _ = client.exec_command("echo ok", timeout=5)
-        out = stdout.read().decode().strip()
-        client.close()
-        return (True, "SSH connection OK") if out == "ok" else (False, f"Unexpected response: {out}")
     except Exception as e:
+        return False, str(e)
+
+    try:
+        # Basic connectivity
+        _, stdout, _ = client.exec_command("echo ok", timeout=5)
+        if stdout.read().decode().strip() != "ok":
+            client.close()
+            return False, "Unexpected response to echo"
+
+        # If a conda env is configured, verify it exists on the remote
+        env = settings.get("conda_env", "").strip()
+        if env:
+            base = settings.get("conda_path", "~/miniconda3").strip() or "~/miniconda3"
+            check_cmd = f"{base}/bin/conda env list | grep -q '^{env} '"
+            _, _, stderr = client.exec_command(check_cmd, timeout=10)
+            exit_code = stderr.channel.recv_exit_status()
+            if exit_code != 0:
+                client.close()
+                return False, (
+                    f"SSH OK, but conda env '{env}' not found at {base}.\n"
+                    f"Check Conda path and env name in Connection Settings."
+                )
+            client.close()
+            return True, f"SSH OK  |  conda env '{env}' found"
+
+        client.close()
+        return True, "SSH connection OK"
+
+    except Exception as e:
+        try:
+            client.close()
+        except Exception:
+            pass
         return False, str(e)

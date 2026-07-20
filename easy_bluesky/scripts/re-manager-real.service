@@ -3,8 +3,9 @@
 # SETUP (run on the RE Manager host as the beamline user):
 #
 #   1. Find the full path to start-re-manager in your environment:
-#        which start-re-manager           # if already activated
-#        conda run -n bluesky which start-re-manager
+#        conda activate bluesky && which start-re-manager
+#        # or without activating:
+#        ~/miniconda3/bin/conda run -n bluesky which start-re-manager
 #
 #   2. Replace every placeholder in this file:
 #        YOUR_USER   → your Linux username  (e.g. xf28id)

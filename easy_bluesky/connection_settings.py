@@ -25,6 +25,8 @@ _DEFAULTS = {
     "ssh_port":     22,
     "ssh_key_path": "~/.ssh/id_rsa",
     "ssh_service":  "",   # systemd service name, or "" for direct pkill+nohup
+    "conda_env":    "",   # conda env name on the remote host, e.g. "bluesky"
+    "conda_path":   "~/miniconda3",  # base conda install dir on the remote host
 }
 
 
@@ -215,6 +217,14 @@ class ConnectionDialog(QDialog):
         self._ssh_service.setPlaceholderText("systemd service, or empty for direct restart")
         ssh_form.addRow("Service name:", self._ssh_service)
 
+        self._conda_env = QLineEdit(self._settings.get("conda_env", ""))
+        self._conda_env.setPlaceholderText("bluesky  (leave empty if not using conda)")
+        ssh_form.addRow("Conda env:", self._conda_env)
+
+        self._conda_path = QLineEdit(self._settings.get("conda_path", "~/miniconda3"))
+        self._conda_path.setPlaceholderText("~/miniconda3  or  ~/miniforge3")
+        ssh_form.addRow("Conda path:", self._conda_path)
+
         lay.addLayout(ssh_form)
 
         # Test SSH button
@@ -269,6 +279,8 @@ class ConnectionDialog(QDialog):
             "ssh_port":         self._ssh_port.value(),
             "ssh_key_path":     self._ssh_key.text().strip() or "~/.ssh/id_rsa",
             "ssh_service":      self._ssh_service.text().strip(),
+            "conda_env":        self._conda_env.text().strip(),
+            "conda_path":       self._conda_path.text().strip() or "~/miniconda3",
         }
 
     def _on_accept(self):
