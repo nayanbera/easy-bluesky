@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, QTimer
 from .config import APP_NAME, ACCENT
 from .connection_settings import load_connection, make_zmq_addrs, ConnectionDialog
+from .sim_generator import generate_sim_script
 from .themes import (
     build_stylesheet, build_palette, load_saved_theme, save_theme,
     theme_names, THEMES,
@@ -92,6 +93,9 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("File")
         act_conn = file_menu.addAction("Connection Settings…")
         act_conn.triggered.connect(self._on_connection_settings)
+        file_menu.addSeparator()
+        act_gen_sim = file_menu.addAction("Generate Sim Script…")
+        act_gen_sim.triggered.connect(self._on_generate_sim_script)
         file_menu.addSeparator()
         self._recent_menu = file_menu.addMenu("Recent Experiments")
         self._refresh_recent_menu()
@@ -201,6 +205,7 @@ class MainWindow(QMainWindow):
         self.re_bar.close_env_requested.connect(self._on_close_env_requested)
         self.re_bar.start_manager_requested.connect(self._on_start_manager_requested)
         self.re_bar.reconnect_requested.connect(self._on_reconnect_requested)
+        self.re_bar.sim_mode_toggled.connect(self._on_sim_mode_toggled)
 
         # Experiments tab → MainWindow
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
@@ -336,6 +341,62 @@ class MainWindow(QMainWindow):
             if self.tabs.widget(i) is self.hdf5_viewer:
                 self.tabs.setCurrentIndex(i)
                 break
+
+    def _on_generate_sim_script(self):
+        from pathlib import Path
+        scripts_dir  = Path(__file__).parent.parent / "scripts"
+        real_script  = scripts_dir / "re_startup_mongo.py"
+        sim_script   = scripts_dir / "re_startup_sim.py"
+        if not real_script.exists():
+            QMessageBox.warning(self, "Not Found",
+                f"Real startup script not found:\n{real_script}\n\n"
+                "Create it first, then generate the sim version.")
+            return
+        try:
+            out = generate_sim_script(real_script, sim_script)
+            QMessageBox.information(self, "Sim Script Generated",
+                f"Simulated startup script written to:\n{out}\n\n"
+                "Review and edit as needed, then enable Sim Mode in the toolbar.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate sim script:\n{e}")
+
+    def _on_sim_mode_toggled(self, sim: bool):
+        from pathlib import Path
+        self.worker.sim_mode = sim
+        mode = "Simulation" if sim else "Real hardware"
+        if sim:
+            sim_script = Path(__file__).parent.parent / "scripts" / "re_startup_sim.py"
+            if not sim_script.exists():
+                r = QMessageBox.question(
+                    self, "Sim Script Missing",
+                    "re_startup_sim.py not found.\n"
+                    "Generate it now from the real startup script?")
+                if r == QMessageBox.StandardButton.Yes:
+                    self._on_generate_sim_script()
+                else:
+                    # Revert toggle
+                    self.re_bar.btn_sim.setChecked(False)
+                    self.re_bar._on_sim_toggled(False)
+                    return
+        r = QMessageBox.question(
+            self, f"Switch to {mode} mode",
+            f"Switch to {mode} mode?\n\n"
+            "The RE Manager environment will be reloaded with the "
+            f"{'simulated' if sim else 'real hardware'} startup script.\n\n"
+            "Any running plan will be stopped.")
+        if r != QMessageBox.StandardButton.Yes:
+            # Revert toggle
+            self.re_bar.btn_sim.setChecked(not sim)
+            self.re_bar._on_sim_toggled(not sim)
+            return
+        self._log(f"[{self._ts()}] Switching to {mode} mode…")
+        self.worker.close_environment()
+        QTimer.singleShot(1500, self._reload_env_for_sim)
+
+    def _reload_env_for_sim(self):
+        self.worker.open_environment()
+        mode = "Simulation" if self.worker.sim_mode else "Real hardware"
+        self._log(f"[{self._ts()}] Environment reloading in {mode} mode…")
 
     def _on_connection_settings(self):
         dlg = ConnectionDialog(self)
