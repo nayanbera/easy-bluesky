@@ -91,6 +91,11 @@ class ZMQWorker(QObject):
         except Exception as e:
             self.error_occurred.emit(f"Failed to load plans/devices: {e}")
 
+    def reload_plans_devices(self):
+        """Re-fetch allowed plans and devices from the RE Manager."""
+        if self.rm:
+            self._load_plans_devices()
+
     def poll(self):
         while self._active:
             if self.rm and not self._is_connecting:
