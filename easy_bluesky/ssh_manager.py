@@ -49,7 +49,7 @@ def _conda_prefix(settings: dict) -> str:
     Return a shell prefix that runs a command inside the configured conda env.
 
     With conda_env='bluesky' and conda_path='~/miniconda3' this produces:
-        ~/miniconda3/bin/conda run -n bluesky --no-capture-output
+        $HOME/miniconda3/bin/conda run -n bluesky --no-capture-output
 
     Returns '' when conda_env is not configured (command runs on PATH as-is).
     """
@@ -57,6 +57,9 @@ def _conda_prefix(settings: dict) -> str:
     base = settings.get("conda_path", "~/miniconda3").strip() or "~/miniconda3"
     if not env:
         return ""
+    # Replace ~ with $HOME so the remote shell expands it correctly.
+    # Literal ~ is not expanded by the non-interactive SSH shell.
+    base = base.replace("~", "$HOME")
     # --no-capture-output keeps stdout/stderr visible in the SSH channel
     return f"{base}/bin/conda run -n {env} --no-capture-output "
 
@@ -95,7 +98,7 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             return True, f"systemctl --user restart {service} OK"
         else:
             script       = "re_startup_sim.py" if sim else "re_startup_mongo.py"
-            scripts_path = "~/.easy_bluesky/scripts"
+            scripts_path = "$HOME/.easy_bluesky/scripts"
 
             stop_cmd  = "pkill -f start-re-manager; sleep 1"
             start_cmd = (
