@@ -16,6 +16,10 @@ _DEFAULTS = {
     "control_port": 60615,
     "info_port":    60625,
     "doc_port":     60630,
+    # Sim-mode ports (separate RE Manager instance with sim startup script)
+    "sim_control_port": 60616,
+    "sim_info_port":    60626,
+    "sim_doc_port":     60631,
     # SSH (used for remote RE Manager restart; never committed to git)
     "ssh_user":     "",
     "ssh_port":     22,
@@ -54,13 +58,25 @@ def save_connection(settings: dict):
 
 
 def make_zmq_addrs(settings: dict) -> tuple:
-    """Return (control_addr, info_addr, doc_addr) strings."""
+    """Return (control_addr, info_addr, doc_addr) for the real-mode instance."""
     h = settings["host"]
     return (
         f"tcp://{h}:{settings['control_port']}",
         f"tcp://{h}:{settings['info_port']}",
         f"tcp://{h}:{settings['doc_port']}",
     )
+
+
+def make_zmq_addrs_for_mode(settings: dict, sim: bool) -> tuple:
+    """Return (control_addr, info_addr, doc_addr) for real or sim mode."""
+    h = settings["host"]
+    if sim:
+        return (
+            f"tcp://{h}:{settings['sim_control_port']}",
+            f"tcp://{h}:{settings['sim_info_port']}",
+            f"tcp://{h}:{settings['sim_doc_port']}",
+        )
+    return make_zmq_addrs(settings)
 
 
 def is_local_host(settings: dict) -> bool:
@@ -112,6 +128,45 @@ class ConnectionDialog(QDialog):
         form.addRow("Doc stream port:", self._doc_port)
 
         lay.addLayout(form)
+
+        # ── Sim ports section ──────────────────────────────────────────────────
+        sep_sim = QFrame()
+        sep_sim.setFrameShape(QFrame.Shape.HLine)
+        sep_sim.setFrameShadow(QFrame.Shadow.Sunken)
+        lay.addWidget(sep_sim)
+
+        sim_title = QLabel("Sim Mode Ports")
+        sim_title.setStyleSheet("font-weight: bold; font-size: 12px;")
+        lay.addWidget(sim_title)
+
+        sim_note = QLabel(
+            "Ports for a second RE Manager instance running the simulated startup script.\n"
+            "The sim mode toggle reconnects to these ports automatically."
+        )
+        sim_note.setWordWrap(True)
+        sim_note.setObjectName("dim_text")
+        lay.addWidget(sim_note)
+
+        sim_form = QFormLayout()
+        sim_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        sim_form.setHorizontalSpacing(12)
+
+        self._sim_ctrl_port = QSpinBox()
+        self._sim_ctrl_port.setRange(1, 65535)
+        self._sim_ctrl_port.setValue(self._settings.get("sim_control_port", 60616))
+        sim_form.addRow("Sim control port:", self._sim_ctrl_port)
+
+        self._sim_info_port = QSpinBox()
+        self._sim_info_port.setRange(1, 65535)
+        self._sim_info_port.setValue(self._settings.get("sim_info_port", 60626))
+        sim_form.addRow("Sim info port:", self._sim_info_port)
+
+        self._sim_doc_port = QSpinBox()
+        self._sim_doc_port.setRange(1, 65535)
+        self._sim_doc_port.setValue(self._settings.get("sim_doc_port", 60631))
+        sim_form.addRow("Sim doc stream port:", self._sim_doc_port)
+
+        lay.addLayout(sim_form)
 
         # ── SSH section separator ──────────────────────────────────────────────
         sep = QFrame()
@@ -203,14 +258,17 @@ class ConnectionDialog(QDialog):
 
     def _current_fields(self) -> dict:
         return {
-            "host":         self._host.text().strip() or "localhost",
-            "control_port": self._ctrl_port.value(),
-            "info_port":    self._info_port.value(),
-            "doc_port":     self._doc_port.value(),
-            "ssh_user":     self._ssh_user.text().strip(),
-            "ssh_port":     self._ssh_port.value(),
-            "ssh_key_path": self._ssh_key.text().strip() or "~/.ssh/id_rsa",
-            "ssh_service":  self._ssh_service.text().strip(),
+            "host":             self._host.text().strip() or "localhost",
+            "control_port":     self._ctrl_port.value(),
+            "info_port":        self._info_port.value(),
+            "doc_port":         self._doc_port.value(),
+            "sim_control_port": self._sim_ctrl_port.value(),
+            "sim_info_port":    self._sim_info_port.value(),
+            "sim_doc_port":     self._sim_doc_port.value(),
+            "ssh_user":         self._ssh_user.text().strip(),
+            "ssh_port":         self._ssh_port.value(),
+            "ssh_key_path":     self._ssh_key.text().strip() or "~/.ssh/id_rsa",
+            "ssh_service":      self._ssh_service.text().strip(),
         }
 
     def _on_accept(self):
