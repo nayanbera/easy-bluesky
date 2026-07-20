@@ -119,6 +119,19 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         return False, f"SSH command failed: {e}"
 
 
+def wait_for_port(host: str, port: int, timeout: int = 30) -> bool:
+    """Poll host:port every 2 s until it accepts a connection or timeout expires."""
+    import socket, time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return True
+        except OSError:
+            time.sleep(2)
+    return False
+
+
 def test_ssh_connection(settings: dict) -> tuple[bool, str]:
     """
     Verify SSH connectivity and optionally check that the conda env exists.
