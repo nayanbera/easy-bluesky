@@ -62,15 +62,24 @@ def _re_manager_exe(settings: dict) -> str:
     return "start-re-manager"
 
 
+def _instance_files(sim: bool) -> tuple[str, str, str]:
+    """Return (remote_script, log_file, pid_file) for real or sim instance."""
+    tag = "sim" if sim else "real"
+    return (
+        f"/tmp/_easy_bluesky_start_{tag}.sh",
+        f"/tmp/re-manager-{tag}.log",
+        f"/tmp/re-manager-{tag}-procserv.pid",
+    )
+
+
 def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
     """
     SSH into the remote RE Manager host and restart it.
 
-    If settings['ssh_service'] is set restarts via:
-        systemctl --user restart <service>
-    Otherwise uses pkill + nohup start-re-manager.
+    Uses procServ when available (ideal for EPICS beamlines — survives SSH
+    disconnect reliably). Falls back to systemd-run --user --scope, then nohup.
 
-    Conda env is handled automatically when settings['conda_env'] is set.
+    If settings['ssh_service'] is set, restarts via systemctl --user instead.
 
     Returns (success, message).
     """
@@ -81,6 +90,7 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
 
     service = settings.get("ssh_service", "").strip()
     exe     = _re_manager_exe(settings)
+
     try:
         if service:
             cmd = f"systemctl --user restart {service}"
@@ -91,50 +101,60 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             if err:
                 return False, f"systemctl: {err}"
             return True, f"systemctl --user restart {service} OK"
-        else:
-            script       = "re_startup_sim.py" if sim else "re_startup_mongo.py"
-            scripts_path = "$HOME/.easy_bluesky/scripts"
 
-            # Write a launcher script via SFTP so we avoid all shell-quoting
-            # issues. The script sources .bash_profile to get EPICS vars, then
-            # runs start-re-manager in the background.
-            script_body = (
-                "#!/bin/bash\n"
-                "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
-                f"exec {exe}"
-                f" --zmq-publish-console ON"
-                f" --startup-script {scripts_path}/{script}"
-                f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
-                f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
-                f" >> /tmp/re-manager.log 2>&1\n"
-            )
-            remote_script = "/tmp/_easy_bluesky_start.sh"
-            sftp = client.open_sftp()
-            with sftp.open(remote_script, "w") as f:
-                f.write(script_body)
-            sftp.chmod(remote_script, 0o755)
-            sftp.close()
+        script        = "re_startup_sim.py" if sim else "re_startup_mongo.py"
+        scripts_path  = "$HOME/.easy_bluesky/scripts"
+        remote_script, log_file, pid_file = _instance_files(sim)
+        procserv_port = settings.get(
+            "sim_procserv_port" if sim else "procserv_port", 60636 if sim else 60635
+        )
 
-            # Kill existing instance, then launch via the script.
-            # Use systemd-run --user --scope when available — it places the
-            # process in its own scope outside the SSH session, so it survives
-            # after the connection closes even when KillUserProcesses=yes.
-            # Fall back to nohup for systems without systemd.
-            stop_cmd = "pkill -f start-re-manager; sleep 2"
-            run_cmd  = (
-                f"if command -v systemd-run &>/dev/null; then "
-                f"  systemd-run --user --scope bash {remote_script} > /dev/null 2>&1 & "
-                f"else "
-                f"  nohup bash {remote_script} > /dev/null 2>&1 & "
-                f"fi"
-            )
-            _, stdout, stderr = client.exec_command(
-                f"{stop_cmd}; {run_cmd}", timeout=15
-            )
-            stdout.channel.recv_exit_status()
-            client.close()
-            env_note = f" (conda env: {settings['conda_env']})" if settings.get("conda_env") else ""
-            return True, f"RE Manager restarted on remote host{env_note}"
+        # Write launcher script via SFTP — avoids all shell-quoting issues.
+        # It sources .bash_profile for EPICS env vars, then exec's start-re-manager.
+        script_body = (
+            "#!/bin/bash\n"
+            "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
+            f"exec {exe}"
+            f" --zmq-publish-console ON"
+            f" --startup-script {scripts_path}/{script}"
+            f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
+            f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
+            f" >> {log_file} 2>&1\n"
+        )
+        sftp = client.open_sftp()
+        with sftp.open(remote_script, "w") as f:
+            f.write(script_body)
+        sftp.chmod(remote_script, 0o755)
+        sftp.close()
+
+        # Kill existing instance then launch.
+        # procServ daemonizes itself — the SSH command returns immediately while
+        # procServ (and RE Manager) keep running after the session closes.
+        # Fall back to systemd-run or nohup on systems without procServ.
+        stop_cmd = (
+            f"kill $(cat {pid_file} 2>/dev/null) 2>/dev/null; "
+            f"pkill -f start-re-manager 2>/dev/null; "
+            f"rm -f {pid_file}; "
+            "sleep 1"
+        )
+        run_cmd = (
+            f"if command -v procServ &>/dev/null; then "
+            f"  procServ --noautorestart -n RE-Manager"
+            f" -l {log_file} -p {pid_file} {procserv_port}"
+            f" bash {remote_script}; "
+            f"elif command -v systemd-run &>/dev/null; then "
+            f"  systemd-run --user --scope bash {remote_script} > /dev/null 2>&1 & "
+            f"else "
+            f"  nohup bash {remote_script} > /dev/null 2>&1 & "
+            f"fi"
+        )
+        _, stdout, stderr = client.exec_command(
+            f"{stop_cmd}; {run_cmd}", timeout=15
+        )
+        stdout.channel.recv_exit_status()
+        client.close()
+        env_note = f" (conda env: {settings['conda_env']})" if settings.get("conda_env") else ""
+        return True, f"RE Manager restarted on remote host{env_note}"
 
     except Exception as e:
         try:
@@ -144,7 +164,7 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         return False, f"SSH command failed: {e}"
 
 
-def stop_re_manager(settings: dict) -> tuple[bool, str]:
+def stop_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
     """SSH into the remote host and kill the RE Manager process."""
     try:
         client = _get_client(settings)
@@ -156,7 +176,14 @@ def stop_re_manager(settings: dict) -> tuple[bool, str]:
         if service:
             cmd = f"systemctl --user stop {service}"
         else:
-            cmd = "pkill -f start-re-manager"
+            _, log_file, pid_file = _instance_files(sim)
+            cmd = (
+                f"if [ -f {pid_file} ]; then "
+                f"  kill $(cat {pid_file}) 2>/dev/null; "
+                f"  rm -f {pid_file}; "
+                f"fi; "
+                f"pkill -f start-re-manager 2>/dev/null; true"
+            )
         _, stdout, stderr = client.exec_command(cmd, timeout=10)
         stdout.channel.recv_exit_status()
         client.close()
@@ -212,8 +239,13 @@ def test_ssh_connection(settings: dict) -> tuple[bool, str]:
                     f"SSH OK, but start-re-manager not found at:\n{exe}\n"
                     f"Check Conda path and env name in Connection Settings."
                 )
+
+            # Also report procServ availability
+            _, stdout3, _ = client.exec_command("which procServ 2>/dev/null && procServ --version 2>&1 | head -1", timeout=5)
+            procserv_info = stdout3.read().decode().strip()
             client.close()
-            return True, f"SSH OK  |  start-re-manager found in env '{env}'"
+            ps_note = f"  |  {procserv_info}" if procserv_info else "  |  procServ not found"
+            return True, f"SSH OK  |  start-re-manager found in env '{env}'{ps_note}"
 
         client.close()
         return True, "SSH connection OK"

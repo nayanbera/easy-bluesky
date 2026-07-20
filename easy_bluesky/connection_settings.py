@@ -25,8 +25,10 @@ _DEFAULTS = {
     "ssh_port":     22,
     "ssh_key_path": "~/.ssh/id_rsa",
     "ssh_service":  "",   # systemd service name, or "" for direct pkill+nohup
-    "conda_env":    "",   # conda env name on the remote host, e.g. "bluesky"
-    "conda_path":   "~/miniconda3",  # base conda install dir on the remote host
+    "conda_env":        "",             # conda env name on the remote host, e.g. "bluesky"
+    "conda_path":       "~/miniconda3", # base conda install dir on the remote host
+    "procserv_port":    60635,          # procServ management telnet port (real instance)
+    "sim_procserv_port": 60636,         # procServ management telnet port (sim instance)
 }
 
 
@@ -268,19 +270,21 @@ class ConnectionDialog(QDialog):
 
     def _current_fields(self) -> dict:
         return {
-            "host":             self._host.text().strip() or "localhost",
-            "control_port":     self._ctrl_port.value(),
-            "info_port":        self._info_port.value(),
-            "doc_port":         self._doc_port.value(),
-            "sim_control_port": self._sim_ctrl_port.value(),
-            "sim_info_port":    self._sim_info_port.value(),
-            "sim_doc_port":     self._sim_doc_port.value(),
-            "ssh_user":         self._ssh_user.text().strip(),
-            "ssh_port":         self._ssh_port.value(),
-            "ssh_key_path":     self._ssh_key.text().strip() or "~/.ssh/id_rsa",
-            "ssh_service":      self._ssh_service.text().strip(),
-            "conda_env":        self._conda_env.text().strip(),
-            "conda_path":       self._conda_path.text().strip() or "~/miniconda3",
+            "host":              self._host.text().strip() or "localhost",
+            "control_port":      self._ctrl_port.value(),
+            "info_port":         self._info_port.value(),
+            "doc_port":          self._doc_port.value(),
+            "sim_control_port":  self._sim_ctrl_port.value(),
+            "sim_info_port":     self._sim_info_port.value(),
+            "sim_doc_port":      self._sim_doc_port.value(),
+            "ssh_user":          self._ssh_user.text().strip(),
+            "ssh_port":          self._ssh_port.value(),
+            "ssh_key_path":      self._ssh_key.text().strip() or "~/.ssh/id_rsa",
+            "ssh_service":       self._ssh_service.text().strip(),
+            "conda_env":         self._conda_env.text().strip(),
+            "conda_path":        self._conda_path.text().strip() or "~/miniconda3",
+            "procserv_port":     self._settings.get("procserv_port", 60635),
+            "sim_procserv_port": self._settings.get("sim_procserv_port", 60636),
         }
 
     def _on_accept(self):
