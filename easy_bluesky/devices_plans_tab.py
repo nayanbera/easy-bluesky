@@ -23,8 +23,8 @@ def _device_color(module: str) -> tuple:
     if "flyer" in m:
         return "#17becf", "Flyer"
     if m in ("__main__", ""):
-        return "#e8e8e8", "User-defined"
-    return "#b0b0b0", "Other"
+        return "#222222", "User-defined"
+    return "#555555", "Other"
 
 
 class DevicesPlansTab(QWidget):
