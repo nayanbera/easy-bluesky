@@ -182,17 +182,25 @@ class ParamForm(QWidget):
         if kind == "VAR_POSITIONAL" and ("__MOVABLE__" in typ or n in ("args",)):
             return ScanArgsWidget(self.devices)
 
-        # ── List/Sequence of any device type → multi-select list ────────────────
-        _list_types    = ("List[", "Sequence[", "list[")
-        _device_types  = ("__READABLE__", "__MOVABLE__", "__SETTABLE__",
-                          "Readable", "Movable", "Motor", "Device", "ophyd",
-                          "readable", "movable")
-        is_list_ann    = any(t in typ for t in _list_types)
-        is_device_ann  = any(t in typ for t in _device_types)
-        is_det_name    = n in ("detectors", "dets", "det", "readables", "readable",
-                               "detectors_list", "motors", "devices", "movables")
-        # List[<any device>]  OR  convert+Sequence  OR  bare name with no annotation
-        if (is_list_ann and is_device_ann) or (convert and is_list_ann) or (is_det_name and not typ):
+        # ── Classify the annotation ──────────────────────────────────────────────
+        _list_types     = ("List[", "Sequence[", "list[")
+        _readable_types = ("__READABLE__", "Readable", "readable", "Detector")
+        _movable_types  = ("__MOVABLE__", "__SETTABLE__", "Movable", "movable",
+                           "Motor", "Device", "ophyd")
+        is_list_ann     = any(t in typ for t in _list_types)
+        is_readable_ann = any(t in typ for t in _readable_types)
+        is_movable_ann  = any(t in typ for t in _movable_types)
+
+        # ── List[Movable] / List[Motor] → ScanArgsWidget (motor, start, stop rows)
+        _mot_names = ("motors", "movables", "axes", "positioners", "actuators")
+        if (is_list_ann and is_movable_ann and not is_readable_ann) or \
+           (n in _mot_names and not typ):
+            return ScanArgsWidget(self.devices)
+
+        # ── List[Readable] / List[Detector] → multi-select device list ──────────
+        is_det_name = n in ("detectors", "dets", "det", "readables", "readable",
+                            "detectors_list")
+        if is_readable_ann or (convert and is_list_ann) or (is_det_name and not typ):
             return self._make_device_list(default)
 
         # ── Float / int — check BEFORE device fallbacks to avoid mis-routing ────
@@ -244,10 +252,11 @@ class ParamForm(QWidget):
                 return w
 
         # ── Single device (motor / movable) ──────────────────────────────────────
-        is_movable_ann = is_device_ann and not is_list_ann
-        is_mot_name    = n in ("motor", "movable", "device", "flyer",
-                               "axis", "positioner", "actuator")
-        if is_movable_ann or (convert and not is_list_ann) or (is_mot_name and not typ):
+        is_mot_name = n in ("motor", "movable", "device", "flyer",
+                            "axis", "positioner", "actuator")
+        if (is_movable_ann and not is_list_ann) or \
+           (convert and not is_list_ann) or \
+           (is_mot_name and not typ):
             return self._make_device_combo(default)
 
         # ── Bool ─────────────────────────────────────────────────────────────────
