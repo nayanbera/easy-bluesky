@@ -10,106 +10,104 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 class ScanArgsWidget(QWidget):
-    """Editor for VAR_POSITIONAL scan args: repeating (motor, start, stop) groups."""
+    """
+    Motor selector for scan plans.
+    Top: multi-select list of available motors.
+    Bottom: start/stop fields appear for each selected motor.
+    Outputs flat list [motor1, start1, stop1, motor2, start2, stop2, ...].
+    """
 
     def __init__(self, devices, parent=None):
         super().__init__(parent)
         self.devices = list(devices) if devices else []
-        self._rows = []  # list of (motor_combo, start_spin, stop_spin, row_widget)
+        self._spinboxes = {}   # motor_name -> (start_spin, stop_spin)
+        self._row_widgets = {} # motor_name -> row QWidget
         self._build()
 
     def _build(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(4)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
 
-        self._rows_widget = QWidget()
-        self._rows_layout = QVBoxLayout(self._rows_widget)
-        self._rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._rows_layout.setSpacing(4)
-        outer.addWidget(self._rows_widget)
+        lay.addWidget(QLabel("Select motors:"))
 
-        btn = QPushButton("+ Add Motor Axis")
-        btn.clicked.connect(self._add_row)
-        outer.addWidget(btn)
+        self._motor_list = QListWidget()
+        self._motor_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.MultiSelection)
+        self._motor_list.setMaximumHeight(100)
+        for d in self.devices:
+            self._motor_list.addItem(QListWidgetItem(d))
+        self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
+        lay.addWidget(self._motor_list)
 
-        self._add_row()
+        # Container for start/stop rows
+        self._rows_container = QWidget()
+        self._rows_layout = QVBoxLayout(self._rows_container)
+        self._rows_layout.setContentsMargins(0, 2, 0, 0)
+        self._rows_layout.setSpacing(2)
+        lay.addWidget(self._rows_container)
 
-    def _add_row(self, motor="", start=0.0, stop=1.0):
-        row_w = QWidget()
-        row_lay = QHBoxLayout(row_w)
-        row_lay.setContentsMargins(0, 0, 0, 0)
-        row_lay.setSpacing(6)
+        # Pre-build one hidden row per device so spinboxes are stable objects
+        for d in self.devices:
+            start_spin = QDoubleSpinBox()
+            start_spin.setRange(-1e9, 1e9)
+            start_spin.setDecimals(4)
+            start_spin.setSingleStep(0.1)
 
-        motor_combo = QComboBox()
-        motor_combo.addItems(["-- motor --"] + self.devices)
-        if motor:
-            idx = motor_combo.findText(str(motor))
-            if idx >= 0:
-                motor_combo.setCurrentIndex(idx)
+            stop_spin = QDoubleSpinBox()
+            stop_spin.setRange(-1e9, 1e9)
+            stop_spin.setDecimals(4)
+            stop_spin.setSingleStep(0.1)
+            stop_spin.setValue(1.0)
 
-        start_spin = QDoubleSpinBox()
-        start_spin.setRange(-1e9, 1e9)
-        start_spin.setDecimals(4)
-        start_spin.setSingleStep(0.1)
-        start_spin.setPrefix("start ")
-        start_spin.setValue(start)
+            self._spinboxes[d] = (start_spin, stop_spin)
 
-        stop_spin = QDoubleSpinBox()
-        stop_spin.setRange(-1e9, 1e9)
-        stop_spin.setDecimals(4)
-        stop_spin.setSingleStep(0.1)
-        stop_spin.setPrefix("stop ")
-        stop_spin.setValue(stop)
+            row = QWidget()
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(4)
+            lbl = QLabel(f"{d}:")
+            lbl.setMinimumWidth(80)
+            row_lay.addWidget(lbl)
+            row_lay.addWidget(QLabel("start"))
+            row_lay.addWidget(start_spin, 2)
+            row_lay.addWidget(QLabel("stop"))
+            row_lay.addWidget(stop_spin, 2)
 
-        rm_btn = QPushButton("✕")
-        rm_btn.setMaximumWidth(28)
-        rm_btn.setToolTip("Remove this axis")
+            self._row_widgets[d] = row
+            self._rows_layout.addWidget(row)
+            row.hide()
 
-        row_lay.addWidget(motor_combo, 3)
-        row_lay.addWidget(start_spin, 2)
-        row_lay.addWidget(stop_spin, 2)
-        row_lay.addWidget(rm_btn)
-
-        entry = (motor_combo, start_spin, stop_spin, row_w)
-        self._rows.append(entry)
-        self._rows_layout.addWidget(row_w)
-
-        rm_btn.clicked.connect(lambda: self._remove_row(entry))
-
-    def _remove_row(self, entry):
-        if len(self._rows) <= 1:
-            return
-        mc, ss, es, rw = entry
-        self._rows.remove(entry)
-        self._rows_layout.removeWidget(rw)
-        rw.deleteLater()
+    def _on_selection_changed(self):
+        selected = {self._motor_list.item(i).text()
+                    for i in range(self._motor_list.count())
+                    if self._motor_list.item(i).isSelected()}
+        for motor, row in self._row_widgets.items():
+            row.setVisible(motor in selected)
 
     def populate(self, flat_args):
-        """Fill from a flat list [motor1, start1, stop1, motor2, ...]."""
-        for _, _, _, rw in list(self._rows):
-            self._rows_layout.removeWidget(rw)
-            rw.deleteLater()
-        self._rows.clear()
-
-        triplets = [flat_args[i:i+3] for i in range(0, len(flat_args) - 2, 3)]
+        """Pre-fill from [motor1, start1, stop1, motor2, ...]."""
+        triplets = [flat_args[i:i + 3] for i in range(0, len(flat_args) - 2, 3)]
         for triplet in triplets:
-            motor, start, stop = triplet[0], triplet[1], triplet[2]
-            try:
-                self._add_row(motor=str(motor), start=float(start), stop=float(stop))
-            except (TypeError, ValueError):
-                self._add_row()
-
-        if not self._rows:
-            self._add_row()
+            motor, start, stop = str(triplet[0]), triplet[1], triplet[2]
+            for i in range(self._motor_list.count()):
+                if self._motor_list.item(i).text() == motor:
+                    self._motor_list.item(i).setSelected(True)
+            if motor in self._spinboxes:
+                s, e = self._spinboxes[motor]
+                try:
+                    s.setValue(float(start))
+                    e.setValue(float(stop))
+                except (TypeError, ValueError):
+                    pass
 
     def get_value(self):
-        """Return flat list [motor1, start1, stop1, ...] or None if empty."""
+        """Return [motor1, start1, stop1, ...] in device-list order, or None."""
         result = []
-        for mc, ss, es, _ in self._rows:
-            motor = mc.currentText()
-            if motor and motor != "-- motor --":
-                result.extend([motor, ss.value(), es.value()])
+        for d in self.devices:
+            if self._row_widgets.get(d, None) and self._row_widgets[d].isVisible():
+                s, e = self._spinboxes[d]
+                result.extend([d, s.value(), e.value()])
         return result if result else None
 
 
