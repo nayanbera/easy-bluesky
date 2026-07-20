@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
 from .config import APP_NAME, ACCENT
-from .connection_settings import load_connection, make_zmq_addrs, ConnectionDialog
+from .connection_settings import load_connection, make_zmq_addrs, ConnectionDialog, is_local_host
 from .sim_generator import generate_sim_script
 from .themes import (
     build_stylesheet, build_palette, load_saved_theme, save_theme,
@@ -302,12 +302,32 @@ class MainWindow(QMainWindow):
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Close environment: {msg}")
 
     def _on_start_manager_requested(self):
-        ok = self.worker.start_re_manager()
-        if ok:
-            self._log(f"[{self._ts()}] ✓ RE Manager starting — reconnecting in 5 s…")
-            QTimer.singleShot(5000, self._auto_reconnect)
+        settings = self._conn_settings
+        if is_local_host(settings):
+            ok = self.worker.start_re_manager()
+            if ok:
+                self._log(f"[{self._ts()}] ✓ RE Manager starting — reconnecting in 5 s…")
+                QTimer.singleShot(5000, self._auto_reconnect)
+            else:
+                self._log(f"[{self._ts()}] ✗ Start RE Manager failed")
         else:
-            self._log(f"[{self._ts()}] ✗ Start RE Manager failed")
+            host = settings["host"]
+            self._log(f"[{self._ts()}] SSH → restarting RE Manager on {host}…")
+            threading.Thread(
+                target=self._ssh_restart_remote,
+                args=(settings,),
+                daemon=True,
+            ).start()
+
+    def _ssh_restart_remote(self, settings: dict):
+        from .ssh_manager import restart_re_manager
+        ok, msg = restart_re_manager(settings, sim=self.worker.sim_mode)
+        ts = self._ts()
+        if ok:
+            self._log(f"[{ts}] ✓ {msg} — reconnecting in 8 s…")
+            QTimer.singleShot(8000, self._auto_reconnect)
+        else:
+            self._log(f"[{ts}] ✗ SSH restart failed: {msg}")
 
     def _auto_reconnect(self):
         self._log(f"[{self._ts()}] Auto-reconnecting…")
