@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 
 from .config import ACCENT
 
@@ -71,10 +71,10 @@ class DevicesPlansTab(QWidget):
         vlay.addLayout(legend)
 
         self.devices_tree = QTreeWidget()
-        self.devices_tree.setHeaderLabels(["Name", "Kind", "Module"])
-        self.devices_tree.setRootIsDecorated(False)
+        self.devices_tree.setHeaderLabels(["Name", "Kind"])
+        self.devices_tree.setRootIsDecorated(True)
         self.devices_tree.setAlternatingRowColors(True)
-        self.devices_tree.setSortingEnabled(True)
+        self.devices_tree.setSortingEnabled(False)
         vlay.addWidget(self.devices_tree, 1)
         return w
 
@@ -108,22 +108,38 @@ class DevicesPlansTab(QWidget):
     # ── Public update slots ────────────────────────────────────────────────────
 
     def update_devices(self, devices: dict):
-        self.devices_tree.setSortingEnabled(False)
         self.devices_tree.clear()
-        for name, info in sorted(devices.items()):
-            module   = info.get("module", "")
-            kind     = info.get("kind", "")
+
+        # Group by module
+        groups: dict = {}
+        for name, info in devices.items():
+            module = info.get("module", "") or "Unknown"
+            groups.setdefault(module, []).append((name, info))
+
+        bold = QFont()
+        bold.setBold(True)
+
+        for module in sorted(groups.keys()):
             color, dev_type = _device_color(module)
-            item = QTreeWidgetItem([name, kind, module])
-            item.setForeground(0, QColor(color))
-            item.setForeground(1, QColor(color))
-            item.setForeground(2, QColor("#555"))
-            item.setToolTip(0, f"Type: {dev_type}\nModule: {module}")
-            self.devices_tree.addTopLevelItem(item)
+            count = len(groups[module])
+            group_item = QTreeWidgetItem([f"{module}  ({count})", ""])
+            group_item.setForeground(0, QColor(color))
+            group_item.setFont(0, bold)
+            group_item.setToolTip(0, dev_type)
+
+            for name, info in sorted(groups[module]):
+                kind = info.get("kind", "")
+                child = QTreeWidgetItem([name, kind])
+                child.setForeground(0, QColor(color))
+                child.setForeground(1, QColor("#888"))
+                child.setToolTip(0, f"Module: {module}")
+                group_item.addChild(child)
+
+            self.devices_tree.addTopLevelItem(group_item)
+
+        self.devices_tree.expandAll()
         self.devices_tree.resizeColumnToContents(0)
         self.devices_tree.resizeColumnToContents(1)
-        self.devices_tree.setSortingEnabled(True)
-        self.devices_tree.sortByColumn(0, Qt.SortOrder.AscendingOrder)
 
     def update_plans(self, plans: dict):
         self._plans = plans
