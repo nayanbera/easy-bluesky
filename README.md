@@ -179,6 +179,35 @@ Logs are written to `/tmp/re-manager-real.log` and `/tmp/re-manager-sim.log`.
 
 Click **🔬 Real** in the toolbar to toggle to **🧪 Sim**. The app immediately reconnects the ZMQ worker and the live doc stream to the sim instance ports. Toggling back reconnects to the real ports. No manual port changes needed.
 
+### Conda environments
+
+If the RE Manager must run inside a specific conda environment, use the `CONDA_ENV` variable with the launch script or the **Conda env** field in Connection Settings.
+
+**With the launch script:**
+
+```bash
+CONDA_ENV=bluesky CONDA_PATH=~/miniconda3 \
+  ~/.easy_bluesky/scripts/start_re_managers.sh
+```
+
+The script uses `conda run -n bluesky --no-capture-output start-re-manager ...` which activates the environment without needing to source `.bashrc`. `CONDA_PATH` defaults to `~/miniconda3`; change it to `~/miniforge3`, `~/opt/anaconda3`, etc. if needed.
+
+**With SSH remote restart:**
+
+In **Connection Settings → Conda env**, enter the environment name (e.g. `bluesky`). Set **Conda path** to the base conda directory on the remote machine. Clicking **⚡ Start RE Mgr** will then SSH in and prefix the command with `conda run -n bluesky`.
+
+**With systemd** — use the full path instead of `conda run` (more robust):
+
+```bash
+# Find the path once
+conda activate bluesky && which start-re-manager
+# → /home/user/miniconda3/envs/bluesky/bin/start-re-manager
+```
+
+Paste that full path into `ExecStart=` in the `.service` file. No conda activation needed at runtime.
+
+---
+
 ### Running as a systemd service (recommended for production)
 
 Systemd keeps the RE Manager running across reboots and restarts it automatically on failure. Service templates are provided at `~/.easy_bluesky/scripts/`.
