@@ -343,8 +343,8 @@ class MainWindow(QMainWindow):
                 break
 
     def _on_generate_sim_script(self):
-        from pathlib import Path
-        scripts_dir  = Path(__file__).parent.parent / "scripts"
+        from easy_bluesky.worker import _get_scripts_dir
+        scripts_dir  = _get_scripts_dir()
         real_script  = scripts_dir / "re_startup_mongo.py"
         sim_script   = scripts_dir / "re_startup_sim.py"
         if not real_script.exists():
@@ -365,7 +365,8 @@ class MainWindow(QMainWindow):
         self.worker.sim_mode = sim
         mode = "Simulation" if sim else "Real hardware"
         if sim:
-            sim_script = Path(__file__).parent.parent / "scripts" / "re_startup_sim.py"
+            from easy_bluesky.worker import _get_scripts_dir
+            sim_script = _get_scripts_dir() / "re_startup_sim.py"
             if not sim_script.exists():
                 r = QMessageBox.question(
                     self, "Sim Script Missing",

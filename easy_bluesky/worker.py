@@ -8,6 +8,30 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO
 
+_USER_SCRIPTS_DIR = Path.home() / ".easy_bluesky" / "scripts"
+_PKG_SCRIPTS_DIR  = Path(__file__).parent / "scripts"
+
+_BUNDLED_FILES = [
+    "existing_plans_and_devices.yaml",
+    "user_group_permissions.yaml",
+    "re_startup_mongo.py",
+    "re_startup_sim.py",
+]
+
+def _get_scripts_dir() -> Path:
+    """
+    Return the user scripts directory (~/.easy_bluesky/scripts/), creating it
+    and copying bundled defaults the first time it is needed.
+    """
+    _USER_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    for fname in _BUNDLED_FILES:
+        dest = _USER_SCRIPTS_DIR / fname
+        if not dest.exists():
+            src = _PKG_SCRIPTS_DIR / fname
+            if src.exists():
+                shutil.copy2(src, dest)
+    return _USER_SCRIPTS_DIR
+
 class ZMQWorker(QObject):
     status_updated  = pyqtSignal(dict)
     queue_updated   = pyqtSignal(list)
@@ -73,11 +97,11 @@ class ZMQWorker(QObject):
             return False
 
         use_sim = self._sim_mode if sim is None else sim
-        scripts_dir = Path(__file__).parent.parent / "scripts"
+        scripts_dir    = _get_scripts_dir()
         startup_script = scripts_dir / ("re_startup_sim.py" if use_sim
                                         else "re_startup_mongo.py")
-        existing_pd = scripts_dir / "existing_plans_and_devices.yaml"
-        permissions = scripts_dir / "user_group_permissions.yaml"
+        existing_pd    = scripts_dir / "existing_plans_and_devices.yaml"
+        permissions    = scripts_dir / "user_group_permissions.yaml"
 
         cmd = [exe, "--zmq-publish-console", "ON",
                "--existing-plans-devices", str(existing_pd),
