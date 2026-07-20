@@ -220,14 +220,17 @@ def generate_sim_script(real_script_path: str | Path,
                     f"center=0, Imax=1000, sigma=0.5, noise='poisson')"
                 )
 
-    if not devices:
-        lines += [
-            '# No devices detected — adding generic defaults',
-            "motor1 = SynAxis(name='motor1')",
-            "motor2 = SynAxis(name='motor2')",
-            "det    = SynGauss('det', motor1, 'motor1', center=0, Imax=1000, sigma=0.5)",
-            "sim_ad = SimAreaDetector(name='sim_ad')",
-        ]
+    # Always add generic sim devices for testing, regardless of real devices found
+    lines += [
+        '',
+        '# ── Generic sim devices (always available in sim mode) ─────────────────────',
+        "motor1 = SynAxis(name='motor1')",
+        "motor2 = SynAxis(name='motor2')",
+        "det    = SynGauss('det',  motor1, 'motor1', center=0, Imax=1000, sigma=0.5)",
+        "det1   = SynGauss('det1', motor1, 'motor1', center=0, Imax=500,  sigma=1.0)",
+        "det2   = SynGauss('det2', motor2, 'motor2', center=0, Imax=800,  sigma=0.5)",
+        "sim_ad = SimAreaDetector(name='sim_ad')",
+    ]
 
     lines += [
         '',
