@@ -11,8 +11,8 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **History Plot** — Browse completed runs. Multi-select overlay with common-column intersection.
 - **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata.
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
-- **Sim Mode** — Toggle between real hardware and a simulated RE Manager instance with one click.
-- **Remote Restart** — Restart the RE Manager on a remote machine via SSH key authentication (no passwords).
+- **Sim Mode** — Toggle between real hardware and a simulated RE Manager instance with one click. Ports switch automatically.
+- **Remote Control** — Start, stop, and restart the RE Manager on a remote host via SSH key authentication (no passwords stored).
 
 ---
 
@@ -60,10 +60,10 @@ pip install easy-bluesky
 
 ### RE Manager host
 
-Only `bluesky-queueserver` needs to be installed — not the full EasyBluesky app:
+Only `bluesky-queueserver` and `pyepics` need to be installed — not the full EasyBluesky app:
 
 ```bash
-pip install bluesky-queueserver
+pip install bluesky-queueserver pyepics
 ```
 
 > **Startup scripts** (`re_startup_mongo.py`, YAML permission files) must also be present on the RE Manager host. See [Startup Scripts](#startup-scripts) below.
@@ -80,27 +80,15 @@ Run the app once to create `~/.easy_bluesky/scripts/` with default startup scrip
 easy-bluesky
 ```
 
-Or create the scripts directory directly without launching the UI:
-
-```bash
-python -c "from easy_bluesky.worker import _get_scripts_dir; _get_scripts_dir()"
-```
-
 ### 2. Edit the startup script
 
 Open `~/.easy_bluesky/scripts/re_startup_mongo.py` and add your devices:
 
 ```python
-from ophyd import EpicsMotor, Component as Cpt
-from bluesky.callbacks.zmq import Publisher
+from ophyd import EpicsMotor
 
 # Your real hardware devices
 m1 = EpicsMotor("IOC:m1", name="m1")
-det = ...
-
-# ZMQ doc stream — must match the doc port in Connection Settings
-pub = Publisher("localhost:60630")
-RE.subscribe(pub)
 ```
 
 ### 3. Start the RE Manager
@@ -125,32 +113,56 @@ The app connects to `localhost:60615` by default. Use **File → Connection Sett
 
 ---
 
+## Toolbar Overview
+
+The persistent toolbar at the top provides:
+
+| Button | Action |
+|--------|--------|
+| ▶ Start | Start the plan queue |
+| ⏸ Pause / ▶▶ Resume | Pause / resume running plan |
+| ✕ Abort / ⬛ Stop | Abort or stop the running plan |
+| Open Env / Close Env | Open or close the RE worker environment |
+| ⚡ Start RE Mgr | Start (or restart) the RE Manager process |
+| ⏹ Stop RE Mgr | Stop the RE Manager process |
+| ↺ Reconnect | Reconnect ZMQ without restarting RE Manager |
+| 🔬 Real / 🧪 Sim | Toggle simulation mode |
+
+---
+
 ## Sim Mode
 
-Sim mode connects to a **second RE Manager instance** running a simulated startup script, so you can test plans without touching real hardware. Both instances can run simultaneously.
+Sim mode connects to a **second RE Manager instance** running a simulated startup script, so you can test plans without touching real hardware. Both instances run simultaneously on different ports.
 
 ### Port layout
 
-| Instance | Control | Info | Doc stream |
-|----------|---------|------|------------|
-| Real     | 60615   | 60625 | 60630     |
-| Sim      | 60616   | 60626 | 60631     |
+| Instance | Control | Info  | Doc stream | procServ mgmt |
+|----------|---------|-------|------------|---------------|
+| Real     | 60615   | 60625 | 60630      | 60635         |
+| Sim      | 60616   | 60626 | 60631      | 60636         |
 
-These are the defaults; all six ports are configurable in **File → Connection Settings → Sim Mode Ports**.
+All ports are configurable in **File → Connection Settings**.
 
 ### Generate the sim startup script
 
-**File → Generate Sim Script…** reads your real `re_startup_mongo.py`, auto-replaces `EpicsMotor` with `SynAxis`, area detectors with `SimAreaDetector`, and scalers with `SynGauss`. Review and edit the generated `re_startup_sim.py` before use.
+**File → Generate Sim Script…** reads your real `re_startup_mongo.py` and auto-generates `re_startup_sim.py`:
 
-The sim startup script must publish to the sim doc port:
+- `EpicsMotor` → `SynAxis`
+- Area detectors → `SimAreaDetector` (Poisson-noise images)
+- Scalers/counters → `SynGauss`
+- Generic test devices always included: `motor1`, `motor2`, `det`, `det1`, `det2`, `sim_ad`
+- ZMQ doc stream set to sim port 60631
+- Separate device list file (`existing_plans_and_devices_sim.yaml`) so real and sim don't overwrite each other
 
-```python
-# In re_startup_sim.py — note port 60631, not 60630
-pub = Publisher("localhost:60631")
-RE.subscribe(pub)
-```
+When the host is **remote**, the dialog offers to **copy the generated script directly to the RE Manager host** via SFTP — no manual `scp` needed.
 
-### Start both instances at once
+### Starting sim mode
+
+1. Click **🔬 Real** to toggle to **🧪 Sim** — the app attempts to connect to the sim instance. If it is not running, a message appears but the toggle stays in sim mode.
+2. Click **⚡ Start RE Mgr** — this starts the sim instance on port 60616 (using procServ on remote hosts).
+3. The app auto-reconnects once the port opens.
+
+### Start both instances at once (local)
 
 A convenience script is provided at `~/.easy_bluesky/scripts/start_re_managers.sh`:
 
@@ -166,68 +178,137 @@ A convenience script is provided at `~/.easy_bluesky/scripts/start_re_managers.s
 ~/.easy_bluesky/scripts/stop_re_managers.sh
 ```
 
-Port numbers can be overridden with environment variables:
-
-```bash
-REAL_CTRL_PORT=60615 SIM_CTRL_PORT=60616 \
-  ~/.easy_bluesky/scripts/start_re_managers.sh
-```
-
 Logs are written to `/tmp/re-manager-real.log` and `/tmp/re-manager-sim.log`.
-
-### Toggle sim mode in the app
-
-Click **🔬 Real** in the toolbar to toggle to **🧪 Sim**. The app immediately reconnects the ZMQ worker and the live doc stream to the sim instance ports. Toggling back reconnects to the real ports. No manual port changes needed.
 
 ### Conda environments
 
-If the RE Manager must run inside a specific conda environment, use the `CONDA_ENV` variable with the launch script or the **Conda env** field in Connection Settings.
+If the RE Manager must run inside a specific conda environment, set **Conda env** and **Conda path** in Connection Settings. The app constructs the full binary path directly — no `conda activate` needed at runtime:
 
-**With the launch script:**
-
-```bash
-CONDA_ENV=bluesky CONDA_PATH=~/miniconda3 \
-  ~/.easy_bluesky/scripts/start_re_managers.sh
 ```
-
-The script uses `conda run -n bluesky --no-capture-output start-re-manager ...` which activates the environment without needing to source `.bashrc`. `CONDA_PATH` defaults to `~/miniconda3`; change it to `~/miniforge3`, `~/opt/anaconda3`, etc. if needed.
-
-**With SSH remote restart:**
-
-In **Connection Settings → Conda env**, enter the environment name (e.g. `bluesky`). Set **Conda path** to the base conda directory on the remote machine. Clicking **⚡ Start RE Mgr** will then SSH in and prefix the command with `conda run -n bluesky`.
-
-**With systemd** — use the full path instead of `conda run` (more robust):
-
-```bash
-# Find the path once
-conda activate bluesky && which start-re-manager
-# → /home/user/miniconda3/envs/bluesky/bin/start-re-manager
+{conda_path}/envs/{conda_env}/bin/start-re-manager
 ```
-
-Paste that full path into `ExecStart=` in the `.service` file. No conda activation needed at runtime.
 
 ---
 
-### Running as a systemd service (recommended for production)
+## Remote RE Manager
 
-Systemd keeps the RE Manager running across reboots and restarts it automatically on failure. Service templates are provided at `~/.easy_bluesky/scripts/`.
+### Connection settings
+
+Open **File → Connection Settings** and set:
+- **Host / IP** — hostname or IP of the RE Manager machine
+- **Control / Info / Doc ports** — match what the RE Manager was started with
+- **Sim ports** — same, for the sim instance
+
+The app reconnects immediately after clicking OK.
+
+### Remote restart via SSH (key auth — no passwords)
+
+**⚡ Start RE Mgr** and **⏹ Stop RE Mgr** SSH into the remote host to manage the RE Manager. No passwords are stored or committed to git — only the **path** to your private key is saved in `~/.easy_bluesky/connection.json` (a local file, never in the repo).
+
+#### One-time SSH setup
+
+**1. Generate an SSH key pair** on your client machine (skip if you already have one):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+```
+
+**2. Copy the public key to the RE Manager host:**
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub user@your-beamline-host
+```
+
+**3. Verify passwordless login:**
+
+```bash
+ssh -i ~/.ssh/id_ed25519 user@your-beamline-host echo ok
+```
+
+> **Note:** SSH key authentication requires that your home directory on the remote host is **not** group- or world-writable. If key auth is rejected, run `chmod go-w ~` on the remote machine.
+
+**4. In the app**, open **File → Connection Settings → Remote SSH Management**:
+
+| Field | Example | Notes |
+|-------|---------|-------|
+| SSH user | `beamline` | Username on the remote machine |
+| SSH port | `22` | Default SSH port |
+| Private key | `~/.ssh/id_ed25519` | Local path only — never committed |
+| Service name | | systemd service name, or leave empty for procServ |
+| Conda env | `easy-bluesky` | Conda environment name on the remote host |
+| Conda path | `~/anaconda3` | Base conda install directory on the remote host |
+
+Click **Test SSH Connection** to verify — it also checks that `start-re-manager` exists in the configured conda env and reports the procServ version.
+
+### procServ (recommended for remote hosts)
+
+When `procServ` is available on the remote host, **⚡ Start RE Mgr** uses it automatically. procServ is an EPICS process manager that:
+
+- Daemonizes the child process — survives SSH session close regardless of systemd-logind settings
+- Writes a PID file for clean shutdown
+- Logs RE Manager output to `/tmp/re-manager-real.log` (or `-sim.log`)
+- Falls back to `systemd-run --user --scope` or `nohup` if procServ is not found
+
+procServ is available at most synchrotron beamlines. To check:
+
+```bash
+which procServ && procServ --version
+```
+
+To install (RHEL/CentOS):
+
+```bash
+sudo yum install procServ
+```
+
+### How remote start/stop works
+
+With the host set to a non-localhost IP and SSH configured, **⚡ Start RE Mgr**:
+
+1. Writes a launcher shell script to `/tmp/_easy_bluesky_start_{real|sim}.sh` via SFTP
+2. Kills the existing instance for that mode only (via procServ PID file)
+3. Launches `procServ ... /bin/bash /tmp/_easy_bluesky_start_{real|sim}.sh`
+4. Waits (polling every 2 s) until the ZMQ control port opens, then reconnects
+
+**⏹ Stop RE Mgr** kills only the instance for the current mode (real or sim), leaving the other running.
+
+#### Service name field (systemd alternative)
+
+If you have a systemd user service set up, enter its name (e.g. `re-manager-real`) in the **Service name** field. The app will use `systemctl --user restart/stop <service>` instead of procServ.
+
+#### Remote startup scripts
+
+The startup scripts must exist on the RE Manager host at `~/.easy_bluesky/scripts/`. Copy them once:
+
+```bash
+# From the client machine
+scp ~/.easy_bluesky/scripts/re_startup_mongo.py \
+    ~/.easy_bluesky/scripts/existing_plans_and_devices.yaml \
+    ~/.easy_bluesky/scripts/user_group_permissions.yaml \
+    user@your-beamline-host:~/.easy_bluesky/scripts/
+```
+
+The sim startup script can be copied automatically via **File → Generate Sim Script… → Copy to Remote?**.
+
+---
+
+### Running as a systemd service (optional, for production)
+
+Service templates are provided at `~/.easy_bluesky/scripts/`.
 
 **1. Find the full path to `start-re-manager` in your environment:**
 
 ```bash
-conda activate bluesky        # or your environment name
-which start-re-manager        # copy this path
+conda activate bluesky
+which start-re-manager
 ```
 
-**2. Edit the template — replace the two placeholders:**
+**2. Edit the templates** — replace `YOUR_USER` and `/path/to/start-re-manager`:
 
 ```bash
-# Edit both files
 nano ~/.easy_bluesky/scripts/re-manager-real.service
 nano ~/.easy_bluesky/scripts/re-manager-sim.service
 ```
-
-Replace `YOUR_USER` with your Linux username and `/path/to/start-re-manager` with the path from step 1.
 
 **3. Install and enable:**
 
@@ -255,93 +336,6 @@ systemctl --user restart re-manager-real
 journalctl --user -u re-manager-real -f    # live logs
 ```
 
-**Using systemd with the EasyBluesky SSH restart:**
-
-In **Connection Settings → Service name**, enter `re-manager-real` (or `re-manager-sim`). The **⚡ Start RE Mgr** button will SSH in and run `systemctl --user restart <service>` instead of killing and relaunching the process directly. This is cleaner and respects the `Restart=on-failure` policy.
-
-> **Note:** The SSH user must be the same user who owns the systemd service. No `sudo` is needed for `--user` services.
-
----
-
-## Remote RE Manager
-
-When the RE Manager runs on a different machine, you only need network access (ZMQ/TCP) and optionally SSH for remote restarts.
-
-### Connection settings
-
-Open **File → Connection Settings** and set:
-- **Host / IP** — hostname or IP of the RE Manager machine
-- **Control / Info / Doc ports** — match what the RE Manager was started with
-- **Sim ports** — same, for the sim instance
-
-The app will reconnect immediately after clicking OK.
-
-### Remote restart via SSH (key auth — no passwords)
-
-The **⚡ Start RE Mgr** button can SSH into the remote host and restart the RE Manager. No passwords are stored or committed to git — only the **path** to your private key is saved in `~/.easy_bluesky/connection.json` (a local file, never in the repo).
-
-#### One-time setup
-
-**1. Generate an SSH key pair** on your client machine (skip if you already have one):
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-```
-
-**2. Copy the public key to the RE Manager host:**
-
-```bash
-ssh-copy-id -i ~/.ssh/id_ed25519.pub user@your-beamline-host
-```
-
-**3. Verify you can log in without a password:**
-
-```bash
-ssh -i ~/.ssh/id_ed25519 user@your-beamline-host echo ok
-```
-
-**4. In the app**, open **File → Connection Settings → Remote SSH Management**:
-
-| Field | Example | Notes |
-|-------|---------|-------|
-| SSH user | `beamline` | Username on the remote machine |
-| SSH port | `22` | Default SSH port |
-| Private key | `~/.ssh/id_ed25519` | Local path only — never committed |
-| Service name | `re-manager` | systemd service name, or leave empty |
-
-Click **Test SSH Connection** to verify before saving.
-
-#### Service name field
-
-- **Empty** (default): uses `pkill` + `nohup start-re-manager` — works without systemd.
-- **Service name** (e.g. `re-manager`): runs `sudo systemctl restart re-manager` — requires the service to be set up and the SSH user to have passwordless sudo for that command.
-
-#### Remote startup scripts
-
-The startup scripts must exist on the RE Manager host at `~/.easy_bluesky/scripts/`. Copy them once:
-
-```bash
-# From the client machine
-scp ~/.easy_bluesky/scripts/* user@your-beamline-host:~/.easy_bluesky/scripts/
-```
-
-Or initialize them directly on the host:
-
-```bash
-# On the RE Manager host (no display needed)
-pip install easy-bluesky
-python -c "from easy_bluesky.worker import _get_scripts_dir; _get_scripts_dir()"
-# Then edit ~/.easy_bluesky/scripts/re_startup_mongo.py with your hardware
-```
-
-#### Using it
-
-With the host set to a non-localhost IP and SSH configured, clicking **⚡ Start RE Mgr** will:
-1. SSH into the remote host
-2. Stop any running RE Manager process
-3. Start the correct instance (real or sim, based on the toolbar toggle)
-4. Auto-reconnect the app after 8 seconds
-
 ---
 
 ## Startup Scripts
@@ -352,36 +346,39 @@ Scripts live at `~/.easy_bluesky/scripts/` and are auto-created on first run.
 
 ```python
 from ophyd import EpicsMotor
-from bluesky.callbacks.zmq import Publisher
 
 # Devices
 m1 = EpicsMotor("IOC:m1", name="m1")
-
-# ZMQ doc publisher — port must match Connection Settings → Doc stream port
-pub = Publisher("localhost:60630")
-RE.subscribe(pub)
 ```
+
+The script also sets up suitcase.jsonl data routing and ZMQ doc publishing on port 60630. Edit the devices section — the rest is handled automatically.
 
 ### `re_startup_sim.py` — simulation
 
-Auto-generated by **File → Generate Sim Script…**. Uses `ophyd.sim.SynAxis`, `SynGauss`, and a full `SimAreaDetector` that produces Poisson-noise images. Review after generation — devices can be renamed or adjusted.
+Auto-generated by **File → Generate Sim Script…**. Contains simulated equivalents of your real devices plus generic test devices:
 
 ```python
 from ophyd.sim import SynAxis, SynGauss
-from bluesky.callbacks.zmq import Publisher
 
-m1 = SynAxis(name="m1")
-det = SynGauss("det", motor=m1, motor_field="m1", center=0, Imax=1, sigma=1)
+# Auto-mapped from real script
+m1 = SynAxis(name='m1')
 
-# Sim doc port — different from real port
-pub = Publisher("localhost:60631")
-RE.subscribe(pub)
+# Generic sim devices (always included)
+motor1 = SynAxis(name='motor1')
+motor2 = SynAxis(name='motor2')
+det    = SynGauss('det',  motor1, 'motor1', center=0, Imax=1000, sigma=0.5)
+det1   = SynGauss('det1', motor1, 'motor1', center=0, Imax=500,  sigma=1.0)
+det2   = SynGauss('det2', motor2, 'motor2', center=0, Imax=800,  sigma=0.5)
+sim_ad = SimAreaDetector(name='sim_ad')
 ```
+
+ZMQ doc stream is published on sim port 60631.
 
 ### YAML permission files
 
-- `existing_plans_and_devices.yaml` — declares which plans and devices are visible to the queue server. Add custom plans here.
-- `user_group_permissions.yaml` — controls which user groups can run which plans.
+- `existing_plans_and_devices.yaml` — device/plan list for the real instance
+- `existing_plans_and_devices_sim.yaml` — device/plan list for the sim instance (written separately so the two instances don't overwrite each other)
+- `user_group_permissions.yaml` — controls which user groups can run which plans
 
 ---
 
@@ -401,11 +398,15 @@ Connection settings are stored in `~/.easy_bluesky/connection.json` (local only,
   "ssh_user": "beamline",
   "ssh_port": 22,
   "ssh_key_path": "~/.ssh/id_ed25519",
-  "ssh_service": ""
+  "ssh_service": "",
+  "conda_env": "easy-bluesky",
+  "conda_path": "~/anaconda3",
+  "procserv_port": 60635,
+  "sim_procserv_port": 60636
 }
 ```
 
-These can also be set via environment variables (useful for scripting):
+Environment variable overrides:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -441,7 +442,7 @@ easy-bluesky/
 │   ├── worker.py             # ZMQ worker thread (RE Manager API)
 │   ├── config.py             # Configuration constants (env-overridable)
 │   ├── connection_settings.py# Connection dialog + settings I/O
-│   ├── ssh_manager.py        # SSH-based remote RE Manager restart
+│   ├── ssh_manager.py        # SSH-based remote RE Manager control (procServ)
 │   ├── sim_generator.py      # Auto-generate sim startup script from real one
 │   ├── re_control_bar.py     # RE control toolbar (status + buttons + sim toggle)
 │   ├── re_console.py         # RE console output tab
