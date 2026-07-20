@@ -110,7 +110,8 @@ class ZMQWorker(QObject):
         scripts_dir    = _get_scripts_dir()
         startup_script = scripts_dir / ("re_startup_sim.py" if use_sim
                                         else "re_startup_mongo.py")
-        existing_pd    = scripts_dir / "existing_plans_and_devices.yaml"
+        existing_pd    = scripts_dir / ("existing_plans_and_devices_sim.yaml"
+                                        if use_sim else "existing_plans_and_devices.yaml")
         permissions    = scripts_dir / "user_group_permissions.yaml"
 
         cmd = [exe,

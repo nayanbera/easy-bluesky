@@ -121,7 +121,7 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             f" --zmq-info-addr tcp://*:{info_port}"
             f" --zmq-publish-console ON"
             f" --startup-script {scripts_path}/{script}"
-            f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
+            f" --existing-plans-devices {scripts_path}/existing_plans_and_devices{'_sim' if sim else ''}.yaml"
             f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
             f" >> {log_file} 2>&1\n"
         )
