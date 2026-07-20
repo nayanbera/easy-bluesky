@@ -717,14 +717,17 @@ class PlanBuilder(QWidget):
         lay.addLayout(tmpl_row)
 
         e_btns = QHBoxLayout()
-        btn_upload = QPushButton("⬆  Upload to RE Manager")
+        btn_open   = QPushButton("📂  Open file")
         btn_save   = QPushButton("💾  Save to file")
+        btn_upload = QPushButton("⬆  Upload to RE Manager")
         btn_reload = QPushButton("↺  Reload RE env")
-        btn_upload.clicked.connect(self._upload_script)
+        btn_open.clicked.connect(self._open_script)
         btn_save.clicked.connect(self._save_script)
+        btn_upload.clicked.connect(self._upload_script)
         btn_reload.clicked.connect(self._reload_environment)
-        e_btns.addWidget(btn_upload)
+        e_btns.addWidget(btn_open)
         e_btns.addWidget(btn_save)
+        e_btns.addWidget(btn_upload)
         e_btns.addWidget(btn_reload)
         lay.addLayout(e_btns)
 
@@ -837,6 +840,13 @@ class PlanBuilder(QWidget):
             # Refresh plan list so the uploaded plan appears immediately
             self.worker.reload_plans_devices()
             self.output.appendPlainText(f"[{ts}] ↻ Plan list refreshed")
+
+    def _open_script(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Plan", str(Path.home()), "Python files (*.py);;All files (*)")
+        if path:
+            self.editor.setPlainText(Path(path).read_text())
+            self.output.appendPlainText(f"Opened {path}")
 
     def _save_script(self):
         path, _ = QFileDialog.getSaveFileName(
