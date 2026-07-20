@@ -96,6 +96,37 @@ class ZMQWorker(QObject):
         if self.rm:
             self._load_plans_devices()
 
+    # ── Console monitor ────────────────────────────────────────────────────────
+
+    def console_monitor_enable(self):
+        try:
+            if self.rm:
+                self.rm.console_monitor.enable()
+        except Exception:
+            pass
+
+    def console_monitor_disable(self):
+        try:
+            if self.rm:
+                self.rm.console_monitor.disable()
+        except Exception:
+            pass
+
+    def console_monitor_clear(self):
+        try:
+            if self.rm:
+                self.rm.console_monitor.clear()
+        except Exception:
+            pass
+
+    def console_monitor_text(self) -> str:
+        try:
+            if self.rm:
+                return self.rm.console_monitor.text or ""
+        except Exception:
+            pass
+        return ""
+
     def poll(self):
         while self._active:
             if self.rm and not self._is_connecting:
