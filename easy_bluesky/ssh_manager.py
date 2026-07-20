@@ -104,7 +104,10 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
                 f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
                 f" > /tmp/re-manager.log 2>&1 &"
             )
-            cmd = f"{stop_cmd}; {start_cmd}"
+            # Wrap in a bash login shell so .bash_profile is sourced,
+            # giving the process EPICS_CA_ADDR_LIST, LD_LIBRARY_PATH, etc.
+            inner = f"{stop_cmd}; {start_cmd}"
+            cmd   = f"bash -l -c '{inner}'"
             _, stdout, stderr = client.exec_command(cmd, timeout=15)
             stdout.channel.recv_exit_status()
             client.close()
