@@ -27,7 +27,6 @@ class ZMQWorker(QObject):
         self._poll_interval  = 1.0
         self._re_proc        = None
         self._is_connecting  = False   # blocks poll while connect() runs
-        self._console_pos    = 0       # tracks how much console text we've already emitted
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -43,9 +42,8 @@ class ZMQWorker(QObject):
             # Enable console monitor permanently after connecting
             try:
                 self.rm.console_monitor.enable()
-                self._console_pos = 0
             except Exception:
-                self._console_pos = 0
+                pass
             return True
         except Exception as e:
             self.rm = None
@@ -115,13 +113,17 @@ class ZMQWorker(QObject):
                     history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
                     self.history_updated.emit(history.get("items", []))
-                    # Emit any new console output
+                    # Drain all pending console messages and emit as one chunk
                     try:
-                        text = self.rm.console_monitor.text or ""
-                        if len(text) > self._console_pos:
-                            new_text = text[self._console_pos:]
-                            self._console_pos = len(text)
-                            self.console_updated.emit(new_text)
+                        msgs = []
+                        while True:
+                            try:
+                                msg = self.rm.console_monitor.next_msg(timeout=0)
+                                msgs.append(msg.get("msg", ""))
+                            except Exception:
+                                break
+                        if msgs:
+                            self.console_updated.emit("".join(msgs))
                     except Exception:
                         pass
                 except Exception:
