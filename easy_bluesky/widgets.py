@@ -148,25 +148,51 @@ class ParamForm(QWidget):
                 self.widgets[name] = widget
                 layout.addRow(label, widget)
 
+    # ── Widget factory helpers ─────────────────────────────────────────────────
+
+    def _make_device_list(self, default=None):
+        """Multi-select list for detectors / readable devices."""
+        w = QListWidget()
+        w.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        w.setMaximumHeight(120)
+        for d in self.devices:
+            w.addItem(QListWidgetItem(d))
+        if default:
+            items = default if isinstance(default, list) else [default]
+            for i in range(w.count()):
+                w.item(i).setSelected(w.item(i).text() in items)
+        return w
+
+    def _make_device_combo(self, default=None):
+        """Single-select combo for motors / movable devices."""
+        w = QComboBox()
+        w.addItems(["-- select --"] + self.devices)
+        if default:
+            idx = w.findText(str(default))
+            if idx >= 0:
+                w.setCurrentIndex(idx)
+        return w
+
     def _make_widget(self, name, typ, default, param):
         convert = param.get("convert_device_names", False)
         kind    = param.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
+        n       = name.lower()
 
-        # VAR_POSITIONAL with movable type → (motor, start, stop, ...) groups
-        if kind == "VAR_POSITIONAL" and "__MOVABLE__" in typ:
+        # ── VAR_POSITIONAL motor args → (motor, start, stop, ...) groups ────────
+        if kind == "VAR_POSITIONAL" and ("__MOVABLE__" in typ or n in ("args",)):
             return ScanArgsWidget(self.devices)
 
-        # Detector list (multi-select)
-        if "__READABLE__" in typ or (convert and "Sequence" in typ):
-            w = QListWidget()
-            w.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-            w.setMaximumHeight(120)
-            for d in self.devices:
-                item = QListWidgetItem(d)
-                w.addItem(item)
-            return w
+        # ── Detector / readable list ─────────────────────────────────────────────
+        _readable_types = ("__READABLE__", "Readable", "readable", "Detector")
+        _list_types     = ("List[", "Sequence[", "list[")
+        is_readable_ann = any(t in typ for t in _readable_types)
+        is_list_ann     = any(t in typ for t in _list_types)
+        is_det_name     = n in ("detectors", "dets", "det", "readables", "readable",
+                                "detectors_list")
+        if is_readable_ann or (convert and is_list_ann) or (is_det_name and not typ):
+            return self._make_device_list(default)
 
-        # Float / int — check BEFORE broad convert fallback to avoid mis-routing
+        # ── Float / int — check BEFORE device fallbacks to avoid mis-routing ────
         if typ in ("float", "int") or "float" in typ or "int" in typ:
             if "int" in typ and "float" not in typ:
                 w = QSpinBox()
@@ -188,20 +214,50 @@ class ParamForm(QWidget):
                         pass
             return w
 
-        # Single device (motor etc.)
-        if "__MOVABLE__" in typ or "__SETTABLE__" in typ or (convert and "Sequence" not in typ):
-            w = QComboBox()
-            w.addItems(["-- select --"] + self.devices)
-            return w
+        # ── Numeric heuristics by name when no annotation ────────────────────────
+        if not typ:
+            if n in ("num", "num_points", "npts", "steps", "n_points", "num_steps",
+                     "num_images", "nframes", "n"):
+                w = QSpinBox()
+                w.setRange(1, 999999)
+                if default not in (None, "None"):
+                    try:
+                        w.setValue(int(default))
+                    except Exception:
+                        pass
+                return w
+            if n in ("start", "stop", "step", "delay", "exposure", "exposure_time",
+                     "sleep_time", "wait_time", "count_time", "dwell", "speed",
+                     "velocity", "position", "pos", "value", "val"):
+                w = QDoubleSpinBox()
+                w.setRange(-1e9, 1e9)
+                w.setDecimals(4)
+                w.setSingleStep(0.1)
+                if default not in (None, "None"):
+                    try:
+                        w.setValue(float(default))
+                    except Exception:
+                        pass
+                return w
 
-        # Bool
+        # ── Single device (motor / movable) ──────────────────────────────────────
+        _movable_types = ("__MOVABLE__", "__SETTABLE__", "Movable", "movable",
+                          "Motor", "Device", "ophyd")
+        is_movable_ann = any(t in typ for t in _movable_types)
+        is_mot_name    = n in ("motor", "motors", "movable", "movables", "device",
+                               "devices", "flyer", "flyers", "axis", "axes",
+                               "positioner", "actuator")
+        if is_movable_ann or (convert and not is_list_ann) or (is_mot_name and not typ):
+            return self._make_device_combo(default)
+
+        # ── Bool ─────────────────────────────────────────────────────────────────
         if typ == "bool":
             w = QCheckBox()
             if default not in (None, "None"):
                 w.setChecked(bool(default))
             return w
 
-        # Enum / literal
+        # ── Enum / literal ───────────────────────────────────────────────────────
         if "Literal" in typ:
             import re
             opts = re.findall(r"'([^']+)'", typ)
@@ -209,7 +265,7 @@ class ParamForm(QWidget):
             w.addItems(opts)
             return w
 
-        # Generic fallback
+        # ── Generic fallback ─────────────────────────────────────────────────────
         w = QLineEdit()
         w.setPlaceholderText(typ or "value")
         if default not in (None, "None"):
