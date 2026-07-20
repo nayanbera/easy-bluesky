@@ -430,11 +430,46 @@ class MainWindow(QMainWindow):
             return
         try:
             out = generate_sim_script(real_script, sim_script)
-            QMessageBox.information(self, "Sim Script Generated",
-                f"Simulated startup script written to:\n{out}\n\n"
-                "Review and edit as needed, then enable Sim Mode in the toolbar.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate sim script:\n{e}")
+            return
+
+        msg = f"Simulated startup script written to:\n{out}\n\nReview and edit as needed, then enable Sim Mode in the toolbar."
+
+        # If the host is remote, offer to copy the script via SFTP
+        settings = self._conn_settings
+        if not is_local_host(settings):
+            r = QMessageBox.question(
+                self, "Copy to Remote?",
+                f"Copy the sim script to the remote RE Manager host?\n\n"
+                f"  {settings['host']}:~/.easy_bluesky/scripts/re_startup_sim.py",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if r == QMessageBox.StandardButton.Yes:
+                ok, sftp_msg = self._sftp_upload_sim_script(sim_script, settings)
+                msg += f"\n\n{'✓' if ok else '✗'} {sftp_msg}"
+
+        QMessageBox.information(self, "Sim Script Generated", msg)
+
+    def _sftp_upload_sim_script(self, local_path, settings: dict) -> tuple[bool, str]:
+        try:
+            from .ssh_manager import _get_client
+            client = _get_client(settings)
+            sftp = client.open_sftp()
+            remote_path = ".easy_bluesky/scripts/re_startup_sim.py"
+            # Ensure remote directory exists
+            try:
+                sftp.stat(".easy_bluesky/scripts")
+            except FileNotFoundError:
+                sftp.mkdir(".easy_bluesky")
+                sftp.mkdir(".easy_bluesky/scripts")
+            sftp.put(str(local_path), remote_path)
+            sftp.close()
+            client.close()
+            return True, f"Copied to {settings['host']}:~/{remote_path}"
+        except Exception as e:
+            return False, f"SFTP upload failed: {e}"
 
     def _on_sim_mode_toggled(self, sim: bool):
         self.worker.sim_mode = sim
