@@ -22,6 +22,7 @@ from .plan_builder import PlanBuilder
 from .experiments_tab import ExperimentsTab
 from .devices_plans_tab import DevicesPlansTab
 from .hdf5_viewer import HDF5Viewer
+from .re_console import REConsoleWidget
 
 
 class MainWindow(QMainWindow):
@@ -51,11 +52,14 @@ class MainWindow(QMainWindow):
         self.devices_plans_tab  = DevicesPlansTab()
         self.hdf5_viewer        = HDF5Viewer()
 
+        self.re_console = REConsoleWidget()
+
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
         self.tabs.addTab(self.queue_mgr,         "⚙  Queue Manager")
         self.tabs.addTab(self.plan_builder,      "🔧  Plan Builder")
         self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
+        self.tabs.addTab(self.re_console,        "🖥  RE Console")
 
         # RE control bar sits above the tabs
         self.re_bar = REControlBar()
@@ -173,6 +177,11 @@ class MainWindow(QMainWindow):
         # Worker → devices_plans_tab
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
         self.worker.devices_updated.connect(self.devices_plans_tab.update_devices)
+
+        # Worker → RE console
+        self.worker.console_updated.connect(self.re_console.append)
+        self.worker.connected.connect(self.re_console.on_connected)
+        self.worker.disconnected.connect(self.re_console.on_disconnected)
 
         # Worker → experiments_tab plans/devices (for PlanDialog)
         self.worker.plans_updated.connect(self.experiments_tab.set_plans)

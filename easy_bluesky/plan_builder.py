@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
     QAbstractItemView, QPlainTextEdit, QComboBox, QLineEdit, QMessageBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
-    QFileDialog, QDialog, QDialogButtonBox,
+    QFileDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QTextCursor
+from PyQt6.QtGui import QFont, QColor
 
 from .highlighter import PythonHighlighter
 from .code_editor import CodeEditor
@@ -20,72 +20,6 @@ from .widgets import ParamForm
 
 
 # ── RE Console Monitor Dialog ──────────────────────────────────────────────────
-
-class ConsoleMonitorDialog(QDialog):
-    """Live dialog showing RE Manager console output during script upload / env reload."""
-
-    def __init__(self, worker, title="RE Console Output", parent=None):
-        super().__init__(parent)
-        self.worker = worker
-        self.setWindowTitle(title)
-        self.setMinimumSize(680, 420)
-        self._last_len = 0
-        self._idle_ticks = 0
-        self._build()
-        worker.console_monitor_clear()
-        worker.console_monitor_enable()
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._poll)
-        self._timer.start(300)
-
-    def _build(self):
-        lay = QVBoxLayout(self)
-
-        self._text = QPlainTextEdit()
-        self._text.setReadOnly(True)
-        self._text.setFont(QFont("Courier New", 11))
-        self._text.setPlaceholderText("Waiting for RE Manager output…")
-        lay.addWidget(self._text, 1)
-
-        bar = QHBoxLayout()
-        self._status = QLabel("● Monitoring…")
-        self._status.setStyleSheet("color: #ffcc00;")
-        bar.addWidget(self._status, 1)
-
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.close)
-        bar.addWidget(btn_close)
-        lay.addLayout(bar)
-
-    def _poll(self):
-        text = self.worker.console_monitor_text()
-        if len(text) != self._last_len:
-            self._text.setPlainText(text)
-            self._text.moveCursor(QTextCursor.MoveOperation.End)
-            self._last_len = len(text)
-            self._idle_ticks = 0
-            # Colour status based on keywords
-            lower = text.lower()
-            if "error" in lower or "traceback" in lower or "exception" in lower:
-                self._status.setText("✗ Error detected")
-                self._status.setStyleSheet("color: #d62728; font-weight: bold;")
-            elif "success" in lower or "complete" in lower or "loaded" in lower:
-                self._status.setText("✓ Loaded successfully")
-                self._status.setStyleSheet("color: #2ca02c; font-weight: bold;")
-            else:
-                self._status.setText("● Receiving output…")
-                self._status.setStyleSheet("color: #ffcc00;")
-        else:
-            self._idle_ticks += 1
-            if self._idle_ticks == 10:   # ~3 s of silence
-                self._status.setText("— No new output")
-                self._status.setStyleSheet("color: #888;")
-
-    def closeEvent(self, event):
-        self._timer.stop()
-        self.worker.console_monitor_disable()
-        super().closeEvent(event)
-
 
 # ── Block type registry ────────────────────────────────────────────────────────
 
@@ -901,8 +835,6 @@ class PlanBuilder(QWidget):
         if not script:
             QMessageBox.warning(self, "Empty", "Write a plan before uploading.")
             return
-        dlg = ConsoleMonitorDialog(self.worker, "RE Console — Script Upload", self)
-        dlg.show()
         ok, msg = self.worker.upload_script(script)
         ts = datetime.now().strftime("%H:%M:%S")
         self.output.appendPlainText(f"[{ts}] {'✓ Uploaded' if ok else '✗ Failed'}: {msg}")
@@ -930,9 +862,6 @@ class PlanBuilder(QWidget):
             "Close and reopen the RE environment?\n"
             "This reloads all startup scripts including your uploaded plan.")
         if r == QMessageBox.StandardButton.Yes:
-            self._console_dlg = ConsoleMonitorDialog(
-                self.worker, "RE Console — Environment Reload", self)
-            self._console_dlg.show()
             self.worker.close_environment()
             QTimer.singleShot(2000, self.worker.open_environment)
             self.output.appendPlainText("Reloading environment…")
