@@ -85,8 +85,9 @@ class ZMQWorker(QObject):
     def sim_mode(self, value: bool):
         self._sim_mode = value
 
-    def start_re_manager(self, sim: bool | None = None):
-        """Launch start-re-manager. Pass sim=True/False to override current mode."""
+    def start_re_manager(self, sim: bool | None = None,
+                         ctrl_port: int = 60615, info_port: int = 60625):
+        """Launch start-re-manager on the given ZMQ ports."""
         exe = shutil.which("start-re-manager")
         if not exe:
             self.error_occurred.emit("start-re-manager not found — install bluesky-queueserver")
@@ -103,7 +104,10 @@ class ZMQWorker(QObject):
         existing_pd    = scripts_dir / "existing_plans_and_devices.yaml"
         permissions    = scripts_dir / "user_group_permissions.yaml"
 
-        cmd = [exe, "--zmq-publish-console", "ON",
+        cmd = [exe,
+               "--zmq-control-addr", f"tcp://*:{ctrl_port}",
+               "--zmq-info-addr",    f"tcp://*:{info_port}",
+               "--zmq-publish-console", "ON",
                "--existing-plans-devices", str(existing_pd),
                "--user-group-permissions", str(permissions)]
         if startup_script.exists():

@@ -10,7 +10,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
 from .config import APP_NAME, ACCENT
-from .connection_settings import load_connection, make_zmq_addrs, ConnectionDialog, is_local_host
+from .connection_settings import (
+    load_connection, make_zmq_addrs, make_zmq_addrs_for_mode,
+    ConnectionDialog, is_local_host,
+)
 from .sim_generator import generate_sim_script
 from .themes import (
     build_stylesheet, build_palette, load_saved_theme, save_theme,
@@ -303,16 +306,24 @@ class MainWindow(QMainWindow):
 
     def _on_start_manager_requested(self):
         settings = self._conn_settings
+        sim = self.worker.sim_mode
+        mode = "sim" if sim else "real"
         if is_local_host(settings):
-            ok = self.worker.start_re_manager()
+            ctrl, _, _ = make_zmq_addrs_for_mode(settings, sim)
+            ctrl_port = int(ctrl.rsplit(":", 1)[-1])
+            _, info, _ = make_zmq_addrs_for_mode(settings, sim)
+            info_port = int(info.rsplit(":", 1)[-1])
+            ok = self.worker.start_re_manager(sim=sim, ctrl_port=ctrl_port, info_port=info_port)
             if ok:
-                self._log(f"[{self._ts()}] ✓ RE Manager starting — reconnecting in 5 s…")
-                QTimer.singleShot(5000, self._auto_reconnect)
+                self._log(
+                    f"[{self._ts()}] ✓ RE Manager ({mode}) starting — reconnecting in 5 s…"
+                )
+                QTimer.singleShot(5000, self._auto_reconnect_mode)
             else:
                 self._log(f"[{self._ts()}] ✗ Start RE Manager failed")
         else:
             host = settings["host"]
-            self._log(f"[{self._ts()}] SSH → restarting RE Manager on {host}…")
+            self._log(f"[{self._ts()}] SSH → restarting RE Manager ({mode}) on {host}…")
             threading.Thread(
                 target=self._ssh_restart_remote,
                 args=(settings,),
@@ -325,15 +336,30 @@ class MainWindow(QMainWindow):
         ts = self._ts()
         if ok:
             self._log(f"[{ts}] ✓ {msg} — reconnecting in 8 s…")
-            QTimer.singleShot(8000, self._auto_reconnect)
+            QTimer.singleShot(8000, self._auto_reconnect_mode)
         else:
             self._log(f"[{ts}] ✗ SSH restart failed: {msg}")
 
     def _auto_reconnect(self):
+        """Reconnect to whatever address the worker was last connected to."""
         self._log(f"[{self._ts()}] Auto-reconnecting…")
         ok = self.worker.connect()
         if ok:
             self._log(f"[{self._ts()}] ✓ Connected")
+        else:
+            self.re_bar.set_disconnected()
+            self._log(f"[{self._ts()}] ✗ Still starting — click Reconnect when ready")
+
+    def _auto_reconnect_mode(self):
+        """Reconnect to the address matching the current real/sim mode."""
+        ctrl, info, doc = make_zmq_addrs_for_mode(
+            self._conn_settings, self.worker.sim_mode
+        )
+        self._log(f"[{self._ts()}] Auto-reconnecting to {ctrl}…")
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        if ok:
+            self._log(f"[{self._ts()}] ✓ Connected")
+            self.experiments_tab.live_viewer.restart_zmq(doc)
         else:
             self.re_bar.set_disconnected()
             self._log(f"[{self._ts()}] ✗ Still starting — click Reconnect when ready")
@@ -381,59 +407,39 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to generate sim script:\n{e}")
 
     def _on_sim_mode_toggled(self, sim: bool):
-        from pathlib import Path
         self.worker.sim_mode = sim
         mode = "Simulation" if sim else "Real hardware"
-        if sim:
-            from easy_bluesky.worker import _get_scripts_dir
-            sim_script = _get_scripts_dir() / "re_startup_sim.py"
-            if not sim_script.exists():
-                r = QMessageBox.question(
-                    self, "Sim Script Missing",
-                    "re_startup_sim.py not found.\n"
-                    "Generate it now from the real startup script?")
-                if r == QMessageBox.StandardButton.Yes:
-                    self._on_generate_sim_script()
-                else:
-                    # Revert toggle
-                    self.re_bar.btn_sim.setChecked(False)
-                    self.re_bar._on_sim_toggled(False)
-                    return
-        r = QMessageBox.question(
-            self, f"Switch to {mode} mode",
-            f"Switch to {mode} mode?\n\n"
-            "The RE Manager environment will be reloaded with the "
-            f"{'simulated' if sim else 'real hardware'} startup script.\n\n"
-            "Any running plan will be stopped.")
-        if r != QMessageBox.StandardButton.Yes:
-            # Revert toggle
+        ctrl, info, doc = make_zmq_addrs_for_mode(self._conn_settings, sim)
+        self._log(f"[{self._ts()}] Switching to {mode} mode → {ctrl}")
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        if ok:
+            self._log(f"[{self._ts()}] ✓ Connected to {mode} RE Manager")
+        else:
+            self._log(
+                f"[{self._ts()}] ✗ Could not reach {mode} RE Manager at {ctrl}\n"
+                f"              Start it first with '⚡ Start RE Mgr', then toggle."
+            )
+            # Revert toggle on failure
             self.re_bar.btn_sim.setChecked(not sim)
             self.re_bar._on_sim_toggled(not sim)
-            return
-        self._log(f"[{self._ts()}] Switching to {mode} mode…")
-        self.worker.close_environment()
-        QTimer.singleShot(1500, self._reload_env_for_sim)
-
-    def _reload_env_for_sim(self):
-        self.worker.open_environment()
-        mode = "Simulation" if self.worker.sim_mode else "Real hardware"
-        self._log(f"[{self._ts()}] Environment reloading in {mode} mode…")
+            self.worker.sim_mode = not sim
+        self.experiments_tab.live_viewer.restart_zmq(doc)
 
     def _on_connection_settings(self):
         dlg = ConnectionDialog(self)
         if dlg.exec() != ConnectionDialog.DialogCode.Accepted:
             return
         self._conn_settings = dlg.get_settings()
-        ctrl, info, doc = make_zmq_addrs(self._conn_settings)
+        ctrl, info, doc = make_zmq_addrs_for_mode(
+            self._conn_settings, self.worker.sim_mode
+        )
         self.status_bar.showMessage(f"Reconnecting to {self._conn_settings['host']}…")
-        # Reconnect worker
         ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
         if ok:
             self._log(f"[{self._ts()}] ✓ Connected to {self._conn_settings['host']}")
         else:
             self.re_bar.set_disconnected()
             self._log(f"[{self._ts()}] ✗ Connection failed — check host and ports")
-        # Restart live ZMQ doc stream
         self.experiments_tab.live_viewer.restart_zmq(doc)
 
     def _on_experiment_changed(self, runs_dir: str):
