@@ -1,0 +1,37 @@
+# Systemd user service for the Bluesky RE Manager — simulation instance.
+#
+# Same setup as re-manager-real.service but on ports 60616/60626/60631.
+# See re-manager-real.service for full setup instructions.
+#
+# SETUP:
+#   cp re-manager-sim.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now re-manager-sim
+#
+# REMOTE RESTART FROM EASYBLUESKY:
+#   Enable sim mode toggle in the toolbar, then in Connection Settings →
+#   Service name, enter:  re-manager-sim
+
+[Unit]
+Description=Bluesky RE Manager — simulation (port 60616)
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+
+ExecStart=/path/to/start-re-manager \
+    --zmq-control-addr tcp://*:60616 \
+    --zmq-info-addr    tcp://*:60626 \
+    --zmq-publish-console ON \
+    --startup-script   /home/YOUR_USER/.easy_bluesky/scripts/re_startup_sim.py \
+    --existing-plans-devices /home/YOUR_USER/.easy_bluesky/scripts/existing_plans_and_devices.yaml \
+    --user-group-permissions /home/YOUR_USER/.easy_bluesky/scripts/user_group_permissions.yaml
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

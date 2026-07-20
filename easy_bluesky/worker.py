@@ -18,6 +18,8 @@ _BUNDLED_FILES = [
     "re_startup_sim.py",
     "start_re_managers.sh",
     "stop_re_managers.sh",
+    "re-manager-real.service",
+    "re-manager-sim.service",
 ]
 
 _EXECUTABLE_SCRIPTS = {"start_re_managers.sh", "stop_re_managers.sh"}
