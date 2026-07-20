@@ -137,7 +137,6 @@ def build_stylesheet(name: str) -> str:
 QMainWindow, QWidget {{
     background-color: {t["bg"]};
     color: {t["text"]};
-    font-family: -apple-system, 'Helvetica Neue', 'Segoe UI', 'Ubuntu', sans-serif;
     font-size: 13px;
 }}
 QTabWidget::pane {{
