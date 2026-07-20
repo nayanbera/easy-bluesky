@@ -134,6 +134,31 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         return False, f"SSH command failed: {e}"
 
 
+def stop_re_manager(settings: dict) -> tuple[bool, str]:
+    """SSH into the remote host and kill the RE Manager process."""
+    try:
+        client = _get_client(settings)
+    except Exception as e:
+        return False, str(e)
+
+    service = settings.get("ssh_service", "").strip()
+    try:
+        if service:
+            cmd = f"systemctl --user stop {service}"
+        else:
+            cmd = "pkill -f start-re-manager"
+        _, stdout, stderr = client.exec_command(cmd, timeout=10)
+        stdout.channel.recv_exit_status()
+        client.close()
+        return True, "RE Manager stopped on remote host"
+    except Exception as e:
+        try:
+            client.close()
+        except Exception:
+            pass
+        return False, f"SSH stop failed: {e}"
+
+
 def wait_for_port(host: str, port: int, timeout: int = 30) -> bool:
     """Poll host:port every 2 s until it accepts a connection or timeout expires."""
     import socket, time

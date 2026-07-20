@@ -16,6 +16,7 @@ class REControlBar(QFrame):
     open_env_requested      = pyqtSignal()
     close_env_requested     = pyqtSignal()
     start_manager_requested = pyqtSignal()
+    stop_manager_requested  = pyqtSignal()
     reconnect_requested     = pyqtSignal()
     sim_mode_toggled        = pyqtSignal(bool)   # True = sim, False = real
 
@@ -151,8 +152,11 @@ class REControlBar(QFrame):
 
         self.btn_start_mgr = QPushButton("⚡ Start RE Mgr")
         self.btn_start_mgr.setObjectName("btn_warning")
+        self.btn_stop_mgr = QPushButton("⏹ Stop RE Mgr")
+        self.btn_stop_mgr.setObjectName("btn_danger")
         self.btn_reconnect = QPushButton("↺ Reconnect")
         lay.addWidget(self.btn_start_mgr)
+        lay.addWidget(self.btn_stop_mgr)
         lay.addWidget(self.btn_reconnect)
 
         lay.addWidget(self._separator())
@@ -185,6 +189,7 @@ class REControlBar(QFrame):
         self.btn_open_env.clicked.connect(self.open_env_requested)
         self.btn_close_env.clicked.connect(self.close_env_requested)
         self.btn_start_mgr.clicked.connect(self.start_manager_requested)
+        self.btn_stop_mgr.clicked.connect(self.stop_manager_requested)
         self.btn_reconnect.clicked.connect(self.reconnect_requested)
 
         # Start in a neutral state
