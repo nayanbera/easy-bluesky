@@ -108,6 +108,8 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         procserv_port = settings.get(
             "sim_procserv_port" if sim else "procserv_port", 60636 if sim else 60635
         )
+        ctrl_port = settings.get("sim_control_port" if sim else "control_port", 60616 if sim else 60615)
+        info_port = settings.get("sim_info_port"    if sim else "info_port",    60626 if sim else 60625)
 
         # Write launcher script via SFTP — avoids all shell-quoting issues.
         # It sources .bash_profile for EPICS env vars, then exec's start-re-manager.
@@ -115,6 +117,8 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             "#!/bin/bash\n"
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
             f"exec {exe}"
+            f" --zmq-control-addr tcp://*:{ctrl_port}"
+            f" --zmq-info-addr tcp://*:{info_port}"
             f" --zmq-publish-console ON"
             f" --startup-script {scripts_path}/{script}"
             f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
