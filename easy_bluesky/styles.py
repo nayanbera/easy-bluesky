@@ -6,7 +6,7 @@ APP_STYLE = f"""
 QMainWindow, QWidget {{
     background-color: {DARK_BG};
     color: #d4d4d4;
-    font-family: 'SF Pro Text', 'Segoe UI', 'Ubuntu', sans-serif;
+    font-family: -apple-system, 'Helvetica Neue', 'Segoe UI', 'Ubuntu', sans-serif;
     font-size: 13px;
 }}
 QTabWidget::pane {{
