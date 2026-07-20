@@ -207,6 +207,7 @@ class MainWindow(QMainWindow):
         self.re_bar.open_env_requested.connect(self._on_open_env_requested)
         self.re_bar.close_env_requested.connect(self._on_close_env_requested)
         self.re_bar.start_manager_requested.connect(self._on_start_manager_requested)
+        self.re_bar.stop_manager_requested.connect(self._on_stop_manager_requested)
         self.re_bar.reconnect_requested.connect(self._on_reconnect_requested)
         self.re_bar.sim_mode_toggled.connect(self._on_sim_mode_toggled)
 
@@ -329,6 +330,27 @@ class MainWindow(QMainWindow):
                 args=(settings,),
                 daemon=True,
             ).start()
+
+    def _on_stop_manager_requested(self):
+        settings = self._conn_settings
+        if is_local_host(settings):
+            self.worker.stop_re_manager()
+            self._log(f"[{self._ts()}] RE Manager stopped")
+        else:
+            host = settings["host"]
+            self._log(f"[{self._ts()}] SSH → stopping RE Manager on {host}…")
+            threading.Thread(
+                target=self._ssh_stop_remote,
+                args=(settings,),
+                daemon=True,
+            ).start()
+
+    def _ssh_stop_remote(self, settings: dict):
+        from .ssh_manager import stop_re_manager
+        ok, msg = stop_re_manager(settings)
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
+        if ok:
+            self.re_bar.set_disconnected()
 
     def _ssh_restart_remote(self, settings: dict):
         from .ssh_manager import restart_re_manager, wait_for_port
