@@ -45,6 +45,9 @@ class REConsoleWidget(QWidget):
         self._output.setReadOnly(True)
         self._output.setFont(QFont("Courier New", 11))
         self._output.setMaximumBlockCount(5000)   # keep last 5000 lines
+        self._output.setStyleSheet(
+            "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; border: 1px solid #444; }"
+        )
         lay.addWidget(self._output, 1)
 
         # Fix the clear button now that _output exists
