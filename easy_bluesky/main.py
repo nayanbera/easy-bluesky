@@ -331,14 +331,21 @@ class MainWindow(QMainWindow):
             ).start()
 
     def _ssh_restart_remote(self, settings: dict):
-        from .ssh_manager import restart_re_manager
+        from .ssh_manager import restart_re_manager, wait_for_port
         ok, msg = restart_re_manager(settings, sim=self.worker.sim_mode)
         ts = self._ts()
-        if ok:
-            self._log(f"[{ts}] ✓ {msg} — reconnecting in 8 s…")
-            QTimer.singleShot(8000, self._auto_reconnect_mode)
-        else:
+        if not ok:
             self._log(f"[{ts}] ✗ SSH restart failed: {msg}")
+            return
+        self._log(f"[{ts}] ✓ {msg} — waiting for port to open…")
+        ctrl, _, _ = make_zmq_addrs_for_mode(settings, self.worker.sim_mode)
+        port = int(ctrl.rsplit(":", 1)[-1])
+        ready = wait_for_port(settings["host"], port, timeout=30)
+        if ready:
+            self._log(f"[{self._ts()}] Port {port} open — reconnecting…")
+            QTimer.singleShot(500, self._auto_reconnect_mode)
+        else:
+            self._log(f"[{self._ts()}] ✗ RE Manager did not open port {port} within 30 s")
 
     def _auto_reconnect(self):
         """Reconnect to whatever address the worker was last connected to."""
