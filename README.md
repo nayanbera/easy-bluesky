@@ -179,6 +179,59 @@ Logs are written to `/tmp/re-manager-real.log` and `/tmp/re-manager-sim.log`.
 
 Click **🔬 Real** in the toolbar to toggle to **🧪 Sim**. The app immediately reconnects the ZMQ worker and the live doc stream to the sim instance ports. Toggling back reconnects to the real ports. No manual port changes needed.
 
+### Running as a systemd service (recommended for production)
+
+Systemd keeps the RE Manager running across reboots and restarts it automatically on failure. Service templates are provided at `~/.easy_bluesky/scripts/`.
+
+**1. Find the full path to `start-re-manager` in your environment:**
+
+```bash
+conda activate bluesky        # or your environment name
+which start-re-manager        # copy this path
+```
+
+**2. Edit the template — replace the two placeholders:**
+
+```bash
+# Edit both files
+nano ~/.easy_bluesky/scripts/re-manager-real.service
+nano ~/.easy_bluesky/scripts/re-manager-sim.service
+```
+
+Replace `YOUR_USER` with your Linux username and `/path/to/start-re-manager` with the path from step 1.
+
+**3. Install and enable:**
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp ~/.easy_bluesky/scripts/re-manager-real.service ~/.config/systemd/user/
+cp ~/.easy_bluesky/scripts/re-manager-sim.service  ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable --now re-manager-real
+systemctl --user enable --now re-manager-sim
+```
+
+**4. Allow services to survive logout** (run once with sudo):
+
+```bash
+sudo loginctl enable-linger YOUR_USER
+```
+
+**5. Useful commands:**
+
+```bash
+systemctl --user status re-manager-real
+systemctl --user restart re-manager-real
+journalctl --user -u re-manager-real -f    # live logs
+```
+
+**Using systemd with the EasyBluesky SSH restart:**
+
+In **Connection Settings → Service name**, enter `re-manager-real` (or `re-manager-sim`). The **⚡ Start RE Mgr** button will SSH in and run `systemctl --user restart <service>` instead of killing and relaunching the process directly. This is cleaner and respects the `Restart=on-failure` policy.
+
+> **Note:** The SSH user must be the same user who owns the systemd service. No `sudo` is needed for `--user` services.
+
 ---
 
 ## Remote RE Manager
@@ -377,7 +430,9 @@ easy-bluesky/
 │       ├── existing_plans_and_devices.yaml
 │       ├── user_group_permissions.yaml
 │       ├── start_re_managers.sh
-│       └── stop_re_managers.sh
+│       ├── stop_re_managers.sh
+│       ├── re-manager-real.service
+│       └── re-manager-sim.service
 ├── pyproject.toml
 └── README.md
 ```

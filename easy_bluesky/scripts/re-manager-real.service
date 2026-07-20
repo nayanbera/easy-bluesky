@@ -1,0 +1,55 @@
+# Systemd user service for the Bluesky RE Manager — real hardware instance.
+#
+# SETUP (run on the RE Manager host as the beamline user):
+#
+#   1. Find the full path to start-re-manager in your environment:
+#        which start-re-manager           # if already activated
+#        conda run -n bluesky which start-re-manager
+#
+#   2. Replace every placeholder in this file:
+#        YOUR_USER   → your Linux username  (e.g. xf28id)
+#        /path/to/start-re-manager → full path from step 1
+#
+#   3. Install and enable:
+#        mkdir -p ~/.config/systemd/user
+#        cp re-manager-real.service ~/.config/systemd/user/
+#        systemctl --user daemon-reload
+#        systemctl --user enable --now re-manager-real
+#
+#   4. Allow the service to keep running after logout:
+#        loginctl enable-linger YOUR_USER   # run once as root or with sudo
+#
+#   5. Check status / logs:
+#        systemctl --user status re-manager-real
+#        journalctl --user -u re-manager-real -f
+#
+# REMOTE RESTART FROM EASYBLUESKY:
+#   In Connection Settings → Service name, enter:  re-manager-real
+#   The app will SSH in and run: systemctl --user restart re-manager-real
+#   (SSH user must be the same user who owns the service.)
+
+[Unit]
+Description=Bluesky RE Manager — real hardware (port 60615)
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+
+# Full path to start-re-manager — do NOT use a bare command name here.
+# Use:  which start-re-manager   (inside your conda/venv) to find it.
+ExecStart=/path/to/start-re-manager \
+    --zmq-control-addr tcp://*:60615 \
+    --zmq-info-addr    tcp://*:60625 \
+    --zmq-publish-console ON \
+    --startup-script   /home/YOUR_USER/.easy_bluesky/scripts/re_startup_mongo.py \
+    --existing-plans-devices /home/YOUR_USER/.easy_bluesky/scripts/existing_plans_and_devices.yaml \
+    --user-group-permissions /home/YOUR_USER/.easy_bluesky/scripts/user_group_permissions.yaml
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
