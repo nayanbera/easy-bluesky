@@ -115,9 +115,19 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             sftp.chmod(remote_script, 0o755)
             sftp.close()
 
-            # Kill existing instance, then launch via the script
-            stop_cmd = "pkill -f start-re-manager; sleep 1"
-            run_cmd  = f"nohup bash {remote_script} > /dev/null 2>&1 &"
+            # Kill existing instance, then launch via the script.
+            # Use systemd-run --user --scope when available — it places the
+            # process in its own scope outside the SSH session, so it survives
+            # after the connection closes even when KillUserProcesses=yes.
+            # Fall back to nohup for systems without systemd.
+            stop_cmd = "pkill -f start-re-manager; sleep 2"
+            run_cmd  = (
+                f"if command -v systemd-run &>/dev/null; then "
+                f"  systemd-run --user --scope bash {remote_script} > /dev/null 2>&1 & "
+                f"else "
+                f"  nohup bash {remote_script} > /dev/null 2>&1 & "
+                f"fi"
+            )
             _, stdout, stderr = client.exec_command(
                 f"{stop_cmd}; {run_cmd}", timeout=15
             )
