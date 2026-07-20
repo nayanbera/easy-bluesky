@@ -59,7 +59,7 @@ where = ["."]
 include = ["easy_bluesky*"]
 
 [tool.setuptools.package-data]
-"easy_bluesky" = ["scripts/*"]
+"easy_bluesky" = ["scripts/*", "scripts/*.sh", "scripts/*.py", "scripts/*.yaml"]
 
 [tool.black]
 line-length = 100

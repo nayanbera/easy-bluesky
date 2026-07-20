@@ -16,13 +16,18 @@ _BUNDLED_FILES = [
     "user_group_permissions.yaml",
     "re_startup_mongo.py",
     "re_startup_sim.py",
+    "start_re_managers.sh",
+    "stop_re_managers.sh",
 ]
+
+_EXECUTABLE_SCRIPTS = {"start_re_managers.sh", "stop_re_managers.sh"}
 
 def _get_scripts_dir() -> Path:
     """
     Return the user scripts directory (~/.easy_bluesky/scripts/), creating it
     and copying bundled defaults the first time it is needed.
     """
+    import os
     _USER_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     for fname in _BUNDLED_FILES:
         dest = _USER_SCRIPTS_DIR / fname
@@ -30,6 +35,8 @@ def _get_scripts_dir() -> Path:
             src = _PKG_SCRIPTS_DIR / fname
             if src.exists():
                 shutil.copy2(src, dest)
+                if fname in _EXECUTABLE_SCRIPTS:
+                    os.chmod(dest, 0o755)
     return _USER_SCRIPTS_DIR
 
 class ZMQWorker(QObject):
