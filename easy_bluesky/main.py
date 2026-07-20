@@ -333,6 +333,7 @@ class MainWindow(QMainWindow):
 
     def _on_stop_manager_requested(self):
         settings = self._conn_settings
+        sim = self.worker.sim_mode
         if is_local_host(settings):
             self.worker.stop_re_manager()
             self._log(f"[{self._ts()}] RE Manager stopped")
@@ -341,13 +342,13 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] SSH → stopping RE Manager on {host}…")
             threading.Thread(
                 target=self._ssh_stop_remote,
-                args=(settings,),
+                args=(settings, sim),
                 daemon=True,
             ).start()
 
-    def _ssh_stop_remote(self, settings: dict):
+    def _ssh_stop_remote(self, settings: dict, sim: bool = False):
         from .ssh_manager import stop_re_manager
-        ok, msg = stop_re_manager(settings)
+        ok, msg = stop_re_manager(settings, sim=sim)
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
         if ok:
             self.re_bar.set_disconnected()
