@@ -135,9 +135,11 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         # procServ daemonizes itself — the SSH command returns immediately while
         # procServ (and RE Manager) keep running after the session closes.
         # Fall back to systemd-run or nohup on systems without procServ.
+        # Kill only this instance's procServ (and its child) via the pid file.
+        # Do NOT pkill start-re-manager globally — that would kill the other
+        # instance (real vs sim) running on a different port.
         stop_cmd = (
             f"kill $(cat {pid_file} 2>/dev/null) 2>/dev/null; "
-            f"pkill -f start-re-manager 2>/dev/null; "
             f"rm -f {pid_file}; "
             "sleep 1"
         )
@@ -181,12 +183,16 @@ def stop_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
             cmd = f"systemctl --user stop {service}"
         else:
             _, log_file, pid_file = _instance_files(sim)
+            ctrl_port = settings.get(
+                "sim_control_port" if sim else "control_port", 60616 if sim else 60615
+            )
             cmd = (
                 f"if [ -f {pid_file} ]; then "
                 f"  kill $(cat {pid_file}) 2>/dev/null; "
                 f"  rm -f {pid_file}; "
-                f"fi; "
-                f"pkill -f start-re-manager 2>/dev/null; true"
+                f"else "
+                f"  pkill -f 'start-re-manager.*{ctrl_port}' 2>/dev/null; "
+                f"fi; true"
             )
         _, stdout, stderr = client.exec_command(cmd, timeout=10)
         stdout.channel.recv_exit_status()
