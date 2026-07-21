@@ -175,7 +175,15 @@ def generate_sim_script(real_script_path: str | Path,
         output_path = real_path.parent / 're_startup_sim.py'
     output_path = Path(output_path)
 
+    # Parse devices from the startup script, then also from devices.py if present
     devices = parse_devices(real_path)
+    devices_py = real_path.parent / "devices.py"
+    if devices_py.exists():
+        seen_vars = {d['var'] for d in devices}
+        for d in parse_devices(devices_py):
+            if d['var'] not in seen_vars:
+                devices.append(d)
+                seen_vars.add(d['var'])
 
     lines: list[str] = [
         '"""',

@@ -16,6 +16,7 @@ _BUNDLED_FILES = [
     "user_group_permissions.yaml",
     "re_startup_mongo.py",
     "re_startup_sim.py",
+    "devices.py",
     "start_re_managers.sh",
     "stop_re_managers.sh",
     "re-manager-real.service",
