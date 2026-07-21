@@ -1,4 +1,4 @@
-"""code_editor.py — QPlainTextEdit with auto-indentation and auto-completion."""
+"""code_editor.py — QPlainTextEdit with line numbers, auto-indentation, and auto-completion."""
 
 try:
     import jedi
@@ -6,9 +6,26 @@ try:
 except ImportError:
     JEDI_AVAILABLE = False
 
-from PyQt6.QtWidgets import QPlainTextEdit, QCompleter, QAbstractItemView
-from PyQt6.QtCore import Qt, QStringListModel
-from PyQt6.QtGui import QTextCursor, QKeyEvent, QFont
+from PyQt6.QtWidgets import QPlainTextEdit, QCompleter, QAbstractItemView, QWidget
+from PyQt6.QtCore import Qt, QStringListModel, QRect, QSize
+from PyQt6.QtGui import (
+    QTextCursor, QKeyEvent, QFont, QPainter, QColor,
+    QTextCharFormat, QPalette,
+)
+
+
+# ── Line number gutter ─────────────────────────────────────────────────────────
+
+class _LineNumberArea(QWidget):
+    def __init__(self, editor: "CodeEditor"):
+        super().__init__(editor)
+        self._editor = editor
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._editor._gutter_width(), 0)
+
+    def paintEvent(self, event):
+        self._editor._paint_gutter(event)
 
 
 # ── Static word lists ──────────────────────────────────────────────────────────
@@ -53,12 +70,82 @@ _ALL_WORDS = sorted(set(
 # ── Editor widget ──────────────────────────────────────────────────────────────
 
 class CodeEditor(QPlainTextEdit):
-    """QPlainTextEdit with auto-indentation, Tab→spaces, and auto-completion."""
+    """QPlainTextEdit with line numbers, current-line highlight, auto-indentation, and auto-completion."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._completer = None
+        self._gutter = _LineNumberArea(self)
+
+        self.blockCountChanged.connect(self._update_gutter_width)
+        self.updateRequest.connect(self._update_gutter)
+        self.cursorPositionChanged.connect(self._highlight_current_line)
+
+        self._update_gutter_width(0)
+        self._highlight_current_line()
         self._setup_completer()
+
+    # ── Line number gutter ─────────────────────────────────────────────────────
+
+    def _gutter_width(self) -> int:
+        digits = max(3, len(str(self.blockCount())))
+        return 8 + self.fontMetrics().horizontalAdvance("9") * digits
+
+    def _update_gutter_width(self, _=0):
+        self.setViewportMargins(self._gutter_width(), 0, 0, 0)
+
+    def _update_gutter(self, rect: QRect, dy: int):
+        if dy:
+            self._gutter.scroll(0, dy)
+        else:
+            self._gutter.update(0, rect.y(), self._gutter.width(), rect.height())
+        if rect.contains(self.viewport().rect()):
+            self._update_gutter_width()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        self._gutter.setGeometry(
+            QRect(cr.left(), cr.top(), self._gutter_width(), cr.height())
+        )
+
+    def _paint_gutter(self, event):
+        pal = self.palette()
+        bg = pal.color(QPalette.ColorRole.AlternateBase)
+        fg = pal.color(QPalette.ColorRole.PlaceholderText)
+
+        painter = QPainter(self._gutter)
+        painter.fillRect(event.rect(), bg)
+        painter.setFont(self.font())
+
+        block = self.firstVisibleBlock()
+        num   = block.blockNumber()
+        top   = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bot   = top + round(self.blockBoundingRect(block).height())
+        lh    = self.fontMetrics().height()
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bot >= event.rect().top():
+                painter.setPen(fg)
+                painter.drawText(
+                    0, top, self._gutter.width() - 4, lh,
+                    Qt.AlignmentFlag.AlignRight,
+                    str(num + 1),
+                )
+            block = block.next()
+            top   = bot
+            bot   = top + round(self.blockBoundingRect(block).height())
+            num  += 1
+
+    def _highlight_current_line(self):
+        pal = self.palette()
+        color = pal.color(QPalette.ColorRole.AlternateBase)
+        sel = QPlainTextEdit.ExtraSelection()
+        sel.format.setBackground(color)
+        sel.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
+        sel.cursor = self.textCursor()
+        sel.cursor.clearSelection()
+        self.setExtraSelections([sel] if not self.isReadOnly() else [])
 
     def _setup_completer(self):
         self._completer = QCompleter(self)

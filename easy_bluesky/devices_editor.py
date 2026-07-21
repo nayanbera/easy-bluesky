@@ -7,11 +7,12 @@ from PyQt6.QtCore import pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QHBoxLayout, QLabel, QMessageBox,
-    QPlainTextEdit, QPushButton, QVBoxLayout,
+    QPushButton, QVBoxLayout,
 )
 
 from .connection_settings import is_local_host
 from .highlighter import PythonHighlighter
+from .code_editor import CodeEditor
 
 
 class _Signals(QObject):
@@ -65,8 +66,8 @@ class DevicesEditorDialog(QDialog):
         top.addWidget(self._loc_label, 2)
         layout.addLayout(top)
 
-        # Code editor
-        self._editor = QPlainTextEdit()
+        # Code editor — full-featured (auto-indent, Tab→spaces, autocomplete)
+        self._editor = CodeEditor()
         font = QFont("Menlo")
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setFixedPitch(True)
@@ -74,6 +75,8 @@ class DevicesEditorDialog(QDialog):
         self._editor.setFont(font)
         self._editor.textChanged.connect(self._on_text_changed)
         self._highlighter = PythonHighlighter(self._editor.document())
+        # Extend autocomplete with ophyd device classes and common args
+        self._extend_completions()
         layout.addWidget(self._editor, 1)
 
         # Status bar
@@ -99,6 +102,30 @@ class DevicesEditorDialog(QDialog):
         btn_close.clicked.connect(self.close)
         btn_row.addWidget(btn_close)
         layout.addLayout(btn_row)
+
+    def _extend_completions(self):
+        """Add ophyd device classes and common kwargs to the editor's word list."""
+        from PyQt6.QtCore import QStringListModel
+        from .code_editor import _ALL_WORDS
+        ophyd_words = [
+            # imports
+            "from ophyd import",
+            "from ophyd.sim import",
+            # common device classes
+            "EpicsMotor", "EpicsSignal", "EpicsSignalRO", "EpicsSignalWithRBV",
+            "Device", "Component", "FormattedComponent", "DDC_EpicsSignal",
+            "PseudoPositioner", "PseudoSingle", "SoftPositioner",
+            "EpicsScaler", "EpicsMotorTuple",
+            "SingleTrigger", "AreaDetector", "SimDetector",
+            "HDF5Plugin", "TIFFPlugin", "ImagePlugin", "StatsPlugin",
+            "ROIPlugin", "TransformPlugin", "OverlayPlugin",
+            # ophyd.sim
+            "SynAxis", "SynGauss", "SynSignal", "motor", "det",
+            # common kwargs
+            "name=", "kind=", "labels=", "read_attrs=", "configuration_attrs=",
+        ]
+        merged = sorted(set(_ALL_WORDS + ophyd_words))
+        self._editor._completer.model().setStringList(merged)
 
     # ── Profile selection ──────────────────────────────────────────────────────
 
