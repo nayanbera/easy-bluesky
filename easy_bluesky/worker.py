@@ -98,14 +98,19 @@ class _DirectConsoleMonitor:
     @staticmethod
     def _extract(parts: list) -> str:
         """
-        Parse one ZMQ message (may be 1 or 2 frames).
+        Parse one ZMQ message (1 or 2 frames) and return console text.
 
-        bluesky-queueserver typically sends:
-          • single frame  → JSON dict  {"type": "console_output", "msg": "…"}
-          • two frames    → [topic, JSON dict]
+        Two formats observed in the wild:
 
-        When the environment is open the PUB socket also broadcasts manager-
-        status dicts; those have no "type" key and are silently ignored.
+        Format A — newer versions (single JSON frame):
+            {"type": "console_output", "msg": "text…"}
+
+        Format B — v0.0.x (two frames: topic + JSON wrapper):
+            [b"QS_Console", {"time": …, "msg": {"console_output": {"text": "…"}}}]
+
+        The topic frame (b"QS_Info" / b"QS_Console") is not valid JSON and is
+        skipped.  Status frames (msg.status) have no console_output key and
+        are silently ignored.
         """
         for frame in parts:
             if not frame:
@@ -116,9 +121,25 @@ class _DirectConsoleMonitor:
                 continue
             if not isinstance(obj, dict):
                 continue
+
+            # Format A: top-level "type" key
             msg_type = obj.get("type", "")
             if msg_type == "console_output" or "console" in msg_type.lower():
                 return obj.get("msg", "") or obj.get("text", "") or ""
+
+            # Format B: {"time": …, "msg": {"console_output": {"text": …}}}
+            inner = obj.get("msg")
+            if isinstance(inner, dict):
+                co = inner.get("console_output")
+                if co is not None:
+                    if isinstance(co, dict):
+                        return co.get("text", "") or co.get("msg", "") or ""
+                    if isinstance(co, str):
+                        return co
+                # Nested type field variant
+                inner_type = inner.get("type", "")
+                if inner_type == "console_output" or "console" in inner_type.lower():
+                    return inner.get("msg", "") or inner.get("text", "") or ""
         return ""
 
 _USER_SCRIPTS_DIR = Path.home() / ".easy_bluesky" / "scripts"
@@ -292,8 +313,10 @@ class ZMQWorker(QObject):
             return f"  Could not connect socket: {e}\n"
 
         deadline = time.monotonic() + duration
-        total, console_msgs, types_seen = 0, 0, set()
-        samples: list = []          # first 3 raw frames for inspection
+        total, console_msgs = 0, 0
+        types_seen: set = set()
+        topics_seen: set = set()
+        samples: list = []          # first 3 frames for inspection
         while time.monotonic() < deadline:
             try:
                 parts = sock.recv_multipart()
@@ -302,15 +325,31 @@ class ZMQWorker(QObject):
                     try:
                         obj = json.loads(frame)
                         if isinstance(obj, dict):
-                            t = obj.get("type", "(no type)")
+                            # Determine message type (Format A or B)
+                            t = obj.get("type", "")
+                            if not t:
+                                inner = obj.get("msg")
+                                if isinstance(inner, dict):
+                                    if "console_output" in inner:
+                                        t = "console_output"
+                                    elif inner.get("type"):
+                                        t = inner["type"]
+                                    elif "status" in inner:
+                                        t = "status"
+                                    else:
+                                        t = "(no type)"
+                                else:
+                                    t = "(no type)"
                             types_seen.add(t)
                             if t == "console_output":
                                 console_msgs += 1
                             if len(samples) < 3:
                                 samples.append(repr(frame[:120]))
                     except Exception:
-                        if frame and len(samples) < 3:
-                            samples.append(f"[raw] {frame[:80]!r}")
+                        if frame:
+                            topics_seen.add(frame[:20].decode("utf-8", errors="replace"))
+                            if len(samples) < 3:
+                                samples.append(f"[topic] {frame[:40]!r}")
             except zmq.Again:
                 pass
 
@@ -328,7 +367,9 @@ class ZMQWorker(QObject):
             )
         else:
             lines.append(f"  ✓ Received {total} frames in {duration:.0f} s.\n")
-            lines.append(f"    Message types seen: {sorted(types_seen)}\n")
+            if topics_seen:
+                lines.append(f"    ZMQ topics seen:  {sorted(topics_seen)}\n")
+            lines.append(f"    Message types:    {sorted(types_seen)}\n")
             if samples:
                 lines.append("    Sample frames:\n")
                 for s in samples:
@@ -337,11 +378,9 @@ class ZMQWorker(QObject):
                 lines.append(f"    console_output messages: {console_msgs}\n")
             else:
                 lines.append(
-                    "    ✗ No console_output messages (this is normal when\n"
-                    "      the environment is idle — console output only appears\n"
-                    "      while the environment is opening or a plan is running).\n"
-                    "    → To test: close the environment, watch this console,\n"
-                    "      then click Open Env — startup messages should appear.\n"
+                    "    ✗ No console_output in this window (normal for idle env).\n"
+                    "    → Open Env while the console is visible — startup\n"
+                    "      messages from re_startup_mongo.py should appear live.\n"
                 )
         return "".join(lines)
 
