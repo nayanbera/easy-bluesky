@@ -6,14 +6,14 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 
 - **Experiments** — Create and manage experiments with sample metadata, plan log, motor/detector summaries, and overlay plotting.
 - **Queue Manager** — Add, reorder, and delete plans. Full RE controls (open environment, start, pause, resume, abort, stop).
-- **Plan Builder** — Auto-generated parameter forms for any allowed plan. Upload and run custom plans from a code editor.
+- **Plan Builder** — Auto-generated parameter forms for any allowed plan. Upload and run custom plans from a full code editor (line numbers, auto-indent, autocomplete).
 - **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move.
 - **History Plot** — Browse completed runs. Multi-select overlay with common-column intersection.
 - **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata.
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
 - **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
 - **Local Profiles** — Run RE Manager as a local subprocess with zero setup. Starts automatically when you launch the profile and stops when you close the app. Ideal for learning and testing with simulated devices.
-- **Edit Devices File** — Edit any profile's devices file directly in the app with Python syntax highlighting. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP (also saves a local copy for the sim generator).
+- **Edit Devices File** — Full code editor for any profile's devices file: line numbers, current-line highlight, auto-indent, Tab→spaces, and ophyd-aware autocomplete. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
 
@@ -255,41 +255,82 @@ Example layout for two technique profiles:
 
 ### Editing devices files
 
-**File → Edit Devices File…** opens a built-in editor that lets you modify any profile's devices file without leaving the app or opening a terminal.
+**File → Edit Devices File…** opens a full code editor for any profile's devices file — no terminal needed.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Edit Devices File — devices_aswaxs.py  [ASWAXS]  *        │
-│                                                             │
-│  Profile: [ ASWAXS ▼ ]  Remote: myhost:~/.easy_bluesky/…  │
-│ ┌─────────────────────────────────────────────────────────┐ │
-│ │ from ophyd import EpicsMotor                            │ │
-│ │                                                         │ │
-│ │ sample_x = EpicsMotor("IOC:m1", name="sample_x")       │ │
-│ │ sample_y = EpicsMotor("IOC:m2", name="sample_y")       │ │
-│ └─────────────────────────────────────────────────────────┘ │
-│  ✓ Pulled from myhost:~/.easy_bluesky/scripts/…            │
-│  [Pull from RE Machine]  [Save & Push to RE Machine]  [Close] │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Edit Devices File — devices_aswaxs.py  [ASWAXS]  *            │
+│                                                                 │
+│  Profile: [ ASWAXS ▼ ]  Remote: myhost:~/.easy_bluesky/…      │
+│ ┌────┬────────────────────────────────────────────────────────┐ │
+│ │  1 │ from ophyd import EpicsMotor, EpicsSignal             │ │
+│ │  2 │                                                        │ │
+│ │  3 │ # ── Motors ─────────────────────────────────────────  │ │
+│ │  4 │ sample_x = EpicsMotor("IOC:m1", name="sample_x")      │ │  ← current line highlighted
+│ │  5 │ sample_y = EpicsMotor("IOC:m2", name="sample_y")      │ │
+│ └────┴────────────────────────────────────────────────────────┘ │
+│  ✓ Pulled from myhost:~/.easy_bluesky/scripts/devices_aswaxs.py │
+│  [Pull from RE Machine]  [Save & Push to RE Machine]  [Close]   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Local profiles** — reads and writes `~/.easy_bluesky/scripts/<file>` directly on this machine. Buttons: **Reload** and **Save**.
+### Editor features
+
+| Feature | Detail |
+|---------|--------|
+| Line numbers | Gutter on the left; auto-widens as the file grows |
+| Current-line highlight | Subtle highlight on the active row (theme-aware) |
+| Syntax highlighting | Python keywords, strings, comments, decorators, numbers |
+| Auto-indent | Enter after `:` adds one indent level automatically |
+| Tab → 4 spaces | Smart tab stops at column boundaries |
+| Smart backspace | Removes a full 4-space indent block at once |
+| Autocomplete | Ctrl+Space (or type 2+ chars) — ophyd classes, common kwargs, Python keywords |
+
+Autocomplete includes ophyd-specific words out of the box: `EpicsMotor`, `EpicsSignal`, `EpicsSignalRO`, `AreaDetector`, `HDF5Plugin`, `SynAxis`, `SynGauss`, `name=`, `kind=`, and more. If `jedi` is installed (`pip install jedi`), completions become fully context-aware.
+
+### Starter template
+
+If the devices file does not exist yet (new profile), the editor pre-fills a starter template:
+
+```python
+"""
+devices_aswaxs.py — Hardware device definitions for ASWAXS profile.
+...
+"""
+from ophyd import EpicsMotor, EpicsSignal, EpicsSignalRO
+
+# ── Motors ────────────────────────────────────────────────────────────────────
+# sample_x = EpicsMotor("IOC:m1", name="sample_x")
+# sample_y = EpicsMotor("IOC:m2", name="sample_y")
+
+# ── Detectors ─────────────────────────────────────────────────────────────────
+# det = EpicsSignal("IOC:det", name="det")
+
+# ── Read-only signals ─────────────────────────────────────────────────────────
+# ring_current = EpicsSignalRO("RING:current", name="ring_current")
+```
+
+Uncomment and fill in your PV names, then click **Save** (local) or **Save & Push to RE Machine** (remote).
+
+### Local vs remote
+
+**Local profiles** — reads and writes `~/.easy_bluesky/scripts/<file>` directly. Buttons: **Reload** and **Save**.
 
 **Remote profiles** — transfers the file via SFTP over the existing SSH connection. Buttons:
 
 | Button | Action |
 |--------|--------|
-| Pull from RE Machine | Downloads the file from `~/.easy_bluesky/scripts/<file>` on the remote host. Also saves a local copy so the sim generator can read it. |
-| Save & Push to RE Machine | Saves a local copy, then uploads to `~/.easy_bluesky/scripts/<file>` on the remote host. |
+| Pull from RE Machine | Downloads the file from the remote host. Also saves a local copy so the sim generator can read it offline. |
+| Save & Push to RE Machine | Saves a local copy, then uploads to the remote host. |
 
-The **profile combo** at the top lets you switch between any profile's devices file without reopening the dialog. If you have unsaved changes you will be prompted to discard them first.
+The **profile combo** at the top lets you switch between any profile's devices file without reopening the dialog. Unsaved changes prompt for confirmation before switching or closing.
 
-A `*` in the title bar marks unsaved changes. Closing with unsaved changes also prompts for confirmation.
+A `*` in the title bar marks unsaved changes.
 
-**Typical remote workflow:**
+### Typical remote workflow
 
 1. **File → Edit Devices File…** — dialog opens and auto-pulls the current file from the RE machine
-2. Edit the devices (add motors, detectors, etc.)
+2. Edit the devices (uncomment and fill in PV addresses)
 3. Click **Save & Push to RE Machine**
 4. Click **⚡ Start RE Mgr** in the main toolbar to restart the RE Manager and pick up the new devices
 
@@ -631,12 +672,14 @@ easy-bluesky/
 │   ├── connection_settings.py# Connection dialog + settings I/O + profiles
 │   ├── ssh_manager.py        # SSH-based remote RE Manager control (procServ)
 │   ├── devices_editor.py     # Edit Devices File dialog (local read/write + SFTP pull/push)
+│   ├── code_editor.py        # CodeEditor widget — line numbers, auto-indent, autocomplete
+│   ├── highlighter.py        # Python syntax highlighter (used by CodeEditor)
 │   ├── sim_generator.py      # Auto-generate sim devices file from real script
 │   ├── re_control_bar.py     # RE control toolbar (status + buttons + profile dropdown)
 │   ├── re_console.py         # RE console output tab
 │   ├── experiments_tab.py    # Experiments tab (plan log, plots, HDF5 export)
 │   ├── queue_manager.py      # Queue Manager tab
-│   ├── plan_builder.py       # Plan Builder tab + code editor
+│   ├── plan_builder.py       # Plan Builder tab + code editor (uses CodeEditor)
 │   ├── widgets.py            # Shared widgets (ScanArgsWidget, ParamForm, …)
 │   ├── live_viewer.py        # Live Viewer (ZMQ + pyqtgraph)
 │   ├── hdf5_viewer.py        # HDF5 Viewer tab
