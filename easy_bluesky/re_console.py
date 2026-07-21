@@ -6,12 +6,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit,
     QCheckBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat
 
 
 class REConsoleWidget(QWidget):
     """Displays live console output from the RE Manager."""
+
+    diagnose_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,6 +36,12 @@ class REConsoleWidget(QWidget):
         self._scroll_chk.setChecked(True)
         self._scroll_chk.toggled.connect(lambda v: setattr(self, "_auto_scroll", v))
         bar.addWidget(self._scroll_chk)
+
+        btn_diag = QPushButton("Diagnose")
+        btn_diag.setMaximumWidth(80)
+        btn_diag.setToolTip("Check ZMQ info socket and RE Manager process flags")
+        btn_diag.clicked.connect(self.diagnose_requested)
+        bar.addWidget(btn_diag)
 
         btn_clear = QPushButton("Clear")
         btn_clear.setMaximumWidth(70)

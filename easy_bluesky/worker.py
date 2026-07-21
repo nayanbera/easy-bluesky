@@ -269,6 +269,72 @@ class ZMQWorker(QObject):
         if self.rm:
             self._load_plans_devices()
 
+    def diagnose_console(self, info_addr: str, duration: float = 6.0) -> str:
+        """
+        Subscribe directly to info_addr for *duration* seconds and report
+        every message type received.  Returns a multi-line diagnostic string.
+        Runs synchronously — call from a background thread.
+        """
+        try:
+            import zmq
+        except ImportError:
+            return "  pyzmq not installed — cannot test ZMQ socket.\n"
+
+        lines = [f"  Subscribing to {info_addr} for {duration:.0f} s…\n"]
+        ctx = zmq.Context()
+        try:
+            sock = ctx.socket(zmq.SUB)
+            sock.setsockopt(zmq.RCVTIMEO, 500)
+            sock.setsockopt(zmq.SUBSCRIBE, b"")
+            sock.connect(info_addr)
+        except Exception as e:
+            ctx.term()
+            return f"  Could not connect socket: {e}\n"
+
+        deadline = time.monotonic() + duration
+        total, console_msgs, types_seen = 0, 0, set()
+        while time.monotonic() < deadline:
+            try:
+                parts = sock.recv_multipart()
+                total += 1
+                for frame in parts:
+                    try:
+                        obj = json.loads(frame)
+                        if isinstance(obj, dict):
+                            t = obj.get("type", "(no type)")
+                            types_seen.add(t)
+                            if t == "console_output":
+                                console_msgs += 1
+                    except Exception:
+                        pass
+            except zmq.Again:
+                pass
+
+        try:
+            sock.close()
+            ctx.term()
+        except Exception:
+            pass
+
+        if total == 0:
+            lines.append(
+                "  ✗ No ZMQ frames received.\n"
+                "    The info port may be bound but not routing to this host,\n"
+                "    or the RE Manager is not publishing on that address.\n"
+            )
+        else:
+            lines.append(f"  ✓ Received {total} frames in {duration:.0f} s.\n")
+            lines.append(f"    Message types seen: {sorted(types_seen)}\n")
+            if console_msgs:
+                lines.append(f"    console_output messages: {console_msgs}\n")
+            else:
+                lines.append(
+                    "    ✗ No console_output messages seen.\n"
+                    "    RE Manager may not have been started with --zmq-publish-console ON,\n"
+                    "    or the environment was not open during the test.\n"
+                )
+        return "".join(lines)
+
 
     def poll(self):
         while self._active:
