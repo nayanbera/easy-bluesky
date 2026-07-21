@@ -136,23 +136,27 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
         sftp.chmod(remote_script, 0o755)
         sftp.close()
 
-        # Kill only this profile's procServ (and its child) via the pid file.
-        # Do NOT pkill start-re-manager globally — that would kill other
-        # profiles' instances running on different ports.
+        # Stop any existing instance for this profile:
+        # 1. Kill by pid file (procServ parent, if we launched via procServ)
+        # 2. Kill ALL start-re-manager processes on this profile's control port
+        #    — catches stale instances that survived previous sessions.
+        #    Port-scoped pkill leaves other profiles (different ports) untouched.
         stop_cmd = (
             f"kill $(cat {pid_file} 2>/dev/null) 2>/dev/null; "
             f"rm -f {pid_file}; "
-            "sleep 1"
+            f"pkill -f 'start-re-manager.*{ctrl_port}' 2>/dev/null; "
+            f"sleep 2; true"
         )
+        # Launch with setsid so the process fully detaches from the SSH session
+        # and survives when paramiko closes the channel.  procServ daemonizes on
+        # its own; the nohup+setsid fallback achieves the same effect manually.
         run_cmd = (
             f"if command -v procServ &>/dev/null; then "
             f"  procServ --noautorestart -n {instance_name}"
             f" -L {log_file} -p {pid_file} {procserv_port}"
             f" /bin/bash {remote_script}; "
-            f"elif command -v systemd-run &>/dev/null; then "
-            f"  systemd-run --user --scope bash {remote_script} > /dev/null 2>&1 & "
             f"else "
-            f"  nohup bash {remote_script} > /dev/null 2>&1 & "
+            f"  nohup setsid bash {remote_script} >> {log_file} 2>&1 & echo $! > {pid_file}; "
             f"fi"
         )
         _, stdout, stderr = client.exec_command(
