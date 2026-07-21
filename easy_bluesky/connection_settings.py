@@ -3,11 +3,12 @@
 import json
 import re
 import socket
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
+    QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
@@ -17,6 +18,7 @@ _SETTINGS_FILE = Path.home() / ".easy_bluesky" / "connection.json"
 _PROFILE_DEFAULTS = {
     "name": "Default",
     "devices_file": "devices.py",
+    "is_local": False,
     "control_port": 60615,
     "info_port": 60625,
     "doc_port": 60630,
@@ -33,27 +35,37 @@ _DEFAULTS = {
     "conda_path": "~/miniconda3",
     "active_profile": "Default",
     "profiles": [_PROFILE_DEFAULTS.copy()],
+    "deleted_profiles": [],
 }
 
 
 def profile_slug(name: str) -> str:
-    """Convert a profile name to a safe filename slug (lowercase, spaces→underscore, strip non-alnum)."""
+    """Convert a profile name to a safe filename slug."""
     slug = name.lower().replace(" ", "_")
     slug = re.sub(r'[^a-z0-9_]', '', slug)
     return slug or "profile"
 
 
+def _ensure_profile_defaults(profile: dict) -> dict:
+    """Return profile with all required keys filled in from defaults."""
+    result = _PROFILE_DEFAULTS.copy()
+    result.update(profile)
+    return result
+
+
 def _migrate(data: dict) -> dict:
     """Convert old flat format (control_port, sim_control_port, etc.) to profiles list."""
     if "profiles" in data:
-        return data  # Already new format
+        # Backfill is_local on existing profiles that predate this field
+        for p in data["profiles"]:
+            p.setdefault("is_local", False)
+        return data
 
     profiles = []
-
-    # Old real ports → "Default" profile
     default_profile = {
         "name": "Default",
         "devices_file": "devices.py",
+        "is_local": False,
         "control_port": data.get("control_port", _PROFILE_DEFAULTS["control_port"]),
         "info_port": data.get("info_port", _PROFILE_DEFAULTS["info_port"]),
         "doc_port": data.get("doc_port", _PROFILE_DEFAULTS["doc_port"]),
@@ -61,11 +73,11 @@ def _migrate(data: dict) -> dict:
     }
     profiles.append(default_profile)
 
-    # Old sim ports → "Sim" profile
-    if any(k in data for k in ("sim_control_port", "sim_info_port", "sim_doc_port", "sim_procserv_port")):
+    if any(k in data for k in ("sim_control_port", "sim_info_port", "sim_doc_port")):
         sim_profile = {
             "name": "Sim",
             "devices_file": "devices_sim.py",
+            "is_local": False,
             "control_port": data.get("sim_control_port", 60616),
             "info_port": data.get("sim_info_port", 60626),
             "doc_port": data.get("sim_doc_port", 60631),
@@ -83,6 +95,7 @@ def _migrate(data: dict) -> dict:
         "conda_path": data.get("conda_path", _DEFAULTS["conda_path"]),
         "active_profile": "Default",
         "profiles": profiles,
+        "deleted_profiles": [],
     }
 
 
@@ -91,16 +104,14 @@ def load_connection() -> dict:
         try:
             data = json.loads(_SETTINGS_FILE.read_text())
             data = _migrate(data)
-            # Merge top-level defaults (profiles come from the file)
             result = dict(_DEFAULTS)
             result.update(data)
-            # Ensure profiles list is non-empty
             if not result.get("profiles"):
                 result["profiles"] = [_PROFILE_DEFAULTS.copy()]
+            result.setdefault("deleted_profiles", [])
             return result
         except Exception:
             pass
-    # Fall back to values derived from env vars in config
     from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_HOST, ZMQ_DOC_PORT
     try:
         ctrl_port = int(ZMQ_CONTROL.rsplit(":", 1)[-1])
@@ -125,23 +136,24 @@ def save_connection(settings: dict):
 
 
 def get_active_profile(settings: dict) -> dict:
-    """Return the active profile dict."""
     active_name = settings.get("active_profile", "Default")
     profiles = settings.get("profiles", [])
     for p in profiles:
         if p.get("name") == active_name:
-            return p
-    # Fall back to first profile or defaults
+            return _ensure_profile_defaults(p)
     if profiles:
-        return profiles[0]
+        return _ensure_profile_defaults(profiles[0])
     return _PROFILE_DEFAULTS.copy()
 
 
 def make_zmq_addrs(settings: dict) -> tuple:
     """Return (control_addr, info_addr, doc_addr) for the active profile."""
-    h = settings.get("host", "localhost") or "localhost"
-    profiles = settings.get("profiles", [])
-    profile = get_active_profile(settings) if profiles else _PROFILE_DEFAULTS
+    profile = get_active_profile(settings)
+    # Local profiles always connect to localhost regardless of global host setting
+    if profile.get("is_local", False):
+        h = "localhost"
+    else:
+        h = settings.get("host", "localhost") or "localhost"
     return (
         f"tcp://{h}:{profile['control_port']}",
         f"tcp://{h}:{profile['info_port']}",
@@ -155,7 +167,6 @@ def is_local_host(settings: dict) -> bool:
 
 
 def _all_used_ports(settings: dict) -> set:
-    """Collect all ports used by all profiles."""
     used = set()
     for p in settings.get("profiles", []):
         for key in ("control_port", "info_port", "doc_port", "procserv_port"):
@@ -166,7 +177,6 @@ def _all_used_ports(settings: dict) -> set:
 
 
 def find_free_ports(count: int = 4, start: int = 60615, used: set = None) -> list:
-    """Find free ports using socket bind test, skipping ports in the used set."""
     if used is None:
         used = set()
     result = []
@@ -184,12 +194,73 @@ def find_free_ports(count: int = 4, start: int = 60615, used: set = None) -> lis
     return result
 
 
+# ── Profile lifecycle helpers ──────────────────────────────────────────────────
+
+def delete_profile(settings: dict, name: str) -> bool:
+    """Move a profile to deleted_profiles. Returns True if found."""
+    profiles = settings.get("profiles", [])
+    for i, p in enumerate(profiles):
+        if p.get("name") == name:
+            entry = dict(p)
+            entry["_deleted_at"] = datetime.now(timezone.utc).isoformat()
+            settings.setdefault("deleted_profiles", []).append(entry)
+            profiles.pop(i)
+            settings["profiles"] = profiles
+            if settings.get("active_profile") == name:
+                settings["active_profile"] = profiles[0]["name"] if profiles else ""
+            return True
+    return False
+
+
+def restore_profile(settings: dict, deleted_entry: dict) -> bool:
+    """Move an entry from deleted_profiles back to profiles."""
+    entry = {k: v for k, v in deleted_entry.items() if k != "_deleted_at"}
+    # Reassign ports if any conflict with existing profiles
+    used = _all_used_ports(settings)
+    if any(entry.get(k) in used for k in ("control_port", "info_port", "doc_port", "procserv_port")):
+        start = (max(used) + 1) if used else 60615
+        new_ports = find_free_ports(4, start, used)
+        if len(new_ports) >= 4:
+            entry["control_port"] = new_ports[0]
+            entry["info_port"]    = new_ports[1]
+            entry["doc_port"]     = new_ports[2]
+            entry["procserv_port"]= new_ports[3]
+    settings.setdefault("profiles", []).append(entry)
+    # Remove from deleted list (match by name + timestamp)
+    deleted = settings.get("deleted_profiles", [])
+    ts = deleted_entry.get("_deleted_at", "")
+    name = deleted_entry.get("name", "")
+    settings["deleted_profiles"] = [
+        d for d in deleted
+        if not (d.get("name") == name and d.get("_deleted_at") == ts)
+    ]
+    return True
+
+
+def purge_old_deleted(settings: dict, days: int = 30):
+    """Remove deleted profiles older than days; keep at most 20."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    kept = []
+    for entry in settings.get("deleted_profiles", []):
+        try:
+            dt = datetime.fromisoformat(entry.get("_deleted_at", ""))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt > cutoff:
+                kept.append(entry)
+        except Exception:
+            kept.append(entry)
+    settings["deleted_profiles"] = kept[-20:]
+
+
+# ── Connection dialog ──────────────────────────────────────────────────────────
+
 class ConnectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Connection Settings")
-        self.setMinimumWidth(620)
-        self.setMinimumHeight(520)
+        self.setMinimumWidth(640)
+        self.setMinimumHeight(560)
         self._settings = load_connection()
         self._current_row = None
         self._build()
@@ -198,7 +269,6 @@ class ConnectionDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setSpacing(8)
 
-        # Scrollable content area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -236,7 +306,7 @@ class ConnectionDialog(QDialog):
         lay.addWidget(ssh_title)
 
         ssh_note = QLabel(
-            "Used only when Host is a remote machine.\n"
+            "Used only when Host is a remote machine and the profile is not Local.\n"
             "SSH key authentication — no passwords stored or committed to git.\n"
             "Settings saved to ~/.easy_bluesky/connection.json (local only)."
         )
@@ -307,11 +377,10 @@ class ConnectionDialog(QDialog):
         prof_note.setObjectName("dim_text")
         lay.addWidget(prof_note)
 
-        # Horizontal split: left list + right editor
         prof_h = QHBoxLayout()
         prof_h.setSpacing(8)
 
-        # Left: list + add/remove buttons (max 170 px wide)
+        # Left: list
         left_w = QWidget()
         left_w.setMaximumWidth(170)
         left_lay = QVBoxLayout(left_w)
@@ -339,35 +408,51 @@ class ConnectionDialog(QDialog):
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(4)
 
-        prof_form = QFormLayout()
-        prof_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        prof_form.setHorizontalSpacing(12)
+        self._prof_form = QFormLayout()
+        self._prof_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._prof_form.setHorizontalSpacing(12)
 
         self._prof_name = QLineEdit()
-        self._prof_name.setPlaceholderText("Profile name (e.g. ASWAXS, SURF, Sim)")
-        prof_form.addRow("Name:", self._prof_name)
+        self._prof_name.setPlaceholderText("Profile name (e.g. ASWAXS, SURF)")
+        self._prof_form.addRow("Name:", self._prof_name)
+
+        self._prof_is_local = QCheckBox("Local (runs on this computer)")
+        self._prof_is_local.setToolTip(
+            "RE Manager runs as a local subprocess.\n"
+            "Starts and stops automatically with the app."
+        )
+        self._prof_is_local.toggled.connect(self._on_is_local_toggled)
+        self._prof_form.addRow("", self._prof_is_local)
 
         self._prof_devices = QLineEdit()
         self._prof_devices.setPlaceholderText("devices.py")
-        prof_form.addRow("Devices file:", self._prof_devices)
+        self._prof_form.addRow("Devices file:", self._prof_devices)
 
         self._prof_ctrl = QSpinBox()
         self._prof_ctrl.setRange(1, 65535)
-        prof_form.addRow("Control port:", self._prof_ctrl)
+        self._prof_form.addRow("Control port:", self._prof_ctrl)
 
         self._prof_info = QSpinBox()
         self._prof_info.setRange(1, 65535)
-        prof_form.addRow("Info port:", self._prof_info)
+        self._prof_form.addRow("Info port:", self._prof_info)
 
         self._prof_doc = QSpinBox()
         self._prof_doc.setRange(1, 65535)
-        prof_form.addRow("Doc stream port:", self._prof_doc)
+        self._prof_form.addRow("Doc stream port:", self._prof_doc)
 
         self._prof_procserv = QSpinBox()
         self._prof_procserv.setRange(1, 65535)
-        prof_form.addRow("procServ port:", self._prof_procserv)
+        self._prof_form.addRow("procServ port:", self._prof_procserv)
 
-        right_lay.addLayout(prof_form)
+        right_lay.addLayout(self._prof_form)
+
+        self._prof_local_note = QLabel(
+            "RE Manager starts and stops automatically with the app. No SSH needed."
+        )
+        self._prof_local_note.setObjectName("dim_text")
+        self._prof_local_note.setWordWrap(True)
+        self._prof_local_note.setVisible(False)
+        right_lay.addWidget(self._prof_local_note)
 
         btn_auto = QPushButton("Auto-assign Ports")
         btn_auto.setToolTip("Find 4 free ports and assign them to this profile")
@@ -386,26 +471,29 @@ class ConnectionDialog(QDialog):
         btns.rejected.connect(self.reject)
         outer.addWidget(btns)
 
-        # Populate profile list and select the active profile
         self._populate_profile_list()
         active = self._settings.get("active_profile", "Default")
         selected = False
         for i in range(self._profile_list.count()):
-            if self._profile_list.item(i).text() == active:
+            if self._profile_list.item(i).text().split("  ")[0] == active:
                 self._profile_list.setCurrentRow(i)
                 selected = True
                 break
         if not selected and self._profile_list.count() > 0:
             self._profile_list.setCurrentRow(0)
 
+    def _on_is_local_toggled(self, checked: bool):
+        self._prof_local_note.setVisible(checked)
+        self._prof_form.setRowVisible(self._prof_procserv, not checked)
+
     def _populate_profile_list(self):
-        """Rebuild the list widget from self._settings['profiles'], marking active in bold."""
         active = self._settings.get("active_profile", "Default")
         self._profile_list.blockSignals(True)
         self._profile_list.clear()
         for p in self._settings.get("profiles", []):
             name = p.get("name", "")
-            item = QListWidgetItem(name)
+            label = f"{name}  [LOCAL]" if p.get("is_local") else name
+            item = QListWidgetItem(label)
             if name == active:
                 font = item.font()
                 font.setBold(True)
@@ -414,28 +502,26 @@ class ConnectionDialog(QDialog):
         self._profile_list.blockSignals(False)
 
     def _on_profile_selected(self, row: int):
-        # Save current editor into the previously selected profile
         if self._current_row is not None and self._current_row >= 0:
             self._save_current_editor()
-
         self._current_row = row
         if row < 0:
             return
-
         profiles = self._settings.get("profiles", [])
         if row >= len(profiles):
             return
-
         p = profiles[row]
         self._prof_name.setText(p.get("name", ""))
+        self._prof_is_local.setChecked(p.get("is_local", False))
         self._prof_devices.setText(p.get("devices_file", "devices.py"))
         self._prof_ctrl.setValue(p.get("control_port", _PROFILE_DEFAULTS["control_port"]))
         self._prof_info.setValue(p.get("info_port", _PROFILE_DEFAULTS["info_port"]))
         self._prof_doc.setValue(p.get("doc_port", _PROFILE_DEFAULTS["doc_port"]))
         self._prof_procserv.setValue(p.get("procserv_port", _PROFILE_DEFAULTS["procserv_port"]))
+        # Show/hide procServ row based on is_local
+        self._on_is_local_toggled(p.get("is_local", False))
 
     def _save_current_editor(self):
-        """Write editor fields back into the profile at _current_row."""
         row = self._current_row
         if row is None or row < 0:
             return
@@ -445,31 +531,31 @@ class ConnectionDialog(QDialog):
 
         new_name = self._prof_name.text().strip() or f"Profile {row + 1}"
         old_name = profiles[row].get("name", "")
+        is_local = self._prof_is_local.isChecked()
 
         profiles[row] = {
             "name": new_name,
             "devices_file": self._prof_devices.text().strip() or "devices.py",
+            "is_local": is_local,
             "control_port": self._prof_ctrl.value(),
             "info_port": self._prof_info.value(),
             "doc_port": self._prof_doc.value(),
             "procserv_port": self._prof_procserv.value(),
         }
 
-        # Keep active_profile in sync if the name changed
         if old_name == self._settings.get("active_profile") and new_name != old_name:
             self._settings["active_profile"] = new_name
 
-        # Update list item text and bold state
         item = self._profile_list.item(row)
         if item:
-            item.setText(new_name)
+            label = f"{new_name}  [LOCAL]" if is_local else new_name
+            item.setText(label)
             current_active = self._settings.get("active_profile", "Default")
             font = item.font()
             font.setBold(new_name == current_active)
             item.setFont(font)
 
     def _on_add_profile(self):
-        # Persist current editor state first
         if self._current_row is not None and self._current_row >= 0:
             self._save_current_editor()
 
@@ -482,6 +568,7 @@ class ConnectionDialog(QDialog):
         new_profile = {
             "name": f"Profile {n}",
             "devices_file": "devices.py",
+            "is_local": False,
             "control_port": ports[0] if len(ports) > 0 else 60700,
             "info_port":    ports[1] if len(ports) > 1 else 60701,
             "doc_port":     ports[2] if len(ports) > 2 else 60702,
@@ -490,14 +577,14 @@ class ConnectionDialog(QDialog):
         profiles.append(new_profile)
         self._settings["profiles"] = profiles
 
-        # Add item to list without triggering selection change
-        self._current_row = None  # prevent _on_profile_selected from saving old state
+        self._current_row = None
         self._profile_list.blockSignals(True)
-        self._profile_list.addItem(new_profile["name"])
+        label = f"{new_profile['name']}  [LOCAL]" if new_profile["is_local"] else new_profile["name"]
+        self._profile_list.addItem(label)
         self._profile_list.blockSignals(False)
 
         new_row = len(profiles) - 1
-        self._profile_list.setCurrentRow(new_row)  # triggers _on_profile_selected
+        self._profile_list.setCurrentRow(new_row)
 
     def _on_remove_profile(self):
         row = self._profile_list.currentRow()
@@ -505,36 +592,33 @@ class ConnectionDialog(QDialog):
             return
         profiles = self._settings.get("profiles", [])
         if len(profiles) <= 1:
-            return  # Must keep at least one profile
+            return
 
         removed_name = profiles[row].get("name", "")
         profiles.pop(row)
         self._settings["profiles"] = profiles
 
-        # If active profile was removed, fall back to first remaining
         if self._settings.get("active_profile") == removed_name:
             self._settings["active_profile"] = profiles[0]["name"] if profiles else "Default"
 
-        self._current_row = None  # prevent save during removal
+        self._current_row = None
         self._profile_list.blockSignals(True)
         self._profile_list.takeItem(row)
         self._profile_list.blockSignals(False)
 
         new_row = min(row, self._profile_list.count() - 1)
         if new_row >= 0:
-            self._profile_list.setCurrentRow(new_row)  # triggers _on_profile_selected
+            self._profile_list.setCurrentRow(new_row)
         else:
             self._current_row = None
 
     def _on_auto_assign_ports(self):
-        # Save first so current editor ports are in settings
         if self._current_row is not None and self._current_row >= 0:
             self._save_current_editor()
 
         row = self._profile_list.currentRow()
         profiles = self._settings.get("profiles", [])
 
-        # Collect ports from all OTHER profiles
         used = set()
         for i, p in enumerate(profiles):
             if i != row:
@@ -575,7 +659,6 @@ class ConnectionDialog(QDialog):
         )
 
     def _collect_top_level(self) -> dict:
-        """Return a copy of settings with the UI's top-level (non-profile) fields applied."""
         return {
             **self._settings,
             "host":         self._host.text().strip() or "localhost",
@@ -588,7 +671,6 @@ class ConnectionDialog(QDialog):
         }
 
     def _on_accept(self):
-        # Flush current editor into profiles
         if self._current_row is not None and self._current_row >= 0:
             self._save_current_editor()
         self._settings.update(self._collect_top_level())

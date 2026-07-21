@@ -5,14 +5,18 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QStatusBar, QLabel,
-    QWidget, QVBoxLayout, QMessageBox,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMessageBox, QPushButton, QStatusBar, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
 from .config import APP_NAME, ACCENT
 from .connection_settings import (
     load_connection, save_connection, make_zmq_addrs,
     get_active_profile, ConnectionDialog, is_local_host,
+    profile_slug, delete_profile, restore_profile,
+    purge_old_deleted, find_free_ports, _all_used_ports,
 )
 from .sim_generator import generate_sim_script
 from .themes import (
@@ -29,24 +33,446 @@ from .hdf5_viewer import HDF5Viewer
 from .re_console import REConsoleWidget
 
 
-class MainWindow(QMainWindow):
+# ── Single-instance guard (one app per profile) ────────────────────────────────
+
+class SingleInstanceGuard:
+    """Uses QLocalServer to enforce one app instance per profile name."""
+
     def __init__(self):
+        self._server = None
+        self._current_name = None
+
+    def try_acquire(self, profile_name: str) -> bool:
+        """Try to claim exclusive lock for profile. Returns True if acquired."""
+        try:
+            from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+        except ImportError:
+            return True  # QtNetwork not available — skip locking
+
+        name = f"easy-bluesky-{profile_slug(profile_name)}"
+
+        # Check if another instance already holds this lock
+        sock = QLocalSocket()
+        sock.connectToServer(name)
+        already_held = sock.waitForConnected(200)
+        sock.close()
+        if already_held:
+            return False
+
+        # Release previous lock (profile switch)
+        if self._server:
+            self._server.close()
+            from PyQt6.QtNetwork import QLocalServer as _LS
+            _LS.removeServer(self._current_name or "")
+
+        from PyQt6.QtNetwork import QLocalServer
+        QLocalServer.removeServer(name)  # clean stale socket from crash
+        self._server = QLocalServer()
+        if not self._server.listen(name):
+            return False
+        self._current_name = name
+        return True
+
+    def release(self):
+        try:
+            from PyQt6.QtNetwork import QLocalServer
+            if self._server:
+                self._server.close()
+            if self._current_name:
+                QLocalServer.removeServer(self._current_name)
+        except Exception:
+            pass
+        self._server = None
+        self._current_name = None
+
+    def locked_profiles(self, profile_names: list) -> set:
+        """Return names of profiles locked by OTHER instances (not this one)."""
+        try:
+            from PyQt6.QtNetwork import QLocalSocket
+        except ImportError:
+            return set()
+        locked = set()
+        for name in profile_names:
+            slug_name = f"easy-bluesky-{profile_slug(name)}"
+            if slug_name == self._current_name:
+                continue  # we hold this one
+            sock = QLocalSocket()
+            sock.connectToServer(slug_name)
+            if sock.waitForConnected(100):
+                sock.close()
+                locked.add(name)
+            sock.close()
+        return locked
+
+
+# ── Profile picker dialog helpers ──────────────────────────────────────────────
+
+class _DeleteConfirmDialog(QDialog):
+    """Require the user to type the profile name exactly before deleting."""
+
+    def __init__(self, profile_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Delete Profile")
+        self.setMinimumWidth(400)
+        layout = QVBoxLayout(self)
+
+        msg = QLabel(
+            f"This will delete profile <b>{profile_name}</b>.<br>"
+            "It can be recovered from <i>Restore Deleted…</i> for 30 days."
+        )
+        msg.setWordWrap(True)
+        layout.addWidget(msg)
+        layout.addSpacing(8)
+
+        layout.addWidget(QLabel(f"Type  <b>{profile_name}</b>  to confirm:"))
+        self._input = QLineEdit()
+        self._input.setPlaceholderText(profile_name)
+        layout.addWidget(self._input)
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        self._btn_delete = QPushButton("Delete")
+        self._btn_delete.clicked.connect(self.accept)
+        self._btn_delete.setEnabled(False)
+        self._btn_delete.setStyleSheet("color: #d62728; font-weight: bold;")
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(self._btn_delete)
+        layout.addLayout(btn_row)
+
+        self._profile_name = profile_name
+        self._input.textChanged.connect(
+            lambda t: self._btn_delete.setEnabled(t == self._profile_name)
+        )
+
+
+class _NewProfileDialog(QDialog):
+    """Mini dialog to create a new profile from the picker."""
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New Profile")
+        self.setMinimumWidth(380)
+        self._settings = settings
+        self.profile_name = ""
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(12)
+
+        self._name = QLineEdit()
+        self._name.setPlaceholderText("e.g. ASWAXS, SURF, Local Sim")
+        form.addRow("Name:", self._name)
+
+        self._is_local = QCheckBox("Local (runs on this computer)")
+        form.addRow("", self._is_local)
+
+        self._devices = QLineEdit("devices.py")
+        form.addRow("Devices file:", self._devices)
+
+        layout.addLayout(form)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _on_accept(self):
+        name = self._name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Required", "Please enter a profile name.")
+            return
+        if any(p.get("name") == name for p in self._settings.get("profiles", [])):
+            QMessageBox.warning(self, "Duplicate", f"A profile named '{name}' already exists.")
+            return
+
+        used = _all_used_ports(self._settings)
+        start = (max(used) + 1) if used else 60615
+        ports = find_free_ports(4, start, used)
+
+        new_profile = {
+            "name": name,
+            "devices_file": self._devices.text().strip() or "devices.py",
+            "is_local": self._is_local.isChecked(),
+            "control_port":  ports[0] if len(ports) > 0 else 60700,
+            "info_port":     ports[1] if len(ports) > 1 else 60701,
+            "doc_port":      ports[2] if len(ports) > 2 else 60702,
+            "procserv_port": ports[3] if len(ports) > 3 else 60703,
+        }
+        self._settings.setdefault("profiles", []).append(new_profile)
+        self.profile_name = name
+        self.accept()
+
+
+class _RestoreDialog(QDialog):
+    """Show deleted profiles and let the user pick one to restore."""
+
+    def __init__(self, deleted_profiles: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Restore Deleted Profile")
+        self.setMinimumWidth(420)
+        self.selected_entry = None
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Select a profile to restore:"))
+        self._list = QListWidget()
+        for entry in reversed(deleted_profiles):  # most recent first
+            name = entry.get("name", "Unknown")
+            ts = entry.get("_deleted_at", "")
+            try:
+                dt = datetime.fromisoformat(ts)
+                ts_str = dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                ts_str = ts[:16]
+            item = QListWidgetItem(f"{name}  — deleted {ts_str}")
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            self._list.addItem(item)
+        layout.addWidget(self._list)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self._ok = btns.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok.setText("Restore")
+        self._ok.setEnabled(False)
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+        self._list.currentItemChanged.connect(
+            lambda cur, _: self._ok.setEnabled(cur is not None)
+        )
+        self._list.itemDoubleClicked.connect(lambda _: self._on_accept())
+
+    def _on_accept(self):
+        item = self._list.currentItem()
+        if item:
+            self.selected_entry = item.data(Qt.ItemDataRole.UserRole)
+            self.accept()
+
+
+# ── Profile picker ─────────────────────────────────────────────────────────────
+
+class ProfilePickerDialog(QDialog):
+    """
+    Startup dialog — user picks which profile to launch.
+
+    Locked profiles (held by another running instance) are shown greyed out
+    with "(already running)" and cannot be selected.
+    """
+
+    def __init__(self, settings: dict, guard: SingleInstanceGuard, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("EasyBluesky — Select Profile")
+        self.setMinimumWidth(480)
+        self.setMinimumHeight(300)
+        self._settings = settings
+        self._guard = guard
+        self.selected_profile = None
+
+        profiles = settings.get("profiles", [])
+        self._locked = guard.locked_profiles([p.get("name", "") for p in profiles])
+
+        self._build_ui()
+        self._populate_list()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        lbl = QLabel("Select a profile to launch:")
+        layout.addWidget(lbl)
+
+        self._list = QListWidget()
+        self._list.setMinimumHeight(160)
+        self._list.itemDoubleClicked.connect(self._on_launch)
+        self._list.currentItemChanged.connect(self._on_selection_changed)
+        layout.addWidget(self._list)
+
+        # Bottom button row
+        btn_row = QHBoxLayout()
+
+        self._btn_restore = QPushButton("Restore Deleted…")
+        self._btn_restore.clicked.connect(self._on_restore)
+        btn_row.addWidget(self._btn_restore)
+
+        self._btn_new = QPushButton("New Profile")
+        self._btn_new.clicked.connect(self._on_new)
+        btn_row.addWidget(self._btn_new)
+
+        self._btn_delete = QPushButton("Delete")
+        self._btn_delete.clicked.connect(self._on_delete)
+        self._btn_delete.setEnabled(False)
+        btn_row.addWidget(self._btn_delete)
+
+        btn_row.addStretch()
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        self._btn_launch = QPushButton("Launch")
+        self._btn_launch.clicked.connect(self._on_launch)
+        self._btn_launch.setDefault(True)
+        self._btn_launch.setEnabled(False)
+        btn_row.addWidget(self._btn_launch)
+
+        layout.addLayout(btn_row)
+
+        self._btn_restore.setEnabled(bool(self._settings.get("deleted_profiles", [])))
+
+    def _populate_list(self):
+        self._list.clear()
+        profiles = self._settings.get("profiles", [])
+        first_selectable = None
+        for p in profiles:
+            name = p.get("name", "Unknown")
+            is_local = p.get("is_local", False)
+            locked = name in self._locked
+
+            if locked:
+                label = f"{name}  (already running)"
+            elif is_local:
+                label = f"{name}  [LOCAL]"
+            else:
+                label = name
+
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+
+            if locked:
+                item.setFlags(
+                    item.flags()
+                    & ~Qt.ItemFlag.ItemIsEnabled
+                    & ~Qt.ItemFlag.ItemIsSelectable
+                )
+                item.setForeground(Qt.GlobalColor.gray)
+            elif first_selectable is None:
+                first_selectable = item
+
+            self._list.addItem(item)
+
+        if first_selectable:
+            self._list.setCurrentItem(first_selectable)
+
+    def _on_selection_changed(self, current, previous):
+        enabled = (
+            current is not None
+            and bool(current.flags() & Qt.ItemFlag.ItemIsEnabled)
+        )
+        self._btn_launch.setEnabled(enabled)
+        self._btn_delete.setEnabled(enabled)
+
+    def _on_launch(self):
+        item = self._list.currentItem()
+        if not item or not (item.flags() & Qt.ItemFlag.ItemIsEnabled):
+            return
+        name = item.data(Qt.ItemDataRole.UserRole)
+        for p in self._settings.get("profiles", []):
+            if p.get("name") == name:
+                self.selected_profile = p
+                break
+        if self.selected_profile:
+            self.accept()
+
+    def _on_delete(self):
+        item = self._list.currentItem()
+        if not item:
+            return
+        name = item.data(Qt.ItemDataRole.UserRole)
+        profiles = self._settings.get("profiles", [])
+        if len(profiles) <= 1:
+            QMessageBox.warning(self, "Cannot Delete", "Cannot delete the last profile.")
+            return
+
+        dlg = _DeleteConfirmDialog(name, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        delete_profile(self._settings, name)
+        save_connection(self._settings)
+        self._refresh()
+
+    def _on_new(self):
+        dlg = _NewProfileDialog(self._settings, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        save_connection(self._settings)
+        self._refresh()
+        # Select the new profile
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == dlg.profile_name:
+                self._list.setCurrentItem(item)
+                break
+
+    def _on_restore(self):
+        deleted = self._settings.get("deleted_profiles", [])
+        if not deleted:
+            return
+        dlg = _RestoreDialog(deleted, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected_entry:
+            return
+        restore_profile(self._settings, dlg.selected_entry)
+        save_connection(self._settings)
+        self._refresh()
+
+    def _refresh(self):
+        profiles = self._settings.get("profiles", [])
+        self._locked = self._guard.locked_profiles([p.get("name", "") for p in profiles])
+        self._populate_list()
+        self._btn_restore.setEnabled(bool(self._settings.get("deleted_profiles", [])))
+
+
+# ── First-run helper ───────────────────────────────────────────────────────────
+
+def _create_first_run_profile(settings: dict):
+    """Create a 'Local Sim' profile for first-time users with no profiles."""
+    from .worker import _get_scripts_dir
+    scripts_dir = _get_scripts_dir()
+    devices_sim = scripts_dir / "devices_sim.py"
+    if not devices_sim.exists():
+        try:
+            generate_sim_script(scripts_dir / "re_startup_mongo.py", devices_sim)
+        except Exception:
+            pass
+
+    ports = find_free_ports(4, 60615)
+    profile = {
+        "name": "Local Sim",
+        "devices_file": "devices_sim.py",
+        "is_local": True,
+        "control_port":  ports[0] if len(ports) > 0 else 60615,
+        "info_port":     ports[1] if len(ports) > 1 else 60625,
+        "doc_port":      ports[2] if len(ports) > 2 else 60630,
+        "procserv_port": ports[3] if len(ports) > 3 else 60635,
+    }
+    settings["profiles"] = [profile]
+    settings["active_profile"] = "Local Sim"
+    settings.setdefault("deleted_profiles", [])
+
+
+# ── Main window ────────────────────────────────────────────────────────────────
+
+class MainWindow(QMainWindow):
+    def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
         self.setWindowTitle("EasyBluesky")
         self.setMinimumSize(1200, 800)
         self._current_theme = load_saved_theme()
         self._conn_settings = load_connection()
+        self._guard = guard
         self.worker = ZMQWorker()
         self._setup_ui()
         self._setup_worker()
         self._connect()
-        # Apply saved theme after UI is fully built
         self.apply_theme(self._current_theme)
 
     def _setup_ui(self):
         self.setStyleSheet(build_stylesheet(self._current_theme))
 
-        # Tabs
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
 
@@ -55,8 +481,7 @@ class MainWindow(QMainWindow):
         self.plan_builder       = PlanBuilder(self.worker)
         self.devices_plans_tab  = DevicesPlansTab()
         self.hdf5_viewer        = HDF5Viewer()
-
-        self.re_console = REConsoleWidget()
+        self.re_console         = REConsoleWidget()
 
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
         self.tabs.addTab(self.queue_mgr,         "⚙  Queue Manager")
@@ -65,7 +490,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
         self.tabs.addTab(self.re_console,        "🖥  RE Console")
 
-        # RE control bar sits above the tabs
         self.re_bar = REControlBar()
 
         central = QWidget()
@@ -76,10 +500,8 @@ class MainWindow(QMainWindow):
         vlay.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
 
-        # Menu bar — View > Theme
         self._build_menu()
 
-        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.conn_label = QLabel("⬤  Connecting...")
@@ -88,7 +510,6 @@ class MainWindow(QMainWindow):
         ctrl_addr, _, _ = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("EasyBluesky  |  ZMQ: " + ctrl_addr)
 
-        # Populate the profile combo with the current profiles
         profiles = self._conn_settings.get("profiles", [])
         names = [p.get("name", "") for p in profiles]
         active = self._conn_settings.get("active_profile", "Default")
@@ -98,7 +519,6 @@ class MainWindow(QMainWindow):
         from PyQt6.QtGui import QActionGroup
         menubar = self.menuBar()
 
-        # ── File menu ──────────────────────────────────────────────────────────
         file_menu = menubar.addMenu("File")
         act_conn = file_menu.addAction("Connection Settings…")
         act_conn.triggered.connect(self._on_connection_settings)
@@ -112,7 +532,6 @@ class MainWindow(QMainWindow):
         act_open_h5 = file_menu.addAction("Open HDF5 Export…")
         act_open_h5.triggered.connect(self._on_open_hdf5)
 
-        # ── View menu ──────────────────────────────────────────────────────────
         view_menu = menubar.addMenu("View")
         theme_menu = view_menu.addMenu("Theme")
 
@@ -150,16 +569,12 @@ class MainWindow(QMainWindow):
         if name not in THEMES:
             return
         self._current_theme = name
-        # Update checkmark
         if hasattr(self, "_theme_actions"):
             for n, act in self._theme_actions.items():
                 act.setChecked(n == name)
-        # Apply stylesheet + palette
         self.setStyleSheet(build_stylesheet(name))
         QApplication.instance().setPalette(build_palette(name))
-        # Update the RE control bar (has its own stylesheet)
         self.re_bar.apply_theme(name)
-        # Persist selection
         save_theme(name)
         self.status_bar.showMessage(f"Theme: {name}", 2000)
 
@@ -167,44 +582,35 @@ class MainWindow(QMainWindow):
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
 
-        # Worker → window
         self.worker.connected.connect(self._on_connected)
         self.worker.disconnected.connect(self._on_disconnected)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.re_manager_started.connect(self._on_re_manager_started)
 
-        # Worker → re_bar
         self.worker.status_updated.connect(self.re_bar.update_status)
         self.worker.queue_updated.connect(
             lambda items: self.re_bar.update_queue_count(len(items))
         )
 
-        # Worker → queue_mgr
         self.worker.queue_updated.connect(self.queue_mgr.update_queue)
         self.worker.history_updated.connect(self.queue_mgr.update_history)
 
-        # Worker → experiments_tab
         self.worker.history_updated.connect(self.experiments_tab.update_history)
         self.worker.queue_updated.connect(self.experiments_tab.update_compact_queue)
 
-        # Worker → devices_plans_tab
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
         self.worker.devices_updated.connect(self.devices_plans_tab.update_devices)
 
-        # Worker → RE console
         self.worker.console_updated.connect(self.re_console.append)
         self.worker.connected.connect(self.re_console.on_connected)
         self.worker.disconnected.connect(self.re_console.on_disconnected)
 
-        # Worker → experiments_tab plans/devices (for PlanDialog)
         self.worker.plans_updated.connect(self.experiments_tab.set_plans)
         self.worker.devices_updated.connect(self.experiments_tab.set_devices)
 
-        # Worker → plan/device handlers (queue_mgr + plan_builder)
         self.worker.plans_updated.connect(self._on_plans_updated)
         self.worker.devices_updated.connect(self._on_devices_updated)
 
-        # RE bar → MainWindow action handlers
         self.re_bar.start_requested.connect(self._on_start_requested)
         self.re_bar.pause_requested.connect(self._on_pause_requested)
         self.re_bar.resume_requested.connect(self._on_resume_requested)
@@ -217,7 +623,6 @@ class MainWindow(QMainWindow):
         self.re_bar.reconnect_requested.connect(self._on_reconnect_requested)
         self.re_bar.profile_changed.connect(self._on_profile_changed)
 
-        # Experiments tab → MainWindow
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
 
         self.worker_thread.start()
@@ -314,7 +719,8 @@ class MainWindow(QMainWindow):
     def _on_start_manager_requested(self):
         settings = self._conn_settings
         profile = get_active_profile(settings)
-        if is_local_host(settings):
+        use_local = profile.get("is_local", False) or is_local_host(settings)
+        if use_local:
             ok = self.worker.start_re_manager(profile)
             if ok:
                 self._log(
@@ -339,7 +745,8 @@ class MainWindow(QMainWindow):
     def _on_stop_manager_requested(self):
         settings = self._conn_settings
         profile = get_active_profile(settings)
-        if is_local_host(settings):
+        use_local = profile.get("is_local", False) or is_local_host(settings)
+        if use_local:
             self.worker.stop_re_manager()
             self._log(f"[{self._ts()}] RE Manager stopped")
         else:
@@ -377,7 +784,6 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] ✗ RE Manager did not open port {port} within 30 s")
 
     def _auto_reconnect(self):
-        """Reconnect to whatever address the worker was last connected to."""
         self._log(f"[{self._ts()}] Auto-reconnecting…")
         ok = self.worker.connect()
         if ok:
@@ -387,7 +793,6 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] ✗ Still starting — click Reconnect when ready")
 
     def _auto_reconnect_mode(self):
-        """Reconnect to the active profile's address."""
         ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self._log(f"[{self._ts()}] Auto-reconnecting to {ctrl}…")
         ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
@@ -409,6 +814,19 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] ✗ Reconnect failed — RE Manager may still be starting")
 
     def _on_profile_changed(self, name: str):
+        # Block switch if another instance already holds this profile
+        if self._guard and not self._guard.try_acquire(name):
+            QMessageBox.warning(
+                self, "Profile In Use",
+                f"Profile '{name}' is already open in another window on this computer."
+            )
+            # Revert combo to current profile
+            current = self._conn_settings.get("active_profile", "Default")
+            profiles = self._conn_settings.get("profiles", [])
+            names = [p.get("name", "") for p in profiles]
+            self.re_bar.update_profiles(names, current)
+            return
+
         self._conn_settings["active_profile"] = name
         save_connection(self._conn_settings)
         ctrl, info, doc = make_zmq_addrs(self._conn_settings)
@@ -422,7 +840,6 @@ class MainWindow(QMainWindow):
                 f"              not running — click Start RE Mgr to start it"
             )
             self.re_bar.set_disconnected()
-        # Always restart the doc stream to point at the new profile's doc port
         self.experiments_tab.live_viewer.restart_zmq(doc)
 
     def _on_open_hdf5(self):
@@ -433,7 +850,6 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.hdf5_viewer.load_file(path)
-        # Switch to the HDF5 Viewer tab
         for i in range(self.tabs.count()):
             if self.tabs.widget(i) is self.hdf5_viewer:
                 self.tabs.setCurrentIndex(i)
@@ -462,9 +878,9 @@ class MainWindow(QMainWindow):
             f"with 'Devices file' set to 'devices_sim.py'."
         )
 
-        # If the host is remote, offer to copy the file via SFTP
         settings = self._conn_settings
-        if not is_local_host(settings):
+        profile = get_active_profile(settings)
+        if not profile.get("is_local", False) and not is_local_host(settings):
             r = QMessageBox.question(
                 self, "Copy to Remote?",
                 f"Copy the devices file to the remote RE Manager host?\n\n"
@@ -484,7 +900,6 @@ class MainWindow(QMainWindow):
             client = _get_client(settings)
             sftp = client.open_sftp()
             remote_path = ".easy_bluesky/scripts/devices_sim.py"
-            # Ensure remote directory exists
             try:
                 sftp.stat(".easy_bluesky/scripts")
             except FileNotFoundError:
@@ -514,7 +929,6 @@ class MainWindow(QMainWindow):
             self.re_bar.set_disconnected()
             self._log(f"[{self._ts()}] ✗ Connection failed — check host and ports")
         self.experiments_tab.live_viewer.restart_zmq(doc)
-        # Refresh the profile combo to reflect any changes
         profiles = self._conn_settings.get("profiles", [])
         names = [p.get("name", "") for p in profiles]
         active = self._conn_settings.get("active_profile", "Default")
@@ -526,22 +940,57 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.worker.stop()
-        self.worker.stop_re_manager()
+        # Stop RE Manager only if the active profile is local
+        profile = get_active_profile(self._conn_settings)
+        if profile.get("is_local", False):
+            self.worker.stop_re_manager()
+        # Release profile lock
+        if self._guard:
+            self._guard.release()
         self.worker_thread.quit()
         self.worker_thread.wait(2000)
         event.accept()
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("EasyBluesky")
     app.setStyle("Fusion")
-
-    # Initial palette set from saved theme; MainWindow.apply_theme() updates it after startup
     app.setPalette(build_palette(load_saved_theme()))
 
-    win = MainWindow()
+    # Ensure scripts directory exists
+    from .worker import _get_scripts_dir
+    _get_scripts_dir()
+
+    settings = load_connection()
+
+    # Auto-create a Local Sim profile on very first run
+    if not settings.get("profiles"):
+        _create_first_run_profile(settings)
+        save_connection(settings)
+
+    # Remove deleted profiles older than 30 days
+    purge_old_deleted(settings)
+
+    # Show profile picker
+    guard = SingleInstanceGuard()
+    picker = ProfilePickerDialog(settings, guard)
+    if picker.exec() != QDialog.DialogCode.Accepted or not picker.selected_profile:
+        sys.exit(0)
+
+    selected = picker.selected_profile
+    settings["active_profile"] = selected["name"]
+    save_connection(settings)
+
+    win = MainWindow(guard=guard)
     win.show()
+
+    # Auto-start RE Manager for local profiles
+    if selected.get("is_local", False):
+        QTimer.singleShot(800, win._on_start_manager_requested)
+
     sys.exit(app.exec())
 
 
