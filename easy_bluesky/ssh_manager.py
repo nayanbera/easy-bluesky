@@ -131,10 +131,27 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
             f" >> {log_file} 2>&1\n"
         )
+        # Ensure remote scripts directory exists
+        _, _home_out, _ = client.exec_command("echo $HOME", timeout=5)
+        _remote_home = _home_out.read().decode().strip()
+        _remote_scripts_dir = f"{_remote_home}/.easy_bluesky/scripts" if _remote_home else None
+        if _remote_scripts_dir:
+            client.exec_command(f"mkdir -p {_remote_scripts_dir}", timeout=5)
+
         sftp = client.open_sftp()
         with sftp.open(remote_script, "w") as f:
             f.write(script_body)
         sftp.chmod(remote_script, 0o755)
+
+        # Upload the bundled startup script so the remote always has the
+        # latest version (supports absolute paths in EASY_BLUESKY_DEVICES_FILE).
+        _local_startup = Path(__file__).parent / "scripts" / startup_script
+        if _remote_scripts_dir and _local_startup.exists():
+            try:
+                sftp.put(str(_local_startup), f"{_remote_scripts_dir}/{startup_script}")
+            except Exception:
+                pass  # non-fatal — fall back to whatever is already on the remote
+
         sftp.close()
 
         # ── Stop ──────────────────────────────────────────────────────────────

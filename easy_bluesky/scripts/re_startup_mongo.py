@@ -35,18 +35,31 @@ from bluesky import RunEngine
 RE = RunEngine({})
 
 # ── Hardware devices (from the profile's devices file) ─────────────────────────
-sys.path.insert(0, str(Path(__file__).parent))
 _devices_file = os.getenv("EASY_BLUESKY_DEVICES_FILE", "devices.py")
-_devices_module = _devices_file[:-3] if _devices_file.endswith(".py") else _devices_file
-try:
-    _mod = importlib.import_module(_devices_module)
-    globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
+
+if os.path.isabs(_devices_file):
+    # Full absolute path — load directly regardless of sys.path
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("_easy_bluesky_devices", _devices_file)
+    _mod  = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
     print(f"[re_startup_mongo] {_devices_file} loaded")
-except ImportError as _e:
-    print(f"[re_startup_mongo] WARNING: {_devices_file} not found ({_e})")
-except Exception as _e:
-    print(f"[re_startup_mongo] ERROR loading {_devices_file}: {_e}")
-    raise
+else:
+    # Relative filename — look in the same directory as this startup script
+    sys.path.insert(0, str(Path(__file__).parent))
+    _devices_module = _devices_file[:-3] if _devices_file.endswith(".py") else _devices_file
+    try:
+        _mod = importlib.import_module(_devices_module)
+        print(f"[re_startup_mongo] {_devices_file} loaded")
+    except ImportError as _e:
+        print(f"[re_startup_mongo] WARNING: {_devices_file} not found ({_e})")
+        _mod = None
+    except Exception as _e:
+        print(f"[re_startup_mongo] ERROR loading {_devices_file}: {_e}")
+        raise
+
+if _mod is not None:
+    globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
 
 # ── Standard bluesky plans ─────────────────────────────────────────────────────
 from bluesky.plans import (
