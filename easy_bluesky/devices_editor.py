@@ -52,10 +52,12 @@ class DevicesEditorDialog(QDialog):
         top.addWidget(QLabel("Profile:"))
         self._combo = QComboBox()
         self._combo.currentIndexChanged.connect(self._on_combo_changed)
+        self._combo.blockSignals(True)
         for p in self._settings.get("profiles", []):
             name = p.get("name", "")
             label = f"{name}  [LOCAL]" if p.get("is_local") else name
             self._combo.addItem(label, userData=p)
+        self._combo.blockSignals(False)
         top.addWidget(self._combo, 1)
 
         self._loc_label = QLabel("")
