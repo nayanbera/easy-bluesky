@@ -1,13 +1,125 @@
 """worker.py — ZMQ worker thread for RE Manager communication."""
 
+import json
 import os
+import queue as _queue
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO
+
+
+# ── Direct ZMQ console subscriber ─────────────────────────────────────────────
+
+class _DirectConsoleMonitor:
+    """
+    Subscribes to the RE Manager's ZMQ info PUB socket and extracts console
+    output messages.  This bypasses bluesky_queueserver_api's own
+    console_monitor to avoid version-specific format issues.
+    """
+
+    def __init__(self):
+        self._q      = _queue.Queue()
+        self._thread = None
+        self._active = False
+
+    def start(self, info_addr: str) -> str:
+        self.stop()
+        self._active = True
+        self._thread = threading.Thread(
+            target=self._run, args=(info_addr,), daemon=True
+        )
+        self._thread.start()
+        return f"Console monitor enabled — subscribed to {info_addr}"
+
+    def stop(self):
+        self._active = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.5)
+        self._thread = None
+        self._flush()
+
+    def _flush(self):
+        try:
+            while True:
+                self._q.get_nowait()
+        except _queue.Empty:
+            pass
+
+    def drain(self) -> list:
+        msgs = []
+        try:
+            while True:
+                msgs.append(self._q.get_nowait())
+        except _queue.Empty:
+            pass
+        return msgs
+
+    def _run(self, info_addr: str):
+        try:
+            import zmq
+        except ImportError:
+            self._q.put("[Console] pyzmq not available.\n")
+            return
+
+        ctx = zmq.Context()
+        try:
+            sock = ctx.socket(zmq.SUB)
+            sock.setsockopt(zmq.RCVTIMEO, 500)   # unblock every 500 ms to check _active
+            sock.setsockopt(zmq.SUBSCRIBE, b"")   # receive all topics
+            sock.connect(info_addr)
+        except Exception as e:
+            self._q.put(f"[Console] Could not connect to {info_addr}: {e}\n")
+            ctx.term()
+            return
+
+        while self._active:
+            try:
+                parts = sock.recv_multipart()
+            except zmq.Again:
+                continue          # normal timeout
+            except Exception:
+                break
+
+            text = self._extract(parts)
+            if text:
+                self._q.put(text)
+
+        try:
+            sock.close()
+            ctx.term()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _extract(parts: list) -> str:
+        """
+        Parse one ZMQ message (may be 1 or 2 frames).
+
+        bluesky-queueserver typically sends:
+          • single frame  → JSON dict  {"type": "console_output", "msg": "…"}
+          • two frames    → [topic, JSON dict]
+
+        When the environment is open the PUB socket also broadcasts manager-
+        status dicts; those have no "type" key and are silently ignored.
+        """
+        for frame in parts:
+            if not frame:
+                continue
+            try:
+                obj = json.loads(frame)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            msg_type = obj.get("type", "")
+            if msg_type == "console_output" or "console" in msg_type.lower():
+                return obj.get("msg", "") or obj.get("text", "") or ""
+        return ""
 
 _USER_SCRIPTS_DIR = Path.home() / ".easy_bluesky" / "scripts"
 _PKG_SCRIPTS_DIR  = Path(__file__).parent / "scripts"
@@ -61,6 +173,7 @@ class ZMQWorker(QObject):
         self._poll_interval  = 1.0
         self._re_proc        = None
         self._is_connecting  = False   # blocks poll while connect() runs
+        self._console_mon    = _DirectConsoleMonitor()
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -73,18 +186,9 @@ class ZMQWorker(QObject):
             self.connected.emit()
             self.status_updated.emit(status)
             self._load_plans_devices()
-            # Enable console monitor; report success/failure to the console tab
-            try:
-                self.rm.console_monitor.enable()
-                info_addr = zmq_info or ZMQ_INFO
-                self.console_updated.emit(
-                    f"[EasyBluesky] Console monitor enabled — subscribed to {info_addr}\n"
-                )
-            except Exception as e:
-                self.console_updated.emit(
-                    f"[EasyBluesky] Console monitor could not be enabled: {e}\n"
-                    f"  RE output will not appear here.\n"
-                )
+            info_addr = zmq_info or ZMQ_INFO
+            msg = self._console_mon.start(info_addr)
+            self.console_updated.emit(f"[EasyBluesky] {msg}\n")
             return True
         except Exception as e:
             self.rm = None
@@ -176,26 +280,10 @@ class ZMQWorker(QObject):
                     history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
                     self.history_updated.emit(history.get("items", []))
-                    # Drain all pending console messages and emit as one chunk
-                    try:
-                        msgs = []
-                        while True:
-                            try:
-                                msg = self.rm.console_monitor.next_msg(timeout=0)
-                                if msg is None:
-                                    break
-                                if isinstance(msg, dict):
-                                    text = msg.get("msg", "") or msg.get("text", "")
-                                else:
-                                    text = str(msg)
-                                if text:
-                                    msgs.append(text)
-                            except Exception:
-                                break
-                        if msgs:
-                            self.console_updated.emit("".join(msgs))
-                    except Exception:
-                        pass
+                    # Drain console messages collected by the ZMQ subscriber thread
+                    msgs = self._console_mon.drain()
+                    if msgs:
+                        self.console_updated.emit("".join(msgs))
                 except Exception:
                     if not self._is_connecting:
                         self.rm = None
@@ -204,11 +292,7 @@ class ZMQWorker(QObject):
 
     def disconnect(self):
         """Drop the ZMQ connection immediately without stopping the poll loop."""
-        if self.rm:
-            try:
-                self.rm.console_monitor.disable()
-            except Exception:
-                pass
+        self._console_mon.stop()
         self.rm = None
         self.disconnected.emit()
 
