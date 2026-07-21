@@ -73,11 +73,18 @@ class ZMQWorker(QObject):
             self.connected.emit()
             self.status_updated.emit(status)
             self._load_plans_devices()
-            # Enable console monitor permanently after connecting
+            # Enable console monitor; report success/failure to the console tab
             try:
                 self.rm.console_monitor.enable()
-            except Exception:
-                pass
+                info_addr = zmq_info or ZMQ_INFO
+                self.console_updated.emit(
+                    f"[EasyBluesky] Console monitor enabled — subscribed to {info_addr}\n"
+                )
+            except Exception as e:
+                self.console_updated.emit(
+                    f"[EasyBluesky] Console monitor could not be enabled: {e}\n"
+                    f"  RE output will not appear here.\n"
+                )
             return True
         except Exception as e:
             self.rm = None
@@ -175,7 +182,14 @@ class ZMQWorker(QObject):
                         while True:
                             try:
                                 msg = self.rm.console_monitor.next_msg(timeout=0)
-                                msgs.append(msg.get("msg", ""))
+                                if msg is None:
+                                    break
+                                if isinstance(msg, dict):
+                                    text = msg.get("msg", "") or msg.get("text", "")
+                                else:
+                                    text = str(msg)
+                                if text:
+                                    msgs.append(text)
                             except Exception:
                                 break
                         if msgs:
@@ -190,6 +204,11 @@ class ZMQWorker(QObject):
 
     def disconnect(self):
         """Drop the ZMQ connection immediately without stopping the poll loop."""
+        if self.rm:
+            try:
+                self.rm.console_monitor.disable()
+            except Exception:
+                pass
         self.rm = None
         self.disconnected.emit()
 

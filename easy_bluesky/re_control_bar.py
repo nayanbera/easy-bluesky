@@ -234,7 +234,11 @@ class REControlBar(QFrame):
             re_state = re_state_raw.upper()
         else:
             re_state = status.get("manager_state", "unknown").upper()
-        env_state = status.get("worker_environment_state", "unknown")
+        env_state = status.get("worker_environment_state", "")
+        if not env_state:
+            # Older bluesky-queueserver uses a boolean worker_environment_exists
+            exists = status.get("worker_environment_exists", False)
+            env_state = "idle" if exists else "closed"
 
         colors = {
             "IDLE":    (SUCCESS, "#1a3a1a"),
