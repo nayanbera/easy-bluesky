@@ -12,7 +12,9 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata.
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
 - **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
+- **Local Profiles** — Run RE Manager as a local subprocess with zero setup. Starts automatically when you launch the profile and stops when you close the app. Ideal for learning and testing with simulated devices.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
+- **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
 
 ---
 
@@ -75,17 +77,24 @@ pip install bluesky-queueserver pyepics
 
 ## Quick Start (local — same machine)
 
-### 1. Initialize scripts
-
-Run the app once to create `~/.easy_bluesky/scripts/` with default startup scripts:
+### 1. Launch the app
 
 ```bash
 easy-bluesky
 ```
 
-### 2. Add your hardware devices
+On first run the **Profile Picker** appears. A **Local Sim** profile is automatically created with simulated devices and free ports — no configuration needed. Select it and click **Launch**.
 
-Open `~/.easy_bluesky/scripts/devices.py` and add your devices:
+The app starts the RE Manager locally and connects automatically.
+
+### 2. Try it out
+
+- **Queue Manager** tab → add a `count` or `scan` plan using `det`, `motor1`, etc.
+- **Live Viewer** tab → see real-time plots as plans run
+
+### 3. Add your real hardware
+
+Open `~/.easy_bluesky/scripts/devices.py` and add your ophyd devices:
 
 ```python
 from ophyd import EpicsMotor
@@ -94,9 +103,13 @@ m1 = EpicsMotor("IOC:m1", name="m1")
 m2 = EpicsMotor("IOC:m2", name="m2")
 ```
 
-`re_startup_mongo.py` imports `devices.py` automatically — you never need to edit the startup script directly. `devices.py` is only created on first run and is never overwritten by app updates.
+Then create a new profile (see [Instance Profiles](#instance-profiles)) that points to `devices.py`.
 
-### 3. Start the RE Manager
+`devices.py` is only created on first run and is never overwritten by app updates.
+
+### Manual RE Manager start (optional)
+
+If you prefer to start the RE Manager yourself rather than using a Local profile:
 
 ```bash
 EASY_BLUESKY_DEVICES_FILE=devices.py \
@@ -109,13 +122,7 @@ start-re-manager \
   --user-group-permissions ~/.easy_bluesky/scripts/user_group_permissions.yaml
 ```
 
-### 4. Launch the app and connect
-
-```bash
-easy-bluesky
-```
-
-The app connects to the active profile's ports (default `localhost:60615`). Use **File → Connection Settings** to configure the host, create profiles, or change ports.
+Use **File → Connection Settings** to configure the host, create profiles, or change ports.
 
 ---
 
@@ -140,35 +147,100 @@ The persistent toolbar at the top provides:
 
 Profiles let you run **multiple RE Manager instances simultaneously**, each with its own set of devices and ZMQ ports. You can name them after your techniques, modes, or sample environments — for example `ASWAXS`, `SURF`, or `Sim`.
 
+### Profile Picker (startup dialog)
+
+Every time you launch EasyBluesky, the **Profile Picker** appears before the main window:
+
+```
+┌─────────────────────────────────────────────┐
+│  EasyBluesky — Select Profile               │
+│                                             │
+│  ┌─────────────────────────────────────┐    │
+│  │  Local Sim  [LOCAL]                 │    │
+│  │  ASWAXS                             │    │
+│  │  SURF  (already running)            │ ← greyed, locked by another window
+│  └─────────────────────────────────────┘    │
+│                                             │
+│  [Restore Deleted…] [New Profile] [Delete]  │
+│                          [Cancel] [Launch]  │
+└─────────────────────────────────────────────┘
+```
+
+- **`[LOCAL]`** — profile runs RE Manager locally on this computer
+- **`(already running)`** — profile is open in another window; greyed out and unselectable
+- **New Profile** — create a profile without opening Connection Settings
+- **Delete** — requires typing the profile name to confirm (see [Deleting profiles](#deleting-profiles))
+- **Restore Deleted…** — recover a recently deleted profile
+
+On **first run**, a `Local Sim` profile is created automatically — just click Launch.
+
+### One app per profile (single-instance enforcement)
+
+Only one EasyBluesky window can run a given profile at a time on the same computer. If you try to switch to a profile already held by another window (via the toolbar dropdown), the switch is blocked and a warning is shown.
+
+To run two profiles simultaneously, launch the app twice and pick a different profile in each window.
+
+### Local profiles
+
+A **Local** profile runs the RE Manager as a subprocess on the same machine as the app:
+
+- RE Manager **starts automatically** when you launch into the profile
+- RE Manager **stops automatically** when you close the app (also on crash via `atexit`)
+- No SSH, no procServ, no configuration needed
+- Choose any devices file — including `devices_sim.py` for a zero-setup simulation
+
+To create a local profile, click **New Profile** in the picker (or **Add Profile** in Connection Settings) and check **Local (runs on this computer)**.
+
+> **First-run default:** the auto-created `Local Sim` profile is local, uses `devices_sim.py`, and gets free ports automatically — nothing to configure.
+
+### Remote profiles
+
+A **Remote** profile connects to an RE Manager running on another machine via SSH + procServ. See [Remote RE Manager](#remote-re-manager).
+
 ### Creating a profile
 
-1. Open **File → Connection Settings**.
-2. In the **Profiles** pane on the left, click **Add Profile**.
-3. Give it a descriptive name (e.g. `SURF`).
-4. Set the **Devices file** — the Python file that defines the hardware for this profile (e.g. `devices_surf.py`).
-5. Click **Auto-assign Ports** to get four free ports that don't conflict with any other profile.
-6. Click OK.
+**From the Profile Picker** (quickest):
+1. Click **New Profile**
+2. Enter a name (e.g. `SURF`)
+3. Check **Local** if running on this machine, or leave unchecked for remote
+4. Set the devices file (e.g. `devices_surf.py`)
+5. Click OK — ports are auto-assigned
+
+**From Connection Settings** (full control):
+1. Open **File → Connection Settings**
+2. In the **Profiles** pane, click **＋ Add**
+3. Fill in name, devices file, and local/remote toggle
+4. Click **Auto-assign Ports**
+5. Click OK
 
 ### Switching profiles
 
 Select a profile from the dropdown in the toolbar. The app immediately attempts to connect to that profile's RE Manager. If it is not yet running, a message appears in the status bar — click **⚡ Start RE Mgr** to start it.
 
+### Deleting profiles
+
+Select a profile in the picker and click **Delete**. A confirmation dialog requires you to **type the profile name exactly** before deletion is allowed — preventing accidental deletes.
+
+Deleted profiles are kept for **30 days** (up to 20 entries) and can be recovered via **Restore Deleted…** in the picker. Ports are auto-reassigned on restore if the originals are now in use.
+
+The last remaining profile cannot be deleted.
+
 ### Port layout
 
-Each profile is assigned four ports automatically:
+Each profile has four ports, all auto-assigned by default:
 
 | Port field | Purpose |
 |-----------|---------|
 | Control port | ZMQ REQ/REP — sends commands to RE Manager |
 | Info port | ZMQ PUB — status/event stream from RE Manager |
 | Doc port | ZMQ PUB — live document stream for Live Viewer |
-| procServ port | procServ management socket (remote hosts only) |
+| procServ port | procServ management socket (remote profiles only) |
 
-Port auto-assignment starts at 60615 and skips any port already in use or assigned to another profile.
+> **Important:** always use **Auto-assign Ports** when creating a new profile. Manually entering port numbers that overlap with an existing profile's ports causes ZMQ connection failures that are hard to diagnose. Port auto-assignment checks both what's already allocated in settings and what's in use on the local machine.
 
 ### Devices file per profile
 
-Each profile loads a separate Python file of device definitions. The `EASY_BLUESKY_DEVICES_FILE` environment variable is passed to the RE Manager subprocess so `re_startup_mongo.py` imports the right file.
+Each profile loads a separate Python file of device definitions via the `EASY_BLUESKY_DEVICES_FILE` environment variable, which is passed to the RE Manager subprocess so `re_startup_mongo.py` imports the right file.
 
 Example layout for two technique profiles:
 
@@ -182,12 +254,12 @@ Example layout for two technique profiles:
 
 ### Configuration migration
 
-If you had a previous EasyBluesky installation with separate real/sim port fields, those settings are automatically migrated to a two-profile setup:
+If you had a previous EasyBluesky installation with separate real/sim port fields, those settings are automatically migrated:
 
 - Real ports → **Default** profile
-- Sim ports → **Sim** profile
+- Sim ports → **Sim** profile (if sim ports were configured)
 
-No manual editing of `connection.json` is needed.
+Existing profiles from the named-profiles release get `is_local: false` backfilled automatically. No manual editing of `connection.json` is needed.
 
 ---
 
@@ -451,6 +523,7 @@ Connection settings are stored in `~/.easy_bluesky/connection.json` (local only,
     {
       "name": "ASWAXS",
       "devices_file": "devices_aswaxs.py",
+      "is_local": false,
       "control_port": 60615,
       "info_port": 60625,
       "doc_port": 60630,
@@ -459,20 +532,23 @@ Connection settings are stored in `~/.easy_bluesky/connection.json` (local only,
     {
       "name": "SURF",
       "devices_file": "devices_surf.py",
+      "is_local": false,
       "control_port": 60640,
       "info_port": 60641,
       "doc_port": 60642,
       "procserv_port": 60643
     },
     {
-      "name": "Sim",
+      "name": "Local Sim",
       "devices_file": "devices_sim.py",
-      "control_port": 60616,
-      "info_port": 60626,
-      "doc_port": 60631,
-      "procserv_port": 60636
+      "is_local": true,
+      "control_port": 60644,
+      "info_port": 60645,
+      "doc_port": 60646,
+      "procserv_port": 60647
     }
-  ]
+  ],
+  "deleted_profiles": []
 }
 ```
 
