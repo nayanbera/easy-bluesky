@@ -1,5 +1,6 @@
 """ssh_manager.py — SSH-based remote RE Manager control (key auth only, no passwords)."""
 
+import time
 from pathlib import Path
 from .connection_settings import profile_slug
 
@@ -136,20 +137,32 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
         sftp.chmod(remote_script, 0o755)
         sftp.close()
 
-        # Stop any existing instance for this profile:
-        # 1. Kill by pid file (procServ parent, if we launched via procServ)
-        # 2. Kill ALL start-re-manager processes on this profile's control port
-        #    — catches stale instances that survived previous sessions.
-        #    Port-scoped pkill leaves other profiles (different ports) untouched.
+        # ── Stop ──────────────────────────────────────────────────────────────
+        # Run stop in its own SSH channel.  pkill -f matches processes whose
+        # cmdline contains the pattern string — which INCLUDES the bash process
+        # that is running this very SSH command (bash's cmdline contains
+        # "start-re-manager" as part of the pkill argument).  Bash therefore
+        # receives SIGTERM and may die early; that is intentional and harmless
+        # here because pkill has already dispatched signals to all matching RE
+        # Manager processes before bash exits.
         stop_cmd = (
             f"kill $(cat {pid_file} 2>/dev/null) 2>/dev/null; "
             f"rm -f {pid_file}; "
-            f"pkill -f 'start-re-manager.*{ctrl_port}' 2>/dev/null; "
-            f"sleep 2; true"
+            f"pkill -f start-re-manager 2>/dev/null; "
+            f"true"
         )
-        # Launch with setsid so the process fully detaches from the SSH session
-        # and survives when paramiko closes the channel.  procServ daemonizes on
-        # its own; the nohup+setsid fallback achieves the same effect manually.
+        _, stdout, _ = client.exec_command(stop_cmd, timeout=12)
+        try:
+            stdout.channel.recv_exit_status()
+        except Exception:
+            pass   # bash self-terminated; RE Managers are still being killed
+
+        time.sleep(2)  # let old processes fully exit before binding the ports
+
+        # ── Start ─────────────────────────────────────────────────────────────
+        # Fresh channel — bash cmdline is just the procServ invocation, so no
+        # self-match risk.  procServ daemonizes on its own; the nohup+setsid
+        # fallback achieves the same effect when procServ is absent.
         run_cmd = (
             f"if command -v procServ &>/dev/null; then "
             f"  procServ --noautorestart -n {instance_name}"
@@ -159,9 +172,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             f"  nohup setsid bash {remote_script} >> {log_file} 2>&1 & echo $! > {pid_file}; "
             f"fi"
         )
-        _, stdout, stderr = client.exec_command(
-            f"{stop_cmd}; {run_cmd}", timeout=15
-        )
+        _, stdout, stderr = client.exec_command(run_cmd, timeout=15)
         stdout.channel.recv_exit_status()
         client.close()
         env_note = f" (conda env: {settings['conda_env']})" if settings.get("conda_env") else ""
