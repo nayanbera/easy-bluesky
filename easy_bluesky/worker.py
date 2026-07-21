@@ -483,6 +483,7 @@ class ZMQWorker(QObject):
 
 
     def poll(self):
+        _prev_env_state = None
         while self._active:
             if self.rm and not self._is_connecting:
                 try:
@@ -492,6 +493,20 @@ class ZMQWorker(QObject):
                     history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
                     self.history_updated.emit(history.get("items", []))
+
+                    # Reload plans/devices when the environment transitions to
+                    # open (closed → idle).  Also fires on the first poll after
+                    # connect when env is already open, ensuring the list is
+                    # populated even if connect() ran while the env was closed.
+                    env_state = status.get("worker_environment_state", "")
+                    if not env_state:
+                        env_state = "idle" if status.get("worker_environment_exists") else "closed"
+                    _env_open = env_state in ("idle", "executing_plan", "paused")
+                    _was_open = _prev_env_state in ("idle", "executing_plan", "paused")
+                    if _env_open and not _was_open:
+                        self._load_plans_devices()
+                    _prev_env_state = env_state
+
                     # Drain both ZMQ subscriber and SSH log tailer
                     msgs = self._console_mon.drain() + self._log_tailer.drain()
                     if msgs:
