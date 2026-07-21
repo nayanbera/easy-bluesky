@@ -188,6 +188,11 @@ class ZMQWorker(QObject):
                         self.disconnected.emit()
             time.sleep(self._poll_interval)
 
+    def disconnect(self):
+        """Drop the ZMQ connection immediately without stopping the poll loop."""
+        self.rm = None
+        self.disconnected.emit()
+
     def stop(self):
         self._active = False
 

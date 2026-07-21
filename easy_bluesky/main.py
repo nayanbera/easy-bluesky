@@ -750,6 +750,7 @@ class MainWindow(QMainWindow):
         use_local = profile.get("is_local", False) or is_local_host(settings)
         if use_local:
             self.worker.stop_re_manager()
+            self.worker.disconnect()
             self._log(f"[{self._ts()}] RE Manager stopped")
         else:
             host = settings["host"]
@@ -765,7 +766,7 @@ class MainWindow(QMainWindow):
         ok, msg = stop_re_manager(settings, profile)
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
         if ok:
-            self.re_bar.set_disconnected()
+            self.worker.disconnect()
 
     def _ssh_restart_remote(self, settings: dict):
         from .ssh_manager import restart_re_manager, wait_for_port
