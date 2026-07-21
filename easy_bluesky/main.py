@@ -523,6 +523,8 @@ class MainWindow(QMainWindow):
         act_conn = file_menu.addAction("Connection Settings…")
         act_conn.triggered.connect(self._on_connection_settings)
         file_menu.addSeparator()
+        act_edit_dev = file_menu.addAction("Edit Devices File…")
+        act_edit_dev.triggered.connect(self._on_edit_devices)
         act_gen_sim = file_menu.addAction("Generate Sim Devices…")
         act_gen_sim.triggered.connect(self._on_generate_sim_script)
         file_menu.addSeparator()
@@ -854,6 +856,11 @@ class MainWindow(QMainWindow):
             if self.tabs.widget(i) is self.hdf5_viewer:
                 self.tabs.setCurrentIndex(i)
                 break
+
+    def _on_edit_devices(self):
+        from .devices_editor import DevicesEditorDialog
+        dlg = DevicesEditorDialog(self._conn_settings, self)
+        dlg.exec()
 
     def _on_generate_sim_script(self):
         from easy_bluesky.worker import _get_scripts_dir
