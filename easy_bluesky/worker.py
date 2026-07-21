@@ -293,6 +293,7 @@ class ZMQWorker(QObject):
 
         deadline = time.monotonic() + duration
         total, console_msgs, types_seen = 0, 0, set()
+        samples: list = []          # first 3 raw frames for inspection
         while time.monotonic() < deadline:
             try:
                 parts = sock.recv_multipart()
@@ -305,8 +306,11 @@ class ZMQWorker(QObject):
                             types_seen.add(t)
                             if t == "console_output":
                                 console_msgs += 1
+                            if len(samples) < 3:
+                                samples.append(repr(frame[:120]))
                     except Exception:
-                        pass
+                        if frame and len(samples) < 3:
+                            samples.append(f"[raw] {frame[:80]!r}")
             except zmq.Again:
                 pass
 
@@ -325,13 +329,19 @@ class ZMQWorker(QObject):
         else:
             lines.append(f"  ✓ Received {total} frames in {duration:.0f} s.\n")
             lines.append(f"    Message types seen: {sorted(types_seen)}\n")
+            if samples:
+                lines.append("    Sample frames:\n")
+                for s in samples:
+                    lines.append(f"      {s}\n")
             if console_msgs:
                 lines.append(f"    console_output messages: {console_msgs}\n")
             else:
                 lines.append(
-                    "    ✗ No console_output messages seen.\n"
-                    "    RE Manager may not have been started with --zmq-publish-console ON,\n"
-                    "    or the environment was not open during the test.\n"
+                    "    ✗ No console_output messages (this is normal when\n"
+                    "      the environment is idle — console output only appears\n"
+                    "      while the environment is opening or a plan is running).\n"
+                    "    → To test: close the environment, watch this console,\n"
+                    "      then click Open Env — startup messages should appear.\n"
                 )
         return "".join(lines)
 
