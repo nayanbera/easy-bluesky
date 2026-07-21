@@ -648,6 +648,15 @@ class MainWindow(QMainWindow):
         self.conn_label.setStyleSheet("color: #2ca02c;")
         ctrl_addr, _, _ = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("Connected to RE Manager at " + ctrl_addr)
+        # If this is an SSH-managed instance, tail the procServ log file so
+        # that worker stdout (startup script output, plan progress) reaches the
+        # RE Console regardless of whether the manager publishes to ZMQ.
+        profile   = get_active_profile(self._conn_settings)
+        use_local = profile.get("is_local", False) or is_local_host(self._conn_settings)
+        if not use_local:
+            from .ssh_manager import _instance_files
+            _, log_file, _ = _instance_files(profile.get("name", "Default"))
+            self.worker.start_log_tail(self._conn_settings, log_file)
 
     def _on_re_manager_started(self, pid):
         self.conn_label.setText("⬤  RE Manager starting…")
@@ -661,6 +670,7 @@ class MainWindow(QMainWindow):
         self.conn_label.setText("⬤  Disconnected")
         self.conn_label.setStyleSheet("color: #d62728;")
         self.re_bar.set_disconnected()
+        self.worker.stop_log_tail()
 
     def _log(self, msg: str):
         self.queue_mgr.append_console(msg)
@@ -873,12 +883,14 @@ class MainWindow(QMainWindow):
 
     def _run_console_diagnostics(self, settings, profile, info_addr, use_local):
         lines = []
-        info_port = profile.get("info_port", 60625)
+        info_port    = profile.get("info_port", 60625)
+        profile_name = profile.get("name", "Default")
 
         if not use_local:
-            # SSH: check running process flags and port binding
+            # SSH: check running process flags, port binding, and log tail
             try:
-                from .ssh_manager import _get_client
+                from .ssh_manager import _get_client, _instance_files
+                _, log_file, _ = _instance_files(profile_name)
                 client = _get_client(settings)
                 _, stdout, _ = client.exec_command(
                     f"ps -o pid,args -p $(pgrep -f 'start-re-manager') 2>/dev/null || "
@@ -892,6 +904,10 @@ class MainWindow(QMainWindow):
                     timeout=10,
                 )
                 port = stdout2.read().decode().strip()
+                _, stdout3, _ = client.exec_command(
+                    f"tail -n 40 {log_file} 2>/dev/null", timeout=10,
+                )
+                log_tail = stdout3.read().decode().strip()
                 client.close()
 
                 lines.append("[Diagnose] SSH process check:\n")
@@ -906,6 +922,13 @@ class MainWindow(QMainWindow):
                     )
                 elif proc:
                     lines.append("  ✓ --zmq-publish-console ON is present.\n")
+
+                lines.append(f"[Diagnose] RE Manager log — last 40 lines of {log_file}:\n")
+                if log_tail:
+                    for ln in log_tail.split("\n"):
+                        lines.append(f"  {ln}\n")
+                else:
+                    lines.append(f"  (log file not found or empty)\n")
             except Exception as e:
                 lines.append(f"[Diagnose] SSH check failed: {e}\n")
 

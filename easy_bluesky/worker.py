@@ -142,6 +142,93 @@ class _DirectConsoleMonitor:
                     return inner.get("msg", "") or inner.get("text", "") or ""
         return ""
 
+# ── SSH log-file tailer ────────────────────────────────────────────────────────
+
+class _SSHLogTailer:
+    """
+    Tails a remote log file over SSH using 'tail -n 50 -f'.
+
+    This is the reliable fallback console source for RE Manager versions that
+    do not forward worker stdout to the ZMQ info socket.  The procServ log
+    captures everything start-re-manager and its worker subprocess print, so
+    tailing it gives full startup and plan output.
+
+    Uses the same Queue drain interface as _DirectConsoleMonitor.
+    """
+
+    def __init__(self):
+        self._q       = _queue.Queue()
+        self._thread  = None
+        self._active  = False
+        self._channel = None
+        self._client  = None
+
+    def start(self, settings: dict, log_file: str) -> str:
+        self.stop()
+        self._active = True
+        self._thread = threading.Thread(
+            target=self._run, args=(settings, log_file), daemon=True
+        )
+        self._thread.start()
+        return f"SSH log tail started — following {log_file}"
+
+    def stop(self):
+        self._active = False
+        for obj in (self._channel, self._client):
+            try:
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+        self._thread  = None
+        self._channel = None
+        self._client  = None
+
+    def drain(self) -> list:
+        msgs = []
+        try:
+            while True:
+                msgs.append(self._q.get_nowait())
+        except _queue.Empty:
+            pass
+        return msgs
+
+    def _run(self, settings: dict, log_file: str):
+        try:
+            from .ssh_manager import _get_client
+            self._client = _get_client(settings)
+            transport = self._client.get_transport()
+            self._channel = transport.open_session()
+            self._channel.settimeout(0.5)
+            # -n 50: replay the last 50 log lines immediately on connect
+            self._channel.exec_command(f"tail -n 50 -f {log_file} 2>/dev/null")
+            buf = ""
+            while self._active:
+                try:
+                    data = self._channel.recv(4096)
+                    if not data:
+                        break   # channel closed by remote side
+                    buf += data.decode("utf-8", errors="replace")
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        self._q.put(line + "\n")
+                except Exception:
+                    if not self._active:
+                        break
+        except Exception as e:
+            if self._active:
+                self._q.put(f"[Console] SSH log tail error: {e}\n")
+        finally:
+            for obj in (self._channel, self._client):
+                try:
+                    if obj is not None:
+                        obj.close()
+                except Exception:
+                    pass
+
+
 _USER_SCRIPTS_DIR = Path.home() / ".easy_bluesky" / "scripts"
 _PKG_SCRIPTS_DIR  = Path(__file__).parent / "scripts"
 
@@ -195,6 +282,7 @@ class ZMQWorker(QObject):
         self._re_proc        = None
         self._is_connecting  = False   # blocks poll while connect() runs
         self._console_mon    = _DirectConsoleMonitor()
+        self._log_tailer     = _SSHLogTailer()
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -217,6 +305,15 @@ class ZMQWorker(QObject):
             return False
         finally:
             self._is_connecting = False
+
+    def start_log_tail(self, settings: dict, log_file: str):
+        """Start SSH log-file tailing for SSH-managed RE Manager instances."""
+        msg = self._log_tailer.start(settings, log_file)
+        self.console_updated.emit(f"[EasyBluesky] {msg}\n")
+
+    def stop_log_tail(self):
+        """Stop the SSH log tailer (call on disconnect or profile switch)."""
+        self._log_tailer.stop()
 
     @property
     def sim_mode(self) -> bool:
@@ -395,8 +492,8 @@ class ZMQWorker(QObject):
                     history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
                     self.history_updated.emit(history.get("items", []))
-                    # Drain console messages collected by the ZMQ subscriber thread
-                    msgs = self._console_mon.drain()
+                    # Drain both ZMQ subscriber and SSH log tailer
+                    msgs = self._console_mon.drain() + self._log_tailer.drain()
                     if msgs:
                         self.console_updated.emit("".join(msgs))
                 except Exception:
@@ -408,6 +505,7 @@ class ZMQWorker(QObject):
     def disconnect(self):
         """Drop the ZMQ connection immediately without stopping the poll loop."""
         self._console_mon.stop()
+        self._log_tailer.stop()
         self.rm = None
         self.disconnected.emit()
 
