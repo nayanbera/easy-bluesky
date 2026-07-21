@@ -165,6 +165,34 @@ class DevicesEditorDialog(QDialog):
 
     # ── Pull ───────────────────────────────────────────────────────────────────
 
+    def _make_template(self, profile: dict) -> str:
+        name = profile.get("name", "")
+        fname = profile.get("devices_file", "devices.py")
+        return (
+            f'"""\n'
+            f'{fname} — Hardware device definitions for {name} profile.\n'
+            f'\n'
+            f'Add your ophyd/EPICS devices below.\n'
+            f'Each device needs a unique Python variable name and a name= keyword.\n'
+            f'"""\n'
+            f'\n'
+            f'from ophyd import EpicsMotor, EpicsSignal, EpicsSignalRO\n'
+            f'\n'
+            f'\n'
+            f'# ── Motors ────────────────────────────────────────────────────────────────────\n'
+            f'# sample_x = EpicsMotor("IOC:m1", name="sample_x")\n'
+            f'# sample_y = EpicsMotor("IOC:m2", name="sample_y")\n'
+            f'# sample_z = EpicsMotor("IOC:m3", name="sample_z")\n'
+            f'\n'
+            f'\n'
+            f'# ── Detectors ─────────────────────────────────────────────────────────────────\n'
+            f'# det = EpicsSignal("IOC:det", name="det")\n'
+            f'\n'
+            f'\n'
+            f'# ── Read-only signals ─────────────────────────────────────────────────────────\n'
+            f'# ring_current = EpicsSignalRO("RING:current", name="ring_current")\n'
+        )
+
     def _on_pull(self):
         if not self._local_path:
             return
@@ -176,15 +204,23 @@ class DevicesEditorDialog(QDialog):
         if not self._is_remote:
             if self._local_path.exists():
                 try:
-                    self._set_content(self._local_path.read_text())
-                    self._set_status(f"Loaded: {self._local_path}", ok=True)
+                    content = self._local_path.read_text()
+                    if content.strip():
+                        self._set_content(content)
+                        self._set_status(f"Loaded: {self._local_path}", ok=True)
+                    else:
+                        self._set_content(self._make_template(profile))
+                        self._set_status(
+                            f"File was empty — template inserted. Edit and click Save.",
+                            ok=True,
+                        )
                 except Exception as e:
                     self._set_status(f"Read error: {e}", ok=False)
             else:
-                self._set_content("")
+                self._set_content(self._make_template(profile))
                 self._set_status(
-                    f"File not found: {self._local_path}  — will be created on Save",
-                    ok=False,
+                    f"New file — edit and click Save to create {self._local_path.name}",
+                    ok=True,
                 )
             return
 
@@ -204,14 +240,25 @@ class DevicesEditorDialog(QDialog):
             return
         self._btn_pull.setEnabled(True)
         if success:
-            self._set_content(content)
+            if content.strip():
+                self._set_content(content)
+            else:
+                profile = self._combo.itemData(self._current_index)
+                self._set_content(self._make_template(profile) if profile else content)
+                message = "File was empty — template inserted. Edit and click Save & Push."
             # Cache local copy for sim generator
             try:
                 self._local_path.parent.mkdir(parents=True, exist_ok=True)
-                self._local_path.write_text(content)
+                self._local_path.write_text(self._editor.toPlainText())
             except Exception:
                 pass
-        self._set_status(message, ok=success)
+        else:
+            # File not found on remote — offer template
+            profile = self._combo.itemData(self._current_index)
+            if profile and "not found" in message.lower():
+                self._set_content(self._make_template(profile))
+                message = "New file — edit and click Save & Push to create it on the RE machine."
+        self._set_status(message, ok=success or "not found" in message.lower())
 
     # ── Save / Push ────────────────────────────────────────────────────────────
 
