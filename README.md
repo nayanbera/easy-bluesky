@@ -11,8 +11,8 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **History Plot** — Browse completed runs. Multi-select overlay with common-column intersection.
 - **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata.
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
-- **Sim Mode** — Toggle between real hardware and a simulated RE Manager instance with one click. Ports switch automatically.
-- **Remote Control** — Start, stop, and restart the RE Manager on a remote host via SSH key authentication (no passwords stored).
+- **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
+- **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 
 ---
 
@@ -21,19 +21,22 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 EasyBluesky separates the **client** (this app) from the **RE Manager host**:
 
 ```
-┌─────────────────────────────┐          ┌───────────────────────────────┐
-│   Client machine            │          │   RE Manager host             │
-│   (your laptop/workstation) │          │   (beamline control computer) │
-│                             │  ZMQ/TCP │                               │
-│   EasyBluesky app  ─────────┼──────────┼──► start-re-manager (real)   │
-│                             │          │   start-re-manager (sim)      │
-│                             │          │                               │
-│   Needs:                    │          │   Needs:                      │
-│   • easy-bluesky            │          │   • bluesky-queueserver       │
-│   • Python ≥ 3.10           │          │   • hardware ophyd drivers    │
-│                             │          │   • startup scripts           │
-└─────────────────────────────┘          └───────────────────────────────┘
+┌─────────────────────────────┐          ┌───────────────────────────────────┐
+│   Client machine            │          │   RE Manager host                 │
+│   (your laptop/workstation) │          │   (beamline control computer)     │
+│                             │  ZMQ/TCP │                                   │
+│   EasyBluesky app  ─────────┼──────────┼──► RE Manager (ASWAXS profile)   │
+│      profile selector       │          │   RE Manager (SURF profile)       │
+│                             │          │   RE Manager (Sim profile)        │
+│   Needs:                    │          │                                   │
+│   • easy-bluesky            │          │   Needs:                          │
+│   • Python ≥ 3.10           │          │   • bluesky-queueserver           │
+│                             │          │   • hardware ophyd drivers        │
+│                             │          │   • startup scripts               │
+└─────────────────────────────┘          └───────────────────────────────────┘
 ```
+
+Each profile has its own ZMQ ports and devices file. The app connects to whichever profile is active in the toolbar dropdown.
 
 The app does **not** need to be installed on the RE Manager host.
 
@@ -96,6 +99,7 @@ m2 = EpicsMotor("IOC:m2", name="m2")
 ### 3. Start the RE Manager
 
 ```bash
+EASY_BLUESKY_DEVICES_FILE=devices.py \
 start-re-manager \
   --zmq-control-addr tcp://*:60615 \
   --zmq-info-addr    tcp://*:60625 \
@@ -111,7 +115,7 @@ start-re-manager \
 easy-bluesky
 ```
 
-The app connects to `localhost:60615` by default. Use **File → Connection Settings** to change the host or ports.
+The app connects to the active profile's ports (default `localhost:60615`). Use **File → Connection Settings** to configure the host, create profiles, or change ports.
 
 ---
 
@@ -119,68 +123,113 @@ The app connects to `localhost:60615` by default. Use **File → Connection Sett
 
 The persistent toolbar at the top provides:
 
-| Button | Action |
-|--------|--------|
+| Button / Control | Action |
+|-----------------|--------|
+| Profile dropdown | Switch the active RE Manager instance (profile) |
 | ▶ Start | Start the plan queue |
 | ⏸ Pause / ▶▶ Resume | Pause / resume running plan |
 | ✕ Abort / ⬛ Stop | Abort or stop the running plan |
 | Open Env / Close Env | Open or close the RE worker environment |
-| ⚡ Start RE Mgr | Start (or restart) the RE Manager process |
-| ⏹ Stop RE Mgr | Stop the RE Manager process |
+| ⚡ Start RE Mgr | Start (or restart) the active profile's RE Manager |
+| ⏹ Stop RE Mgr | Stop the active profile's RE Manager |
 | ↺ Reconnect | Reconnect ZMQ without restarting RE Manager |
-| 🔬 Real / 🧪 Sim | Toggle simulation mode |
 
 ---
 
-## Sim Mode
+## Instance Profiles
 
-Sim mode connects to a **second RE Manager instance** running a simulated startup script, so you can test plans without touching real hardware. Both instances run simultaneously on different ports.
+Profiles let you run **multiple RE Manager instances simultaneously**, each with its own set of devices and ZMQ ports. You can name them after your techniques, modes, or sample environments — for example `ASWAXS`, `SURF`, or `Sim`.
+
+### Creating a profile
+
+1. Open **File → Connection Settings**.
+2. In the **Profiles** pane on the left, click **Add Profile**.
+3. Give it a descriptive name (e.g. `SURF`).
+4. Set the **Devices file** — the Python file that defines the hardware for this profile (e.g. `devices_surf.py`).
+5. Click **Auto-assign Ports** to get four free ports that don't conflict with any other profile.
+6. Click OK.
+
+### Switching profiles
+
+Select a profile from the dropdown in the toolbar. The app immediately attempts to connect to that profile's RE Manager. If it is not yet running, a message appears in the status bar — click **⚡ Start RE Mgr** to start it.
 
 ### Port layout
 
-| Instance | Control | Info  | Doc stream | procServ mgmt |
-|----------|---------|-------|------------|---------------|
-| Real     | 60615   | 60625 | 60630      | 60635         |
-| Sim      | 60616   | 60626 | 60631      | 60636         |
+Each profile is assigned four ports automatically:
 
-All ports are configurable in **File → Connection Settings**.
+| Port field | Purpose |
+|-----------|---------|
+| Control port | ZMQ REQ/REP — sends commands to RE Manager |
+| Info port | ZMQ PUB — status/event stream from RE Manager |
+| Doc port | ZMQ PUB — live document stream for Live Viewer |
+| procServ port | procServ management socket (remote hosts only) |
 
-### Generate the sim startup script
+Port auto-assignment starts at 60615 and skips any port already in use or assigned to another profile.
 
-**File → Generate Sim Script…** reads your real `re_startup_mongo.py` and auto-generates `re_startup_sim.py`:
+### Devices file per profile
+
+Each profile loads a separate Python file of device definitions. The `EASY_BLUESKY_DEVICES_FILE` environment variable is passed to the RE Manager subprocess so `re_startup_mongo.py` imports the right file.
+
+Example layout for two technique profiles:
+
+```
+~/.easy_bluesky/scripts/
+├── devices.py          ← default hardware (never overwritten)
+├── devices_surf.py     ← SURF-specific devices
+├── devices_sim.py      ← simulated devices (auto-generated)
+└── re_startup_mongo.py ← shared startup script (all profiles use this)
+```
+
+### Configuration migration
+
+If you had a previous EasyBluesky installation with separate real/sim port fields, those settings are automatically migrated to a two-profile setup:
+
+- Real ports → **Default** profile
+- Sim ports → **Sim** profile
+
+No manual editing of `connection.json` is needed.
+
+---
+
+## Simulated Devices
+
+### Generate a simulated devices file
+
+**File → Generate Sim Devices…** reads your real `devices.py` (and `re_startup_mongo.py`) and auto-generates `devices_sim.py`:
 
 - `EpicsMotor` → `SynAxis`
 - Area detectors → `SimAreaDetector` (Poisson-noise images)
 - Scalers/counters → `SynGauss`
 - Generic test devices always included: `motor1`, `motor2`, `det`, `det1`, `det2`, `sim_ad`
-- ZMQ doc stream set to sim port 60631
 - Separate device list file (`existing_plans_and_devices_sim.yaml`) so real and sim don't overwrite each other
 
-When the host is **remote**, the dialog offers to **copy the generated script directly to the RE Manager host** via SFTP — no manual `scp` needed.
+Example generated content:
 
-### Starting sim mode
+```python
+from ophyd.sim import SynAxis, SynGauss
 
-1. Click **🔬 Real** to toggle to **🧪 Sim** — the app attempts to connect to the sim instance. If it is not running, a message appears but the toggle stays in sim mode.
-2. Click **⚡ Start RE Mgr** — this starts the sim instance on port 60616 (using procServ on remote hosts).
-3. The app auto-reconnects once the port opens.
+# Auto-mapped from real script
+m1 = SynAxis(name='m1')
 
-### Start both instances at once (local)
-
-A convenience script is provided at `~/.easy_bluesky/scripts/start_re_managers.sh`:
-
-```bash
-# Start both real and sim instances
-~/.easy_bluesky/scripts/start_re_managers.sh
-
-# Start only one
-~/.easy_bluesky/scripts/start_re_managers.sh --real-only
-~/.easy_bluesky/scripts/start_re_managers.sh --sim-only
-
-# Stop all instances
-~/.easy_bluesky/scripts/stop_re_managers.sh
+# Generic sim devices (always included)
+motor1 = SynAxis(name='motor1')
+motor2 = SynAxis(name='motor2')
+det    = SynGauss('det',  motor1, 'motor1', center=0, Imax=1000, sigma=0.5)
+det1   = SynGauss('det1', motor1, 'motor1', center=0, Imax=500,  sigma=1.0)
+det2   = SynGauss('det2', motor2, 'motor2', center=0, Imax=800,  sigma=0.5)
+sim_ad = SimAreaDetector(name='sim_ad')
 ```
 
-Logs are written to `/tmp/re-manager-real.log` and `/tmp/re-manager-sim.log`.
+When the host is **remote**, the dialog offers to **copy the generated file directly to the RE Manager host** via SFTP — no manual `scp` needed.
+
+### Running a sim profile
+
+1. Create a profile named `Sim` (or any name) and set its **Devices file** to `devices_sim.py`.
+2. Click **Auto-assign Ports** to get ports that don't conflict with real profiles.
+3. Select the `Sim` profile in the toolbar.
+4. Click **⚡ Start RE Mgr** to launch it.
+
+Both real and sim instances run simultaneously — switching profiles in the toolbar reconnects without stopping anything.
 
 ### Conda environments
 
@@ -198,8 +247,7 @@ If the RE Manager must run inside a specific conda environment, set **Conda env*
 
 Open **File → Connection Settings** and set:
 - **Host / IP** — hostname or IP of the RE Manager machine
-- **Control / Info / Doc ports** — match what the RE Manager was started with
-- **Sim ports** — same, for the sim instance
+- **Profiles** — one profile per RE Manager instance, each with its own ports and devices file
 
 The app reconnects immediately after clicking OK.
 
@@ -248,7 +296,7 @@ When `procServ` is available on the remote host, **⚡ Start RE Mgr** uses it au
 
 - Daemonizes the child process — survives SSH session close regardless of systemd-logind settings
 - Writes a PID file for clean shutdown
-- Logs RE Manager output to `/tmp/re-manager-real.log` (or `-sim.log`)
+- Logs RE Manager output to `/tmp/re-manager-<profile>.log`
 - Falls back to `systemd-run --user --scope` or `nohup` if procServ is not found
 
 procServ is available at most synchrotron beamlines. To check:
@@ -267,16 +315,22 @@ sudo yum install procServ
 
 With the host set to a non-localhost IP and SSH configured, **⚡ Start RE Mgr**:
 
-1. Writes a launcher shell script to `/tmp/_easy_bluesky_start_{real|sim}.sh` via SFTP
-2. Kills the existing instance for that mode only (via procServ PID file)
-3. Launches `procServ ... /bin/bash /tmp/_easy_bluesky_start_{real|sim}.sh`
+1. Writes a launcher shell script to `/tmp/_easy_bluesky_<profile>.sh` via SFTP
+2. Kills the existing instance for this profile only (via procServ PID file — other profiles are unaffected)
+3. Launches `procServ ... /bin/bash /tmp/_easy_bluesky_<profile>.sh`
 4. Waits (polling every 2 s) until the ZMQ control port opens, then reconnects
 
-**⏹ Stop RE Mgr** kills only the instance for the current mode (real or sim), leaving the other running.
+The launcher script exports `EASY_BLUESKY_DEVICES_FILE=<profile's devices file>` so `re_startup_mongo.py` loads the right devices.
+
+**⏹ Stop RE Mgr** kills only the active profile's instance (via its PID file), leaving all other profiles running.
+
+Profile names are slugified for filenames (lowercase, spaces → underscores). For example:
+- Profile `ASWAXS` → `/tmp/_easy_bluesky_aswaxs.sh`, `/tmp/re-manager-aswaxs.log`
+- Profile `SURF` → `/tmp/_easy_bluesky_surf.sh`, `/tmp/re-manager-surf.log`
 
 #### Service name field (systemd alternative)
 
-If you have a systemd user service set up, enter its name (e.g. `re-manager-real`) in the **Service name** field. The app will use `systemctl --user restart/stop <service>` instead of procServ.
+If you have a systemd user service set up, enter its name (e.g. `re-manager-aswaxs`) in the **Service name** field. The app will use `systemctl --user restart/stop <service>` instead of procServ.
 
 #### Remote startup scripts
 
@@ -290,7 +344,7 @@ scp ~/.easy_bluesky/scripts/re_startup_mongo.py \
     user@your-beamline-host:~/.easy_bluesky/scripts/
 ```
 
-The sim startup script can be copied automatically via **File → Generate Sim Script… → Copy to Remote?**.
+The sim devices file can be copied automatically via **File → Generate Sim Devices… → Copy to Remote?**.
 
 ---
 
@@ -358,40 +412,23 @@ det = EpicsSignal("IOC:det", name="det")
 
 This file is:
 - **Never overwritten** by app updates — safe to edit freely
-- **Imported automatically** by `re_startup_mongo.py` via `from devices import *`
-- **Parsed by the sim generator** — `File → Generate Sim Script…` reads `devices.py` and maps each device to its simulated equivalent
+- **Imported automatically** by `re_startup_mongo.py` via the `EASY_BLUESKY_DEVICES_FILE` env var
+- **Parsed by the sim generator** — `File → Generate Sim Devices…` reads `devices.py` and maps each device to its simulated equivalent
 
-You can also split hardware across multiple files and import them from `devices.py`.
+You can also split hardware across multiple files and import them from `devices.py`. When using multiple profiles, create a separate devices file for each (e.g. `devices_surf.py`, `devices_aswaxs.py`).
 
 ### `re_startup_mongo.py` — do not edit
 
-Handles RE setup, data routing (suitcase.jsonl), and ZMQ doc publishing on port 60630. Imports your hardware from `devices.py`. No changes needed here.
+Handles RE setup, data routing (suitcase.jsonl), and ZMQ doc publishing. Reads `EASY_BLUESKY_DEVICES_FILE` from the environment to decide which devices file to load. **All profiles share this single startup script** — no per-profile startup scripts needed.
 
-### `re_startup_sim.py` — simulation
+### `devices_sim.py` — simulation devices
 
-Auto-generated by **File → Generate Sim Script…**. Contains simulated equivalents of your real devices plus generic test devices:
-
-```python
-from ophyd.sim import SynAxis, SynGauss
-
-# Auto-mapped from real script
-m1 = SynAxis(name='m1')
-
-# Generic sim devices (always included)
-motor1 = SynAxis(name='motor1')
-motor2 = SynAxis(name='motor2')
-det    = SynGauss('det',  motor1, 'motor1', center=0, Imax=1000, sigma=0.5)
-det1   = SynGauss('det1', motor1, 'motor1', center=0, Imax=500,  sigma=1.0)
-det2   = SynGauss('det2', motor2, 'motor2', center=0, Imax=800,  sigma=0.5)
-sim_ad = SimAreaDetector(name='sim_ad')
-```
-
-ZMQ doc stream is published on sim port 60631.
+Auto-generated by **File → Generate Sim Devices…**. Contains simulated equivalents of your real devices plus generic test devices. Referenced by a `Sim` profile's **Devices file** field.
 
 ### YAML permission files
 
-- `existing_plans_and_devices.yaml` — device/plan list for the real instance (auto-updated when environment opens)
-- `existing_plans_and_devices_sim.yaml` — device/plan list for the sim instance (kept separate so real and sim don't overwrite each other)
+- `existing_plans_and_devices.yaml` — device/plan list for the Default profile (auto-updated when environment opens)
+- `existing_plans_and_devices_sim.yaml` — device/plan list for the Sim profile (kept separate so real and sim don't overwrite each other)
 - `user_group_permissions.yaml` — controls which user groups can run which plans
 
 ---
@@ -403,20 +440,39 @@ Connection settings are stored in `~/.easy_bluesky/connection.json` (local only,
 ```json
 {
   "host": "192.168.1.50",
-  "control_port": 60615,
-  "info_port": 60625,
-  "doc_port": 60630,
-  "sim_control_port": 60616,
-  "sim_info_port": 60626,
-  "sim_doc_port": 60631,
   "ssh_user": "beamline",
   "ssh_port": 22,
   "ssh_key_path": "~/.ssh/id_ed25519",
   "ssh_service": "",
   "conda_env": "easy-bluesky",
   "conda_path": "~/anaconda3",
-  "procserv_port": 60635,
-  "sim_procserv_port": 60636
+  "active_profile": "ASWAXS",
+  "profiles": [
+    {
+      "name": "ASWAXS",
+      "devices_file": "devices_aswaxs.py",
+      "control_port": 60615,
+      "info_port": 60625,
+      "doc_port": 60630,
+      "procserv_port": 60635
+    },
+    {
+      "name": "SURF",
+      "devices_file": "devices_surf.py",
+      "control_port": 60640,
+      "info_port": 60641,
+      "doc_port": 60642,
+      "procserv_port": 60643
+    },
+    {
+      "name": "Sim",
+      "devices_file": "devices_sim.py",
+      "control_port": 60616,
+      "info_port": 60626,
+      "doc_port": 60631,
+      "procserv_port": 60636
+    }
+  ]
 }
 ```
 
@@ -455,10 +511,10 @@ easy-bluesky/
 │   ├── main.py               # MainWindow + entry point
 │   ├── worker.py             # ZMQ worker thread (RE Manager API)
 │   ├── config.py             # Configuration constants (env-overridable)
-│   ├── connection_settings.py# Connection dialog + settings I/O
+│   ├── connection_settings.py# Connection dialog + settings I/O + profiles
 │   ├── ssh_manager.py        # SSH-based remote RE Manager control (procServ)
-│   ├── sim_generator.py      # Auto-generate sim startup script from real one
-│   ├── re_control_bar.py     # RE control toolbar (status + buttons + sim toggle)
+│   ├── sim_generator.py      # Auto-generate sim devices file from real script
+│   ├── re_control_bar.py     # RE control toolbar (status + buttons + profile dropdown)
 │   ├── re_console.py         # RE console output tab
 │   ├── experiments_tab.py    # Experiments tab (plan log, plots, HDF5 export)
 │   ├── queue_manager.py      # Queue Manager tab
@@ -469,9 +525,8 @@ easy-bluesky/
 │   ├── devices_plans_tab.py  # Devices & Plans tab
 │   ├── themes.py             # Theme definitions + stylesheet builder
 │   └── scripts/              # Bundled default scripts (copied to ~/.easy_bluesky/scripts/)
-│       ├── devices.py            ← edit this to add hardware
-│       ├── re_startup_mongo.py   ← do not edit (imports devices.py)
-│       ├── re_startup_sim.py     ← auto-generated by File → Generate Sim Script
+│       ├── devices.py            ← edit this to add hardware (never overwritten)
+│       ├── re_startup_mongo.py   ← shared startup script (all profiles use this)
 │       ├── existing_plans_and_devices.yaml
 │       ├── user_group_permissions.yaml
 │       ├── start_re_managers.sh
