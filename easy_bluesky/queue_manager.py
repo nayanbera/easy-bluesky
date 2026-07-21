@@ -493,50 +493,65 @@ class QueueManager(QWidget):
 
     @staticmethod
     def _plan_summary(name: str, kwargs: dict, args: list = None) -> str:
-        args  = list(args or [])
-        parts = []
+        args    = list(args or [])
+        parts   = []
+        name_lc = name.lower()
 
-        # Detectors
+        # ── Readable (detectors) ──────────────────────────────────────────────
         dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
         if isinstance(dets, str):
             dets = [dets]
+        # Fallback: first positional arg is often the detectors list
+        if not dets and args and isinstance(args[0], list):
+            dets = args[0]
         if dets:
-            parts.append("det:" + ",".join(str(d) for d in dets[:3]))
+            parts.append("det: [" + ", ".join(str(d) for d in dets) + "]")
 
-        # Motor
+        # ── Movable (motor) ───────────────────────────────────────────────────
         motor  = kwargs.get("motor")
         motors = kwargs.get("motors")
         if not motor and isinstance(motors, list) and motors:
             motor = motors[0]
-        if not motor and name.lower() in _MOTION_PLANS and args:
+        if not motor and name_lc in _MOTION_PLANS and args:
             motor = args[0]
+        # scan-style: [dets_list, motor, start, stop, ...] in positional args
+        if not motor and name_lc not in _MOTION_PLANS:
+            if len(args) >= 2 and isinstance(args[0], list) and not isinstance(args[1], (int, float)):
+                motor = args[1]
 
         if motor:
             start = kwargs.get("start")
             stop  = kwargs.get("stop")
             num   = kwargs.get("num")
-            s = f"mot:{motor}"
-            if start is not None and stop is not None:
-                s += f"[{start}→{stop}"
-                if num is not None:
-                    s += f",{num}pts"
-                s += "]"
-            elif name.lower() in ("mv", "mvr") and len(args) >= 2:
+            # args-based layout: [dets_list, motor, start, stop, ...]
+            if start is None and len(args) >= 4 and isinstance(args[0], list):
                 try:
-                    s += f"→{float(args[1]):.4g}"
+                    start, stop = float(args[2]), float(args[3])
                 except (TypeError, ValueError):
-                    s += f"→{args[1]}"
+                    pass
+            s = f"mot: {motor}"
+            if start is not None and stop is not None:
+                s += f" [{start} → {stop}"
+                if num is not None:
+                    s += f", {num} pts"
+                s += "]"
+            elif name_lc in ("mv", "mvr") and len(args) >= 2:
+                try:
+                    s += f" → {float(args[1]):.4g}"
+                except (TypeError, ValueError):
+                    s += f" → {args[1]}"
             parts.insert(0, s)
 
-        if not parts:
-            num = kwargs.get("num")
-            if num is not None:
-                parts.append(f"{num}pts")
-            delay = kwargs.get("delay")
-            if delay is not None:
-                parts.append(f"delay={delay}s")
+        # ── num pts / delay (when not already shown inside the motor range) ───
+        num_shown = any("pts" in p for p in parts)
+        num = kwargs.get("num")
+        if num is not None and not num_shown:
+            parts.append(f"{num} pts")
+        delay = kwargs.get("delay")
+        if delay is not None:
+            parts.append(f"delay={delay:.4g} s")
 
-        return "  " + "  ".join(parts) if parts else ""
+        return "  " + "  |  ".join(parts) if parts else ""
 
     def update_history(self, items):
         self.history_list.clear()
