@@ -21,14 +21,23 @@ Environment variables:
 """
 
 import os
+import sys
 from pathlib import Path
 
 # ── Run Engine ─────────────────────────────────────────────────────────────────
 from bluesky import RunEngine
 RE = RunEngine({})
 
-# ── Simulated devices ──────────────────────────────────────────────────────────
-from ophyd.sim import motor1, motor2, det1, det2, det, motor
+# ── Hardware devices (from devices.py) ─────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent))
+try:
+    from devices import *
+    print("[re_startup_mongo] devices.py loaded")
+except ImportError as _e:
+    print(f"[re_startup_mongo] WARNING: devices.py not found ({_e})")
+except Exception as _e:
+    print(f"[re_startup_mongo] ERROR loading devices.py: {_e}")
+    raise
 
 # ── Standard bluesky plans ─────────────────────────────────────────────────────
 from bluesky.plans import (
