@@ -68,6 +68,40 @@ from bluesky.plans import (
     spiral, spiral_fermat,
 )
 from bluesky.plan_stubs import mv, mvr, sleep, rd
+import bluesky.plan_stubs as _bps
+
+
+def prime_detector(det):
+    """
+    Prime an area detector's file-writing plugins (HDF5, TIFF, JPEG).
+
+    The plugin must receive one acquisition before it can write files — ophyd
+    calls this "priming" or "warming up."  Run this plan once after the IOC
+    restarts and before your first scan with an area detector.
+
+    Usage (queue server)::
+
+        prime_detector(Pil300K)
+    """
+    _file_plugins = ("hdf1", "tiff1", "jpeg1", "netcdf1", "magick1")
+    _primed = []
+    for _attr in _file_plugins:
+        _plugin = getattr(det, _attr, None)
+        if _plugin is not None and hasattr(_plugin, "warmup"):
+            try:
+                _plugin.warmup()
+                _primed.append(_attr)
+                print(f"[prime_detector] {det.name}.{_attr} warmed up")
+            except Exception as _e:
+                print(f"[prime_detector] Warning: {det.name}.{_attr} warmup failed: {_e}")
+    if not _primed:
+        # Fallback: stage→unstage triggers plugin configuration
+        yield from _bps.stage(det)
+        yield from _bps.unstage(det)
+        print(f"[prime_detector] {det.name} staged/unstaged (primed via fallback)")
+    else:
+        yield from _bps.null()
+
 
 print("[re_startup_mongo] RE created, devices and plans loaded")
 
