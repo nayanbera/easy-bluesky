@@ -109,6 +109,9 @@ def load_connection() -> dict:
             if not result.get("profiles"):
                 result["profiles"] = [_PROFILE_DEFAULTS.copy()]
             result.setdefault("deleted_profiles", [])
+            # Auto-fix any port conflicts silently; persist if changed
+            if _fix_port_conflicts(result):
+                _SETTINGS_FILE.write_text(json.dumps(result, indent=2))
             return result
         except Exception:
             pass
@@ -131,6 +134,7 @@ def load_connection() -> dict:
 
 
 def save_connection(settings: dict):
+    _fix_port_conflicts(settings)  # resolve conflicts before persisting
     _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     _SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
 
@@ -192,6 +196,41 @@ def find_free_ports(count: int = 4, start: int = 60615, used: set = None) -> lis
                 pass
         port += 1
     return result
+
+
+def _fix_port_conflicts(settings: dict) -> bool:
+    """
+    Scan all profiles for duplicate port numbers and reassign duplicates.
+
+    Iterates profiles in order — earlier profiles keep their ports, later
+    profiles that conflict get new ports assigned above the current maximum.
+    Returns True if any ports were changed.
+    """
+    profiles = settings.get("profiles", [])
+    if len(profiles) <= 1:
+        return False
+
+    _PORT_FIELDS = ("control_port", "info_port", "doc_port", "procserv_port")
+    seen: dict = {}   # port -> (profile_idx, field) — first owner wins
+    changed = False
+
+    for i, p in enumerate(profiles):
+        for field in _PORT_FIELDS:
+            port = p.get(field)
+            if not isinstance(port, int):
+                continue
+            if port in seen:
+                # Conflict — reassign this duplicate to the next free port
+                all_used = set(seen.keys())
+                new = find_free_ports(1, max(all_used) + 1, all_used)
+                if new:
+                    p[field] = new[0]
+                    seen[new[0]] = (i, field)
+                    changed = True
+            else:
+                seen[port] = (i, field)
+
+    return changed
 
 
 # ── Profile lifecycle helpers ──────────────────────────────────────────────────
