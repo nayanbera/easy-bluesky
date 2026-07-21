@@ -236,7 +236,7 @@ Each profile has four ports, all auto-assigned by default:
 | Doc port | ZMQ PUB — live document stream for Live Viewer |
 | procServ port | procServ management socket (remote profiles only) |
 
-> **Important:** always use **Auto-assign Ports** when creating a new profile. Manually entering port numbers that overlap with an existing profile's ports causes ZMQ connection failures that are hard to diagnose. Port auto-assignment checks both what's already allocated in settings and what's in use on the local machine.
+> **Port conflicts are resolved automatically.** On every load and save, the app scans all profiles for duplicate port numbers and reassigns any duplicates — profiles earlier in the list keep their ports, later ones get bumped to the next free port. No manual intervention needed. Using **Auto-assign Ports** when creating profiles is still recommended to start with clean, non-overlapping ports.
 
 ### Devices file per profile
 
