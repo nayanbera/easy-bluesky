@@ -1,6 +1,6 @@
 """re_control_bar.py — Persistent RE status and control toolbar."""
 
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
+from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import pyqtSignal
 from .themes import ACCENT, SUCCESS, DANGER, WARNING, THEMES, DEFAULT_THEME
 
@@ -18,7 +18,7 @@ class REControlBar(QFrame):
     start_manager_requested = pyqtSignal()
     stop_manager_requested  = pyqtSignal()
     reconnect_requested     = pyqtSignal()
-    sim_mode_toggled        = pyqtSignal(bool)   # True = sim, False = real
+    profile_changed         = pyqtSignal(str)   # emits the selected profile name
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -161,15 +161,16 @@ class REControlBar(QFrame):
 
         lay.addWidget(self._separator())
 
-        self.btn_sim = QPushButton("🔬 Real")
-        self.btn_sim.setCheckable(True)
-        self.btn_sim.setChecked(False)
-        self.btn_sim.setToolTip(
-            "Toggle simulation mode.\n"
-            "Sim uses re_startup_sim.py (auto-generated virtual devices).\n"
-            "Switching mode restarts the RE Manager environment.")
-        self.btn_sim.clicked.connect(self._on_sim_toggled)
-        lay.addWidget(self.btn_sim)
+        # Profile selector combo (replaces the old sim toggle button)
+        self.profile_combo = QComboBox()
+        self.profile_combo.setToolTip(
+            "Select active profile.\n"
+            "Each profile points to a separate RE Manager instance.\n"
+            "Switching profile reconnects automatically."
+        )
+        self.profile_combo.setMinimumWidth(90)
+        self.profile_combo.currentTextChanged.connect(self._on_combo_changed)
+        lay.addWidget(self.profile_combo)
 
         lay.addStretch()
 
@@ -195,16 +196,19 @@ class REControlBar(QFrame):
         # Start in a neutral state
         self._set_re_buttons_enabled(False, False)
 
-    def _on_sim_toggled(self, checked: bool):
-        if checked:
-            self.btn_sim.setText("🧪 Sim")
-            self.btn_sim.setStyleSheet(
-                "background: #c77400; color: white; border-color: #c77400;"
-                " font-weight: bold;")
-        else:
-            self.btn_sim.setText("🔬 Real")
-            self.btn_sim.setStyleSheet("")
-        self.sim_mode_toggled.emit(checked)
+    def _on_combo_changed(self, name: str):
+        if name:
+            self.profile_changed.emit(name)
+
+    def update_profiles(self, names: list, active: str):
+        """Repopulate the profile combo and set the current item to *active*."""
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItems(names)
+        idx = self.profile_combo.findText(active)
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.profile_combo.blockSignals(False)
 
     @staticmethod
     def _separator():
