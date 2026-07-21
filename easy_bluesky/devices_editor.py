@@ -51,11 +51,11 @@ class DevicesEditorDialog(QDialog):
         top = QHBoxLayout()
         top.addWidget(QLabel("Profile:"))
         self._combo = QComboBox()
+        self._combo.currentIndexChanged.connect(self._on_combo_changed)
         for p in self._settings.get("profiles", []):
             name = p.get("name", "")
             label = f"{name}  [LOCAL]" if p.get("is_local") else name
             self._combo.addItem(label, userData=p)
-        self._combo.currentIndexChanged.connect(self._on_combo_changed)
         top.addWidget(self._combo, 1)
 
         self._loc_label = QLabel("")
@@ -75,8 +75,9 @@ class DevicesEditorDialog(QDialog):
         layout.addWidget(self._editor, 1)
 
         # Status bar
-        self._status = QLabel("")
+        self._status = QLabel("Ready")
         self._status.setWordWrap(True)
+        self._status.setMinimumHeight(20)
         layout.addWidget(self._status)
 
         # Button row
@@ -101,12 +102,19 @@ class DevicesEditorDialog(QDialog):
 
     def _select_active_profile(self):
         active_name = self._settings.get("active_profile", "")
+        target = 0
         for i in range(self._combo.count()):
             if self._combo.itemData(i).get("name") == active_name:
-                self._combo.setCurrentIndex(i)
-                return
-        if self._combo.count() > 0:
-            self._combo.setCurrentIndex(0)
+                target = i
+                break
+        # Block the signal so _on_combo_changed doesn't fire; load manually below.
+        self._combo.blockSignals(True)
+        self._combo.setCurrentIndex(target)
+        self._combo.blockSignals(False)
+        self._current_index = target
+        profile = self._combo.itemData(target)
+        if profile:
+            self._load_profile(profile)
 
     def _on_combo_changed(self, index: int):
         if self._dirty and self._current_index >= 0:
