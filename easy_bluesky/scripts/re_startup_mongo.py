@@ -112,6 +112,15 @@ def prime_detector(det):
 
 print("[re_startup_mongo] RE created, devices and plans loaded")
 
+# ── BestEffortCallback (live scan table in console) ────────────────────────────
+try:
+    from bluesky.callbacks.best_effort import BestEffortCallback as _BEC
+    bec = _BEC()
+    RE.subscribe(bec)
+    print("[re_startup_mongo] BestEffortCallback subscribed")
+except Exception as _e:
+    print(f"[re_startup_mongo] WARNING: BestEffortCallback not subscribed: {_e}")
+
 # ── suitcase.jsonl serializer ──────────────────────────────────────────────────
 _script_dir = Path(__file__).parent
 _default_data_dir = _script_dir.parent / "data" / "runs"
@@ -126,7 +135,16 @@ try:
     def _jsonl_factory(name, doc):
         runs_dir = _DATA_DIR  # fallback
         try:
-            if _ACTIVE_EXP_FILE.exists():
+            # Priority 1: exp_dir passed in plan metadata (works for remote RE Manager
+            # because the local app injects it into every plan's md kwargs).
+            exp_dir = doc.get("exp_dir", "")
+            if exp_dir:
+                candidate = Path(exp_dir) / "runs"
+                candidate.mkdir(parents=True, exist_ok=True)
+                runs_dir = candidate
+                print(f"[re_startup_mongo] run → {runs_dir} (from exp_dir md)")
+            # Priority 2: active_experiment.json on this machine (local-mode only).
+            elif _ACTIVE_EXP_FILE.exists():
                 import json as _j
                 info = _j.loads(_ACTIVE_EXP_FILE.read_text())
                 candidate = Path(info["path"]) / "runs"
