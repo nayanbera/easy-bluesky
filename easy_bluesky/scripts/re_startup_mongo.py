@@ -79,28 +79,35 @@ def prime_detector(det):
     calls this "priming" or "warming up."  Run this plan once after the IOC
     restarts and before your first scan with an area detector.
 
+    Accepts a single detector or a list of detectors.
+
     Usage (queue server)::
 
         prime_detector(Pil300K)
     """
     _file_plugins = ("hdf1", "tiff1", "jpeg1", "netcdf1", "magick1")
-    _primed = []
-    for _attr in _file_plugins:
-        _plugin = getattr(det, _attr, None)
-        if _plugin is not None and hasattr(_plugin, "warmup"):
+    _dets = det if isinstance(det, (list, tuple)) else [det]
+    for _d in _dets:
+        _primed = False
+        for _attr in _file_plugins:
+            _plugin = getattr(_d, _attr, None)
+            if _plugin is not None and hasattr(_plugin, "warmup"):
+                try:
+                    _plugin.warmup()
+                    _primed = True
+                    print(f"[prime_detector] {_d.name}.{_attr} warmed up")
+                except Exception as _e:
+                    print(f"[prime_detector] Warning: {_d.name}.{_attr}: {_e}")
+        if not _primed:
+            # Call stage/unstage directly (not via plan stubs) so the
+            # RunEngine never sees a list as msg.obj.
             try:
-                _plugin.warmup()
-                _primed.append(_attr)
-                print(f"[prime_detector] {det.name}.{_attr} warmed up")
+                _d.stage()
+                _d.unstage()
+                print(f"[prime_detector] {_d.name}: primed via stage/unstage")
             except Exception as _e:
-                print(f"[prime_detector] Warning: {det.name}.{_attr} warmup failed: {_e}")
-    if not _primed:
-        # Fallback: stage→unstage triggers plugin configuration
-        yield from _bps.stage(det)
-        yield from _bps.unstage(det)
-        print(f"[prime_detector] {det.name} staged/unstaged (primed via fallback)")
-    else:
-        yield from _bps.null()
+                print(f"[prime_detector] Warning: stage/unstage for {_d.name}: {_e}")
+    yield from _bps.null()
 
 
 print("[re_startup_mongo] RE created, devices and plans loaded")
