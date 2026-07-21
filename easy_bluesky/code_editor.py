@@ -6,7 +6,7 @@ try:
 except ImportError:
     JEDI_AVAILABLE = False
 
-from PyQt6.QtWidgets import QPlainTextEdit, QCompleter, QAbstractItemView, QWidget
+from PyQt6.QtWidgets import QPlainTextEdit, QCompleter, QAbstractItemView, QWidget, QTextEdit
 from PyQt6.QtCore import Qt, QStringListModel, QRect, QSize
 from PyQt6.QtGui import (
     QTextCursor, QKeyEvent, QFont, QPainter, QColor,
@@ -140,7 +140,7 @@ class CodeEditor(QPlainTextEdit):
     def _highlight_current_line(self):
         pal = self.palette()
         color = pal.color(QPalette.ColorRole.AlternateBase)
-        sel = QPlainTextEdit.ExtraSelection()
+        sel = QTextEdit.ExtraSelection()
         sel.format.setBackground(color)
         sel.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
         sel.cursor = self.textCursor()
