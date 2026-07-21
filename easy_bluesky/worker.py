@@ -1,5 +1,6 @@
 """worker.py — ZMQ worker thread for RE Manager communication."""
 
+import os
 import shutil
 import subprocess
 import time
@@ -30,7 +31,6 @@ def _get_scripts_dir() -> Path:
     Return the user scripts directory (~/.easy_bluesky/scripts/), creating it
     and copying bundled defaults the first time it is needed.
     """
-    import os
     _USER_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     for fname in _BUNDLED_FILES:
         dest = _USER_SCRIPTS_DIR / fname
@@ -61,7 +61,6 @@ class ZMQWorker(QObject):
         self._poll_interval  = 1.0
         self._re_proc        = None
         self._is_connecting  = False   # blocks poll while connect() runs
-        self._sim_mode       = False   # use re_startup_sim.py when True
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -89,15 +88,17 @@ class ZMQWorker(QObject):
 
     @property
     def sim_mode(self) -> bool:
-        return self._sim_mode
+        """Kept for backward compatibility — always returns False in profile mode."""
+        return False
 
-    @sim_mode.setter
-    def sim_mode(self, value: bool):
-        self._sim_mode = value
+    def start_re_manager(self, profile: dict,
+                         ctrl_port: int = None, info_port: int = None):
+        """
+        Launch start-re-manager locally for the given profile.
 
-    def start_re_manager(self, sim: bool | None = None,
-                         ctrl_port: int = 60615, info_port: int = 60625):
-        """Launch start-re-manager on the given ZMQ ports."""
+        Ports come from the profile dict unless overridden by ctrl_port/info_port.
+        Sets EASY_BLUESKY_DEVICES_FILE so re_startup_mongo.py loads the right devices.
+        """
         exe = shutil.which("start-re-manager")
         if not exe:
             self.error_occurred.emit("start-re-manager not found — install bluesky-queueserver")
@@ -107,25 +108,30 @@ class ZMQWorker(QObject):
             self.error_occurred.emit("RE Manager is already running")
             return False
 
-        use_sim = self._sim_mode if sim is None else sim
-        scripts_dir    = _get_scripts_dir()
-        startup_script = scripts_dir / ("re_startup_sim.py" if use_sim
-                                        else "re_startup_mongo.py")
-        existing_pd    = scripts_dir / ("existing_plans_and_devices_sim.yaml"
-                                        if use_sim else "existing_plans_and_devices.yaml")
+        p_ctrl = ctrl_port if ctrl_port is not None else profile.get("control_port", 60615)
+        p_info = info_port if info_port is not None else profile.get("info_port", 60625)
+        devices_file = profile.get("devices_file", "devices.py")
+
+        scripts_dir = _get_scripts_dir()
+        startup_script = scripts_dir / "re_startup_mongo.py"
+        existing_pd    = scripts_dir / "existing_plans_and_devices.yaml"
         permissions    = scripts_dir / "user_group_permissions.yaml"
 
         cmd = [exe,
-               "--zmq-control-addr", f"tcp://*:{ctrl_port}",
-               "--zmq-info-addr",    f"tcp://*:{info_port}",
+               "--zmq-control-addr", f"tcp://*:{p_ctrl}",
+               "--zmq-info-addr",    f"tcp://*:{p_info}",
                "--zmq-publish-console", "ON",
                "--existing-plans-devices", str(existing_pd),
                "--user-group-permissions", str(permissions)]
         if startup_script.exists():
             cmd += ["--startup-script", str(startup_script)]
 
+        # Pass the devices file via environment variable
+        env = dict(os.environ)
+        env["EASY_BLUESKY_DEVICES_FILE"] = devices_file
+
         try:
-            self._re_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
+            self._re_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, env=env)
             self.re_manager_started.emit(self._re_proc.pid)
             return True
         except Exception as e:

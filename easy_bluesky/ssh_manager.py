@@ -1,6 +1,7 @@
 """ssh_manager.py — SSH-based remote RE Manager control (key auth only, no passwords)."""
 
 from pathlib import Path
+from .connection_settings import profile_slug
 
 
 def _get_client(settings: dict):
@@ -62,19 +63,19 @@ def _re_manager_exe(settings: dict) -> str:
     return "start-re-manager"
 
 
-def _instance_files(sim: bool) -> tuple[str, str, str]:
-    """Return (remote_script, log_file, pid_file) for real or sim instance."""
-    tag = "sim" if sim else "real"
+def _instance_files(profile_name: str) -> tuple:
+    """Return (remote_script, log_file, pid_file) for the given profile name."""
+    slug = profile_slug(profile_name)
     return (
-        f"/tmp/_easy_bluesky_start_{tag}.sh",
-        f"/tmp/re-manager-{tag}.log",
-        f"/tmp/re-manager-{tag}-procserv.pid",
+        f"/tmp/_easy_bluesky_{slug}.sh",
+        f"/tmp/re-manager-{slug}.log",
+        f"/tmp/re-manager-{slug}-procserv.pid",
     )
 
 
-def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
+def restart_re_manager(settings: dict, profile: dict) -> tuple:
     """
-    SSH into the remote RE Manager host and restart it.
+    SSH into the remote RE Manager host and restart the instance for *profile*.
 
     Uses procServ when available (ideal for EPICS beamlines — survives SSH
     disconnect reliably). Falls back to systemd-run --user --scope, then nohup.
@@ -102,26 +103,30 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
                 return False, f"systemctl: {err}"
             return True, f"systemctl --user restart {service} OK"
 
-        script        = "re_startup_sim.py" if sim else "re_startup_mongo.py"
         scripts_path  = "$HOME/.easy_bluesky/scripts"
-        remote_script, log_file, pid_file = _instance_files(sim)
-        procserv_port = settings.get(
-            "sim_procserv_port" if sim else "procserv_port", 60636 if sim else 60635
-        )
-        ctrl_port = settings.get("sim_control_port" if sim else "control_port", 60616 if sim else 60615)
-        info_port = settings.get("sim_info_port"    if sim else "info_port",    60626 if sim else 60625)
+        startup_script = "re_startup_mongo.py"
+        devices_file   = profile.get("devices_file", "devices.py")
+        ctrl_port      = profile.get("control_port", 60615)
+        info_port      = profile.get("info_port", 60625)
+        procserv_port  = profile.get("procserv_port", 60635)
+        profile_name   = profile.get("name", "Default")
+        instance_name  = f"RE-{profile_name}"
+
+        remote_script, log_file, pid_file = _instance_files(profile_name)
 
         # Write launcher script via SFTP — avoids all shell-quoting issues.
-        # It sources .bash_profile for EPICS env vars, then exec's start-re-manager.
+        # It sources .bash_profile for EPICS env vars, exports EASY_BLUESKY_DEVICES_FILE,
+        # then exec's start-re-manager.
         script_body = (
             "#!/bin/bash\n"
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
+            f"export EASY_BLUESKY_DEVICES_FILE={devices_file}\n"
             f"exec {exe}"
             f" --zmq-control-addr tcp://*:{ctrl_port}"
             f" --zmq-info-addr tcp://*:{info_port}"
             f" --zmq-publish-console ON"
-            f" --startup-script {scripts_path}/{script}"
-            f" --existing-plans-devices {scripts_path}/existing_plans_and_devices{'_sim' if sim else ''}.yaml"
+            f" --startup-script {scripts_path}/{startup_script}"
+            f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
             f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
             f" >> {log_file} 2>&1\n"
         )
@@ -131,13 +136,9 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         sftp.chmod(remote_script, 0o755)
         sftp.close()
 
-        # Kill existing instance then launch.
-        # procServ daemonizes itself — the SSH command returns immediately while
-        # procServ (and RE Manager) keep running after the session closes.
-        # Fall back to systemd-run or nohup on systems without procServ.
-        # Kill only this instance's procServ (and its child) via the pid file.
-        # Do NOT pkill start-re-manager globally — that would kill the other
-        # instance (real vs sim) running on a different port.
+        # Kill only this profile's procServ (and its child) via the pid file.
+        # Do NOT pkill start-re-manager globally — that would kill other
+        # profiles' instances running on different ports.
         stop_cmd = (
             f"kill $(cat {pid_file} 2>/dev/null) 2>/dev/null; "
             f"rm -f {pid_file}; "
@@ -145,7 +146,7 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         )
         run_cmd = (
             f"if command -v procServ &>/dev/null; then "
-            f"  procServ --noautorestart -n RE-Manager"
+            f"  procServ --noautorestart -n {instance_name}"
             f" -L {log_file} -p {pid_file} {procserv_port}"
             f" /bin/bash {remote_script}; "
             f"elif command -v systemd-run &>/dev/null; then "
@@ -160,7 +161,7 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         stdout.channel.recv_exit_status()
         client.close()
         env_note = f" (conda env: {settings['conda_env']})" if settings.get("conda_env") else ""
-        return True, f"RE Manager restarted on remote host{env_note}"
+        return True, f"RE Manager (profile: {profile_name}) restarted on remote host{env_note}"
 
     except Exception as e:
         try:
@@ -170,8 +171,8 @@ def restart_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         return False, f"SSH command failed: {e}"
 
 
-def stop_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
-    """SSH into the remote host and kill the RE Manager process."""
+def stop_re_manager(settings: dict, profile: dict) -> tuple:
+    """SSH into the remote host and kill the RE Manager instance for *profile*."""
     try:
         client = _get_client(settings)
     except Exception as e:
@@ -182,10 +183,9 @@ def stop_re_manager(settings: dict, sim: bool = False) -> tuple[bool, str]:
         if service:
             cmd = f"systemctl --user stop {service}"
         else:
-            _, log_file, pid_file = _instance_files(sim)
-            ctrl_port = settings.get(
-                "sim_control_port" if sim else "control_port", 60616 if sim else 60615
-            )
+            profile_name = profile.get("name", "Default")
+            ctrl_port = profile.get("control_port", 60615)
+            _, log_file, pid_file = _instance_files(profile_name)
             cmd = (
                 f"if [ -f {pid_file} ]; then "
                 f"  kill $(cat {pid_file}) 2>/dev/null; "
@@ -219,7 +219,7 @@ def wait_for_port(host: str, port: int, timeout: int = 30) -> bool:
     return False
 
 
-def test_ssh_connection(settings: dict) -> tuple[bool, str]:
+def test_ssh_connection(settings: dict) -> tuple:
     """
     Verify SSH connectivity and optionally check that the conda env exists.
     Returns (success, message).
@@ -251,7 +251,9 @@ def test_ssh_connection(settings: dict) -> tuple[bool, str]:
                 )
 
             # Also report procServ availability
-            _, stdout3, _ = client.exec_command("which procServ 2>/dev/null && procServ --version 2>&1 | head -1", timeout=5)
+            _, stdout3, _ = client.exec_command(
+                "which procServ 2>/dev/null && procServ --version 2>&1 | head -1", timeout=5
+            )
             procserv_info = stdout3.read().decode().strip()
             client.close()
             ps_note = f"  |  {procserv_info}" if procserv_info else "  |  procServ not found"

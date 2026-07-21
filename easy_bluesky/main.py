@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, QTimer
 from .config import APP_NAME, ACCENT
 from .connection_settings import (
-    load_connection, make_zmq_addrs, make_zmq_addrs_for_mode,
-    ConnectionDialog, is_local_host,
+    load_connection, save_connection, make_zmq_addrs,
+    get_active_profile, ConnectionDialog, is_local_host,
 )
 from .sim_generator import generate_sim_script
 from .themes import (
@@ -88,6 +88,12 @@ class MainWindow(QMainWindow):
         ctrl_addr, _, _ = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("EasyBluesky  |  ZMQ: " + ctrl_addr)
 
+        # Populate the profile combo with the current profiles
+        profiles = self._conn_settings.get("profiles", [])
+        names = [p.get("name", "") for p in profiles]
+        active = self._conn_settings.get("active_profile", "Default")
+        self.re_bar.update_profiles(names, active)
+
     def _build_menu(self):
         from PyQt6.QtGui import QActionGroup
         menubar = self.menuBar()
@@ -97,7 +103,7 @@ class MainWindow(QMainWindow):
         act_conn = file_menu.addAction("Connection Settings…")
         act_conn.triggered.connect(self._on_connection_settings)
         file_menu.addSeparator()
-        act_gen_sim = file_menu.addAction("Generate Sim Script…")
+        act_gen_sim = file_menu.addAction("Generate Sim Devices…")
         act_gen_sim.triggered.connect(self._on_generate_sim_script)
         file_menu.addSeparator()
         self._recent_menu = file_menu.addMenu("Recent Experiments")
@@ -209,7 +215,7 @@ class MainWindow(QMainWindow):
         self.re_bar.start_manager_requested.connect(self._on_start_manager_requested)
         self.re_bar.stop_manager_requested.connect(self._on_stop_manager_requested)
         self.re_bar.reconnect_requested.connect(self._on_reconnect_requested)
-        self.re_bar.sim_mode_toggled.connect(self._on_sim_mode_toggled)
+        self.re_bar.profile_changed.connect(self._on_profile_changed)
 
         # Experiments tab → MainWindow
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
@@ -307,24 +313,23 @@ class MainWindow(QMainWindow):
 
     def _on_start_manager_requested(self):
         settings = self._conn_settings
-        sim = self.worker.sim_mode
-        mode = "sim" if sim else "real"
+        profile = get_active_profile(settings)
         if is_local_host(settings):
-            ctrl, _, _ = make_zmq_addrs_for_mode(settings, sim)
-            ctrl_port = int(ctrl.rsplit(":", 1)[-1])
-            _, info, _ = make_zmq_addrs_for_mode(settings, sim)
-            info_port = int(info.rsplit(":", 1)[-1])
-            ok = self.worker.start_re_manager(sim=sim, ctrl_port=ctrl_port, info_port=info_port)
+            ok = self.worker.start_re_manager(profile)
             if ok:
                 self._log(
-                    f"[{self._ts()}] ✓ RE Manager ({mode}) starting — reconnecting in 5 s…"
+                    f"[{self._ts()}] ✓ RE Manager (profile: {profile['name']}) "
+                    f"starting — reconnecting in 5 s…"
                 )
                 QTimer.singleShot(5000, self._auto_reconnect_mode)
             else:
                 self._log(f"[{self._ts()}] ✗ Start RE Manager failed")
         else:
             host = settings["host"]
-            self._log(f"[{self._ts()}] SSH → restarting RE Manager ({mode}) on {host}…")
+            self._log(
+                f"[{self._ts()}] SSH → restarting RE Manager "
+                f"(profile: {profile['name']}) on {host}…"
+            )
             threading.Thread(
                 target=self._ssh_restart_remote,
                 args=(settings,),
@@ -333,7 +338,7 @@ class MainWindow(QMainWindow):
 
     def _on_stop_manager_requested(self):
         settings = self._conn_settings
-        sim = self.worker.sim_mode
+        profile = get_active_profile(settings)
         if is_local_host(settings):
             self.worker.stop_re_manager()
             self._log(f"[{self._ts()}] RE Manager stopped")
@@ -342,26 +347,27 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] SSH → stopping RE Manager on {host}…")
             threading.Thread(
                 target=self._ssh_stop_remote,
-                args=(settings, sim),
+                args=(settings, profile),
                 daemon=True,
             ).start()
 
-    def _ssh_stop_remote(self, settings: dict, sim: bool = False):
+    def _ssh_stop_remote(self, settings: dict, profile: dict):
         from .ssh_manager import stop_re_manager
-        ok, msg = stop_re_manager(settings, sim=sim)
+        ok, msg = stop_re_manager(settings, profile)
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
         if ok:
             self.re_bar.set_disconnected()
 
     def _ssh_restart_remote(self, settings: dict):
         from .ssh_manager import restart_re_manager, wait_for_port
-        ok, msg = restart_re_manager(settings, sim=self.worker.sim_mode)
+        profile = get_active_profile(settings)
+        ok, msg = restart_re_manager(settings, profile)
         ts = self._ts()
         if not ok:
             self._log(f"[{ts}] ✗ SSH restart failed: {msg}")
             return
         self._log(f"[{ts}] ✓ {msg} — waiting for port to open…")
-        ctrl, _, _ = make_zmq_addrs_for_mode(settings, self.worker.sim_mode)
+        ctrl, _, _ = make_zmq_addrs(settings)
         port = int(ctrl.rsplit(":", 1)[-1])
         ready = wait_for_port(settings["host"], port, timeout=30)
         if ready:
@@ -381,10 +387,8 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] ✗ Still starting — click Reconnect when ready")
 
     def _auto_reconnect_mode(self):
-        """Reconnect to the address matching the current real/sim mode."""
-        ctrl, info, doc = make_zmq_addrs_for_mode(
-            self._conn_settings, self.worker.sim_mode
-        )
+        """Reconnect to the active profile's address."""
+        ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self._log(f"[{self._ts()}] Auto-reconnecting to {ctrl}…")
         ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
         if ok:
@@ -404,6 +408,23 @@ class MainWindow(QMainWindow):
             self.re_bar.set_disconnected()
             self._log(f"[{self._ts()}] ✗ Reconnect failed — RE Manager may still be starting")
 
+    def _on_profile_changed(self, name: str):
+        self._conn_settings["active_profile"] = name
+        save_connection(self._conn_settings)
+        ctrl, info, doc = make_zmq_addrs(self._conn_settings)
+        self._log(f"[{self._ts()}] Switching to profile '{name}' → {ctrl}")
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        if ok:
+            self._log(f"[{self._ts()}] ✓ Connected to profile '{name}'")
+        else:
+            self._log(
+                f"[{self._ts()}] ✗ Profile '{name}' RE Manager not running at {ctrl}\n"
+                f"              not running — click Start RE Mgr to start it"
+            )
+            self.re_bar.set_disconnected()
+        # Always restart the doc stream to point at the new profile's doc port
+        self.experiments_tab.live_viewer.restart_zmq(doc)
+
     def _on_open_hdf5(self):
         from PyQt6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(
@@ -422,47 +443,55 @@ class MainWindow(QMainWindow):
         from easy_bluesky.worker import _get_scripts_dir
         scripts_dir  = _get_scripts_dir()
         real_script  = scripts_dir / "re_startup_mongo.py"
-        sim_script   = scripts_dir / "re_startup_sim.py"
+        sim_devices  = scripts_dir / "devices_sim.py"
         if not real_script.exists():
             QMessageBox.warning(self, "Not Found",
                 f"Real startup script not found:\n{real_script}\n\n"
-                "Create it first, then generate the sim version.")
+                "Create it first, then generate the sim devices file.")
             return
         try:
-            out = generate_sim_script(real_script, sim_script)
+            out = generate_sim_script(real_script, sim_devices)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to generate sim script:\n{e}")
+            QMessageBox.critical(self, "Error", f"Failed to generate sim devices file:\n{e}")
             return
 
-        msg = f"Simulated startup script written to:\n{out}\n\nReview and edit as needed, then enable Sim Mode in the toolbar."
+        msg = (
+            f"Simulated devices file written to:\n{out}\n\n"
+            f"Review and edit as needed.\n\n"
+            f"To use simulation, open Connection Settings and create or edit a profile "
+            f"with 'Devices file' set to 'devices_sim.py'."
+        )
 
-        # If the host is remote, offer to copy the script via SFTP
+        # If the host is remote, offer to copy the file via SFTP
         settings = self._conn_settings
         if not is_local_host(settings):
             r = QMessageBox.question(
                 self, "Copy to Remote?",
-                f"Copy the sim script to the remote RE Manager host?\n\n"
-                f"  {settings['host']}:~/.easy_bluesky/scripts/re_startup_sim.py",
+                f"Copy the devices file to the remote RE Manager host?\n\n"
+                f"  {settings['host']}:~/.easy_bluesky/scripts/devices_sim.py",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
             if r == QMessageBox.StandardButton.Yes:
-                ok, sftp_msg = self._sftp_upload_sim_script(sim_script, settings)
+                ok, sftp_msg = self._sftp_upload_sim_script(sim_devices, settings)
                 msg += f"\n\n{'✓' if ok else '✗'} {sftp_msg}"
 
-        QMessageBox.information(self, "Sim Script Generated", msg)
+        QMessageBox.information(self, "Sim Devices Generated", msg)
 
-    def _sftp_upload_sim_script(self, local_path, settings: dict) -> tuple[bool, str]:
+    def _sftp_upload_sim_script(self, local_path, settings: dict) -> tuple:
         try:
             from .ssh_manager import _get_client
             client = _get_client(settings)
             sftp = client.open_sftp()
-            remote_path = ".easy_bluesky/scripts/re_startup_sim.py"
+            remote_path = ".easy_bluesky/scripts/devices_sim.py"
             # Ensure remote directory exists
             try:
                 sftp.stat(".easy_bluesky/scripts")
             except FileNotFoundError:
-                sftp.mkdir(".easy_bluesky")
+                try:
+                    sftp.stat(".easy_bluesky")
+                except FileNotFoundError:
+                    sftp.mkdir(".easy_bluesky")
                 sftp.mkdir(".easy_bluesky/scripts")
             sftp.put(str(local_path), remote_path)
             sftp.close()
@@ -471,30 +500,12 @@ class MainWindow(QMainWindow):
         except Exception as e:
             return False, f"SFTP upload failed: {e}"
 
-    def _on_sim_mode_toggled(self, sim: bool):
-        self.worker.sim_mode = sim
-        mode = "Simulation" if sim else "Real hardware"
-        ctrl, info, doc = make_zmq_addrs_for_mode(self._conn_settings, sim)
-        self._log(f"[{self._ts()}] Switching to {mode} mode → {ctrl}")
-        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
-        if ok:
-            self._log(f"[{self._ts()}] ✓ Connected to {mode} RE Manager")
-        else:
-            self._log(
-                f"[{self._ts()}] ✗ {mode} RE Manager not running at {ctrl}\n"
-                f"              Click '⚡ Start RE Mgr' to start it."
-            )
-            self.re_bar.set_disconnected()
-        self.experiments_tab.live_viewer.restart_zmq(doc)
-
     def _on_connection_settings(self):
         dlg = ConnectionDialog(self)
         if dlg.exec() != ConnectionDialog.DialogCode.Accepted:
             return
         self._conn_settings = dlg.get_settings()
-        ctrl, info, doc = make_zmq_addrs_for_mode(
-            self._conn_settings, self.worker.sim_mode
-        )
+        ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage(f"Reconnecting to {self._conn_settings['host']}…")
         ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
         if ok:
@@ -503,6 +514,11 @@ class MainWindow(QMainWindow):
             self.re_bar.set_disconnected()
             self._log(f"[{self._ts()}] ✗ Connection failed — check host and ports")
         self.experiments_tab.live_viewer.restart_zmq(doc)
+        # Refresh the profile combo to reflect any changes
+        profiles = self._conn_settings.get("profiles", [])
+        names = [p.get("name", "") for p in profiles]
+        active = self._conn_settings.get("active_profile", "Default")
+        self.re_bar.update_profiles(names, active)
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")

@@ -6,9 +6,13 @@ Bluesky RE startup script loaded by the queue server worker process.
 IMPORTANT: This script must define `RE` (a RunEngine instance) — the queue
 server uses whatever `RE` it finds in the module namespace.
 
+The devices file is selected via the EASY_BLUESKY_DEVICES_FILE environment
+variable (default: devices.py). This allows each named profile to load its own
+devices file (e.g. devices_sim.py) without a separate startup script.
+
 Defines:
   - RE: RunEngine instance
-  - Simulated ophyd devices (motor1, motor2, det1, det2, det, motor)
+  - All names exported by the active devices file
   - Standard bluesky plans (scan, count, rel_scan, etc.)
   - Subscribes suitcase.jsonl serializer; routes each run's JSONL data to
     <active_experiment>/runs/ (reads data/active_experiment.json per run).
@@ -16,10 +20,12 @@ Defines:
   - Publishes documents on ZMQ PUB port 60630 for the Live Viewer
 
 Environment variables:
-    BLUESKY_DATA_DIR      (default: <project_root>/data/runs)
-    BLUESKY_ZMQ_PUB_PORT  (default: 60630)
+    EASY_BLUESKY_DEVICES_FILE  (default: devices.py)
+    BLUESKY_DATA_DIR           (default: <project_root>/data/runs)
+    BLUESKY_ZMQ_PUB_PORT       (default: 60630)
 """
 
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -28,15 +34,18 @@ from pathlib import Path
 from bluesky import RunEngine
 RE = RunEngine({})
 
-# ── Hardware devices (from devices.py) ─────────────────────────────────────────
+# ── Hardware devices (from the profile's devices file) ─────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
+_devices_file = os.getenv("EASY_BLUESKY_DEVICES_FILE", "devices.py")
+_devices_module = _devices_file[:-3] if _devices_file.endswith(".py") else _devices_file
 try:
-    from devices import *
-    print("[re_startup_mongo] devices.py loaded")
+    _mod = importlib.import_module(_devices_module)
+    globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
+    print(f"[re_startup_mongo] {_devices_file} loaded")
 except ImportError as _e:
-    print(f"[re_startup_mongo] WARNING: devices.py not found ({_e})")
+    print(f"[re_startup_mongo] WARNING: {_devices_file} not found ({_e})")
 except Exception as _e:
-    print(f"[re_startup_mongo] ERROR loading devices.py: {_e}")
+    print(f"[re_startup_mongo] ERROR loading {_devices_file}: {_e}")
     raise
 
 # ── Standard bluesky plans ─────────────────────────────────────────────────────
