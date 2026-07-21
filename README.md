@@ -13,6 +13,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
 - **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
 - **Local Profiles** — Run RE Manager as a local subprocess with zero setup. Starts automatically when you launch the profile and stops when you close the app. Ideal for learning and testing with simulated devices.
+- **Edit Devices File** — Edit any profile's devices file directly in the app with Python syntax highlighting. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP (also saves a local copy for the sim generator).
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
 
@@ -251,6 +252,46 @@ Example layout for two technique profiles:
 ├── devices_sim.py      ← simulated devices (auto-generated)
 └── re_startup_mongo.py ← shared startup script (all profiles use this)
 ```
+
+### Editing devices files
+
+**File → Edit Devices File…** opens a built-in editor that lets you modify any profile's devices file without leaving the app or opening a terminal.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Edit Devices File — devices_aswaxs.py  [ASWAXS]  *        │
+│                                                             │
+│  Profile: [ ASWAXS ▼ ]  Remote: myhost:~/.easy_bluesky/…  │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ from ophyd import EpicsMotor                            │ │
+│ │                                                         │ │
+│ │ sample_x = EpicsMotor("IOC:m1", name="sample_x")       │ │
+│ │ sample_y = EpicsMotor("IOC:m2", name="sample_y")       │ │
+│ └─────────────────────────────────────────────────────────┘ │
+│  ✓ Pulled from myhost:~/.easy_bluesky/scripts/…            │
+│  [Pull from RE Machine]  [Save & Push to RE Machine]  [Close] │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Local profiles** — reads and writes `~/.easy_bluesky/scripts/<file>` directly on this machine. Buttons: **Reload** and **Save**.
+
+**Remote profiles** — transfers the file via SFTP over the existing SSH connection. Buttons:
+
+| Button | Action |
+|--------|--------|
+| Pull from RE Machine | Downloads the file from `~/.easy_bluesky/scripts/<file>` on the remote host. Also saves a local copy so the sim generator can read it. |
+| Save & Push to RE Machine | Saves a local copy, then uploads to `~/.easy_bluesky/scripts/<file>` on the remote host. |
+
+The **profile combo** at the top lets you switch between any profile's devices file without reopening the dialog. If you have unsaved changes you will be prompted to discard them first.
+
+A `*` in the title bar marks unsaved changes. Closing with unsaved changes also prompts for confirmation.
+
+**Typical remote workflow:**
+
+1. **File → Edit Devices File…** — dialog opens and auto-pulls the current file from the RE machine
+2. Edit the devices (add motors, detectors, etc.)
+3. Click **Save & Push to RE Machine**
+4. Click **⚡ Start RE Mgr** in the main toolbar to restart the RE Manager and pick up the new devices
 
 ### Configuration migration
 
@@ -589,6 +630,7 @@ easy-bluesky/
 │   ├── config.py             # Configuration constants (env-overridable)
 │   ├── connection_settings.py# Connection dialog + settings I/O + profiles
 │   ├── ssh_manager.py        # SSH-based remote RE Manager control (procServ)
+│   ├── devices_editor.py     # Edit Devices File dialog (local read/write + SFTP pull/push)
 │   ├── sim_generator.py      # Auto-generate sim devices file from real script
 │   ├── re_control_bar.py     # RE control toolbar (status + buttons + profile dropdown)
 │   ├── re_console.py         # RE console output tab
