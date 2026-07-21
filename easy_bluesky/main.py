@@ -606,6 +606,7 @@ class MainWindow(QMainWindow):
         self.worker.console_updated.connect(self.re_console.append)
         self.worker.connected.connect(self.re_console.on_connected)
         self.worker.disconnected.connect(self.re_console.on_disconnected)
+        self.re_console.diagnose_requested.connect(self._on_console_diagnose)
 
         self.worker.plans_updated.connect(self.experiments_tab.set_plans)
         self.worker.devices_updated.connect(self.experiments_tab.set_devices)
@@ -857,6 +858,63 @@ class MainWindow(QMainWindow):
             if self.tabs.widget(i) is self.hdf5_viewer:
                 self.tabs.setCurrentIndex(i)
                 break
+
+    def _on_console_diagnose(self):
+        settings = self._conn_settings
+        profile  = get_active_profile(settings)
+        _, info, _ = make_zmq_addrs(settings)
+        use_local  = profile.get("is_local", False) or is_local_host(settings)
+        self.re_console.append("[EasyBluesky] Running console diagnostics…\n")
+        threading.Thread(
+            target=self._run_console_diagnostics,
+            args=(settings, profile, info, use_local),
+            daemon=True,
+        ).start()
+
+    def _run_console_diagnostics(self, settings, profile, info_addr, use_local):
+        lines = []
+        info_port = profile.get("info_port", 60625)
+
+        if not use_local:
+            # SSH: check running process flags and port binding
+            try:
+                from .ssh_manager import _get_client
+                client = _get_client(settings)
+                _, stdout, _ = client.exec_command(
+                    f"ps -o pid,args -p $(pgrep -f 'start-re-manager') 2>/dev/null || "
+                    f"ps aux | grep 'start-re-manager' | grep -v grep",
+                    timeout=10,
+                )
+                proc = stdout.read().decode().strip()
+                _, stdout2, _ = client.exec_command(
+                    f"ss -tlnp 2>/dev/null | grep ':{info_port}' || "
+                    f"netstat -tlnp 2>/dev/null | grep ':{info_port}'",
+                    timeout=10,
+                )
+                port = stdout2.read().decode().strip()
+                client.close()
+
+                lines.append("[Diagnose] SSH process check:\n")
+                lines.append(f"  {proc or '(start-re-manager not found in process list)'}\n")
+                lines.append(f"[Diagnose] Port {info_port} on remote:\n")
+                lines.append(f"  {port or f'(nothing bound to port {info_port})'}\n")
+
+                if proc and "--zmq-publish-console ON" not in proc:
+                    lines.append(
+                        "  ✗ --zmq-publish-console ON not found in process args.\n"
+                        "    Console output will not be published.\n"
+                    )
+                elif proc:
+                    lines.append("  ✓ --zmq-publish-console ON is present.\n")
+            except Exception as e:
+                lines.append(f"[Diagnose] SSH check failed: {e}\n")
+
+        # ZMQ live test — open environment before clicking Diagnose for best results
+        lines.append(f"[Diagnose] ZMQ live test on {info_addr} (6 s):\n")
+        zmq_result = self.worker.diagnose_console(info_addr, duration=6.0)
+        lines.append(zmq_result)
+
+        self.worker.console_updated.emit("".join(lines))
 
     def _on_edit_devices(self):
         from .devices_editor import DevicesEditorDialog
