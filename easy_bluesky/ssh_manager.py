@@ -187,17 +187,16 @@ def stop_re_manager(settings: dict, profile: dict) -> tuple:
             ctrl_port = profile.get("control_port", 60615)
             _, log_file, pid_file = _instance_files(profile_name)
             cmd = (
+                # Kill the specific instance we launched (via pid file),
+                # then kill ALL remaining start-re-manager processes so
+                # stale instances from previous sessions can't impersonate
+                # this profile on the same control port.
                 f"if [ -f {pid_file} ]; then "
                 f"  kill $(cat {pid_file}) 2>/dev/null; "
                 f"  rm -f {pid_file}; "
-                f"else "
-                f"  pkill -f 'start-re-manager.*{ctrl_port}' 2>/dev/null; "
                 f"fi; "
-                # Also sweep up orphaned instances that use default ports
-                # (no explicit --zmq-control-addr) — these are stale from
-                # previous sessions and left behind when the app was quit.
-                f"pkill -f 'start-re-manager --zmq-publish-console' 2>/dev/null; "
-                f"true"
+                f"pkill -f start-re-manager 2>/dev/null; "
+                f"sleep 1; true"
             )
         _, stdout, stderr = client.exec_command(cmd, timeout=10)
         stdout.channel.recv_exit_status()
