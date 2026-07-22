@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 from bluesky_queueserver_api.zmq import REManagerAPI
-from .config import ZMQ_CONTROL, ZMQ_INFO
+from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_ADDR
 
 
 # ── Direct ZMQ console subscriber ─────────────────────────────────────────────
@@ -229,6 +229,122 @@ class _SSHLogTailer:
                     pass
 
 
+class _LocalDocWriter:
+    """
+    Subscribe to the bluesky ZMQ PUB document stream and write JSONL files
+    locally in the active experiment's runs/ directory.
+
+    This lets remote RE Manager scans be captured on the local machine without
+    relying on the remote side having write access to any local path.
+    Each run becomes <exp_dir>/runs/<uid>.jsonl in [name, doc] line format.
+    """
+
+    def __init__(self):
+        self._thread   = None
+        self._active   = False
+        self._exp_dir  = None   # Path or None, guarded by _lock
+        self._lock     = threading.Lock()
+        self._open_fhs = {}     # uid → file handle (only accessed by _run thread)
+
+    def set_exp_dir(self, path: str):
+        with self._lock:
+            self._exp_dir = Path(path) / "runs" if path else None
+
+    def start(self, addr: str):
+        self.stop()
+        self._active = True
+        self._thread = threading.Thread(
+            target=self._run, args=(addr,), daemon=True
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._active = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+        self._thread = None
+        for fh in self._open_fhs.values():
+            try:
+                fh.flush()
+                fh.close()
+            except Exception:
+                pass
+        self._open_fhs.clear()
+
+    def _get_exp_dir(self):
+        with self._lock:
+            return self._exp_dir
+
+    def _run(self, addr: str):
+        try:
+            import zmq
+        except ImportError:
+            return
+
+        ctx  = zmq.Context()
+        sock = ctx.socket(zmq.SUB)
+        sock.setsockopt(zmq.RCVTIMEO, 500)
+        sock.setsockopt(zmq.SUBSCRIBE, b"")
+        try:
+            sock.connect(addr)
+        except Exception:
+            ctx.term()
+            return
+
+        while self._active:
+            try:
+                raw        = sock.recv_string()
+                name, doc  = json.loads(raw)
+                self._handle(name, doc)
+            except zmq.Again:
+                continue
+            except Exception:
+                pass
+
+        for fh in self._open_fhs.values():
+            try:
+                fh.flush()
+                fh.close()
+            except Exception:
+                pass
+        self._open_fhs.clear()
+        sock.close()
+        ctx.term()
+
+    def _handle(self, name: str, doc: dict):
+        exp_dir = self._get_exp_dir()
+        if exp_dir is None:
+            return
+
+        uid = doc.get("uid") if name == "start" else doc.get("run_start")
+        if not uid:
+            return
+
+        if name == "start" and uid not in self._open_fhs:
+            try:
+                exp_dir.mkdir(parents=True, exist_ok=True)
+                self._open_fhs[uid] = open(exp_dir / f"{uid}.jsonl", "a")
+            except Exception:
+                return
+
+        fh = self._open_fhs.get(uid)
+        if fh is None:
+            return
+
+        try:
+            fh.write(json.dumps([name, doc]) + "\n")
+            fh.flush()
+        except Exception:
+            pass
+
+        if name == "stop":
+            try:
+                fh.close()
+            except Exception:
+                pass
+            self._open_fhs.pop(uid, None)
+
+
 _USER_SCRIPTS_DIR = Path.home() / ".easy_bluesky" / "scripts"
 _PKG_SCRIPTS_DIR  = Path(__file__).parent / "scripts"
 
@@ -283,6 +399,7 @@ class ZMQWorker(QObject):
         self._is_connecting  = False   # blocks poll while connect() runs
         self._console_mon    = _DirectConsoleMonitor()
         self._log_tailer     = _SSHLogTailer()
+        self._doc_writer     = _LocalDocWriter()
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -298,6 +415,7 @@ class ZMQWorker(QObject):
             info_addr = zmq_info or ZMQ_INFO
             msg = self._console_mon.start(info_addr)
             self.console_updated.emit(f"[EasyBluesky] {msg}\n")
+            self._doc_writer.start(ZMQ_DOC_ADDR)
             return True
         except Exception as e:
             self.rm = None
@@ -517,10 +635,15 @@ class ZMQWorker(QObject):
                         self.disconnected.emit()
             time.sleep(self._poll_interval)
 
+    def set_doc_writer_exp_dir(self, path: str):
+        """Tell the local doc writer where to save JSONL files."""
+        self._doc_writer.set_exp_dir(path)
+
     def disconnect(self):
         """Drop the ZMQ connection immediately without stopping the poll loop."""
         self._console_mon.stop()
         self._log_tailer.stop()
+        self._doc_writer.stop()
         self.rm = None
         self.disconnected.emit()
 

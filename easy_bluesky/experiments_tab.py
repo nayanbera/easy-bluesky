@@ -974,6 +974,8 @@ class ExperimentsTab(QWidget):
 
     def _set_active_experiment(self, path: str, info: dict):
         self._active_exp_path = path
+        if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
+            self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()
         created = info.get("created", "")
         try:
