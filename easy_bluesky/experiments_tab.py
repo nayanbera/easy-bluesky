@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
-    QMainWindow, QLineEdit, QFormLayout, QGroupBox,
+    QMainWindow, QLineEdit, QFormLayout, QGroupBox, QMenu,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor, QFont
@@ -414,11 +414,19 @@ class ExperimentsTab(QWidget):
         lbl_log.setObjectName("section_title")
         vlay.addWidget(lbl_log)
 
+        self._plan_log_search = QLineEdit()
+        self._plan_log_search.setPlaceholderText("🔍  Search plan log…")
+        self._plan_log_search.setClearButtonEnabled(True)
+        self._plan_log_search.textChanged.connect(self._filter_plan_log)
+        vlay.addWidget(self._plan_log_search)
+
         self.plan_log_list = QListWidget()
         self.plan_log_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self.plan_log_list.itemSelectionChanged.connect(self._on_plan_log_selection_changed)
         self.plan_log_list.itemDoubleClicked.connect(self._on_plan_log_double_clicked)
+        self.plan_log_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.plan_log_list.customContextMenuRequested.connect(self._plan_log_context_menu)
         vlay.addWidget(self.plan_log_list, 1)
 
         self._btn_export_h5 = QPushButton("Export HDF5…")
@@ -1143,10 +1151,17 @@ class ExperimentsTab(QWidget):
         except Exception:
             return False
 
+    def _filter_plan_log(self, text: str):
+        q = text.strip().lower()
+        for i in range(self.plan_log_list.count()):
+            item = self.plan_log_list.item(i)
+            item.setHidden(bool(q and q not in item.text().lower()))
+
     def _load_plan_log(self, exp_path: str):
         runs_dir = Path(exp_path) / "runs"
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
+        self._plan_log_search.clear()
 
         self._logged_uids = set()
         exps_dir = Path(EXPERIMENTS_DIR)
@@ -1338,9 +1353,36 @@ class ExperimentsTab(QWidget):
         self.plot_tabs.setCurrentIndex(1)
 
     def _on_plan_log_double_clicked(self, li: QListWidgetItem):
+        """Double-click: open PlanDialog pre-populated so the user can edit & re-queue."""
+        entry = li.data(Qt.ItemDataRole.UserRole)
+        if not entry or not self.worker:
+            return
+        base = {
+            "name":      entry.get("name", ""),
+            "args":      entry.get("args", []) or [],
+            "kwargs":    {k: v for k, v in (entry.get("kwargs", {}) or {}).items()
+                         if k != "md"},
+            "item_type": "plan",
+        }
+        dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
+            item = self._inject_metadata(dlg.result_item)
+            ok, msg = self.worker.add_item(item)
+            self._log(f"{'✓' if ok else '✗'} Re-queue '{base['name']}': {msg}")
+
+    def _plan_log_context_menu(self, pos):
+        li = self.plan_log_list.itemAt(pos)
+        if not li:
+            return
         entry = li.data(Qt.ItemDataRole.UserRole)
         if not entry:
             return
+        menu = QMenu(self)
+        menu.addAction("Edit & Re-queue", lambda: self._on_plan_log_double_clicked(li))
+        menu.addAction("View Details",    lambda: self._view_plan_detail(entry))
+        menu.exec(self.plan_log_list.viewport().mapToGlobal(pos))
+
+    def _view_plan_detail(self, entry: dict):
         ts_str = entry.get("timestamp", "")
         dur    = entry.get("duration_s")
         try:
@@ -1348,7 +1390,6 @@ class ExperimentsTab(QWidget):
         except Exception:
             t_stop = 0.0
         t_start = (t_stop - dur) if (t_stop and dur) else t_stop
-
         item = {
             "name":      entry.get("name", "?"),
             "args":      entry.get("args", []) or [],
