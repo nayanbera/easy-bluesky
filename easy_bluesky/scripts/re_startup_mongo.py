@@ -64,6 +64,7 @@ if _mod is not None:
 # ── Standard bluesky plans ─────────────────────────────────────────────────────
 from bluesky.plans import (
     count, scan, rel_scan, grid_scan, rel_grid_scan,
+    list_scan, list_grid_scan,
     adaptive_scan, tune_centroid,
     spiral, spiral_fermat,
 )

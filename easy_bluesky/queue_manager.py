@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QPlainTextEdit, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QMessageBox, QMenu, QDialog, QTabWidget, QHeaderView,
+    QLineEdit,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QFont
@@ -345,11 +346,17 @@ class QueueManager(QWidget):
         hist_hdr.addWidget(btn_clr_hist)
         llay.addLayout(hist_hdr)
 
+        self._history_search = QLineEdit()
+        self._history_search.setPlaceholderText("🔍  Search history…")
+        self._history_search.setClearButtonEnabled(True)
+        self._history_search.textChanged.connect(self._filter_history)
+        llay.addWidget(self._history_search)
+
         self.history_list = QListWidget()
         self.history_list.setMaximumHeight(160)
         self.history_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.history_list.customContextMenuRequested.connect(self._history_context_menu)
-        self.history_list.itemDoubleClicked.connect(self._show_run_detail)
+        self.history_list.itemDoubleClicked.connect(self._requeue_from_history_dialog)
         llay.addWidget(self.history_list)
 
         splitter.addWidget(left)
@@ -553,8 +560,15 @@ class QueueManager(QWidget):
 
         return "  " + "  |  ".join(parts) if parts else ""
 
+    def _filter_history(self, text: str):
+        q = text.strip().lower()
+        for i in range(self.history_list.count()):
+            item = self.history_list.item(i)
+            item.setHidden(bool(q and q not in item.text().lower()))
+
     def update_history(self, items):
         self.history_list.clear()
+        self._history_search.clear()
         for item in reversed(items[-30:]):
             name   = item.get("name", "unknown")
             args   = item.get("args", []) or []
@@ -588,22 +602,26 @@ class QueueManager(QWidget):
                               plans=self.plans, devices=self.devices, parent=self)
         dlg.exec()
 
+    def _requeue_from_history_dialog(self, list_item: QListWidgetItem):
+        """Double-click: open PlanDialog pre-populated so user can edit & re-queue."""
+        item = list_item.data(Qt.ItemDataRole.UserRole)
+        if not item:
+            return
+        base = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
+        base.setdefault("item_type", "plan")
+        dlg = PlanDialog(self.plans, self.devices, item=base, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
+            ok, msg = self.worker.add_item(dlg.result_item)
+            self._log(f"{'✓' if ok else '✗'} Re-queue '{item.get('name', '?')}': {msg}")
+
     def _history_context_menu(self, pos):
         list_item = self.history_list.itemAt(pos)
         if not list_item:
             return
         menu = QMenu(self)
-        menu.addAction("View Details",  lambda: self._show_run_detail(list_item))
-        menu.addAction("Add to Queue",  lambda: self._requeue_from_history(list_item))
+        menu.addAction("Edit & Re-queue", lambda: self._requeue_from_history_dialog(list_item))
+        menu.addAction("View Details",    lambda: self._show_run_detail(list_item))
         menu.exec(self.history_list.viewport().mapToGlobal(pos))
-
-    def _requeue_from_history(self, list_item: QListWidgetItem):
-        item = list_item.data(Qt.ItemDataRole.UserRole)
-        if not item:
-            return
-        new_item = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
-        ok, msg = self.worker.add_item(new_item)
-        self._log(f"{'✓' if ok else '✗'} Re-queue '{item.get('name', '?')}': {msg}")
 
     def append_console(self, text):
         self.console.appendPlainText(text)
