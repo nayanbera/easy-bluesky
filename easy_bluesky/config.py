@@ -25,17 +25,18 @@ TILED_API_KEY = os.getenv("BLUESKY_TILED_API_KEY", "bluesky")
 
 # ── Local data dir (suitcase.jsonl output) ────────────────────────────────────
 import pathlib as _pl
+_USER_DIR = _pl.Path.home() / ".easy_bluesky"
 DATA_RUNS_DIR = os.getenv(
     "BLUESKY_DATA_DIR",
-    str(_pl.Path(__file__).parent.parent / "data" / "runs"),
+    str(_USER_DIR / "data" / "runs"),
 )
 
 # ── Experiments ───────────────────────────────────────────────────────────────
 EXPERIMENTS_DIR = os.getenv(
     "BLUESKY_EXPERIMENTS_DIR",
-    str(_pl.Path(__file__).parent.parent / "experiments"),
+    str(_USER_DIR / "experiments"),
 )
-ACTIVE_EXPERIMENT_FILE = str(_pl.Path(__file__).parent.parent / "data" / "active_experiment.json")
+ACTIVE_EXPERIMENT_FILE = str(_USER_DIR / "data" / "active_experiment.json")
 
 # ── UI Colors (semantic — constant across themes) ─────────────────────────────
 ACCENT   = "#1f77b4"
