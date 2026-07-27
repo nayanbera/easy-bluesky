@@ -358,31 +358,9 @@ class PropertyPanel(QWidget):
                 w.setValue(int(value))
                 w.valueChanged.connect(lambda v, n=name: self._update(n, v))
 
-            elif wtype == "device_single" and self._devices:
-                w = QComboBox()
-                w.setEditable(True)
-                w.addItem("")
-                w.addItems(self._devices)
-                idx = w.findText(str(value))
-                w.setCurrentIndex(idx if idx >= 0 else 0)
-                if idx < 0 and value:
-                    w.setCurrentText(str(value))
-                w.currentTextChanged.connect(lambda v, n=name: self._update(n, v))
-
-            elif wtype == "device_multi" and self._devices:
-                w = QListWidget()
-                w.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-                w.setMaximumHeight(90)
-                w.addItems(self._devices)
-                current = {x.strip() for x in str(value).split(",") if x.strip()}
-                for i in range(w.count()):
-                    if w.item(i).text() in current:
-                        w.item(i).setSelected(True)
-                w.itemSelectionChanged.connect(
-                    lambda n=name, lw=w: self._update(
-                        n, ", ".join(lw.item(i).text()
-                                     for i in range(lw.count())
-                                     if lw.item(i).isSelected())))
+            elif wtype in ("device_single", "device_multi") and self._devices:
+                multi = (wtype == "device_multi")
+                w = self._make_device_list_widget(name, value, multi)
 
             else:
                 w = QLineEdit(str(value))
@@ -391,6 +369,51 @@ class PropertyPanel(QWidget):
 
             label = name.replace("_", " ").title() + ":"
             self._form.addRow(label, w)
+
+    def _make_device_list_widget(self, name: str, value, multi: bool) -> QWidget:
+        """Scrollable list with selection summary — shared by device_single and device_multi."""
+        container = QWidget()
+        cl = QVBoxLayout(container)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(2)
+
+        lw = QListWidget()
+        lw.setSelectionMode(
+            QAbstractItemView.SelectionMode.MultiSelection if multi
+            else QAbstractItemView.SelectionMode.SingleSelection)
+        lw.setMaximumHeight(90)
+        lw.addItems(self._devices)
+
+        current = ({x.strip() for x in str(value).split(",") if x.strip()}
+                   if multi else ({str(value).strip()} if value else set()))
+        for i in range(lw.count()):
+            if lw.item(i).text() in current:
+                lw.item(i).setSelected(True)
+
+        summary = QLabel("None selected")
+        summary.setStyleSheet(
+            "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+        summary.setWordWrap(True)
+
+        def _refresh(n=name, lw_=lw, s=summary, m=multi):
+            sel = [lw_.item(i).text() for i in range(lw_.count())
+                   if lw_.item(i).isSelected()]
+            if sel:
+                s.setText("✓  " + ",   ".join(sel))
+                s.setStyleSheet(
+                    "color: #2ca02c; font-size: 11px; font-weight: bold; padding: 1px 2px;")
+            else:
+                s.setText("None selected")
+                s.setStyleSheet(
+                    "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+            self._update(n, ", ".join(sel) if m else (sel[0] if sel else ""))
+
+        lw.itemSelectionChanged.connect(_refresh)
+        _refresh()  # initialise summary from pre-selected items
+
+        cl.addWidget(lw)
+        cl.addWidget(summary)
+        return container
 
     def _update(self, name, value):
         if self._block:
