@@ -386,6 +386,7 @@ class PropertyPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._block     = None
+        self._widgets   = {}   # param_name → widget, for direct value reads
         self._devices   = []
         self._motors    = []
         self._detectors = []
@@ -419,7 +420,8 @@ class PropertyPanel(QWidget):
             self.load_block(self._block)
 
     def load_block(self, block):
-        self._block = block
+        self._block   = block
+        self._widgets = {}
         while self._form.rowCount():
             self._form.removeRow(0)
 
@@ -467,8 +469,27 @@ class PropertyPanel(QWidget):
                 w.setPlaceholderText(hint)
                 w.textChanged.connect(lambda v, n=name: self._update(n, v))
 
+            self._widgets[name] = w
             label = name.replace("_", " ").title() + ":"
             self._form.addRow(label, w)
+
+    def sync_to_block(self):
+        """Read each widget's current value directly into the active block params.
+
+        Bypasses the value_changed signal so initial picker selections (set
+        before the signal is connected) are always flushed before code gen.
+        """
+        if not self._block:
+            return
+        for name, w in self._widgets.items():
+            if isinstance(w, DevicePickerWidget):
+                self._block["params"][name] = w.get_value()
+            elif isinstance(w, QDoubleSpinBox):
+                self._block["params"][name] = w.value()
+            elif isinstance(w, QSpinBox):
+                self._block["params"][name] = w.value()
+            elif isinstance(w, QLineEdit):
+                self._block["params"][name] = w.text()
 
     def _update(self, name, value):
         if self._block:
@@ -845,6 +866,11 @@ class ComposerWidget(QWidget):
         self._update_preview()
 
     def _update_preview(self):
+        # Flush current widget states into block params before reading them.
+        # DevicePickerWidget emits value_changed during __init__ before the
+        # signal is connected to _update, so without this sync the initial
+        # (and any programmatically-set) selections would be missed.
+        self._props.sync_to_block()
         code, _ = generate_plan_code(
             self._main_seq.get_blocks(),
             self._perstep_seq.get_blocks(),
