@@ -643,13 +643,19 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
         lines.append("    pass")
         return "\n".join(lines), name
 
-    # Detectors default: None → runtime fallback to selected device
-    if "detectors" in func_params:
-        det_default = func_params["detectors"]["default"]
-        if det_default:
-            lines.append(f"    detectors = detectors or [{det_default}]")
-        else:
-            lines.append("    if detectors is None: detectors = []")
+    # Runtime defaults: device params use = None in signature; assign in body.
+    device_lines = []
+    for pname, info in func_params.items():
+        ann, d = info["ann"], info["default"]
+        if ann == "List[Readable]":
+            device_lines.append(
+                f"    {pname} = {pname} or [{d}]" if d
+                else f"    if {pname} is None: {pname} = []"
+            )
+        elif ann == "Movable" and d:
+            device_lines.append(f"    {pname} = {pname} or {d}")
+    if device_lines:
+        lines.extend(device_lines)
         lines.append("")
 
     has_ps = bool(ps_blocks)
