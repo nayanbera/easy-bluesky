@@ -461,6 +461,11 @@ class PropertyPanel(QWidget):
                 else:  # device_any
                     devs, multi = self._devices, False
                 picker = DevicePickerWidget(value, multi, devs)
+                # Write the initial selection into block params NOW (before the
+                # signal is connected) so the value is always in sync even if
+                # the user never touches this picker in this session.
+                if block:
+                    block["params"][name] = picker.get_value()
                 picker.value_changed.connect(lambda v, n=name: self._update(n, v))
                 w = picker
 
@@ -866,11 +871,6 @@ class ComposerWidget(QWidget):
         self._update_preview()
 
     def _update_preview(self):
-        # Flush current widget states into block params before reading them.
-        # DevicePickerWidget emits value_changed during __init__ before the
-        # signal is connected to _update, so without this sync the initial
-        # (and any programmatically-set) selections would be missed.
-        self._props.sync_to_block()
         code, _ = generate_plan_code(
             self._main_seq.get_blocks(),
             self._perstep_seq.get_blocks(),
