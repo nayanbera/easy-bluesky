@@ -607,6 +607,13 @@ class ExperimentsTab(QWidget):
         auto_md = self._build_metadata()
         if not auto_md:
             return result_item
+        # Only inject md if the plan actually accepts it — plan stubs like
+        # sleep/mv/mvr do not, and the queue server will reject the item.
+        plan_name = result_item.get("name", "")
+        plan_info = self._plans.get(plan_name, {})
+        params = plan_info.get("parameters", []) if plan_info else []
+        if not any(p.get("name") == "md" for p in params):
+            return result_item
         existing_md = result_item.get("kwargs", {}).get("md", {}) or {}
         merged = {**auto_md, **existing_md}   # user-supplied md wins
         result_item.setdefault("kwargs", {})["md"] = merged
