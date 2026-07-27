@@ -260,18 +260,25 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
 # ── Sequence list widget ───────────────────────────────────────────────────────
 
 class SequenceList(QListWidget):
-    """Drag-to-reorder list of plan blocks. Each item stores a block dict."""
+    """Drag-to-reorder list of plan blocks."""
     block_selected = pyqtSignal(object)   # emits block dict or None
     sequence_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._blocks = []   # authoritative list; avoids item.data() copy issues
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setMinimumHeight(120)
         self.currentItemChanged.connect(self._on_selection)
-        self.model().rowsMoved.connect(lambda *_: self.sequence_changed.emit())
+        self.model().rowsMoved.connect(self._on_rows_moved)
+
+    def _on_rows_moved(self, *_):
+        # Re-sync _blocks to match the new visual order after a drag.
+        self._blocks = [self.item(i).data(Qt.ItemDataRole.UserRole)
+                        for i in range(self.count())]
+        self.sequence_changed.emit()
 
     def add_block(self, block: dict):
         item = QListWidgetItem(self._make_label(block))
@@ -280,6 +287,7 @@ class SequenceList(QListWidget):
             item.setForeground(QColor("#1f77b4"))
             f = QFont(); f.setBold(True)
             item.setFont(f)
+        self._blocks.append(block)
         self.addItem(item)
         self.setCurrentItem(item)
         self.sequence_changed.emit()
@@ -287,27 +295,29 @@ class SequenceList(QListWidget):
     def remove_selected(self):
         row = self.currentRow()
         if row >= 0:
+            self._blocks.pop(row)
             self.takeItem(row)
             self.sequence_changed.emit()
 
     def get_blocks(self) -> list:
-        return [self.item(i).data(Qt.ItemDataRole.UserRole)
-                for i in range(self.count())]
+        return list(self._blocks)
 
     def refresh_labels(self):
         for i in range(self.count()):
             item = self.item(i)
-            block = item.data(Qt.ItemDataRole.UserRole)
-            if block:
-                item.setText(self._make_label(block))
+            if i < len(self._blocks):
+                item.setText(self._make_label(self._blocks[i]))
 
     def _make_label(self, block: dict) -> str:
         return _block_summary(block)
 
     def _on_selection(self, current, _prev):
-        self.block_selected.emit(
-            current.data(Qt.ItemDataRole.UserRole) if current else None
-        )
+        if current is None:
+            self.block_selected.emit(None)
+            return
+        row = self.row(current)
+        block = self._blocks[row] if 0 <= row < len(self._blocks) else None
+        self.block_selected.emit(block)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Delete:
