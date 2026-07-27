@@ -6,7 +6,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 
 - **Experiments** — Create and manage experiments with sample metadata, plan log, motor/detector summaries, and overlay plotting.
 - **Queue Manager** — Add, reorder, and delete plans. Full RE controls (open environment, start, pause, resume, abort, stop).
-- **Plan Builder** — Auto-generated parameter forms for any allowed plan. Upload and run custom plans from a full code editor (line numbers, auto-indent, autocomplete).
+- **Plan Builder** — Two-panel interface: a **Visual Composer** for assembling scan sequences from drag-and-drop blocks (no Python required), and a **Code Editor** for full custom plans with syntax highlighting, auto-indent, and templates.
 - **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move.
 - **History Plot** — Browse completed runs. Multi-select overlay with common-column intersection.
 - **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata.
@@ -411,27 +411,31 @@ The app reconnects immediately after clicking OK.
 
 #### One-time SSH setup
 
-**1. Generate an SSH key pair** on your client machine (skip if you already have one):
+**Automated (recommended):** Open **File → Connection Settings**, fill in the host and SSH username, then click **Setup SSH Key…** next to the key path field. The app will:
+
+1. Generate an Ed25519 key pair at `~/.ssh/id_ed25519` (if one does not already exist)
+2. Prompt for your SSH password **once** in a masked dialog — it is never stored anywhere
+3. Connect to the remote host and append the public key to `~/.ssh/authorized_keys`
+4. Update the key path field automatically
+
+After the key is installed, click **Test SSH Connection** to verify passwordless auth works.
+
+**Manual alternative:** If you prefer the command line:
 
 ```bash
+# 1. Generate key pair (skip if you already have one)
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-```
 
-**2. Copy the public key to the RE Manager host:**
-
-```bash
+# 2. Install on remote host
 ssh-copy-id -i ~/.ssh/id_ed25519.pub user@your-beamline-host
-```
 
-**3. Verify passwordless login:**
-
-```bash
+# 3. Verify
 ssh -i ~/.ssh/id_ed25519 user@your-beamline-host echo ok
 ```
 
 > **Note:** SSH key authentication requires that your home directory on the remote host is **not** group- or world-writable. If key auth is rejected, run `chmod go-w ~` on the remote machine.
 
-**4. In the app**, open **File → Connection Settings → Remote SSH Management**:
+**In the app**, open **File → Connection Settings → Remote SSH Management**:
 
 | Field | Example | Notes |
 |-------|---------|-------|
@@ -545,6 +549,184 @@ systemctl --user status re-manager-real
 systemctl --user restart re-manager-real
 journalctl --user -u re-manager-real -f    # live logs
 ```
+
+---
+
+## Visual Plan Composer
+
+The **Visual Composer** tab inside Plan Builder lets you build a complete Bluesky plan by assembling blocks — no Python required. It generates a fully parametric Python plan function that you can send directly to the Code Editor or the RE Manager.
+
+### Layout
+
+```
+┌──────────────────┬─────────────────────────────────────┬──────────────────────┐
+│  BLOCK PALETTE   │  MAIN SEQUENCE          PER-STEP     │  BLOCK PROPERTIES    │
+│                  │                                      │                      │
+│  ▸ Motion        │  ⏲ Set Exposure  ×1   ◉ Open Shutter│  ⏲  Set Exposure     │
+│  ▸ Timing        │  ⟳ Scan          ×1   📷 Trigger & R│                      │
+│  ▸ Detector      │                       ○ Close Shutter│  Detectors:          │
+│  ▸ Shutter       │                       ⏱ Sleep  0.5s │  [✓ Eig1M, Pil300K]  │
+│  ▸ Device        │                                      │                      │
+│  ▸ Plans         │  [Plan name: my_scan ]               │  Exposure attr:      │
+│  ▸ Flow          │                                      │  cam.acquire_time    │
+│                  │  GENERATED CODE ────────────────────  │                      │
+│  Double-click or │  def my_scan(                        │  Exposure time:      │
+│  drag to add     │    detectors: List[Readable] = None, │  1.0                 │
+│                  │    motor: Movable = None, ...        │                      │
+│  [Add to Main ↑] │                        [→ Send to   │                      │
+│  [Add to Per-Step│                         Code Editor] │                      │
+└──────────────────┴─────────────────────────────────────┴──────────────────────┘
+```
+
+- **Main Sequence** — blocks that run once per plan (set exposure, configure files, then scan)
+- **Per-Step Sequence** — blocks injected at every point of the scan or count (open shutter → trigger → close shutter → sleep)
+- **Block Properties** — parameter form for the selected block; device pickers show all connected devices
+- **Generated Code** — live preview; updates as you edit any block property
+- **Send to Code Editor** — pushes the generated plan to the Code Editor tab for further customization or upload
+
+Drag blocks from the palette directly into either sequence list, or double-click to append to the last active list. Delete with the **Del** key or the Remove button. Drag rows to reorder.
+
+---
+
+### Block Reference
+
+#### Motion
+
+| Block | Bluesky call | Parameters |
+|-------|-------------|------------|
+| **Move** | `bps.mv(device, position)` | device, position |
+| **Relative Move** | `bps.mvr(device, delta)` | device, delta |
+
+#### Timing
+
+| Block | Bluesky call | Parameters |
+|-------|-------------|------------|
+| **Sleep** | `bps.sleep(seconds)` | seconds |
+
+#### Detector
+
+| Block | Bluesky call | Parameters |
+|-------|-------------|------------|
+| **Set Exposure** | `bps.mv(det.cam.acquire_time, t)` for each det | detectors, exposure_attr, exposure_time |
+| **Set AD File** | `bps.abs_set(det.hdf1.file_path / file_name, ...)` | detector, plugin, file_path, file_name |
+| **Trigger & Read** | `bps.trigger_and_read(detectors)` | detectors |
+
+#### Shutter
+
+| Block | Bluesky call | Parameters |
+|-------|-------------|------------|
+| **Open Shutter** | `bps.mv(shutter, 'open')` | shutter |
+| **Close Shutter** | `bps.mv(shutter, 'closed')` | shutter |
+
+#### Device
+
+| Block | Bluesky call | Parameters |
+|-------|-------------|------------|
+| **Stage Device** | `bps.stage(device)` | device |
+| **Unstage Device** | `bps.unstage(device)` | device |
+| **Set Attribute** | `bps.mv(device.attribute, value)` | device, attribute, value |
+
+#### Plans
+
+All scan blocks support the Per-Step sequence injection.
+
+| Block | Bluesky call | Notes |
+|-------|-------------|-------|
+| **Scan** | `bp.scan(dets, motor, start, stop, num)` | Single motor: start/stop parametric. Multi-motor: enter comma-separated motors, starts, stops — each motor gets its own range. Shorter lists are padded with the last value. |
+| **Relative Scan** | `bp.rel_scan(dets, motor, start, stop, num)` | Same as Scan but positions are relative to the current motor position. |
+| **Grid Scan** | `bp.grid_scan(dets, m1, s1, e1, n1, m2, …)` | Comma-separated motors/starts/stops/nums (one value per motor). Optional **Energy inner axis** — set `energy_motor`/`energy_start`/`energy_stop`/`energy_num` to append energy as the innermost (fastest-varying) axis. |
+| **List Scan** | `bp.list_scan(dets, motor, [positions])` | Explicit comma-separated position list. Optional **Energy inner loop** — generates nested for-loop: move to each spatial position, then run `bp.scan` over energy. |
+| **Adaptive Scan** | `bp.adaptive_scan(dets, field, motor, …)` | Intelligent step sizing based on signal change. `target_field` is the detector reading name to adapt on (e.g. `Pil300K_stats1_total`). All numeric params (min_step, max_step, target_delta, threshold) are parametric. |
+| **Fly Scan** | `bp.fly([flyer])` | Hardware-triggered continuous acquisition. If `motor` is set, prepends `bps.abs_set(motor.velocity, …)` + `bps.mv(motor, start)` before the fly call. |
+| **Count** | `bp.count(dets, num, delay)` | Fixed-position acquisition. |
+| **Plan Stub** | `yield from stub_name(args)` | Free-form plan stub for one-liners not covered by other blocks. |
+
+#### Flow  *(shown in purple/italic)*
+
+| Block | What it generates | Notes |
+|-------|------------------|-------|
+| **Repeat N Times** | `for _i in range(n): <body>` | Wraps the entire Main Sequence body. Composable: a Repeat block inside a sequence containing For Each Position produces a correctly nested double loop. |
+| **For Each Position** | `for _pos in [p1, p2, …]: bps.mv(motor, _pos); bp.count(dets, …)` | Self-contained — includes its own detector, num, and delay fields. |
+| **Custom Python** | Raw code injected at that position | Multiline editor in Block Properties. Use for anything not covered by other blocks. |
+
+---
+
+### Multi-motor scans
+
+For **Scan**, **Relative Scan**, and **Grid Scan** with multiple motors selected, enter comma-separated values in the `start` and `stop` fields — one value per motor:
+
+```
+Motors : coll_x, coll_y
+Start  : 0.0, 10.0
+Stop   : 5.0, 20.0
+Num    : 11
+```
+
+Generates: `bp.scan(dets, coll_x, 0.0, 5.0, coll_y, 10.0, 20.0, 11)`.
+
+If you enter a single value for start/stop, it is repeated for all motors.
+
+---
+
+### Energy inner loops (Grid Scan / List Scan)
+
+Set the **Energy motor**, **Energy start**, **Energy stop**, and **Energy num** fields in Block Properties:
+
+**Grid Scan + energy** — energy is appended as the last (innermost) `bp.grid_scan` axis:
+```python
+yield from bp.grid_scan(dets, sample_x, 0, 5, 5, sample_y, 0, 10, 10, dcm_energy, 7100, 7200, 20)
+```
+
+**List Scan + energy** — generates a nested for-loop (spatial outer, energy inner):
+```python
+for _pos in [0.5, 1.0, 2.5]:
+    yield from bps.mv(motor, _pos)
+    yield from bp.scan(dets, dcm_energy, 7100, 7200, 50)
+```
+
+Leave `energy_motor` blank to skip the energy loop entirely.
+
+---
+
+### Generated code
+
+The Visual Composer produces a fully parametric Python function. Device selections from Block Properties become the **default values** — callers can override any device or numeric value at call time:
+
+```python
+def my_scan(
+        detectors: List[Readable] = None,
+        motor: Movable = None,
+        start: float = 0.0,
+        stop: float = 5.0,
+        num: int = 11,
+        exposure_time: float = 1.0,
+):
+    """
+    Plan generated by EasyBluesky Visual Composer.
+
+    Sequence
+    --------
+    Main     : Set Exposure → Scan
+    Per-step : Open Shutter → Trigger & Read → Close Shutter → Sleep
+    ...
+    """
+    detectors = detectors or [Eig1M]
+    motor = motor or coll_x
+
+    for _det in detectors:
+        yield from bps.mv(_det.cam.acquire_time, exposure_time)
+
+    def _per_step(detectors, step, pos_cache):
+        yield from bps.move_per_step(step, pos_cache)
+        yield from bps.mv(shutter, 'open')
+        yield from bps.trigger_and_read(detectors)
+        yield from bps.mv(shutter, 'closed')
+        yield from bps.sleep(0.5)
+
+    yield from bp.scan(detectors, motor, start, stop, num, per_step=_per_step)
+```
+
+Click **→ Send to Code Editor** to transfer the code to the Code Editor tab, where you can review, edit, and upload to the RE Manager.
 
 ---
 
