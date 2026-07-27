@@ -130,20 +130,28 @@ BLOCK_DEFS = {
     "grid_scan": {
         "label": "Grid Scan", "category": "Plans", "icon": "⊞",
         "params": [
-            {"name": "detectors",  "type": "str",  "default": "",          "hint": "detectors",                           "widget": "device_multi"},
-            {"name": "motor",      "type": "str",  "default": "",          "hint": "motors, comma-sep (2 required)",      "widget": "device_single"},
-            {"name": "start",      "type": "str",  "default": "0.0, 0.0",  "hint": "start positions, comma-sep per motor"},
-            {"name": "stop",       "type": "str",  "default": "1.0, 1.0",  "hint": "stop positions,  comma-sep per motor"},
-            {"name": "num",        "type": "str",  "default": "5, 5",      "hint": "num points,       comma-sep per motor"},
-            {"name": "snake_axes", "type": "bool", "default": False,       "hint": "snake-boustrophedon scan axes"},
+            {"name": "detectors",    "type": "str",  "default": "",         "hint": "detectors",                                     "widget": "device_multi"},
+            {"name": "motor",        "type": "str",  "default": "",         "hint": "spatial motors, comma-sep (≥2)",                "widget": "device_single"},
+            {"name": "start",        "type": "str",  "default": "0.0, 0.0", "hint": "start positions, comma-sep per motor"},
+            {"name": "stop",         "type": "str",  "default": "1.0, 1.0", "hint": "stop positions,  comma-sep per motor"},
+            {"name": "num",          "type": "str",  "default": "5, 5",     "hint": "num points,       comma-sep per motor"},
+            {"name": "snake_axes",   "type": "bool", "default": False,      "hint": "snake-boustrophedon scan axes"},
+            {"name": "energy_motor", "type": "str",  "default": "",         "hint": "energy motor — added as innermost axis (leave blank to skip)", "widget": "device_single"},
+            {"name": "energy_start", "type": "str",  "default": "7000",     "hint": "energy start (eV)"},
+            {"name": "energy_stop",  "type": "str",  "default": "7100",     "hint": "energy stop (eV)"},
+            {"name": "energy_num",   "type": "int",  "default": 10,         "hint": "energy points"},
         ],
     },
     "list_scan": {
         "label": "List Scan", "category": "Plans", "icon": "≣",
         "params": [
-            {"name": "detectors",  "type": "str", "default": "",               "hint": "detectors",                     "widget": "device_multi"},
-            {"name": "motor",      "type": "str", "default": "",               "hint": "motor name",                    "widget": "device_single"},
-            {"name": "positions",  "type": "str", "default": "0.0, 1.0, 2.0", "hint": "explicit positions, comma-sep"},
+            {"name": "detectors",    "type": "str", "default": "",               "hint": "detectors",                                            "widget": "device_multi"},
+            {"name": "motor",        "type": "str", "default": "",               "hint": "spatial motor",                                        "widget": "device_single"},
+            {"name": "positions",    "type": "str", "default": "0.0, 1.0, 2.0", "hint": "explicit positions, comma-sep"},
+            {"name": "energy_motor", "type": "str", "default": "",               "hint": "energy motor — inner loop at each position (leave blank to skip)", "widget": "device_single"},
+            {"name": "energy_start", "type": "str", "default": "7000",           "hint": "energy start (eV)"},
+            {"name": "energy_stop",  "type": "str", "default": "7100",           "hint": "energy stop (eV)"},
+            {"name": "energy_num",   "type": "int", "default": 10,               "hint": "energy points"},
         ],
     },
     "plan_stub": {
@@ -242,10 +250,12 @@ def _block_summary(block: dict) -> str:
     if btype == "rel_scan":
         return f"{icon}  RelScan  {p['motor']}  {p['start']}→{p['stop']}  ×{p['num']}"
     if btype == "grid_scan":
-        snake = " 🐍" if p.get("snake_axes") else ""
-        return f"{icon}  GridScan  {p['motor']}  [{p['start']}]→[{p['stop']}]  {p['num']}{snake}"
+        snake  = " ~" if p.get("snake_axes") else ""
+        e_part = f"  ⚡{p['energy_motor']} {p['energy_start']}→{p['energy_stop']}×{p['energy_num']}" if p.get("energy_motor") else ""
+        return f"{icon}  GridScan  {p['motor']}  [{p['start']}]→[{p['stop']}]  {p['num']}{snake}{e_part}"
     if btype == "list_scan":
-        return f"{icon}  ListScan  {p['motor']}  [{p['positions']}]"
+        e_part = f"  ⚡{p['energy_motor']} {p['energy_start']}→{p['energy_stop']}×{p['energy_num']}" if p.get("energy_motor") else ""
+        return f"{icon}  ListScan  {p['motor']}  [{p['positions']}]{e_part}"
     if btype == "plan_stub":
         return f"{icon}  {p['stub_name']}({p['args']})"
     if btype == "repeat_n":
@@ -380,7 +390,14 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
             f"{m}, {s0}, {s1}, {n}"
             for m, s0, s1, n in zip(motors, starts, stops, nums)
         )
-        snake = p.get("snake_axes", False)
+        # Optional energy inner axis: appended last so it varies fastest
+        e_motor = p.get("energy_motor", "")
+        if e_motor:
+            e_start = p.get("energy_start", "7000")
+            e_stop  = p.get("energy_stop",  "7100")
+            e_num   = p.get("energy_num",   10)
+            args += f", {e_motor}, {e_start}, {e_stop}, {e_num}"
+        snake  = p.get("snake_axes", False)
         ps_arg = f", per_step={per_step_name}" if per_step_name else ""
         return f"{pad}yield from bp.grid_scan({dets}, {args}, snake_axes={snake}{ps_arg})"
 
@@ -389,6 +406,18 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
         motor  = pm.get("motor", p.get("motor", ""))
         pos    = [x.strip() for x in str(p.get("positions", "")).split(",") if x.strip()]
         ps_arg = f", per_step={per_step_name}" if per_step_name else ""
+        e_motor = p.get("energy_motor", "")
+        if e_motor:
+            # Nested loop: move to each spatial position, then do an energy scan
+            e_start = p.get("energy_start", "7000")
+            e_stop  = p.get("energy_stop",  "7100")
+            e_num   = p.get("energy_num",   10)
+            inner   = pad + "    "
+            return "\n".join([
+                f"{pad}for _pos in [{', '.join(pos)}]:",
+                f"{inner}yield from bps.mv({motor}, _pos)",
+                f"{inner}yield from bp.scan({dets}, {e_motor}, {e_start}, {e_stop}, {e_num}{ps_arg})",
+            ])
         return f"{pad}yield from bp.list_scan({dets}, {motor}, [{', '.join(pos)}]{ps_arg})"
 
     if btype == "plan_stub":
