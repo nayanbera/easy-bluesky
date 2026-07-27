@@ -497,9 +497,13 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
     func_params = {}
 
     def _add(pname, ann, default, desc):
-        func_params.setdefault(pname, {"ann": ann, "default": default, "desc": desc})
+        if pname not in func_params:
+            func_params[pname] = {"ann": ann, "default": default, "desc": desc}
+        elif not func_params[pname]["default"] and default:
+            # Prefer first non-empty default found across all blocks
+            func_params[pname]["default"] = default
 
-    for block in main_blocks:
+    for block in main_blocks + ps_blocks:
         btype, p = block["type"], block["params"]
         if btype == "scan":
             _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
@@ -511,13 +515,12 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
             _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
             _add("num",       "int",            p.get("num",    1),     "Number of acquisitions")
             _add("delay",     "float",          p.get("delay",  0.0),   "Delay between acquisitions (s)")
-
-    for block in ps_blocks:
-        btype, p = block["type"], block["params"]
-        if btype in ("open_shutter", "close_shutter"):
-            _add("shutter",       "Movable", p.get("shutter",       ""), "Shutter device")
-        elif btype == "set_exposure":
-            _add("exposure_time", "float",   p.get("exposure_time", 1.0), "Exposure time (s)")
+        elif btype in ("set_exposure", "trigger_read"):
+            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
+            if btype == "set_exposure":
+                _add("exposure_time", "float", p.get("exposure_time", 1.0), "Exposure time (s)")
+        elif btype in ("open_shutter", "close_shutter"):
+            _add("shutter", "Movable", p.get("shutter", ""), "Shutter device")
 
     # param_map: block-level param name → variable name in generated code
     param_map = {k: k for k in func_params}
