@@ -6,10 +6,10 @@ import socket
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -292,6 +292,133 @@ def purge_old_deleted(settings: dict, days: int = 30):
     settings["deleted_profiles"] = kept[-20:]
 
 
+class _SshKeyInstaller(QThread):
+    """Generate an Ed25519 key (if needed) and install it on the remote host.
+
+    The SSH password is used only during this one-time setup and is never
+    stored anywhere.
+    """
+    progress = pyqtSignal(str)        # intermediate status line
+    finished = pyqtSignal(bool, str)  # (success, final_message)
+
+    def __init__(self, host, port, user, password, key_path, parent=None):
+        super().__init__(parent)
+        self._host     = host
+        self._port     = int(port)
+        self._user     = user
+        self._password = password
+        self._key_path = Path(key_path).expanduser()
+
+    def run(self):
+        try:
+            self._do_setup()
+        except Exception as exc:
+            self.finished.emit(False, f"Unexpected error: {exc}")
+        finally:
+            self._password = ""   # wipe password from memory
+
+    def _do_setup(self):
+        key_path = self._key_path
+        pub_path  = Path(str(key_path) + ".pub")
+
+        # ── 1. Generate key if absent ──────────────────────────────────────────
+        if key_path.exists():
+            self.progress.emit("Key file found — reading public key…")
+            pub_str = self._read_public_key(key_path, pub_path)
+        else:
+            self.progress.emit(f"Generating Ed25519 key → {key_path} …")
+            pub_str = self._generate_key(key_path, pub_path)
+
+        # ── 2. Connect with password and install public key ────────────────────
+        self.progress.emit(f"Connecting to {self._user}@{self._host}:{self._port}…")
+        import paramiko
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(
+                hostname=self._host, port=self._port,
+                username=self._user, password=self._password,
+                look_for_keys=False, allow_agent=False, timeout=15,
+            )
+        except paramiko.AuthenticationException:
+            self.finished.emit(False, "Authentication failed — wrong password?")
+            return
+        except Exception as exc:
+            self.finished.emit(False, f"Connection error: {exc}")
+            return
+
+        self.progress.emit("Installing public key in ~/.ssh/authorized_keys…")
+        entry = pub_str.split()[:2]   # drop any trailing comment
+        safe  = " ".join(entry) + " easybluesky"
+        marker = entry[1] if len(entry) > 1 else entry[0]
+
+        cmds = [
+            "mkdir -p ~/.ssh && chmod 700 ~/.ssh",
+            f"grep -qF -- '{marker}' ~/.ssh/authorized_keys 2>/dev/null "
+            f"|| printf '%s\\n' '{safe}' >> ~/.ssh/authorized_keys",
+            "chmod 600 ~/.ssh/authorized_keys",
+        ]
+        for cmd in cmds:
+            _, stdout, stderr = client.exec_command(cmd)
+            stdout.channel.recv_exit_status()
+        client.close()
+
+        self.finished.emit(
+            True,
+            f"✓ SSH key installed on {self._user}@{self._host}.\n"
+            f"  Private key : {key_path}\n"
+            f"  Public key  : {pub_path}\n"
+            f"Click 'Test SSH Connection' to verify.",
+        )
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _generate_key(self, key_path: Path, pub_path: Path) -> str:
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PrivateKey,
+            )
+            from cryptography.hazmat.primitives import serialization
+            priv = Ed25519PrivateKey.generate()
+            key_path.write_bytes(
+                priv.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.OpenSSH,
+                    serialization.NoEncryption(),
+                )
+            )
+            key_path.chmod(0o600)
+            pub_str = priv.public_key().public_bytes(
+                serialization.Encoding.OpenSSH,
+                serialization.PublicFormat.OpenSSH,
+            ).decode()
+        except Exception:
+            # Fallback: RSA via paramiko (always available)
+            import paramiko, io
+            rsa = paramiko.RSAKey.generate(bits=4096)
+            buf = io.StringIO()
+            rsa.write_private_key(buf)
+            key_path.write_text(buf.getvalue())
+            key_path.chmod(0o600)
+            pub_str = f"ssh-rsa {rsa.get_base64()}"
+        pub_path.write_text(pub_str + " easybluesky\n")
+        return pub_str
+
+    def _read_public_key(self, key_path: Path, pub_path: Path) -> str:
+        if pub_path.exists():
+            return pub_path.read_text().strip()
+        import paramiko
+        for cls in [paramiko.Ed25519Key, paramiko.RSAKey,
+                    paramiko.ECDSAKey, paramiko.DSSKey]:
+            try:
+                k = cls(filename=str(key_path))
+                return f"{k.get_name()} {k.get_base64()}"
+            except Exception:
+                continue
+        raise ValueError(f"Cannot read public key from {key_path}")
+
+
 # ── Connection dialog ──────────────────────────────────────────────────────────
 
 class ConnectionDialog(QDialog):
@@ -367,13 +494,20 @@ class ConnectionDialog(QDialog):
         ssh_form.addRow("SSH port:", self._ssh_port)
 
         key_row = QHBoxLayout()
-        self._ssh_key = QLineEdit(self._settings.get("ssh_key_path", "~/.ssh/id_rsa"))
-        self._ssh_key.setPlaceholderText("~/.ssh/id_rsa  or  ~/.ssh/id_ed25519")
+        self._ssh_key = QLineEdit(self._settings.get("ssh_key_path", "~/.ssh/id_ed25519"))
+        self._ssh_key.setPlaceholderText("~/.ssh/id_ed25519")
         btn_browse = QPushButton("Browse…")
         btn_browse.setMaximumWidth(70)
         btn_browse.clicked.connect(self._browse_key)
+        btn_setup_key = QPushButton("Setup SSH Key…")
+        btn_setup_key.setToolTip(
+            "Generate an Ed25519 key (if absent) and install it on the remote machine.\n"
+            "You will be prompted for your SSH password once — it is never stored."
+        )
+        btn_setup_key.clicked.connect(self._setup_ssh_key)
         key_row.addWidget(self._ssh_key)
         key_row.addWidget(btn_browse)
+        key_row.addWidget(btn_setup_key)
         ssh_form.addRow("Private key:", key_row)
 
         self._ssh_service = QLineEdit(self._settings.get("ssh_service", ""))
@@ -696,6 +830,57 @@ class ConnectionDialog(QDialog):
         self._ssh_result.setStyleSheet(
             "color: #2ca02c;" if ok else "color: #d62728;"
         )
+
+    def _setup_ssh_key(self):
+        settings = self._collect_top_level()
+        host = settings.get("host", "").strip()
+        user = settings.get("ssh_user", "").strip()
+        port = settings.get("ssh_port", 22)
+        key_path = self._ssh_key.text().strip() or "~/.ssh/id_ed25519"
+
+        if is_local_host(settings):
+            self._ssh_result.setText("Host is localhost — SSH key setup not needed.")
+            self._ssh_result.setStyleSheet("color: #888;")
+            return
+        if not host:
+            self._ssh_result.setText("Enter a host address first.")
+            self._ssh_result.setStyleSheet("color: #d62728;")
+            return
+        if not user:
+            self._ssh_result.setText("Enter an SSH username first.")
+            self._ssh_result.setStyleSheet("color: #d62728;")
+            return
+
+        password, ok = QInputDialog.getText(
+            self, "SSH Password — One-Time Setup",
+            f"Enter the SSH password for {user}@{host}\n"
+            "(used only to install the key; never stored):",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok or not password:
+            return
+
+        self._ssh_result.setText("Setting up SSH key…")
+        self._ssh_result.setStyleSheet("color: #888;")
+
+        self._key_installer = _SshKeyInstaller(
+            host, port, user, password, key_path, parent=self
+        )
+        self._key_installer.progress.connect(
+            lambda msg: self._ssh_result.setText(msg)
+        )
+        self._key_installer.finished.connect(self._on_key_setup_done)
+        self._key_installer.start()
+
+    def _on_key_setup_done(self, success: bool, message: str):
+        self._ssh_result.setText(message)
+        self._ssh_result.setStyleSheet(
+            "color: #2ca02c;" if success else "color: #d62728;"
+        )
+        if success:
+            # Update the key path field to whatever was used
+            installed_path = self._key_installer._key_path
+            self._ssh_key.setText(str(installed_path))
 
     def _collect_top_level(self) -> dict:
         return {

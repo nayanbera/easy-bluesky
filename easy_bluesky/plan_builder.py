@@ -124,17 +124,46 @@ BLOCK_DEFS = {
             {"name": "args",      "type": "str", "default": "", "hint": "comma-separated args"},
         ],
     },
+    # ── Flow control ─────────────────────────────────────────────────────────────
+    "repeat_n": {
+        "label": "Repeat N Times", "category": "Flow", "icon": "↻",
+        "params": [
+            {"name": "count", "type": "int", "default": 2, "hint": "number of repetitions"},
+        ],
+    },
+    "for_each_position": {
+        "label": "For Each Position", "category": "Flow", "icon": "⟳",
+        "params": [
+            {"name": "motor",      "type": "str",   "default": "",               "hint": "motor name",                  "widget": "device_single"},
+            {"name": "detectors",  "type": "str",   "default": "",               "hint": "detectors to read",           "widget": "device_multi"},
+            {"name": "positions",  "type": "str",   "default": "0.0, 1.0, 2.0",  "hint": "comma-separated positions"},
+            {"name": "num",        "type": "int",   "default": 1,                "hint": "acquisitions per position"},
+            {"name": "delay",      "type": "float", "default": 0.0,              "hint": "delay between acquisitions (s)"},
+        ],
+    },
+    "custom_python": {
+        "label": "Custom Python", "category": "Flow", "icon": "⌨",
+        "params": [
+            {"name": "code", "type": "str", "default": "# custom code\npass", "hint": "Python code", "widget": "code"},
+        ],
+    },
 }
 
 _PLAN_BLOCKS = {"scan", "count"}   # blocks that support per-step injection
+_FLOW_BLOCKS = {"repeat_n", "for_each_position", "custom_python"}
 
-_CATEGORY_ORDER = ["Motion", "Timing", "Detector", "Shutter", "Device", "Plans"]
+_CATEGORY_ORDER = ["Motion", "Timing", "Detector", "Shutter", "Device", "Plans", "Flow"]
 
 # Convenience groups shown as workflow hints in the palette tooltip
 _WORKFLOW_HINT = (
     "Typical scan workflow:\n"
     "  Main:     Set Exposure → Set AD File → Scan\n"
-    "  Per-step: Open Shutter → Trigger & Read → Close Shutter → Sleep"
+    "  Per-step: Open Shutter → Trigger & Read → Close Shutter → Sleep\n"
+    "\n"
+    "Flow blocks (purple):\n"
+    "  Repeat N Times — wraps whole sequence in a loop\n"
+    "  For Each Position — move motor, repeat at each\n"
+    "  Custom Python — inject arbitrary code"
 )
 
 
@@ -183,6 +212,13 @@ def _block_summary(block: dict) -> str:
         return f"{icon}  Count  [{p['detectors']}]  ×{p['num']}"
     if btype == "plan_stub":
         return f"{icon}  {p['stub_name']}({p['args']})"
+    if btype == "repeat_n":
+        return f"{icon}  Repeat  ×{p['count']}"
+    if btype == "for_each_position":
+        return f"{icon}  For  {p['motor']} in [{p['positions']}]  ×{p.get('num', 1)}"
+    if btype == "custom_python":
+        first = str(p.get("code", "")).split("\n")[0].strip()
+        return f"{icon}  {first[:50]}" if first else f"{icon}  Custom Python"
     return f"{icon}  {name}"
 
 
@@ -268,6 +304,31 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
         return (f"{pad}yield from bp.count({dets}, num={num}, delay={delay}{ps_arg})")
     if btype == "plan_stub":
         return f"{pad}yield from {p['stub_name']}({p['args']})"
+    if btype == "repeat_n":
+        return ""   # handled at generate_plan_code level as a body wrapper
+    if btype == "for_each_position":
+        motor = pm.get("motor", p.get("motor", "motor"))
+        dets  = pm.get("detectors", p.get("detectors", ""))
+        dets_expr = f"[{dets}]" if dets else "detectors"
+        raw_pos = str(p.get("positions", ""))
+        pos_list = "[" + ", ".join(
+            x.strip() for x in raw_pos.split(",") if x.strip()
+        ) + "]"
+        num   = p.get("num", 1)
+        delay = p.get("delay", 0.0)
+        inner = f"{pad}    "
+        lines = [
+            f"{pad}for _pos in {pos_list}:",
+            f"{inner}yield from bps.mv({motor}, _pos)",
+            f"{inner}yield from bp.count({dets_expr}, num={num}, delay={delay})",
+        ]
+        return "\n".join(lines)
+    if btype == "custom_python":
+        code = p.get("code", "pass")
+        lines = []
+        for line in code.splitlines():
+            lines.append(pad + line if line.strip() else "")
+        return "\n".join(lines) if lines else f"{pad}pass"
     return f"{pad}pass  # unknown: {btype}"
 
 
@@ -300,6 +361,10 @@ class SequenceList(QListWidget):
         if block["type"] in _PLAN_BLOCKS:
             item.setForeground(QColor("#1f77b4"))
             f = QFont(); f.setBold(True)
+            item.setFont(f)
+        elif block["type"] in _FLOW_BLOCKS:
+            item.setForeground(QColor("#9467bd"))
+            f = QFont(); f.setItalic(True)
             item.setFont(f)
         return item
 
@@ -541,6 +606,18 @@ class PropertyPanel(QWidget):
                 w.valueChanged.connect(handler)
                 w.setValue(int(value))
 
+            elif wtype == "code":
+                w = QPlainTextEdit()
+                w.setPlainText(str(value))
+                w.setMinimumHeight(80)
+                w.setMaximumHeight(160)
+                f2 = QFont("Courier New", 10)
+                w.setFont(f2)
+                handler = lambda n=name, ww=w: self._update(n, ww.toPlainText())
+                self._handlers.append(handler)
+                w.textChanged.connect(handler)
+                block["params"][name] = w.toPlainText()
+
             elif wtype in ("device_single", "device_multi", "device_any") and self._devices:
                 if wtype == "device_multi":
                     devs, multi = self._detectors or self._devices, True
@@ -585,6 +662,8 @@ class PropertyPanel(QWidget):
                 self._block["params"][name] = w.value()
             elif isinstance(w, QSpinBox):
                 self._block["params"][name] = w.value()
+            elif isinstance(w, QPlainTextEdit):
+                self._block["params"][name] = w.toPlainText()
             elif isinstance(w, QLineEdit):
                 self._block["params"][name] = w.text()
 
@@ -674,7 +753,15 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
         sig_lines[-1] = sig_lines[-1].rstrip(",")   # no trailing comma on last param
 
     # ── 3. Docstring ──────────────────────────────────────────────────────────
-    main_seq = " → ".join(BLOCK_DEFS[b["type"]]["label"] for b in main_blocks)
+    # Detect repeat_n wrapper; filter it out of the actual code blocks
+    repeat_block = next((b for b in main_blocks if b["type"] == "repeat_n"), None)
+    repeat_count = int(repeat_block["params"].get("count", 1)) if repeat_block else None
+    code_main_blocks = [b for b in main_blocks if b["type"] != "repeat_n"]
+
+    seq_blocks = [b for b in code_main_blocks if b["type"] != "custom_python"]
+    main_seq = " → ".join(BLOCK_DEFS[b["type"]]["label"] for b in seq_blocks)
+    if repeat_count and repeat_count > 1:
+        main_seq = f"[×{repeat_count}] {main_seq}"
     ps_seq   = (" → ".join(BLOCK_DEFS[b["type"]]["label"] for b in ps_blocks)
                 if ps_blocks else "")
 
@@ -724,7 +811,7 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
 
     lines.extend(doc)
 
-    if not main_blocks:
+    if not code_main_blocks:
         lines.append("    pass")
         return "\n".join(lines), name
 
@@ -743,20 +830,29 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
         lines.extend(device_lines)
         lines.append("")
 
+    # repeat_n: emit the for-loop header; body indented an extra 4 spaces
+    body_indent = 4
+    if repeat_count is not None and repeat_count > 1:
+        lines.append(f"    for _i in range({repeat_count}):")
+        body_indent = 8
+
     has_ps = bool(ps_blocks)
-    for block in main_blocks:
+    for block in code_main_blocks:
         if block["type"] in _PLAN_BLOCKS and has_ps:
             ps_name = "_per_step"
-            lines.append(f"    def {ps_name}(detectors, step, pos_cache):")
-            lines.append(f"        yield from bps.move_per_step(step, pos_cache)")
+            ps_indent = body_indent
+            lines.append(f"{' ' * ps_indent}def {ps_name}(detectors, step, pos_cache):")
+            lines.append(f"{' ' * (ps_indent + 4)}yield from bps.move_per_step(step, pos_cache)")
             for ps in ps_blocks:
-                lines.append(_block_to_code(ps, indent=8, param_map=param_map))
+                lines.append(_block_to_code(ps, indent=ps_indent + 4, param_map=param_map))
             lines.append("")
-            lines.append(_block_to_code(block, indent=4,
+            lines.append(_block_to_code(block, indent=body_indent,
                                          per_step_name=ps_name,
                                          param_map=param_map))
         else:
-            lines.append(_block_to_code(block, indent=4, param_map=param_map))
+            code_line = _block_to_code(block, indent=body_indent, param_map=param_map)
+            if code_line:   # repeat_n returns "" — skip blank lines
+                lines.append(code_line)
 
     return "\n".join(lines), name
 
