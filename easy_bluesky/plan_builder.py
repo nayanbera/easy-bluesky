@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
     QFileDialog,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData
+from PyQt6.QtGui import QFont, QColor, QDrag
 
 from .highlighter import PythonHighlighter
 from .code_editor import CodeEditor
@@ -239,13 +239,27 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
         return f"{pad}yield from bps.trigger_and_read({dets})"
     if btype == "scan":
         dets  = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
-        mot   = pm.get("motor",  p["motor"])
+        mot_raw = pm.get("motor", p["motor"])
         start = pm.get("start",  p["start"])
         stop  = pm.get("stop",   p["stop"])
         num   = pm.get("num",    p["num"])
         ps_arg = f", per_step={per_step_name}" if per_step_name else ""
-        return (f"{pad}yield from bp.scan({dets}, {mot}, "
-                f"{start}, {stop}, {num}{ps_arg})")
+        # If motor is a parametric variable (single name, no commas) use it
+        # directly.  If it is a literal multi-motor string use list-unpacking.
+        if "," in str(mot_raw) and "motor" not in pm:
+            # hardcoded multi-motor: unpack as (m, start, stop) triplets
+            motors = [m.strip() for m in str(mot_raw).split(",") if m.strip()]
+            triplets = ", ".join(f"{m}, {start}, {stop}" for m in motors)
+            return f"{pad}yield from bp.scan({dets}, {triplets}, {num}{ps_arg})"
+        elif mot_raw == "motor":
+            # parametric variable — use list-unpacking so it handles both
+            # single Movable and List[Movable] at runtime
+            return (f"{pad}yield from bp.scan("
+                    f"{dets}, *[x for _m in (motor if isinstance(motor, list) else [motor])"
+                    f" for x in (_m, {start}, {stop})], {num}{ps_arg})")
+        else:
+            return (f"{pad}yield from bp.scan({dets}, {mot_raw}, "
+                    f"{start}, {stop}, {num}{ps_arg})")
     if btype == "count":
         dets  = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
         num   = pm.get("num",   p["num"])
@@ -280,16 +294,26 @@ class SequenceList(QListWidget):
                         for i in range(self.count())]
         self.sequence_changed.emit()
 
-    def add_block(self, block: dict):
+    def _make_item(self, block: dict) -> QListWidgetItem:
         item = QListWidgetItem(self._make_label(block))
         item.setData(Qt.ItemDataRole.UserRole, block)
         if block["type"] in _PLAN_BLOCKS:
             item.setForeground(QColor("#1f77b4"))
             f = QFont(); f.setBold(True)
             item.setFont(f)
+        return item
+
+    def add_block(self, block: dict):
         self._blocks.append(block)
-        self.addItem(item)
-        self.setCurrentItem(item)
+        self.addItem(self._make_item(block))
+        self.setCurrentItem(self.item(self.count() - 1))
+        self.sequence_changed.emit()
+
+    def insert_block(self, row: int, block: dict):
+        row = max(0, min(row, self.count()))
+        self._blocks.insert(row, block)
+        self.insertItem(row, self._make_item(block))
+        self.setCurrentItem(self.item(row))
         self.sequence_changed.emit()
 
     def remove_selected(self):
@@ -319,11 +343,54 @@ class SequenceList(QListWidget):
         block = self._blocks[row] if 0 <= row < len(self._blocks) else None
         self.block_selected.emit(block)
 
+    # ── External drag-drop (from Block Palette) ────────────────────────────────
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text() in BLOCK_DEFS:
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)  # internal reorder
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text() in BLOCK_DEFS:
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text() in BLOCK_DEFS:
+            btype = event.mimeData().text()
+            target = self.itemAt(event.position().toPoint())
+            row = self.row(target) if target else self.count()
+            self.insert_block(row, _new_block(btype))
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)  # internal reorder
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Delete:
             self.remove_selected()
         else:
             super().keyPressEvent(event)
+
+
+# ── Block palette tree (with drag support) ────────────────────────────────────
+
+class _PaletteTree(QTreeWidget):
+    """Block palette that encodes the block type as mime text on drag-start."""
+
+    def startDrag(self, supported_actions):
+        item = self.currentItem()
+        if not item:
+            return
+        btype = item.data(0, Qt.ItemDataRole.UserRole)
+        if not btype:
+            return   # category header — not draggable
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(btype)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
 
 
 # ── Device picker widget ───────────────────────────────────────────────────────
@@ -478,9 +545,9 @@ class PropertyPanel(QWidget):
                 if wtype == "device_multi":
                     devs, multi = self._detectors or self._devices, True
                 elif wtype == "device_single":
-                    devs, multi = self._motors or self._devices, False
+                    devs, multi = self._motors or self._devices, True
                 else:  # device_any
-                    devs, multi = self._devices, False
+                    devs, multi = self._devices, True
                 picker = DevicePickerWidget(value, multi, devs)
                 handler = lambda v, n=name: self._update(n, v)
                 self._handlers.append(handler)
@@ -548,12 +615,28 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
     # func_params: ordered dict  param_name → {ann, default, desc}
     func_params = {}
 
+    def _first(val):
+        """Return first comma-separated value (for single-device params)."""
+        s = str(val).strip()
+        return s.split(",")[0].strip() if "," in s else s
+
     def _add(pname, ann, default, desc):
+        # For Movable params that may have multiple devices selected (the picker
+        # is now multi-select), store the full comma-separated string in
+        # 'all_defaults' for the docstring and only the first device as
+        # 'default' for the runtime fallback assignment.
+        if ann == "Movable":
+            first = _first(default)
+        else:
+            first = default
         if pname not in func_params:
-            func_params[pname] = {"ann": ann, "default": default, "desc": desc}
-        elif not func_params[pname]["default"] and default:
-            # Prefer first non-empty default found across all blocks
-            func_params[pname]["default"] = default
+            func_params[pname] = {
+                "ann": ann, "default": first,
+                "all_defaults": str(default).strip(), "desc": desc,
+            }
+        elif not func_params[pname]["default"] and first:
+            func_params[pname]["default"]     = first
+            func_params[pname]["all_defaults"] = str(default).strip()
 
     for block in main_blocks + ps_blocks:
         btype, p = block["type"], block["params"]
@@ -608,9 +691,11 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
         doc.append("    Parameters")
         doc.append("    ----------")
         for pname, info in func_params.items():
-            d    = info["default"]
+            d_runtime = info["default"]
+            d_display = info.get("all_defaults", d_runtime)
             desc = info["desc"]
-            note = f"  Default selection: {d}." if d != "" and d != 0.0 and d != 0 else ""
+            show = d_display if (d_display and d_display != "0.0" and d_display != "0") else ""
+            note = f"  Default selection: {show}." if show else ""
             doc.append(f"    {pname} : {info['ann']}")
             doc.append(f"        {desc}.{note}")
     doc.append('    """')
@@ -728,9 +813,10 @@ class ComposerWidget(QWidget):
         lbl.setObjectName("section_title")
         lay.addWidget(lbl)
 
-        self._palette = QTreeWidget()
+        self._palette = _PaletteTree()
         self._palette.setHeaderHidden(True)
         self._palette.setRootIsDecorated(True)
+        self._palette.setDragEnabled(True)
         self._palette.itemDoubleClicked.connect(self._palette_double_clicked)
 
         cats = {}
