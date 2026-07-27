@@ -1168,8 +1168,6 @@ class ExperimentsTab(QWidget):
         runs_dir = Path(exp_path) / "runs"
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
-        self._plan_log_search.clear()
-
         self._logged_uids = set()
         exps_dir = Path(EXPERIMENTS_DIR)
         if exps_dir.exists():
@@ -1245,6 +1243,7 @@ class ExperimentsTab(QWidget):
                 self.plan_log_list.addItem(li)
         except Exception:
             pass
+        self._filter_plan_log(self._plan_log_search.text())
 
     # ── Public update slots ────────────────────────────────────────────────────
 

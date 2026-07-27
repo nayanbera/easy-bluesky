@@ -427,7 +427,7 @@ class ParamForm(QWidget):
             optional = default is not None
 
             # Skip internal params
-            if name in ("per_step", "md", "cycler"):
+            if name in ("md", "cycler"):
                 continue
 
             label = QLabel(f"{'[opt] ' if optional else ''}{name}")
@@ -467,6 +467,10 @@ class ParamForm(QWidget):
         convert = param.get("convert_device_names", False)
         kind    = param.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
         n       = name.lower()
+
+        # Callable params (e.g. per_step) can't be represented in a GUI
+        if "callable" in typ.lower():
+            return None
 
         # ── VAR_POSITIONAL motor args ─────────────────────────────────────────────
         # list_scan: annotation is tuple[Movable, list[...]] → contains "list["
@@ -586,7 +590,7 @@ class ParamForm(QWidget):
         arg_iter = iter(args)
         for p in self.params:
             name = p["name"]
-            if name in ("per_step", "md", "cycler") or name not in self.widgets:
+            if name in ("md", "cycler") or name not in self.widgets:
                 continue
             kind = p.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
             w = self.widgets[name]
@@ -642,7 +646,7 @@ class ParamForm(QWidget):
         kwargs = {}
         for p in self.params:
             name = p["name"]
-            if name in ("per_step", "md", "cycler"):
+            if name in ("md", "cycler"):
                 continue
             if name not in self.widgets:
                 continue

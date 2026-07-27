@@ -568,7 +568,6 @@ class QueueManager(QWidget):
 
     def update_history(self, items):
         self.history_list.clear()
-        self._history_search.clear()
         for item in reversed(items[-30:]):
             name   = item.get("name", "unknown")
             args   = item.get("args", []) or []
@@ -593,6 +592,7 @@ class QueueManager(QWidget):
             li.setData(Qt.ItemDataRole.UserRole, item)
             li.setToolTip(f"Exit: {status}\nDouble-click to view data  |  Right-click to re-queue")
             self.history_list.addItem(li)
+        self._filter_history(self._history_search.text())
 
     def _show_run_detail(self, list_item: QListWidgetItem):
         item = list_item.data(Qt.ItemDataRole.UserRole)
