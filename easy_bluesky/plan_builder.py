@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
     QAbstractItemView, QPlainTextEdit, QComboBox, QLineEdit, QMessageBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
-    QFileDialog,
+    QFileDialog, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData
 from PyQt6.QtGui import QFont, QColor, QDrag
@@ -117,6 +117,35 @@ BLOCK_DEFS = {
             {"name": "delay",     "type": "float", "default": 0.0, "hint": "delay between acquisitions"},
         ],
     },
+    "rel_scan": {
+        "label": "Relative Scan", "category": "Plans", "icon": "↔",
+        "params": [
+            {"name": "detectors", "type": "str", "default": "",    "hint": "detectors",                                          "widget": "device_multi"},
+            {"name": "motor",     "type": "str", "default": "",    "hint": "motor name(s)",                                      "widget": "device_single"},
+            {"name": "start",     "type": "str", "default": "-1.0","hint": "start (relative to current), comma-sep if multi-motor"},
+            {"name": "stop",      "type": "str", "default": "1.0", "hint": "stop (relative to current),  comma-sep if multi-motor"},
+            {"name": "num",       "type": "int", "default": 11,    "hint": "number of points"},
+        ],
+    },
+    "grid_scan": {
+        "label": "Grid Scan", "category": "Plans", "icon": "⊞",
+        "params": [
+            {"name": "detectors",  "type": "str",  "default": "",          "hint": "detectors",                           "widget": "device_multi"},
+            {"name": "motor",      "type": "str",  "default": "",          "hint": "motors, comma-sep (2 required)",      "widget": "device_single"},
+            {"name": "start",      "type": "str",  "default": "0.0, 0.0",  "hint": "start positions, comma-sep per motor"},
+            {"name": "stop",       "type": "str",  "default": "1.0, 1.0",  "hint": "stop positions,  comma-sep per motor"},
+            {"name": "num",        "type": "str",  "default": "5, 5",      "hint": "num points,       comma-sep per motor"},
+            {"name": "snake_axes", "type": "bool", "default": False,       "hint": "snake-boustrophedon scan axes"},
+        ],
+    },
+    "list_scan": {
+        "label": "List Scan", "category": "Plans", "icon": "≣",
+        "params": [
+            {"name": "detectors",  "type": "str", "default": "",               "hint": "detectors",                     "widget": "device_multi"},
+            {"name": "motor",      "type": "str", "default": "",               "hint": "motor name",                    "widget": "device_single"},
+            {"name": "positions",  "type": "str", "default": "0.0, 1.0, 2.0", "hint": "explicit positions, comma-sep"},
+        ],
+    },
     "plan_stub": {
         "label": "Plan Stub", "category": "Plans", "icon": "⋯",
         "params": [
@@ -149,7 +178,7 @@ BLOCK_DEFS = {
     },
 }
 
-_PLAN_BLOCKS = {"scan", "count"}   # blocks that support per-step injection
+_PLAN_BLOCKS = {"scan", "count", "rel_scan", "grid_scan", "list_scan"}   # blocks that support per-step injection
 _FLOW_BLOCKS = {"repeat_n", "for_each_position", "custom_python"}
 
 _CATEGORY_ORDER = ["Motion", "Timing", "Detector", "Shutter", "Device", "Plans", "Flow"]
@@ -210,6 +239,13 @@ def _block_summary(block: dict) -> str:
         return f"{icon}  Scan  {p['motor']}  {p['start']}→{p['stop']}  ×{p['num']}"
     if btype == "count":
         return f"{icon}  Count  [{p['detectors']}]  ×{p['num']}"
+    if btype == "rel_scan":
+        return f"{icon}  RelScan  {p['motor']}  {p['start']}→{p['stop']}  ×{p['num']}"
+    if btype == "grid_scan":
+        snake = " 🐍" if p.get("snake_axes") else ""
+        return f"{icon}  GridScan  {p['motor']}  [{p['start']}]→[{p['stop']}]  {p['num']}{snake}"
+    if btype == "list_scan":
+        return f"{icon}  ListScan  {p['motor']}  [{p['positions']}]"
     if btype == "plan_stub":
         return f"{icon}  {p['stub_name']}({p['args']})"
     if btype == "repeat_n":
@@ -309,6 +345,52 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
         delay = pm.get("delay", p["delay"])
         ps_arg = f", per_step={per_step_name}" if per_step_name else ""
         return (f"{pad}yield from bp.count({dets}, num={num}, delay={delay}{ps_arg})")
+    if btype == "rel_scan":
+        dets    = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        mot_raw = pm.get("motor", p["motor"])
+        start   = pm.get("start", p["start"])
+        stop    = pm.get("stop",  p["stop"])
+        num     = pm.get("num",   p["num"])
+        ps_arg  = f", per_step={per_step_name}" if per_step_name else ""
+        if "," in str(mot_raw) and "motor" not in pm:
+            motors = [m.strip() for m in str(mot_raw).split(",") if m.strip()]
+            starts = [s.strip() for s in str(start).split(",") if s.strip()]
+            stops  = [s.strip() for s in str(stop).split(",")  if s.strip()]
+            while len(starts) < len(motors): starts.append(starts[-1] if starts else "-1.0")
+            while len(stops)  < len(motors): stops.append(stops[-1]   if stops  else "1.0")
+            triplets = ", ".join(f"{m}, {s0}, {s1}" for m, s0, s1 in zip(motors, starts, stops))
+            return f"{pad}yield from bp.rel_scan({dets}, {triplets}, {num}{ps_arg})"
+        elif mot_raw == "motor":
+            return (f"{pad}yield from bp.rel_scan("
+                    f"{dets}, *[x for _m in (motor if isinstance(motor, list) else [motor])"
+                    f" for x in (_m, {start}, {stop})], {num}{ps_arg})")
+        else:
+            return f"{pad}yield from bp.rel_scan({dets}, {mot_raw}, {start}, {stop}, {num}{ps_arg})"
+
+    if btype == "grid_scan":
+        dets   = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        motors = [m.strip() for m in str(p["motor"]).split(",") if m.strip()]
+        starts = [s.strip() for s in str(p["start"]).split(",") if s.strip()]
+        stops  = [s.strip() for s in str(p["stop"]).split(",")  if s.strip()]
+        nums   = [n.strip() for n in str(p["num"]).split(",")   if n.strip()]
+        while len(starts) < len(motors): starts.append(starts[-1] if starts else "0.0")
+        while len(stops)  < len(motors): stops.append(stops[-1]   if stops  else "1.0")
+        while len(nums)   < len(motors): nums.append(nums[-1]     if nums   else "5")
+        args = ", ".join(
+            f"{m}, {s0}, {s1}, {n}"
+            for m, s0, s1, n in zip(motors, starts, stops, nums)
+        )
+        snake = p.get("snake_axes", False)
+        ps_arg = f", per_step={per_step_name}" if per_step_name else ""
+        return f"{pad}yield from bp.grid_scan({dets}, {args}, snake_axes={snake}{ps_arg})"
+
+    if btype == "list_scan":
+        dets   = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        motor  = pm.get("motor", p.get("motor", ""))
+        pos    = [x.strip() for x in str(p.get("positions", "")).split(",") if x.strip()]
+        ps_arg = f", per_step={per_step_name}" if per_step_name else ""
+        return f"{pad}yield from bp.list_scan({dets}, {motor}, [{', '.join(pos)}]{ps_arg})"
+
     if btype == "plan_stub":
         return f"{pad}yield from {p['stub_name']}({p['args']})"
     if btype == "repeat_n":
@@ -613,6 +695,15 @@ class PropertyPanel(QWidget):
                 w.valueChanged.connect(handler)
                 w.setValue(int(value))
 
+            elif ptype == "bool":
+                w = QCheckBox()
+                checked = (value if isinstance(value, bool)
+                           else str(value).lower() in ("true", "1", "yes"))
+                handler = lambda v, n=name: self._update(n, bool(v))
+                self._handlers.append(handler)
+                w.stateChanged.connect(handler)
+                w.setChecked(checked)
+
             elif wtype == "code":
                 w = QPlainTextEdit()
                 w.setPlainText(str(value))
@@ -669,6 +760,8 @@ class PropertyPanel(QWidget):
                 self._block["params"][name] = w.value()
             elif isinstance(w, QSpinBox):
                 self._block["params"][name] = w.value()
+            elif isinstance(w, QCheckBox):
+                self._block["params"][name] = w.isChecked()
             elif isinstance(w, QPlainTextEdit):
                 self._block["params"][name] = w.toPlainText()
             elif isinstance(w, QLineEdit):
@@ -743,6 +836,25 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
             _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
             _add("num",       "int",            p.get("num",    1),     "Number of acquisitions")
             _add("delay",     "float",          p.get("delay",  0.0),   "Delay between acquisitions (s)")
+        elif btype == "rel_scan":
+            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
+            motor_val = p.get("motor", "")
+            if "," not in str(motor_val):
+                _add("motor", "Movable", motor_val, "Motor to scan (relative)")
+                try:
+                    _add("start", "float", float(str(p.get("start", "-1.0")).split(",")[0]), "Relative start position")
+                    _add("stop",  "float", float(str(p.get("stop",  "1.0")).split(",")[0]),  "Relative stop position")
+                except ValueError:
+                    pass
+            _add("num", "int", p.get("num", 11), "Number of scan points")
+        elif btype == "grid_scan":
+            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
+            # All grid axes are hardcoded (per-motor); only detectors parametrized
+        elif btype == "list_scan":
+            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
+            motor_val = p.get("motor", "")
+            if "," not in str(motor_val):
+                _add("motor", "Movable", motor_val, "Motor to scan")
         elif btype in ("set_exposure", "trigger_read"):
             _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
             if btype == "set_exposure":
