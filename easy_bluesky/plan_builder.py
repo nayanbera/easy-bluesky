@@ -154,6 +154,30 @@ BLOCK_DEFS = {
             {"name": "energy_num",   "type": "int", "default": 10,               "hint": "energy points"},
         ],
     },
+    "adaptive_scan": {
+        "label": "Adaptive Scan", "category": "Plans", "icon": "≈",
+        "params": [
+            {"name": "detectors",    "type": "str",   "default": "",    "hint": "detectors",                                             "widget": "device_multi"},
+            {"name": "target_field", "type": "str",   "default": "",    "hint": "field to adapt on, e.g. Pil300K_stats1_total"},
+            {"name": "motor",        "type": "str",   "default": "",    "hint": "motor to scan",                                         "widget": "device_single"},
+            {"name": "start",        "type": "float", "default": 0.0,   "hint": "start position"},
+            {"name": "stop",         "type": "float", "default": 1.0,   "hint": "stop position"},
+            {"name": "min_step",     "type": "float", "default": 0.001, "hint": "minimum step size"},
+            {"name": "max_step",     "type": "float", "default": 0.1,   "hint": "maximum step size"},
+            {"name": "target_delta", "type": "float", "default": 0.05,  "hint": "target fractional change in target_field per step"},
+            {"name": "backstep",     "type": "bool",  "default": True,  "hint": "allow motor to step back toward better signal"},
+            {"name": "threshold",    "type": "float", "default": 0.8,   "hint": "fraction of target_delta that triggers a backstep"},
+        ],
+    },
+    "flyscan": {
+        "label": "Fly Scan", "category": "Plans", "icon": "✈",
+        "params": [
+            {"name": "flyer",    "type": "str",   "default": "",   "hint": "flyer device (must implement Flyable protocol)", "widget": "device_any"},
+            {"name": "motor",    "type": "str",   "default": "",   "hint": "motor to position/configure before fly (optional)", "widget": "device_single"},
+            {"name": "start",    "type": "float", "default": 0.0,  "hint": "move motor to this position before triggering fly"},
+            {"name": "velocity", "type": "float", "default": 0.5,  "hint": "motor.velocity to set before fly (units/s)"},
+        ],
+    },
     "plan_stub": {
         "label": "Plan Stub", "category": "Plans", "icon": "⋯",
         "params": [
@@ -256,6 +280,12 @@ def _block_summary(block: dict) -> str:
     if btype == "list_scan":
         e_part = f"  ⚡{p['energy_motor']} {p['energy_start']}→{p['energy_stop']}×{p['energy_num']}" if p.get("energy_motor") else ""
         return f"{icon}  ListScan  {p['motor']}  [{p['positions']}]{e_part}"
+    if btype == "adaptive_scan":
+        return (f"{icon}  AdaptScan  {p['motor']}  {p['start']}→{p['stop']}"
+                f"  Δ{p['target_delta']}  [{p['min_step']},{p['max_step']}]")
+    if btype == "flyscan":
+        motor_part = f"  {p['motor']}@{p['velocity']}/s→{p['start']}" if p.get("motor") else ""
+        return f"{icon}  FlyScan  {p['flyer']}{motor_part}"
     if btype == "plan_stub":
         return f"{icon}  {p['stub_name']}({p['args']})"
     if btype == "repeat_n":
@@ -420,6 +450,36 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
             ])
         return f"{pad}yield from bp.list_scan({dets}, {motor}, [{', '.join(pos)}]{ps_arg})"
 
+    if btype == "adaptive_scan":
+        dets     = pm["detectors"]    if "detectors"    in pm else f"[{p['detectors']}]"
+        motor    = pm.get("motor",        p.get("motor",        ""))
+        start    = pm.get("start",        p.get("start",        0.0))
+        stop     = pm.get("stop",         p.get("stop",         1.0))
+        min_step = pm.get("min_step",     p.get("min_step",   0.001))
+        max_step = pm.get("max_step",     p.get("max_step",     0.1))
+        t_delta  = pm.get("target_delta", p.get("target_delta", 0.05))
+        backstep = p.get("backstep", True)
+        threshold= pm.get("threshold",    p.get("threshold",    0.8))
+        field    = p.get("target_field", "")
+        return (
+            f"{pad}yield from bp.adaptive_scan(\n"
+            f"{pad}    {dets}, \"{field}\",\n"
+            f"{pad}    {motor}, {start}, {stop},\n"
+            f"{pad}    {min_step}, {max_step},\n"
+            f"{pad}    {t_delta}, {backstep},\n"
+            f"{pad}    threshold={threshold})"
+        )
+    if btype == "flyscan":
+        flyer    = p.get("flyer", "")
+        motor    = p.get("motor", "")
+        start    = p.get("start", 0.0)
+        velocity = p.get("velocity", 0.5)
+        lines = []
+        if motor:
+            lines.append(f"{pad}yield from bps.abs_set({motor}.velocity, {velocity}, wait=True)")
+            lines.append(f"{pad}yield from bps.mv({motor}, {start})")
+        lines.append(f"{pad}yield from bp.fly([{flyer}])")
+        return "\n".join(lines)
     if btype == "plan_stub":
         return f"{pad}yield from {p['stub_name']}({p['args']})"
     if btype == "repeat_n":
@@ -876,6 +936,17 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
                 except ValueError:
                     pass
             _add("num", "int", p.get("num", 11), "Number of scan points")
+        elif btype == "adaptive_scan":
+            _add("detectors",    "List[Readable]", p.get("detectors",    ""),    "Detectors to read")
+            motor_val = p.get("motor", "")
+            if "," not in str(motor_val):
+                _add("motor",        "Movable",        motor_val,               "Motor to scan")
+                _add("start",        "float",          p.get("start",     0.0), "Scan start position")
+                _add("stop",         "float",          p.get("stop",      1.0), "Scan stop position")
+                _add("min_step",     "float",          p.get("min_step",  0.001),"Minimum step size")
+                _add("max_step",     "float",          p.get("max_step",  0.1), "Maximum step size")
+                _add("target_delta", "float",          p.get("target_delta", 0.05), "Target fractional change per step")
+                _add("threshold",    "float",          p.get("threshold", 0.8), "Backstep threshold")
         elif btype == "grid_scan":
             _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
             # All grid axes are hardcoded (per-motor); only detectors parametrized
