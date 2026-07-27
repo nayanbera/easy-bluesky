@@ -27,14 +27,14 @@ BLOCK_DEFS = {
     "move": {
         "label": "Move", "category": "Motion", "icon": "→",
         "params": [
-            {"name": "device",   "type": "str",   "default": "", "hint": "motor name"},
+            {"name": "device",   "type": "str",   "default": "", "hint": "motor name",        "widget": "device_single"},
             {"name": "position", "type": "float", "default": 0.0, "hint": "target position"},
         ],
     },
     "rel_move": {
         "label": "Relative Move", "category": "Motion", "icon": "↔",
         "params": [
-            {"name": "device", "type": "str",   "default": "", "hint": "motor name"},
+            {"name": "device", "type": "str",   "default": "", "hint": "motor name",        "widget": "device_single"},
             {"name": "delta",  "type": "float", "default": 0.0, "hint": "relative distance"},
         ],
     },
@@ -47,7 +47,7 @@ BLOCK_DEFS = {
     "set_attr": {
         "label": "Set Attribute", "category": "Device", "icon": "⚙",
         "params": [
-            {"name": "device",    "type": "str", "default": "", "hint": "device name"},
+            {"name": "device",    "type": "str", "default": "", "hint": "device name",            "widget": "device_single"},
             {"name": "attribute", "type": "str", "default": "", "hint": "e.g. cam.acquire_time"},
             {"name": "value",     "type": "str", "default": "", "hint": "value to set"},
         ],
@@ -55,7 +55,7 @@ BLOCK_DEFS = {
     "set_exposure": {
         "label": "Set Exposure", "category": "Detector", "icon": "⏲",
         "params": [
-            {"name": "detectors",     "type": "str",   "default": "",  "hint": "comma-separated detector names"},
+            {"name": "detectors",     "type": "str",   "default": "",  "hint": "detector names",          "widget": "device_multi"},
             {"name": "exposure_attr", "type": "str",   "default": "cam.acquire_time", "hint": "attribute path on each detector"},
             {"name": "exposure_time", "type": "float", "default": 1.0, "hint": "exposure time in seconds"},
         ],
@@ -63,7 +63,7 @@ BLOCK_DEFS = {
     "set_file": {
         "label": "Set AD File", "category": "Detector", "icon": "🗂",
         "params": [
-            {"name": "detector",   "type": "str", "default": "",         "hint": "AreaDetector device name"},
+            {"name": "detector",   "type": "str", "default": "",         "hint": "AreaDetector device name", "widget": "device_single"},
             {"name": "plugin",     "type": "str", "default": "hdf1",     "hint": "file plugin (hdf1, tiff1, etc.)"},
             {"name": "file_path",  "type": "str", "default": "/data/",   "hint": "save directory"},
             {"name": "file_name",  "type": "str", "default": "scan",     "hint": "file name prefix"},
@@ -72,39 +72,38 @@ BLOCK_DEFS = {
     "stage": {
         "label": "Stage Device", "category": "Device", "icon": "▲",
         "params": [
-            {"name": "device", "type": "str", "default": "", "hint": "device to stage"},
+            {"name": "device", "type": "str", "default": "", "hint": "device to stage",   "widget": "device_single"},
         ],
     },
     "unstage": {
         "label": "Unstage Device", "category": "Device", "icon": "▼",
         "params": [
-            {"name": "device", "type": "str", "default": "", "hint": "device to unstage"},
+            {"name": "device", "type": "str", "default": "", "hint": "device to unstage", "widget": "device_single"},
         ],
     },
     "open_shutter": {
         "label": "Open Shutter", "category": "Shutter", "icon": "◉",
         "params": [
-            {"name": "shutter", "type": "str", "default": "", "hint": "shutter device name"},
+            {"name": "shutter", "type": "str", "default": "", "hint": "shutter device name", "widget": "device_single"},
         ],
     },
     "close_shutter": {
         "label": "Close Shutter", "category": "Shutter", "icon": "○",
         "params": [
-            {"name": "shutter", "type": "str", "default": "", "hint": "shutter device name"},
+            {"name": "shutter", "type": "str", "default": "", "hint": "shutter device name", "widget": "device_single"},
         ],
     },
     "trigger_read": {
         "label": "Trigger & Read", "category": "Detector", "icon": "📷",
         "params": [
-            {"name": "detectors", "type": "str", "default": "",
-             "hint": "comma-separated detector names"},
+            {"name": "detectors", "type": "str", "default": "", "hint": "detector names", "widget": "device_multi"},
         ],
     },
     "scan": {
         "label": "Scan", "category": "Plans", "icon": "⟳",
         "params": [
-            {"name": "detectors", "type": "str",   "default": "", "hint": "comma-separated detectors"},
-            {"name": "motor",     "type": "str",   "default": "", "hint": "motor name"},
+            {"name": "detectors", "type": "str",   "default": "", "hint": "detectors",    "widget": "device_multi"},
+            {"name": "motor",     "type": "str",   "default": "", "hint": "motor name",   "widget": "device_single"},
             {"name": "start",     "type": "float", "default": 0.0, "hint": "start position"},
             {"name": "stop",      "type": "float", "default": 1.0, "hint": "stop position"},
             {"name": "num",       "type": "int",   "default": 11,  "hint": "number of points"},
@@ -113,7 +112,7 @@ BLOCK_DEFS = {
     "count": {
         "label": "Count", "category": "Plans", "icon": "●",
         "params": [
-            {"name": "detectors", "type": "str",   "default": "", "hint": "comma-separated detectors"},
+            {"name": "detectors", "type": "str",   "default": "", "hint": "detectors",   "widget": "device_multi"},
             {"name": "num",       "type": "int",   "default": 1,  "hint": "number of acquisitions"},
             {"name": "delay",     "type": "float", "default": 0.0, "hint": "delay between acquisitions"},
         ],
@@ -301,6 +300,7 @@ class PropertyPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._block = None
+        self._devices: list = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
@@ -320,6 +320,11 @@ class PropertyPanel(QWidget):
         scroll.setWidget(self._form_host)
         lay.addWidget(scroll, 1)
 
+    def set_devices(self, devices: dict):
+        self._devices = sorted(devices.keys()) if devices else []
+        if self._block:
+            self.load_block(self._block)   # rebuild with device pickers
+
     def load_block(self, block):
         self._block = block
         while self._form.rowCount():
@@ -333,10 +338,11 @@ class PropertyPanel(QWidget):
         self._title.setText(f"{defn['icon']}  {defn['label']}")
 
         for param in defn["params"]:
-            name  = param["name"]
-            ptype = param["type"]
-            value = block["params"].get(name, param["default"])
-            hint  = param.get("hint", "")
+            name       = param["name"]
+            ptype      = param["type"]
+            value      = block["params"].get(name, param["default"])
+            hint       = param.get("hint", "")
+            wtype      = param.get("widget", "")
 
             if ptype == "float":
                 w = QDoubleSpinBox()
@@ -345,11 +351,39 @@ class PropertyPanel(QWidget):
                 w.setValue(float(value))
                 w.setSingleStep(0.1)
                 w.valueChanged.connect(lambda v, n=name: self._update(n, v))
+
             elif ptype == "int":
                 w = QSpinBox()
                 w.setRange(1, 1000000)
                 w.setValue(int(value))
                 w.valueChanged.connect(lambda v, n=name: self._update(n, v))
+
+            elif wtype == "device_single" and self._devices:
+                w = QComboBox()
+                w.setEditable(True)
+                w.addItem("")
+                w.addItems(self._devices)
+                idx = w.findText(str(value))
+                w.setCurrentIndex(idx if idx >= 0 else 0)
+                if idx < 0 and value:
+                    w.setCurrentText(str(value))
+                w.currentTextChanged.connect(lambda v, n=name: self._update(n, v))
+
+            elif wtype == "device_multi" and self._devices:
+                w = QListWidget()
+                w.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+                w.setMaximumHeight(90)
+                w.addItems(self._devices)
+                current = {x.strip() for x in str(value).split(",") if x.strip()}
+                for i in range(w.count()):
+                    if w.item(i).text() in current:
+                        w.item(i).setSelected(True)
+                w.itemSelectionChanged.connect(
+                    lambda n=name, lw=w: self._update(
+                        n, ", ".join(lw.item(i).text()
+                                     for i in range(lw.count())
+                                     if lw.item(i).isSelected())))
+
             else:
                 w = QLineEdit(str(value))
                 w.setPlaceholderText(hint)
@@ -648,10 +682,10 @@ class ComposerWidget(QWidget):
         self.send_to_editor.emit(code)
 
     def set_devices(self, devices: dict):
-        pass   # reserved for future autocomplete
+        self._props.set_devices(devices)
 
     def set_plans(self, plans: dict):
-        pass   # reserved for future autocomplete
+        pass
 
 
 # ── Main PlanBuilder widget (two tabs) ─────────────────────────────────────────
@@ -956,3 +990,4 @@ class PlanBuilder(QWidget):
 
     def update_devices(self, devices: dict):
         self.devices = devices
+        self._composer.set_devices(devices)
