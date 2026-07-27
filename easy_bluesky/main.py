@@ -627,7 +627,7 @@ _SHORTCUTS_HTML = """
 </table>
 """
 
-_ABOUT_HTML = f"""
+_ABOUT_HTML = """
 <h2>EasyBluesky</h2>
 <p>A PyQt6 desktop GUI for controlling Bluesky/ophyd beamlines via the
 <b>bluesky-queueserver</b> (ZMQ transport).</p>
@@ -653,7 +653,13 @@ _ABOUT_HTML = f"""
 <tr><td><code>suitcase-jsonl</code></td><td>JSONL run file I/O</td></tr>
 </table>
 
-<p style="color:#888; margin-top:16px;">
+<h3>Acknowledgements</h3>
+<p>EasyBluesky is developed at <b>NSF's ChemMatCARS, Sector&nbsp;15</b> at the
+Advanced Photon Source (APS), Argonne National Laboratory (ANL).</p>
+<p>NSF's ChemMatCARS is supported by the Divisions of Chemistry (CHE) and
+Materials Research (DMR), National Science Foundation, under grant number
+<b>NSF/CHE-2335833</b>.</p>
+<p style="color:#888; margin-top:8px;">
 Developed with assistance from
 <a href="https://claude.ai">Claude</a> (Anthropic).</p>
 """

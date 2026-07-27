@@ -884,6 +884,10 @@ easy-bluesky/
 
 ## Acknowledgements
 
+EasyBluesky is developed at **NSF's ChemMatCARS, Sector 15** at the Advanced Photon Source (APS), Argonne National Laboratory (ANL).
+
+NSF's ChemMatCARS is supported by the Divisions of Chemistry (CHE) and Materials Research (DMR), National Science Foundation, under grant number **NSF/CHE-2335833**.
+
 Developed with assistance from [Claude](https://claude.ai) (Anthropic).
 
 ## License
