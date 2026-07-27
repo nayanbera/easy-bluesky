@@ -102,11 +102,11 @@ BLOCK_DEFS = {
     "scan": {
         "label": "Scan", "category": "Plans", "icon": "⟳",
         "params": [
-            {"name": "detectors", "type": "str",   "default": "", "hint": "detectors",    "widget": "device_multi"},
-            {"name": "motor",     "type": "str",   "default": "", "hint": "motor name",   "widget": "device_single"},
-            {"name": "start",     "type": "float", "default": 0.0, "hint": "start position"},
-            {"name": "stop",      "type": "float", "default": 1.0, "hint": "stop position"},
-            {"name": "num",       "type": "int",   "default": 11,  "hint": "number of points"},
+            {"name": "detectors", "type": "str", "default": "",    "hint": "detectors",                                         "widget": "device_multi"},
+            {"name": "motor",     "type": "str", "default": "",    "hint": "motor name(s)",                                     "widget": "device_single"},
+            {"name": "start",     "type": "str", "default": "0.0", "hint": "start position(s) — comma-separated if multi-motor"},
+            {"name": "stop",      "type": "str", "default": "1.0", "hint": "stop position(s)  — comma-separated if multi-motor"},
+            {"name": "num",       "type": "int", "default": 11,    "hint": "number of points"},
         ],
     },
     "count": {
@@ -274,22 +274,29 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
         dets = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
         return f"{pad}yield from bps.trigger_and_read({dets})"
     if btype == "scan":
-        dets  = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        dets    = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
         mot_raw = pm.get("motor", p["motor"])
-        start = pm.get("start",  p["start"])
-        stop  = pm.get("stop",   p["stop"])
-        num   = pm.get("num",    p["num"])
-        ps_arg = f", per_step={per_step_name}" if per_step_name else ""
-        # If motor is a parametric variable (single name, no commas) use it
-        # directly.  If it is a literal multi-motor string use list-unpacking.
+        start   = pm.get("start", p["start"])
+        stop    = pm.get("stop",  p["stop"])
+        num     = pm.get("num",   p["num"])
+        ps_arg  = f", per_step={per_step_name}" if per_step_name else ""
+
         if "," in str(mot_raw) and "motor" not in pm:
-            # hardcoded multi-motor: unpack as (m, start, stop) triplets
+            # Multi-motor hardcoded: zip each motor with its own start/stop.
+            # start/stop may be comma-separated too; pad to motor count if fewer.
             motors = [m.strip() for m in str(mot_raw).split(",") if m.strip()]
-            triplets = ", ".join(f"{m}, {start}, {stop}" for m in motors)
+            starts = [s.strip() for s in str(start).split(",") if s.strip()]
+            stops  = [s.strip() for s in str(stop).split(",")  if s.strip()]
+            while len(starts) < len(motors):
+                starts.append(starts[-1] if starts else "0.0")
+            while len(stops)  < len(motors):
+                stops.append(stops[-1]  if stops  else "1.0")
+            triplets = ", ".join(
+                f"{m}, {s0}, {s1}" for m, s0, s1 in zip(motors, starts, stops)
+            )
             return f"{pad}yield from bp.scan({dets}, {triplets}, {num}{ps_arg})"
         elif mot_raw == "motor":
-            # parametric variable — use list-unpacking so it handles both
-            # single Movable and List[Movable] at runtime
+            # Parametric single motor — list-unpack handles Movable or List[Movable]
             return (f"{pad}yield from bp.scan("
                     f"{dets}, *[x for _m in (motor if isinstance(motor, list) else [motor])"
                     f" for x in (_m, {start}, {stop})], {num}{ps_arg})")
@@ -721,10 +728,17 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
         btype, p = block["type"], block["params"]
         if btype == "scan":
             _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
-            _add("motor",     "Movable",        p.get("motor",     ""), "Motor to scan")
-            _add("start",     "float",          p.get("start",  0.0),   "Scan start position")
-            _add("stop",      "float",          p.get("stop",   1.0),   "Scan stop position")
-            _add("num",       "int",            p.get("num",    11),    "Number of scan points")
+            motor_val = p.get("motor", "")
+            # Multi-motor: keep motor/start/stop hardcoded — they can't map to
+            # a single typed parameter.  Single motor: parametrize all three.
+            if "," not in str(motor_val):
+                _add("motor", "Movable", motor_val, "Motor to scan")
+                try:
+                    _add("start", "float", float(str(p.get("start", "0.0")).split(",")[0]), "Scan start position")
+                    _add("stop",  "float", float(str(p.get("stop",  "1.0")).split(",")[0]), "Scan stop position")
+                except ValueError:
+                    pass
+            _add("num", "int", p.get("num", 11), "Number of scan points")
         elif btype == "count":
             _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
             _add("num",       "int",            p.get("num",    1),     "Number of acquisitions")
