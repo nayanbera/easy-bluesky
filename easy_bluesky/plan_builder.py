@@ -186,10 +186,19 @@ def _block_summary(block: dict) -> str:
     return f"{icon}  {name}"
 
 
-def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None) -> str:
-    p = block["params"]
+def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
+                   param_map: dict = None) -> str:
+    """Generate code for one block.
+
+    param_map maps semantic names ("detectors", "motor", "shutter", …) to the
+    variable name to emit.  When a key is present the parameter variable is used
+    instead of the hardcoded value from Block Properties.
+    """
+    p   = block["params"]
+    pm  = param_map or {}
     pad = " " * indent
     btype = block["type"]
+
     if btype == "move":
         return f"{pad}yield from bps.mv({p['device']}, {p['position']})"
     if btype == "rel_move":
@@ -199,13 +208,20 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None) -> s
     if btype == "set_attr":
         return f"{pad}yield from bps.mv({p['device']}.{p['attribute']}, {p['value']})"
     if btype == "open_shutter":
-        return f"{pad}yield from bps.mv({p['shutter']}, 'open')"
+        shutter = pm.get("shutter", p["shutter"])
+        return f"{pad}yield from bps.mv({shutter}, 'open')"
     if btype == "close_shutter":
-        return f"{pad}yield from bps.mv({p['shutter']}, 'closed')"
+        shutter = pm.get("shutter", p["shutter"])
+        return f"{pad}yield from bps.mv({shutter}, 'closed')"
     if btype == "set_exposure":
+        exp_time = pm.get("exposure_time", p["exposure_time"])
+        attr     = p["exposure_attr"]
+        if "detectors" in pm:
+            dets_var = pm["detectors"]
+            return (f"{pad}for _det in {dets_var}:\n"
+                    f"{pad}    yield from bps.mv(_det.{attr}, {exp_time})")
         dets = [d.strip() for d in p["detectors"].split(",") if d.strip()]
-        lines = [f"{pad}yield from bps.mv({d}.{p['exposure_attr']}, {p['exposure_time']})"
-                 for d in dets]
+        lines = [f"{pad}yield from bps.mv({d}.{attr}, {exp_time})" for d in dets]
         return "\n".join(lines) if lines else f"{pad}pass  # no detectors specified"
     if btype == "set_file":
         det, plug = p["detector"], p["plugin"]
@@ -218,15 +234,24 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None) -> s
     if btype == "unstage":
         return f"{pad}yield from bps.unstage({p['device']})"
     if btype == "trigger_read":
-        return f"{pad}yield from bps.trigger_and_read([{p['detectors']}])"
+        # detectors is already a list variable; no extra brackets needed
+        dets = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        return f"{pad}yield from bps.trigger_and_read({dets})"
     if btype == "scan":
+        dets  = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        mot   = pm.get("motor",  p["motor"])
+        start = pm.get("start",  p["start"])
+        stop  = pm.get("stop",   p["stop"])
+        num   = pm.get("num",    p["num"])
         ps_arg = f", per_step={per_step_name}" if per_step_name else ""
-        return (f"{pad}yield from bp.scan([{p['detectors']}], {p['motor']}, "
-                f"{p['start']}, {p['stop']}, {p['num']}{ps_arg})")
+        return (f"{pad}yield from bp.scan({dets}, {mot}, "
+                f"{start}, {stop}, {num}{ps_arg})")
     if btype == "count":
+        dets  = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        num   = pm.get("num",   p["num"])
+        delay = pm.get("delay", p["delay"])
         ps_arg = f", per_step={per_step_name}" if per_step_name else ""
-        return (f"{pad}yield from bp.count([{p['detectors']}], "
-                f"num={p['num']}, delay={p['delay']}{ps_arg})")
+        return (f"{pad}yield from bp.count({dets}, num={num}, delay={delay}{ps_arg})")
     if btype == "plan_stub":
         return f"{pad}yield from {p['stub_name']}({p['args']})"
     return f"{pad}pass  # unknown: {btype}"
@@ -289,6 +314,67 @@ class SequenceList(QListWidget):
             self.remove_selected()
         else:
             super().keyPressEvent(event)
+
+
+# ── Device picker widget ───────────────────────────────────────────────────────
+
+class DevicePickerWidget(QWidget):
+    """Scrollable device list with a live selection-summary label.
+
+    Replaces the fragile closure-based approach so that selection changes
+    reliably propagate back to PropertyPanel via a proper Qt signal.
+    """
+    value_changed = pyqtSignal(str)   # emits comma-sep string (or single name)
+
+    def __init__(self, value, multi: bool, devices: list, parent=None):
+        super().__init__(parent)
+        self._multi = multi
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        self._lw = QListWidget()
+        self._lw.setSelectionMode(
+            QAbstractItemView.SelectionMode.MultiSelection if multi
+            else QAbstractItemView.SelectionMode.SingleSelection)
+        self._lw.setMaximumHeight(90)
+        self._lw.addItems(devices)
+
+        current = ({x.strip() for x in str(value).split(",") if x.strip()}
+                   if multi else ({str(value).strip()} if value else set()))
+        for i in range(self._lw.count()):
+            if self._lw.item(i).text() in current:
+                self._lw.item(i).setSelected(True)
+
+        self._summary = QLabel("None selected")
+        self._summary.setStyleSheet(
+            "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+        self._summary.setWordWrap(True)
+
+        lay.addWidget(self._lw)
+        lay.addWidget(self._summary)
+
+        self._lw.itemSelectionChanged.connect(self._on_changed)
+        self._on_changed()   # initialise summary without emitting (block not set yet)
+
+    def _on_changed(self):
+        sel = [self._lw.item(i).text() for i in range(self._lw.count())
+               if self._lw.item(i).isSelected()]
+        if sel:
+            self._summary.setText("✓  " + ",   ".join(sel))
+            self._summary.setStyleSheet(
+                "color: #2ca02c; font-size: 11px; font-weight: bold; padding: 1px 2px;")
+        else:
+            self._summary.setText("None selected")
+            self._summary.setStyleSheet(
+                "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+        self.value_changed.emit(
+            ", ".join(sel) if self._multi else (sel[0] if sel else ""))
+
+    def get_value(self) -> str:
+        sel = [self._lw.item(i).text() for i in range(self._lw.count())
+               if self._lw.item(i).isSelected()]
+        return ", ".join(sel) if self._multi else (sel[0] if sel else "")
 
 
 # ── Property panel ─────────────────────────────────────────────────────────────
@@ -372,7 +458,9 @@ class PropertyPanel(QWidget):
                     devs, multi = self._motors or self._devices, False
                 else:  # device_any
                     devs, multi = self._devices, False
-                w = self._make_device_list_widget(name, value, multi, devs)
+                picker = DevicePickerWidget(value, multi, devs)
+                picker.value_changed.connect(lambda v, n=name: self._update(n, v))
+                w = picker
 
             else:
                 w = QLineEdit(str(value))
@@ -381,53 +469,6 @@ class PropertyPanel(QWidget):
 
             label = name.replace("_", " ").title() + ":"
             self._form.addRow(label, w)
-
-    def _make_device_list_widget(self, name: str, value, multi: bool,
-                                    devices: list = None) -> QWidget:
-        """Scrollable list with selection summary — shared by all device widget types."""
-        device_list = devices if devices is not None else self._devices
-        container = QWidget()
-        cl = QVBoxLayout(container)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(2)
-
-        lw = QListWidget()
-        lw.setSelectionMode(
-            QAbstractItemView.SelectionMode.MultiSelection if multi
-            else QAbstractItemView.SelectionMode.SingleSelection)
-        lw.setMaximumHeight(90)
-        lw.addItems(device_list)
-
-        current = ({x.strip() for x in str(value).split(",") if x.strip()}
-                   if multi else ({str(value).strip()} if value else set()))
-        for i in range(lw.count()):
-            if lw.item(i).text() in current:
-                lw.item(i).setSelected(True)
-
-        summary = QLabel("None selected")
-        summary.setStyleSheet(
-            "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
-        summary.setWordWrap(True)
-
-        def _refresh(n=name, lw_=lw, s=summary, m=multi):
-            sel = [lw_.item(i).text() for i in range(lw_.count())
-                   if lw_.item(i).isSelected()]
-            if sel:
-                s.setText("✓  " + ",   ".join(sel))
-                s.setStyleSheet(
-                    "color: #2ca02c; font-size: 11px; font-weight: bold; padding: 1px 2px;")
-            else:
-                s.setText("None selected")
-                s.setStyleSheet(
-                    "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
-            self._update(n, ", ".join(sel) if m else (sel[0] if sel else ""))
-
-        lw.itemSelectionChanged.connect(_refresh)
-        _refresh()  # initialise summary from pre-selected items
-
-        cl.addWidget(lw)
-        cl.addWidget(summary)
-        return container
 
     def _update(self, name, value):
         if self._block:
@@ -438,38 +479,140 @@ class PropertyPanel(QWidget):
 # ── Code generation ────────────────────────────────────────────────────────────
 
 def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") -> tuple:
-    """Return (code_str, plan_name)."""
+    """Return (code_str, plan_name).
+
+    Generates a fully parametric plan: scan/count blocks contribute
+    detectors, motor, start/stop/num as function parameters; shutter and
+    exposure blocks contribute shutter / exposure_time parameters.
+    Block-Properties selections become the default values shown in the
+    docstring and used at runtime when callers omit the argument.
+    """
     import re
     name = re.sub(r"[^a-zA-Z0-9_]", "_", plan_name.strip()) if plan_name.strip() else ""
     if not name:
-        name = f"composed_plan_{datetime.now().strftime('%H%M%S')}"
+        name = "composed_plan"
 
-    lines = [
-        "import bluesky.plans as bp",
-        "import bluesky.plan_stubs as bps",
-        "",
-        f"def {plan_name}():",
-    ]
+    # ── 1. Collect parameterisable values from all blocks ─────────────────────
+    # func_params: ordered dict  param_name → {ann, default, desc}
+    func_params = {}
+
+    def _add(pname, ann, default, desc):
+        func_params.setdefault(pname, {"ann": ann, "default": default, "desc": desc})
+
+    for block in main_blocks:
+        btype, p = block["type"], block["params"]
+        if btype == "scan":
+            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
+            _add("motor",     "Movable",        p.get("motor",     ""), "Motor to scan")
+            _add("start",     "float",          p.get("start",  0.0),   "Scan start position")
+            _add("stop",      "float",          p.get("stop",   1.0),   "Scan stop position")
+            _add("num",       "int",            p.get("num",    11),    "Number of scan points")
+        elif btype == "count":
+            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
+            _add("num",       "int",            p.get("num",    1),     "Number of acquisitions")
+            _add("delay",     "float",          p.get("delay",  0.0),   "Delay between acquisitions (s)")
+
+    for block in ps_blocks:
+        btype, p = block["type"], block["params"]
+        if btype in ("open_shutter", "close_shutter"):
+            _add("shutter",       "Movable", p.get("shutter",       ""), "Shutter device")
+        elif btype == "set_exposure":
+            _add("exposure_time", "float",   p.get("exposure_time", 1.0), "Exposure time (s)")
+
+    # param_map: block-level param name → variable name in generated code
+    param_map = {k: k for k in func_params}
+
+    # ── 2. Function signature ─────────────────────────────────────────────────
+    sig_lines = []
+    for pname, info in func_params.items():
+        ann, d = info["ann"], info["default"]
+        if ann in ("List[Readable]", "Movable"):
+            sig_lines.append(f"        {pname}: {ann} = None,")
+        elif ann == "float":
+            sig_lines.append(f"        {pname}: float = {d},")
+        elif ann == "int":
+            sig_lines.append(f"        {pname}: int = {d},")
+    if sig_lines:
+        sig_lines[-1] = sig_lines[-1].rstrip(",")   # no trailing comma on last param
+
+    # ── 3. Docstring ──────────────────────────────────────────────────────────
+    main_seq = " → ".join(BLOCK_DEFS[b["type"]]["label"] for b in main_blocks)
+    ps_seq   = (" → ".join(BLOCK_DEFS[b["type"]]["label"] for b in ps_blocks)
+                if ps_blocks else "")
+
+    doc = ['    """']
+    doc.append(f"    Plan generated by EasyBluesky Visual Composer.")
+    doc.append("")
+    doc.append("    Sequence")
+    doc.append("    --------")
+    doc.append(f"    Main     : {main_seq}")
+    if ps_seq:
+        doc.append(f"    Per-step : {ps_seq}")
+    if func_params:
+        doc.append("")
+        doc.append("    Parameters")
+        doc.append("    ----------")
+        for pname, info in func_params.items():
+            d    = info["default"]
+            desc = info["desc"]
+            note = f"  Default selection: {d}." if d != "" and d != 0.0 and d != 0 else ""
+            doc.append(f"    {pname} : {info['ann']}")
+            doc.append(f"        {desc}.{note}")
+    doc.append('    """')
+
+    # ── 4. Assemble code ──────────────────────────────────────────────────────
+    need_protocols = any(v["ann"] in ("List[Readable]", "Movable")
+                         for v in func_params.values())
+    lines = []
+    if need_protocols:
+        lines += ["from typing import List",
+                  "from bluesky.protocols import Readable, Movable",
+                  "import bluesky.plans as bp",
+                  "import bluesky.plan_stubs as bps",
+                  ""]
+    else:
+        lines += ["import bluesky.plans as bp",
+                  "import bluesky.plan_stubs as bps",
+                  ""]
+
+    if sig_lines:
+        lines.append(f"def {name}(")
+        lines.extend(sig_lines)
+        lines.append("):")
+    else:
+        lines.append(f"def {name}():")
+
+    lines.extend(doc)
 
     if not main_blocks:
         lines.append("    pass")
-        return "\n".join(lines), plan_name
+        return "\n".join(lines), name
+
+    # Detectors default: None → runtime fallback to selected device
+    if "detectors" in func_params:
+        det_default = func_params["detectors"]["default"]
+        if det_default:
+            lines.append(f"    detectors = detectors or [{det_default}]")
+        else:
+            lines.append("    if detectors is None: detectors = []")
+        lines.append("")
 
     has_ps = bool(ps_blocks)
-
     for block in main_blocks:
         if block["type"] in _PLAN_BLOCKS and has_ps:
             ps_name = "_per_step"
             lines.append(f"    def {ps_name}(detectors, step, pos_cache):")
             lines.append(f"        yield from bps.move_per_step(step, pos_cache)")
             for ps in ps_blocks:
-                lines.append(_block_to_code(ps, indent=8))
+                lines.append(_block_to_code(ps, indent=8, param_map=param_map))
             lines.append("")
-            lines.append(_block_to_code(block, indent=4, per_step_name=ps_name))
+            lines.append(_block_to_code(block, indent=4,
+                                         per_step_name=ps_name,
+                                         param_map=param_map))
         else:
-            lines.append(_block_to_code(block, indent=4))
+            lines.append(_block_to_code(block, indent=4, param_map=param_map))
 
-    return "\n".join(lines), plan_name
+    return "\n".join(lines), name
 
 
 # ── Composer widget ────────────────────────────────────────────────────────────
