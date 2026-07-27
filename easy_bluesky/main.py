@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QStatusBar, QTabWidget,
-    QVBoxLayout, QWidget,
+    QTextBrowser, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
 from .config import APP_NAME, ACCENT
@@ -454,6 +454,257 @@ def _create_first_run_profile(settings: dict):
     settings.setdefault("deleted_profiles", [])
 
 
+# ── Help dialog ───────────────────────────────────────────────────────────────
+
+_HELP_CSS = """
+body  { font-family: -apple-system, sans-serif; font-size: 13px;
+        margin: 12px 16px; line-height: 1.55; }
+h2    { color: #1f77b4; margin-top: 0; border-bottom: 1px solid #444;
+        padding-bottom: 4px; }
+h3    { color: #aaa; margin-bottom: 4px; margin-top: 14px; }
+code  { background: #2d2d2d; color: #e8c07d; padding: 1px 5px;
+        border-radius: 3px; font-size: 12px; }
+pre   { background: #2d2d2d; color: #ccc; padding: 8px 10px;
+        border-radius: 4px; font-size: 12px; white-space: pre-wrap; }
+table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+th    { background: #1f77b4; color: white; padding: 5px 8px;
+        text-align: left; font-weight: bold; }
+td    { padding: 4px 8px; border-bottom: 1px solid #333; vertical-align: top; }
+tr:nth-child(even) td { background: #252525; }
+.tip  { background: #1a2e1a; border-left: 3px solid #2ca02c;
+        padding: 6px 10px; border-radius: 3px; margin: 8px 0; }
+.warn { background: #2e1a1a; border-left: 3px solid #d62728;
+        padding: 6px 10px; border-radius: 3px; margin: 8px 0; }
+"""
+
+_QUICK_START_HTML = """
+<h2>Quick Start</h2>
+
+<h3>1 — Launch and pick a profile</h3>
+<p>On first run a <b>Local Sim</b> profile is created automatically.
+Click <b>Launch</b> to start it.  A local profile starts the RE Manager
+as a subprocess — no SSH or configuration needed.</p>
+
+<h3>2 — Open the RE environment</h3>
+<p>Click <b>Open Env</b> in the toolbar.  Wait for the status indicator
+to turn green and show <b>idle</b>.  Devices are loaded at this step.</p>
+<div class="tip">If the status stays "closed", check the RE Console tab for
+startup errors.  Common cause: missing devices file.</div>
+
+<h3>3 — Add a plan to the queue</h3>
+<p>Go to <b>Queue Manager</b> → choose a plan from the dropdown
+(e.g. <code>count</code> or <code>scan</code>) → fill in the parameters
+→ click <b>Add to Queue</b>.</p>
+<p>Or use the <b>Plan Builder → Visual Composer</b> tab to assemble a plan
+from blocks and click <b>→ Send to Code Editor</b>, then upload it.</p>
+
+<h3>4 — Start the queue</h3>
+<p>Click <b>▶ Start</b> in the toolbar.  The first plan in the queue runs.
+Use <b>⏸ Pause</b>, <b>▶▶ Resume</b>, and <b>✕ Abort</b> to control it.</p>
+
+<h3>5 — View live data</h3>
+<p>Open the <b>Experiments</b> tab.  The Live Viewer updates in real time
+as the scan runs.  When the plan finishes, the run appears in the history
+panel and is saved as a JSONL file in your experiment folder.</p>
+
+<h3>Connecting to a remote beamline</h3>
+<p>Open <b>File → Connection Settings</b>.  Fill in the host, SSH user,
+and key path.  Click <b>Setup SSH Key…</b> to generate and install an
+Ed25519 key in one step (needs your SSH password once — never stored).
+Then click <b>Test SSH Connection</b> to verify.</p>
+<div class="tip">The key path defaults to <code>~/.ssh/id_ed25519</code>.
+Check "Remote RE Manager" in the README for full details.</div>
+"""
+
+_COMPOSER_HTML = """
+<h2>Visual Composer</h2>
+<p>Drag blocks from the <b>Block Palette</b> onto the <b>Main Sequence</b>
+or <b>Per-Step Sequence</b>.  Edit parameters in <b>Block Properties</b>
+on the right.  The generated plan code updates live.
+Click <b>→ Send to Code Editor</b> to review and upload.</p>
+
+<h3>Typical scan workflow</h3>
+<pre>Main:      Set Exposure → Set AD File → Scan
+Per-step:  Open Shutter → Trigger &amp; Read → Close Shutter → Sleep</pre>
+
+<h3>All scan block types</h3>
+<table>
+<tr><th>Block</th><th>Bluesky call</th><th>Notes</th></tr>
+<tr><td><b>Scan</b></td><td><code>bp.scan</code></td>
+    <td>Single motor: parametric. Multi-motor: comma-separate motors and
+    start/stop — each motor gets its own range.</td></tr>
+<tr><td><b>Relative Scan</b></td><td><code>bp.rel_scan</code></td>
+    <td>Same as Scan but positions are relative to current motor position.</td></tr>
+<tr><td><b>Grid Scan</b></td><td><code>bp.grid_scan</code></td>
+    <td>2-D (or N-D) grid. Comma-separate motors/starts/stops/nums.
+    Optional <i>Energy inner axis</i> field.</td></tr>
+<tr><td><b>List Scan</b></td><td><code>bp.list_scan</code></td>
+    <td>Explicit position list. Optional <i>Energy inner loop</i>
+    (nested for-loop: spatial outer, energy scan inner).</td></tr>
+<tr><td><b>Adaptive Scan</b></td><td><code>bp.adaptive_scan</code></td>
+    <td>Intelligent step sizing. Set <i>target_field</i> to the detector
+    reading name, e.g. <code>Pil300K_stats1_total</code>.</td></tr>
+<tr><td><b>Fly Scan</b></td><td><code>bp.fly</code></td>
+    <td>Continuous acquisition. If motor is set, prepends velocity config
+    and move-to-start before the fly call.</td></tr>
+<tr><td><b>Count</b></td><td><code>bp.count</code></td>
+    <td>Fixed-position acquisition.</td></tr>
+</table>
+
+<h3>Flow blocks</h3>
+<table>
+<tr><th>Block</th><th>What it generates</th></tr>
+<tr><td><b>Repeat N Times</b></td>
+    <td>Wraps the entire Main Sequence in <code>for _i in range(n):</code>.
+    Composable with other Flow blocks.</td></tr>
+<tr><td><b>For Each Position</b></td>
+    <td>Self-contained loop: move motor to each position, then count.
+    Includes its own detector/num/delay fields.</td></tr>
+<tr><td><b>Custom Python</b></td>
+    <td>Injects raw Python at that position in the sequence.
+    Edit in the multiline code editor in Block Properties.</td></tr>
+</table>
+
+<h3>Multi-motor start/stop</h3>
+<p>Enter comma-separated values in the <b>Start</b> and <b>Stop</b>
+fields — one value per motor.  If you enter fewer values than motors,
+the last value is repeated for remaining motors.</p>
+<pre>Motors : coll_x, coll_y
+Start  : 0.0, 10.0
+Stop   : 5.0, 20.0   →   bp.scan(dets, coll_x, 0.0, 5.0, coll_y, 10.0, 20.0, 11)</pre>
+
+<h3>Energy inner loop</h3>
+<p>In a <b>Grid Scan</b> or <b>List Scan</b> block, set the
+<i>Energy motor</i>, <i>Energy start/stop/num</i> fields.
+Leave <i>Energy motor</i> blank to skip the energy loop.</p>
+<ul>
+<li><b>Grid Scan + energy</b> — appended as the innermost (fastest-varying)
+    <code>bp.grid_scan</code> axis.</li>
+<li><b>List Scan + energy</b> — nested for-loop (spatial outer,
+    <code>bp.scan</code> over energy at each position).</li>
+</ul>
+"""
+
+_SHORTCUTS_HTML = """
+<h2>Keyboard Shortcuts</h2>
+
+<h3>Visual Composer — sequence lists</h3>
+<table>
+<tr><th>Key / Action</th><th>Effect</th></tr>
+<tr><td><code>Del</code></td><td>Remove selected block</td></tr>
+<tr><td>Drag row</td><td>Reorder blocks within a list</td></tr>
+<tr><td>Drag from palette</td><td>Insert block at drop position</td></tr>
+<tr><td>Double-click palette item</td><td>Append to last active sequence</td></tr>
+<tr><td><b>Add to Main ↑</b> button</td><td>Append selected palette block to Main</td></tr>
+<tr><td><b>Add to Per-Step ↓</b> button</td><td>Append selected palette block to Per-Step</td></tr>
+</table>
+
+<h3>Code Editor</h3>
+<table>
+<tr><th>Key</th><th>Effect</th></tr>
+<tr><td><code>Ctrl+Space</code></td><td>Trigger autocomplete</td></tr>
+<tr><td><code>Tab</code></td><td>Insert 4 spaces (smart tab stop)</td></tr>
+<tr><td><code>Shift+Tab</code></td><td>Remove one indent level</td></tr>
+<tr><td><code>Backspace</code></td><td>Smart backspace — removes a full 4-space block</td></tr>
+<tr><td><code>Enter</code> after <code>:</code></td><td>Auto-indent next line</td></tr>
+</table>
+
+<h3>Queue Manager</h3>
+<table>
+<tr><th>Key / Action</th><th>Effect</th></tr>
+<tr><td>Double-click queue item</td><td>View plan details</td></tr>
+<tr><td><b>▶ Start</b></td><td>Start the queue (requires an open experiment)</td></tr>
+<tr><td><b>✕ Abort</b></td><td>Abort running plan (prompts confirmation)</td></tr>
+</table>
+
+<h3>Global</h3>
+<table>
+<tr><th>Menu / Action</th><th>Effect</th></tr>
+<tr><td><b>File → Connection Settings</b></td><td>Configure host, profiles, SSH key</td></tr>
+<tr><td><b>File → Edit Devices File</b></td><td>Edit ophyd device definitions in-app</td></tr>
+<tr><td><b>View → Theme</b></td><td>Switch between Dark / Light / Midnight themes</td></tr>
+<tr><td><b>Help → Quick Start</b></td><td>This help dialog</td></tr>
+</table>
+"""
+
+_ABOUT_HTML = f"""
+<h2>EasyBluesky</h2>
+<p>A PyQt6 desktop GUI for controlling Bluesky/ophyd beamlines via the
+<b>bluesky-queueserver</b> (ZMQ transport).</p>
+
+<table>
+<tr><td><b>Version</b></td><td>0.1.0</td></tr>
+<tr><td><b>Python</b></td><td>≥ 3.10</td></tr>
+<tr><td><b>UI toolkit</b></td><td>PyQt6</td></tr>
+<tr><td><b>License</b></td><td>BSD 3-Clause</td></tr>
+<tr><td><b>Source</b></td>
+    <td><a href="https://github.com/nayanbera/easy-bluesky">
+    github.com/nayanbera/easy-bluesky</a></td></tr>
+</table>
+
+<h3>Key dependencies</h3>
+<table>
+<tr><th>Package</th><th>Purpose</th></tr>
+<tr><td><code>bluesky-queueserver-api</code></td><td>ZMQ client API</td></tr>
+<tr><td><code>bluesky</code></td><td>Plan protocols and helpers</td></tr>
+<tr><td><code>ophyd</code></td><td>Device abstractions</td></tr>
+<tr><td><code>paramiko</code></td><td>SSH management of remote RE Manager</td></tr>
+<tr><td><code>pyqtgraph</code></td><td>Live Viewer plots</td></tr>
+<tr><td><code>suitcase-jsonl</code></td><td>JSONL run file I/O</td></tr>
+</table>
+
+<p style="color:#888; margin-top:16px;">
+Developed with assistance from
+<a href="https://claude.ai">Claude</a> (Anthropic).</p>
+"""
+
+
+class _HelpDialog(QDialog):
+    """Tabbed help / documentation dialog.  Non-modal so it stays open."""
+
+    _TABS = [
+        ("Quick Start",       _QUICK_START_HTML),
+        ("Visual Composer",   _COMPOSER_HTML),
+        ("Keyboard Shortcuts",_SHORTCUTS_HTML),
+        ("About",             _ABOUT_HTML),
+    ]
+
+    def __init__(self, parent=None, start_tab: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle("EasyBluesky Help")
+        self.setMinimumSize(700, 540)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 8)
+
+        self._tabs = QTabWidget()
+        for title, html in self._TABS:
+            browser = QTextBrowser()
+            browser.setOpenExternalLinks(True)
+            browser.document().setDefaultStyleSheet(_HELP_CSS)
+            browser.setHtml(html)
+            self._tabs.addTab(browser, title)
+        lay.addWidget(self._tabs, 1)
+
+        btn_close = QPushButton("Close")
+        btn_close.setFixedWidth(90)
+        btn_close.clicked.connect(self.hide)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(btn_close)
+        row.setContentsMargins(0, 0, 12, 0)
+        lay.addLayout(row)
+
+        self._tabs.setCurrentIndex(start_tab)
+
+    def show_tab(self, index: int):
+        self._tabs.setCurrentIndex(index)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+
 # ── Main window ────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -547,6 +798,25 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda checked, n=name: self.apply_theme(n))
             group.addAction(act)
             self._theme_actions[name] = act
+
+        self._help_dialog = None
+
+        help_menu = menubar.addMenu("Help")
+        act_qs    = help_menu.addAction("Quick Start…")
+        act_vc    = help_menu.addAction("Visual Composer Guide…")
+        act_kb    = help_menu.addAction("Keyboard Shortcuts…")
+        help_menu.addSeparator()
+        act_about = help_menu.addAction("About EasyBluesky")
+
+        act_qs.triggered.connect(lambda: self._open_help(0))
+        act_vc.triggered.connect(lambda: self._open_help(1))
+        act_kb.triggered.connect(lambda: self._open_help(2))
+        act_about.triggered.connect(lambda: self._open_help(3))
+
+    def _open_help(self, tab: int = 0):
+        if self._help_dialog is None:
+            self._help_dialog = _HelpDialog(self)
+        self._help_dialog.show_tab(tab)
 
     def _refresh_recent_menu(self):
         self._recent_menu.clear()
