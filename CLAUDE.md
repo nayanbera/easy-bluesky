@@ -1,5 +1,10 @@
 # EasyBluesky — Claude Context
 
+## Commit rules
+
+- **Never** add `Co-Authored-By:` trailers to commit messages. GitHub parses them as
+  co-authorship and lists Claude as a contributor on the project page.
+
 EasyBluesky is a PyQt6 desktop GUI for controlling a Bluesky/ophyd beamline via the
 bluesky-queueserver. It targets synchrotron beamlines (current user: ASWAXS beamline,
 `Pil300K` Pilatus area detector). The app runs locally on a Mac; the RE Manager runs
