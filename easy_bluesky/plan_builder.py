@@ -47,7 +47,7 @@ BLOCK_DEFS = {
     "set_attr": {
         "label": "Set Attribute", "category": "Device", "icon": "⚙",
         "params": [
-            {"name": "device",    "type": "str", "default": "", "hint": "device name",            "widget": "device_single"},
+            {"name": "device",    "type": "str", "default": "", "hint": "device name",            "widget": "device_any"},
             {"name": "attribute", "type": "str", "default": "", "hint": "e.g. cam.acquire_time"},
             {"name": "value",     "type": "str", "default": "", "hint": "value to set"},
         ],
@@ -63,7 +63,7 @@ BLOCK_DEFS = {
     "set_file": {
         "label": "Set AD File", "category": "Detector", "icon": "🗂",
         "params": [
-            {"name": "detector",   "type": "str", "default": "",         "hint": "AreaDetector device name", "widget": "device_single"},
+            {"name": "detector",   "type": "str", "default": "",         "hint": "AreaDetector device name", "widget": "device_multi"},
             {"name": "plugin",     "type": "str", "default": "hdf1",     "hint": "file plugin (hdf1, tiff1, etc.)"},
             {"name": "file_path",  "type": "str", "default": "/data/",   "hint": "save directory"},
             {"name": "file_name",  "type": "str", "default": "scan",     "hint": "file name prefix"},
@@ -72,13 +72,13 @@ BLOCK_DEFS = {
     "stage": {
         "label": "Stage Device", "category": "Device", "icon": "▲",
         "params": [
-            {"name": "device", "type": "str", "default": "", "hint": "device to stage",   "widget": "device_single"},
+            {"name": "device", "type": "str", "default": "", "hint": "device to stage",   "widget": "device_any"},
         ],
     },
     "unstage": {
         "label": "Unstage Device", "category": "Device", "icon": "▼",
         "params": [
-            {"name": "device", "type": "str", "default": "", "hint": "device to unstage", "widget": "device_single"},
+            {"name": "device", "type": "str", "default": "", "hint": "device to unstage", "widget": "device_any"},
         ],
     },
     "open_shutter": {
@@ -299,8 +299,10 @@ class PropertyPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._block = None
-        self._devices: list = []
+        self._block     = None
+        self._devices   = []
+        self._motors    = []
+        self._detectors = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
@@ -321,9 +323,14 @@ class PropertyPanel(QWidget):
         lay.addWidget(scroll, 1)
 
     def set_devices(self, devices: dict):
-        self._devices = sorted(devices.keys()) if devices else []
+        devices = devices or {}
+        self._devices   = sorted(devices.keys())
+        self._motors    = sorted(k for k, v in devices.items()
+                                 if isinstance(v, dict) and v.get("is_movable", False))
+        self._detectors = sorted(k for k, v in devices.items()
+                                 if isinstance(v, dict) and v.get("is_readable", False))
         if self._block:
-            self.load_block(self._block)   # rebuild with device pickers
+            self.load_block(self._block)
 
     def load_block(self, block):
         self._block = block
@@ -358,9 +365,14 @@ class PropertyPanel(QWidget):
                 w.setValue(int(value))
                 w.valueChanged.connect(lambda v, n=name: self._update(n, v))
 
-            elif wtype in ("device_single", "device_multi") and self._devices:
-                multi = (wtype == "device_multi")
-                w = self._make_device_list_widget(name, value, multi)
+            elif wtype in ("device_single", "device_multi", "device_any") and self._devices:
+                if wtype == "device_multi":
+                    devs, multi = self._detectors or self._devices, True
+                elif wtype == "device_single":
+                    devs, multi = self._motors or self._devices, False
+                else:  # device_any
+                    devs, multi = self._devices, False
+                w = self._make_device_list_widget(name, value, multi, devs)
 
             else:
                 w = QLineEdit(str(value))
@@ -370,8 +382,10 @@ class PropertyPanel(QWidget):
             label = name.replace("_", " ").title() + ":"
             self._form.addRow(label, w)
 
-    def _make_device_list_widget(self, name: str, value, multi: bool) -> QWidget:
-        """Scrollable list with selection summary — shared by device_single and device_multi."""
+    def _make_device_list_widget(self, name: str, value, multi: bool,
+                                    devices: list = None) -> QWidget:
+        """Scrollable list with selection summary — shared by all device widget types."""
+        device_list = devices if devices is not None else self._devices
         container = QWidget()
         cl = QVBoxLayout(container)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -382,7 +396,7 @@ class PropertyPanel(QWidget):
             QAbstractItemView.SelectionMode.MultiSelection if multi
             else QAbstractItemView.SelectionMode.SingleSelection)
         lw.setMaximumHeight(90)
-        lw.addItems(self._devices)
+        lw.addItems(device_list)
 
         current = ({x.strip() for x in str(value).split(",") if x.strip()}
                    if multi else ({str(value).strip()} if value else set()))

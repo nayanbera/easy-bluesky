@@ -408,8 +408,13 @@ class ListScanArgsWidget(QWidget):
 class ParamForm(QWidget):
     def __init__(self, params, devices, parent=None):
         super().__init__(parent)
-        self.params  = params
-        self.devices = list(devices.keys()) if devices else []
+        self.params = params
+        devices = devices or {}
+        self.devices   = sorted(devices.keys())
+        self.motors    = sorted(k for k, v in devices.items()
+                                if isinstance(v, dict) and v.get("is_movable", False))
+        self.detectors = sorted(k for k, v in devices.items()
+                                if isinstance(v, dict) and v.get("is_readable", False))
         self.widgets = {}
         self._build()
 
@@ -444,19 +449,21 @@ class ParamForm(QWidget):
 
     def _make_device_list(self, default=None):
         """Multi-select list for detectors / readable devices."""
-        w = MultiSelectWidget(self.devices)
+        items = self.detectors or self.devices
+        w = MultiSelectWidget(items)
         if default:
-            items = default if isinstance(default, list) else [default]
+            sel = default if isinstance(default, list) else [default]
             for i in range(w.count()):
-                if w.item(i).text() in items:
+                if w.item(i).text() in sel:
                     w.item(i).setSelected(True)
             w._update_summary()
         return w
 
     def _make_device_combo(self, default=None):
         """Single-select combo for motors / movable devices."""
+        items = self.motors or self.devices
         w = QComboBox()
-        w.addItems(["-- select --"] + self.devices)
+        w.addItems(["-- select --"] + items)
         if default:
             idx = w.findText(str(default))
             if idx >= 0:
@@ -476,9 +483,10 @@ class ParamForm(QWidget):
         # list_scan: annotation is tuple[Movable, list[...]] → contains "list["
         # scan:      annotation is Movable | Any             → no "list["
         if kind == "VAR_POSITIONAL" and ("__MOVABLE__" in typ or n in ("args",)):
+            motor_list = self.motors or self.devices
             if "list[" in typ.lower():
-                return ListScanArgsWidget(self.devices)
-            return ScanArgsWidget(self.devices)
+                return ListScanArgsWidget(motor_list)
+            return ScanArgsWidget(motor_list)
 
         # ── Classify the annotation ──────────────────────────────────────────────
         _list_types     = ("List[", "Sequence[", "list[")
@@ -493,7 +501,7 @@ class ParamForm(QWidget):
         _mot_names = ("motors", "movables", "axes", "positioners", "actuators")
         if (is_list_ann and is_movable_ann and not is_readable_ann) or \
            (n in _mot_names and not typ):
-            return ScanArgsWidget(self.devices)
+            return ScanArgsWidget(self.motors or self.devices)
 
         # ── List[Readable] / List[Detector] → multi-select device list ──────────
         is_det_name = n in ("detectors", "dets", "det", "readables", "readable",
