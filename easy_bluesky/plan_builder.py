@@ -387,6 +387,8 @@ class PropertyPanel(QWidget):
         super().__init__(parent)
         self._block     = None
         self._widgets   = {}   # param_name → widget, for direct value reads
+        self._handlers  = []   # strong refs to lambdas so Qt doesn't GC them
+        self._loading   = False
         self._devices   = []
         self._motors    = []
         self._detectors = []
@@ -420,12 +422,15 @@ class PropertyPanel(QWidget):
             self.load_block(self._block)
 
     def load_block(self, block):
-        self._block   = block
-        self._widgets = {}
+        self._block    = block
+        self._widgets  = {}
+        self._handlers = []   # drop old lambdas; keep strong refs to new ones
+        self._loading  = True  # suppress changed() during widget init
         while self._form.rowCount():
             self._form.removeRow(0)
 
         if not block:
+            self._loading = False
             self._title.setText("Select a block to edit")
             return
 
@@ -433,25 +438,31 @@ class PropertyPanel(QWidget):
         self._title.setText(f"{defn['icon']}  {defn['label']}")
 
         for param in defn["params"]:
-            name       = param["name"]
-            ptype      = param["type"]
-            value      = block["params"].get(name, param["default"])
-            hint       = param.get("hint", "")
-            wtype      = param.get("widget", "")
+            name  = param["name"]
+            ptype = param["type"]
+            value = block["params"].get(name, param["default"])
+            hint  = param.get("hint", "")
+            wtype = param.get("widget", "")
 
             if ptype == "float":
                 w = QDoubleSpinBox()
                 w.setRange(-1e9, 1e9)
                 w.setDecimals(4)
-                w.setValue(float(value))
                 w.setSingleStep(0.1)
-                w.valueChanged.connect(lambda v, n=name: self._update(n, v))
+                # Connect BEFORE setValue so the initial value is written into
+                # block params; store strong ref so the lambda isn't GC'd.
+                handler = lambda v, n=name: self._update(n, v)
+                self._handlers.append(handler)
+                w.valueChanged.connect(handler)
+                w.setValue(float(value))
 
             elif ptype == "int":
                 w = QSpinBox()
                 w.setRange(1, 1000000)
+                handler = lambda v, n=name: self._update(n, v)
+                self._handlers.append(handler)
+                w.valueChanged.connect(handler)
                 w.setValue(int(value))
-                w.valueChanged.connect(lambda v, n=name: self._update(n, v))
 
             elif wtype in ("device_single", "device_multi", "device_any") and self._devices:
                 if wtype == "device_multi":
@@ -461,22 +472,26 @@ class PropertyPanel(QWidget):
                 else:  # device_any
                     devs, multi = self._devices, False
                 picker = DevicePickerWidget(value, multi, devs)
-                # Write the initial selection into block params NOW (before the
-                # signal is connected) so the value is always in sync even if
-                # the user never touches this picker in this session.
-                if block:
-                    block["params"][name] = picker.get_value()
-                picker.value_changed.connect(lambda v, n=name: self._update(n, v))
+                handler = lambda v, n=name: self._update(n, v)
+                self._handlers.append(handler)
+                picker.value_changed.connect(handler)
+                # Flush initial selection into block params now — picker's
+                # _on_changed() fired during __init__ before we connected.
+                block["params"][name] = picker.get_value()
                 w = picker
 
             else:
                 w = QLineEdit(str(value))
                 w.setPlaceholderText(hint)
-                w.textChanged.connect(lambda v, n=name: self._update(n, v))
+                handler = lambda v, n=name: self._update(n, v)
+                self._handlers.append(handler)
+                w.textChanged.connect(handler)
 
             self._widgets[name] = w
             label = name.replace("_", " ").title() + ":"
             self._form.addRow(label, w)
+
+        self._loading = False  # widget init done; user changes now emit changed()
 
     def sync_to_block(self):
         """Read each widget's current value directly into the active block params.
@@ -499,7 +514,8 @@ class PropertyPanel(QWidget):
     def _update(self, name, value):
         if self._block:
             self._block["params"][name] = value
-            self.changed.emit()
+            if not self._loading:
+                self.changed.emit()
 
 
 # ── Code generation ────────────────────────────────────────────────────────────
