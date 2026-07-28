@@ -111,6 +111,44 @@ def prime_detector(det):
     yield from _bps.null()
 
 
+def read_devices_status():
+    """Return {name: {connected, kind, reading:{sig:{value,units}}, error}} for all top-level devices."""
+    import ophyd as _oph
+
+    def _ser(v):
+        try:
+            import numpy as _np
+            if isinstance(v, _np.ndarray):
+                return v.tolist()
+            if isinstance(v, _np.generic):
+                return v.item()
+        except ImportError:
+            pass
+        return v
+
+    out = {}
+    for _n, _obj in list(globals().items()):
+        if _n.startswith('_') or not isinstance(_obj, _oph.Device):
+            continue
+        _d = {'connected': False, 'kind': str(_obj.kind.name), 'reading': {}, 'error': None}
+        try:
+            _d['connected'] = bool(_obj.connected)
+            for _sn, _sd in _obj.read().items():
+                _units = ''
+                try:
+                    _comp = _sn[len(_n) + 1:] if _sn.startswith(_n + '_') else _sn
+                    _sig = getattr(_obj, _comp, None)
+                    if _sig is not None:
+                        _units = (getattr(_sig, 'metadata', None) or {}).get('units', '') or ''
+                except Exception:
+                    pass
+                _d['reading'][_sn] = {'value': _ser(_sd.get('value')), 'units': str(_units)}
+        except Exception as _e:
+            _d['error'] = str(_e)
+        out[_n] = _d
+    return out
+
+
 print("[re_startup_mongo] RE created, devices and plans loaded")
 
 # ── BestEffortCallback (live scan table in console) ────────────────────────────

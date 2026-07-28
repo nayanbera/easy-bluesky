@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_ADDR
 
@@ -378,13 +378,48 @@ def _get_scripts_dir() -> Path:
                     os.chmod(dest, 0o755)
     return _USER_SCRIPTS_DIR
 
+class _DeviceStatusReader(QThread):
+    """Background thread: calls read_devices_status() via function_execute and waits for result."""
+    readings_ready = pyqtSignal(dict)
+    read_error     = pyqtSignal(str)
+
+    def __init__(self, rm, parent=None):
+        super().__init__(parent)
+        self._rm = rm
+
+    def run(self):
+        try:
+            from bluesky_queueserver_api import BFunc
+            r = self._rm.function_execute(item=BFunc("read_devices_status"))
+            if not r.get("success"):
+                self.read_error.emit(r.get("msg", "function_execute failed"))
+                return
+            task_uid = r["task_uid"]
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                time.sleep(0.3)
+                res = self._rm.task_result(task_uid=task_uid)
+                state = res.get("status", "")
+                if state == "completed":
+                    rv = res.get("result", {}).get("return_value", {})
+                    self.readings_ready.emit(rv if isinstance(rv, dict) else {})
+                    return
+                if state in ("failed", "aborted"):
+                    self.read_error.emit(res.get("msg", f"Task {state}"))
+                    return
+            self.read_error.emit("read_devices_status timed out (>15 s)")
+        except Exception as e:
+            self.read_error.emit(str(e))
+
+
 class ZMQWorker(QObject):
     status_updated  = pyqtSignal(dict)
     queue_updated   = pyqtSignal(list)
     history_updated = pyqtSignal(list)
     plans_updated   = pyqtSignal(dict)
-    devices_updated = pyqtSignal(dict)
-    error_occurred  = pyqtSignal(str)
+    devices_updated         = pyqtSignal(dict)
+    device_readings_updated = pyqtSignal(dict)
+    error_occurred          = pyqtSignal(str)
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
     re_manager_started = pyqtSignal(int)   # pid
@@ -400,6 +435,7 @@ class ZMQWorker(QObject):
         self._console_mon    = _DirectConsoleMonitor()
         self._log_tailer     = _SSHLogTailer()
         self._doc_writer     = _LocalDocWriter()
+        self._device_reader  = None   # strong ref to _DeviceStatusReader
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -772,3 +808,15 @@ class ZMQWorker(QObject):
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
+
+    def read_devices_status(self):
+        """Submit read_devices_status() to the RE environment and emit device_readings_updated when done."""
+        if self.rm is None:
+            self.error_occurred.emit("Not connected — cannot read device status")
+            return
+        if self._device_reader is not None and self._device_reader.isRunning():
+            return  # already in progress
+        self._device_reader = _DeviceStatusReader(self.rm, self)
+        self._device_reader.readings_ready.connect(self.device_readings_updated)
+        self._device_reader.read_error.connect(self.error_occurred)
+        self._device_reader.start()
