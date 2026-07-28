@@ -1,6 +1,7 @@
 """connection_settings.py — Persistent connection settings + dialog."""
 
 import json
+import os
 import re
 import socket
 from datetime import datetime, timezone, timedelta
@@ -36,6 +37,8 @@ _DEFAULTS = {
     "active_profile": "Default",
     "profiles": [_PROFILE_DEFAULTS.copy()],
     "deleted_profiles": [],
+    "epics_ca_addr_list": "",
+    "epics_ca_auto_addr_list": True,
 }
 
 
@@ -137,6 +140,20 @@ def save_connection(settings: dict):
     _fix_port_conflicts(settings)  # resolve conflicts before persisting
     _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     _SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+
+
+def apply_epics_env(settings: dict):
+    """Set EPICS_CA_* environment variables from settings.
+
+    Must be called before pyepics initialises libca (i.e. before the first
+    epics.PV() call).  Changes to EPICS_CA_ADDR_LIST take full effect only
+    on the next app start once libca is already running.
+    """
+    addr_list = settings.get("epics_ca_addr_list", "").strip()
+    auto = settings.get("epics_ca_auto_addr_list", True)
+    if addr_list:
+        os.environ["EPICS_CA_ADDR_LIST"] = addr_list
+    os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "YES" if auto else "NO"
 
 
 def get_active_profile(settings: dict) -> dict:
@@ -532,6 +549,46 @@ class ConnectionDialog(QDialog):
         self._ssh_result.setWordWrap(True)
         lay.addWidget(self._ssh_result)
 
+        # ── EPICS CA section ───────────────────────────────────────────────────
+        sep_ca = QFrame()
+        sep_ca.setFrameShape(QFrame.Shape.HLine)
+        sep_ca.setFrameShadow(QFrame.Shadow.Sunken)
+        lay.addWidget(sep_ca)
+
+        ca_title = QLabel("EPICS CA Network")
+        ca_title.setStyleSheet("font-weight: bold; font-size: 12px;")
+        lay.addWidget(ca_title)
+
+        ca_note = QLabel(
+            "Sets EPICS_CA_ADDR_LIST and EPICS_CA_AUTO_ADDR_LIST for pyepics.\n"
+            "Changes to the address list take full effect on the next app restart."
+        )
+        ca_note.setWordWrap(True)
+        ca_note.setObjectName("dim_text")
+        lay.addWidget(ca_note)
+
+        ca_form = QFormLayout()
+        ca_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        ca_form.setHorizontalSpacing(12)
+
+        self._ca_addr_list = QLineEdit(
+            self._settings.get("epics_ca_addr_list", "")
+        )
+        self._ca_addr_list.setPlaceholderText(
+            "e.g. 10.0.0.255 192.168.1.100  (leave empty to use system default)"
+        )
+        ca_form.addRow("CA addr list:", self._ca_addr_list)
+
+        self._ca_auto = QCheckBox("Auto addr list  (broadcast)")
+        self._ca_auto.setChecked(self._settings.get("epics_ca_auto_addr_list", True))
+        self._ca_auto.setToolTip(
+            "EPICS_CA_AUTO_ADDR_LIST=YES — CA also broadcasts on all local subnets.\n"
+            "Set to NO when you only want to reach the addresses listed above."
+        )
+        ca_form.addRow("", self._ca_auto)
+
+        lay.addLayout(ca_form)
+
         # ── Profiles section ───────────────────────────────────────────────────
         sep_prof = QFrame()
         sep_prof.setFrameShape(QFrame.Shape.HLine)
@@ -885,13 +942,15 @@ class ConnectionDialog(QDialog):
     def _collect_top_level(self) -> dict:
         return {
             **self._settings,
-            "host":         self._host.text().strip() or "localhost",
-            "ssh_user":     self._ssh_user.text().strip(),
-            "ssh_port":     self._ssh_port.value(),
-            "ssh_key_path": self._ssh_key.text().strip() or "~/.ssh/id_rsa",
-            "ssh_service":  self._ssh_service.text().strip(),
-            "conda_env":    self._conda_env.text().strip(),
-            "conda_path":   self._conda_path.text().strip() or "~/miniconda3",
+            "host":                     self._host.text().strip() or "localhost",
+            "ssh_user":                 self._ssh_user.text().strip(),
+            "ssh_port":                 self._ssh_port.value(),
+            "ssh_key_path":             self._ssh_key.text().strip() or "~/.ssh/id_rsa",
+            "ssh_service":              self._ssh_service.text().strip(),
+            "conda_env":                self._conda_env.text().strip(),
+            "conda_path":               self._conda_path.text().strip() or "~/miniconda3",
+            "epics_ca_addr_list":       self._ca_addr_list.text().strip(),
+            "epics_ca_auto_addr_list":  self._ca_auto.isChecked(),
         }
 
     def _on_accept(self):

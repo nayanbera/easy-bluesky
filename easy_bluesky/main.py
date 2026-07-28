@@ -17,6 +17,7 @@ from .connection_settings import (
     get_active_profile, ConnectionDialog, is_local_host,
     profile_slug, delete_profile, restore_profile,
     purge_old_deleted, find_free_ports, _all_used_ports,
+    apply_epics_env,
 )
 from .sim_generator import generate_sim_script
 from .themes import (
@@ -1288,6 +1289,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != ConnectionDialog.DialogCode.Accepted:
             return
         self._conn_settings = dlg.get_settings()
+        apply_epics_env(self._conn_settings)
         ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage(f"Reconnecting to {self._conn_settings['host']}…")
         ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
@@ -1333,6 +1335,7 @@ def main():
     _get_scripts_dir()
 
     settings = load_connection()
+    apply_epics_env(settings)   # must run before pyepics initialises libca
 
     # Auto-create a Local Sim profile on very first run
     if not settings.get("profiles"):
