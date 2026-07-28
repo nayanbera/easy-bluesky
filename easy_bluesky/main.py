@@ -1227,12 +1227,21 @@ class MainWindow(QMainWindow):
     def _on_generate_sim_script(self):
         from easy_bluesky.worker import _get_scripts_dir
         scripts_dir  = _get_scripts_dir()
-        real_script  = scripts_dir / "re_startup_mongo.py"
         sim_devices  = scripts_dir / "devices_sim.py"
+
+        # Use the active profile's devices file as the primary source so all
+        # real motors (e.g. devices_ASWAXS.py) are picked up.  Fall back to
+        # re_startup_mongo.py only if the devices file isn't available locally.
+        profile      = get_active_profile(self._conn_settings)
+        devices_fname = profile.get("devices_file", "devices.py")
+        real_script  = scripts_dir / devices_fname
+        if not real_script.exists():
+            real_script = scripts_dir / "re_startup_mongo.py"
         if not real_script.exists():
             QMessageBox.warning(self, "Not Found",
-                f"Real startup script not found:\n{real_script}\n\n"
-                "Create it first, then generate the sim devices file.")
+                f"Devices file not found locally:\n{scripts_dir / devices_fname}\n\n"
+                "Restart the RE Manager once so the devices file is uploaded, "
+                "then try again.")
             return
         try:
             out = generate_sim_script(real_script, sim_devices)

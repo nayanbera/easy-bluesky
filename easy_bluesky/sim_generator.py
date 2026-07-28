@@ -52,8 +52,10 @@ def parse_devices(script_path: str | Path) -> list[dict]:
     source = Path(script_path).read_text()
     tree   = ast.parse(source)
 
-    # Collect class defs that inherit from AD-related bases
-    ad_class_names: set[str] = set()
+    # Collect class defs that inherit from AD or motor bases so user-defined
+    # subclasses (e.g. ASWAXSAreaDetector, JJCSlit) are classified correctly.
+    ad_class_names:    set[str] = set()
+    motor_class_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             for base in node.bases:
@@ -61,6 +63,8 @@ def parse_devices(script_path: str | Path) -> list[dict]:
                          base.attr if isinstance(base, ast.Attribute) else '')
                 if _classify(bname) == 'area_det':
                     ad_class_names.add(node.name)
+                if _classify(bname) == 'motor' or bname in motor_class_names:
+                    motor_class_names.add(node.name)
 
     devices = []
     for node in ast.walk(tree):
@@ -82,6 +86,8 @@ def parse_devices(script_path: str | Path) -> list[dict]:
 
         if cname in ad_class_names:
             kind = 'area_det'
+        elif cname in motor_class_names:
+            kind = 'motor'
         else:
             kind = _classify(cname)
             if kind == 'unknown':
@@ -181,15 +187,17 @@ def generate_sim_script(real_script_path: str | Path,
         output_path = real_path.parent / 'devices_sim.py'
     output_path = Path(output_path)
 
-    # Parse devices from the startup script, then also from devices.py if present
+    # Parse devices from the primary file, then supplement from re_startup_mongo.py
+    # and devices.py in the same directory (deduplicating by var name).
     devices = parse_devices(real_path)
-    devices_py = real_path.parent / "devices.py"
-    if devices_py.exists():
-        seen_vars = {d['var'] for d in devices}
-        for d in parse_devices(devices_py):
-            if d['var'] not in seen_vars:
-                devices.append(d)
-                seen_vars.add(d['var'])
+    seen_vars = {d['var'] for d in devices}
+    for secondary_name in ("re_startup_mongo.py", "devices.py"):
+        secondary = real_path.parent / secondary_name
+        if secondary.exists() and secondary.resolve() != real_path.resolve():
+            for d in parse_devices(secondary):
+                if d['var'] not in seen_vars:
+                    devices.append(d)
+                    seen_vars.add(d['var'])
 
     lines: list[str] = [
         '"""',
