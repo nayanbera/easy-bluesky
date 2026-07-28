@@ -226,7 +226,7 @@ class DevicesPlansTab(QWidget):
 
         self.devices_tree = QTreeWidget()
         self.devices_tree.setHeaderLabels(
-            ["Device / Signal", "Kind", "Value", "Units", "Description", "Tweak"]
+            ["Device / Signal", "Class", "Value", "Units", "Description", "Tweak"]
         )
         self.devices_tree.setRootIsDecorated(True)
         self.devices_tree.setAlternatingRowColors(True)
@@ -286,8 +286,8 @@ class DevicesPlansTab(QWidget):
             group_item.setToolTip(0, dev_type)
 
             for name, info in sorted(groups[module]):
-                kind = info.get("kind", "")
-                child = QTreeWidgetItem([name, kind, "", ""])
+                classname = info.get("classname", "")
+                child = QTreeWidgetItem([name, classname, "", ""])
                 child.setForeground(0, QColor(color))
                 child.setForeground(1, QColor("#888"))
                 child.setToolTip(0, f"Module: {module}")
