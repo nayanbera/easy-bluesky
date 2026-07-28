@@ -360,6 +360,11 @@ _BUNDLED_FILES = [
     "re-manager-sim.service",
 ]
 
+# These files are always overwritten from the package bundle so that
+# updates to queueserver config (permissions, startup scripts) are
+# applied without requiring the user to manually delete their copy.
+_ALWAYS_OVERWRITE = {"user_group_permissions.yaml"}
+
 _EXECUTABLE_SCRIPTS = {"start_re_managers.sh", "stop_re_managers.sh"}
 
 def _get_scripts_dir() -> Path:
@@ -370,7 +375,7 @@ def _get_scripts_dir() -> Path:
     _USER_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     for fname in _BUNDLED_FILES:
         dest = _USER_SCRIPTS_DIR / fname
-        if not dest.exists():
+        if not dest.exists() or fname in _ALWAYS_OVERWRITE:
             src = _PKG_SCRIPTS_DIR / fname
             if src.exists():
                 shutil.copy2(src, dest)

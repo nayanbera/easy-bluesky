@@ -22,8 +22,7 @@ user_groups:
     forbidden_devices:
       - null  # Nothing is forbidden
     allowed_functions:
-      - "function_sleep"  # Explicitly listed name
-      - ":^func_for_test"
+      - ":.*"  # Allow all functions defined in startup scripts
   test_user:  # Another group used for unit tests.
     allowed_plans:
       - ":^count"  # Use regular expression patterns

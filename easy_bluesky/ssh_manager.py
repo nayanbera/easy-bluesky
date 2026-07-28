@@ -143,14 +143,16 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             f.write(script_body)
         sftp.chmod(remote_script, 0o755)
 
-        # Upload the bundled startup script so the remote always has the
-        # latest version (supports absolute paths in EASY_BLUESKY_DEVICES_FILE).
-        _local_startup = Path(__file__).parent / "scripts" / startup_script
-        if _remote_scripts_dir and _local_startup.exists():
-            try:
-                sftp.put(str(_local_startup), f"{_remote_scripts_dir}/{startup_script}")
-            except Exception:
-                pass  # non-fatal — fall back to whatever is already on the remote
+        # Upload bundled config files so the remote always has the latest versions.
+        _scripts_pkg = Path(__file__).parent / "scripts"
+        _always_upload = [startup_script, "user_group_permissions.yaml"]
+        for _fname in _always_upload:
+            _local = _scripts_pkg / _fname
+            if _remote_scripts_dir and _local.exists():
+                try:
+                    sftp.put(str(_local), f"{_remote_scripts_dir}/{_fname}")
+                except Exception:
+                    pass  # non-fatal
 
         sftp.close()
 
