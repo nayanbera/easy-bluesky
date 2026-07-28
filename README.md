@@ -14,6 +14,8 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
 - **Local Profiles** — Run RE Manager as a local subprocess with zero setup. Starts automatically when you launch the profile and stops when you close the app. Ideal for learning and testing with simulated devices.
 - **Edit Devices File** — Full code editor for any profile's devices file: line numbers, current-line highlight, auto-indent, Tab→spaces, and ophyd-aware autocomplete. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP.
+- **Live Device Monitor** — Real-time EPICS Channel Access (CA) monitoring in the Devices & Plans tab. Each device shows its connected/disconnected status and live PV readings that update instantly as values change — no polling during scans. pyepics is auto-installed if missing.
+- **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors. Highlights all matches with per-match navigation; read-only panels (RE Console) get search-only.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
 
@@ -288,6 +290,22 @@ Example layout for two technique profiles:
 
 Autocomplete includes ophyd-specific words out of the box: `EpicsMotor`, `EpicsSignal`, `EpicsSignalRO`, `AreaDetector`, `HDF5Plugin`, `SynAxis`, `SynGauss`, `name=`, `kind=`, and more. If `jedi` is installed (`pip install jedi`), completions become fully context-aware.
 
+### Find / Replace
+
+A floating find bar is available in every code editor and the RE Console:
+
+| Shortcut | Action | Available in |
+|---------|--------|-------------|
+| Ctrl+F | Open find bar | Code Editor, Devices Editor, RE Console |
+| Ctrl+R | Open find + replace | Code Editor, Devices Editor (not RE Console — read-only) |
+| Enter / ↓ | Next match | Find bar focused |
+| Shift+Enter / ↑ | Previous match | Find bar focused |
+| Escape | Close bar | Find bar focused |
+
+All matches in the current document are highlighted immediately as you type. The current match is shown in orange; other matches in amber. A `N / M` counter shows which match is selected. The search field turns red when no matches are found.
+
+The Replace row (Ctrl+R) offers **Replace** (current match) and **Replace All** buttons. Replace operations are undoable as a single action.
+
 ### Starter template
 
 If the devices file does not exist yet (new profile), the editor pre-fills a starter template:
@@ -549,6 +567,52 @@ systemctl --user status re-manager-real
 systemctl --user restart re-manager-real
 journalctl --user -u re-manager-real -f    # live logs
 ```
+
+---
+
+## Live Device Monitor
+
+The **Devices & Plans** tab shows all devices registered in the open RE environment, with real-time PV readings sourced directly from EPICS Channel Access (CA) — not through the RE Manager. This means values update instantly while a scan is running without adding any polling overhead.
+
+### How it works
+
+When the RE environment transitions from `closed` → `idle`, the app calls `get_device_pvnames()` in the RE worker namespace to retrieve a map of every device's signals and their PV names. It then opens a persistent CA monitor for each PV using `pyepics`. Value and connection-change callbacks fire on the CA background thread and are forwarded to Qt via queued signals — fully thread-safe.
+
+### Device tree layout
+
+```
+AVAILABLE DEVICES
+┌─────────────────────────────────────────────────────────────────────┐
+│ Device / Signal            Kind        Value       Units            │
+│ ─────────────────────────────────────────────────────────────────── │
+│ ▼ ophyd.epics_motor  (2)                                           │
+│   ▼ sample_x         hinted      12.5000      mm   ← live CA value │
+│       user_readback             12.5000      mm                     │
+│       user_setpoint             12.5000      mm                     │
+│   ▼ sample_y         hinted       0.0000      mm                   │
+│       user_readback              0.0000      mm                     │
+│ ▼ ophyd.areadetector  (1)                                          │
+│   ▼ Pil300K           hinted   ○ Connecting…                       │
+│       count_time               ○ Connecting…                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+- **Green value** on the device row — primary signal is connected and live
+- **"○ Disconnected"** in red — CA connection lost (IOC down or PV name mismatch)
+- **"○ Connecting…"** in grey — waiting for the first CA callback
+- Signal sub-rows (indented) show all readable signals; hovering shows the raw PV name
+
+The **primary signal** displayed on the device row is chosen in priority order: `user_readback` → `readback` → signal with the same name as the device → first available signal.
+
+### ⟳ Reconnect button
+
+Click **⟳ Reconnect** to re-fetch PV names from the RE environment and reopen all CA monitors. Useful after restarting the RE Manager or changing the devices file.
+
+### pyepics auto-install
+
+If `pyepics` is not installed in the app's Python environment, a background thread runs `pip install pyepics` automatically the first time live monitoring is attempted. No manual installation step is needed. Once installed, monitors are opened without requiring an app restart.
+
+> **Network requirement:** the client machine running the app must be on the same network as the EPICS IOCs (or have the appropriate CA gateway configured). CA connections go directly from the client to the IOC — they do not pass through the RE Manager host.
 
 ---
 

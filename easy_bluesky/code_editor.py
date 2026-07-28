@@ -50,7 +50,7 @@ class FindBar(QWidget):
     _NORMAL     = ""
 
     def __init__(self, editor: QPlainTextEdit):
-        super().__init__(editor.viewport())
+        super().__init__(editor)          # parent = editor, not viewport
         self._editor   = editor
         self._matches: list = []
         self._current:  int = -1
@@ -112,17 +112,20 @@ class FindBar(QWidget):
             b = QPushButton(text)
             b.setFixedWidth(28)
             b.setToolTip(tip)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.clicked.connect(slot)
             row1.addWidget(b)
 
         self._case_cb = QCheckBox("Aa")
         self._case_cb.setToolTip("Match case")
+        self._case_cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._case_cb.toggled.connect(self._on_text_changed)
         row1.addWidget(self._case_cb)
 
         close_btn = QPushButton("✕")
         close_btn.setFixedWidth(28)
         close_btn.setToolTip("Close  (Esc)")
+        close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         close_btn.clicked.connect(self.hide_bar)
         row1.addWidget(close_btn)
 
@@ -138,6 +141,7 @@ class FindBar(QWidget):
 
         for text, slot in (("Replace", self._replace_one), ("All", self._replace_all)):
             b = QPushButton(text)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.clicked.connect(slot)
             row2.addWidget(b)
 
@@ -149,11 +153,12 @@ class FindBar(QWidget):
     # ── Positioning ────────────────────────────────────────────────────────────
 
     def _reposition(self):
-        vp = self._editor.viewport()
-        w  = min(420, max(280, vp.width() - 20))
+        vp  = self._editor.viewport()
+        geo = vp.geometry()              # viewport rect in editor coordinates
+        w   = min(420, max(280, geo.width() - 20))
         self.setFixedWidth(w)
         self.adjustSize()
-        self.move(vp.width() - self.width() - 4, 4)
+        self.move(geo.right() - self.width() - 4, geo.top() + 4)
         self.raise_()
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -183,6 +188,10 @@ class FindBar(QWidget):
 
     def eventFilter(self, obj, event):
         if obj is not self._editor:
+            return False
+        if event.type() == QEvent.Type.Resize:
+            if self.isVisible():
+                self._reposition()
             return False
         if event.type() != QEvent.Type.KeyPress:
             return False
