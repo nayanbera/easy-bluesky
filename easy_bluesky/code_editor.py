@@ -192,7 +192,7 @@ class FindBar(QWidget):
         if ctrl and key == Qt.Key.Key_F:
             self.show_search()
             return True
-        if ctrl and key == Qt.Key.Key_H and not self._editor.isReadOnly():
+        if ctrl and key == Qt.Key.Key_R and not self._editor.isReadOnly():
             self.show_replace()
             return True
         return False
