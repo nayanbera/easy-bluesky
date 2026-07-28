@@ -199,6 +199,11 @@ def generate_sim_script(real_script_path: str | Path,
                     devices.append(d)
                     seen_vars.add(d['var'])
 
+    # Sort so motors come first — SynGauss devices reference motor_vars[0],
+    # so all motors must be defined before any unknown/scalar devices.
+    _KIND_ORDER = {'motor': 0, 'area_det': 1, 'scalar_det': 2, 'unknown_device': 3}
+    devices.sort(key=lambda d: _KIND_ORDER.get(d['kind'], 99))
+
     lines: list[str] = [
         '"""',
         'devices_sim.py — simulated devices, generated from re_startup_mongo.py / devices.py',
@@ -214,12 +219,16 @@ def generate_sim_script(real_script_path: str | Path,
         _SIM_AD_SRC.rstrip(),
         '',
         '',
-        '# ── Simulated devices (auto-mapped from real script) ───────────────────────',
         'from ophyd.sim import SynAxis, SynGauss',
         '',
+        '# ── Base motors (defined first so SynGauss references are always valid) ────',
+        "motor1 = SynAxis(name='motor1')",
+        "motor2 = SynAxis(name='motor2')",
+        '',
+        '# ── Simulated devices (auto-mapped from real script) ───────────────────────',
     ]
 
-    motor_vars: list[str] = []
+    motor_vars: list[str] = ['motor1', 'motor2']
     for d in devices:
         var, name, kind = d['var'], d['name'], d['kind']
         if kind == 'motor':
@@ -240,12 +249,10 @@ def generate_sim_script(real_script_path: str | Path,
                     f"center=0, Imax=1000, sigma=0.5, noise='poisson')"
                 )
 
-    # Always add generic sim devices for testing, regardless of real devices found
+    # Always add generic sim detectors (motor1/motor2 already defined above)
     lines += [
         '',
-        '# ── Generic sim devices (always available in sim mode) ─────────────────────',
-        "motor1 = SynAxis(name='motor1')",
-        "motor2 = SynAxis(name='motor2')",
+        '# ── Generic sim detectors (always available in sim mode) ───────────────────',
         "det    = SynGauss('det',  motor1, 'motor1', center=0, Imax=1000, sigma=0.5)",
         "det1   = SynGauss('det1', motor1, 'motor1', center=0, Imax=500,  sigma=1.0)",
         "det2   = SynGauss('det2', motor2, 'motor2', center=0, Imax=800,  sigma=0.5)",
