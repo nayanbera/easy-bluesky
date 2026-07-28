@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit,
     QCheckBox,
 )
+from .code_editor import FindBar
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat
 
@@ -57,6 +58,7 @@ class REConsoleWidget(QWidget):
             "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; border: 1px solid #444; }"
         )
         lay.addWidget(self._output, 1)
+        self._find_bar = FindBar(self._output)   # Ctrl+F to search console
 
         # Fix the clear button now that _output exists
         btn_clear.clicked.disconnect()
