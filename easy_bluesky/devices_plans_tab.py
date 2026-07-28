@@ -44,7 +44,8 @@ class _EPICSMonitor(QObject):
     Callbacks arrive on a CA background thread; emitting a pyqtSignal queues
     the update safely onto the main-thread event loop.
     """
-    value_changed = pyqtSignal(str, str, object, str)   # dev, sig, value, units
+    value_changed      = pyqtSignal(str, str, object, str)  # dev, sig, value, units
+    connection_changed = pyqtSignal(str, str, bool)          # dev, sig, connected
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,6 +68,7 @@ class _EPICSMonitor(QObject):
                     pvname,
                     auto_monitor=True,
                     callback=self._on_change,
+                    connection_callback=self._on_connect,
                 )
                 self._pvs[pvname] = pv
 
@@ -80,11 +82,15 @@ class _EPICSMonitor(QObject):
         self._pvs.clear()
         self._map.clear()
 
-    # Called from CA background thread — emit queues to main thread
     def _on_change(self, pvname='', value=None, units='', **kw):
         info = self._map.get(pvname)
         if info:
             self.value_changed.emit(info[0], info[1], value, units or '')
+
+    def _on_connect(self, pvname='', conn=True, **kw):
+        info = self._map.get(pvname)
+        if info:
+            self.connection_changed.emit(info[0], info[1], bool(conn))
 
 
 # ── Tab widget ──────────────────────────────────────────────────────────────────
@@ -102,6 +108,7 @@ class DevicesPlansTab(QWidget):
         self._primary_signal: dict = {}  # dev_name → sig_name shown on device row
         self._epics_monitor = _EPICSMonitor(self)
         self._epics_monitor.value_changed.connect(self._on_pv_changed)
+        self._epics_monitor.connection_changed.connect(self._on_pv_connected)
         self._build()
 
     def _build(self):
@@ -253,12 +260,17 @@ class DevicesPlansTab(QWidget):
             self._primary_signal[dev_name] = primary
 
             for sig_name, pvname in sigs.items():
-                sig_item = QTreeWidgetItem([f"  {sig_name}", "", "…", ""])
+                sig_item = QTreeWidgetItem([f"  {sig_name}", "", "○ Connecting…", ""])
                 sig_item.setForeground(0, dim)
                 sig_item.setForeground(2, QColor("#aaaaaa"))
                 sig_item.setToolTip(0, pvname)
                 item.addChild(sig_item)
                 self._signal_items[(dev_name, sig_name)] = sig_item
+
+            # Initialise device row too
+            if item:
+                item.setText(2, "○ Connecting…")
+                item.setForeground(2, QColor("#aaaaaa"))
 
         self._epics_monitor.setup(pv_map)
 
@@ -293,6 +305,24 @@ class DevicesPlansTab(QWidget):
                     break
 
     # ── Internal ────────────────────────────────────────────────────────────────
+
+    def _on_pv_connected(self, dev_name: str, sig_name: str, connected: bool):
+        grey = QColor("#888888")
+        red  = QColor("#e05050")
+
+        sig_item = self._signal_items.get((dev_name, sig_name))
+        if sig_item:
+            if not connected:
+                sig_item.setText(2, "○ Disconnected")
+                sig_item.setForeground(2, red)
+                sig_item.setText(3, "")
+
+        if self._primary_signal.get(dev_name) == sig_name:
+            dev_item = self._device_items.get(dev_name)
+            if dev_item and not connected:
+                dev_item.setText(2, "○ Disconnected")
+                dev_item.setForeground(2, red)
+                dev_item.setText(3, "")
 
     def _on_pv_changed(self, dev_name: str, sig_name: str, value, units: str):
         green = QColor("#2ca02c")
