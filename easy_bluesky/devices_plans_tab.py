@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QPushButton,
+    QPlainTextEdit, QPushButton, QDoubleSpinBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread
 from PyQt6.QtGui import QColor, QFont
@@ -68,11 +68,14 @@ class _EPICSMonitor(QObject):
     """
     value_changed      = pyqtSignal(str, str, object, str)  # dev, sig, value, units
     connection_changed = pyqtSignal(str, str, bool)          # dev, sig, connected
+    desc_changed       = pyqtSignal(str, str, str)           # dev, sig, desc
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._pvs: dict = {}   # pvname → epics.PV  (strong refs)
-        self._map: dict = {}   # pvname → (dev_name, sig_name)
+        self._pvs: dict      = {}   # pvname → epics.PV  (strong refs)
+        self._map: dict      = {}   # pvname → (dev_name, sig_name)
+        self._desc_pvs: dict = {}   # pvname.DESC → epics.PV
+        self._desc_map: dict = {}   # pvname.DESC → (dev_name, sig_name)
 
     def setup(self, pv_map: dict):
         """Open CA monitors for every PV in pv_map = {dev: {sig: pvname}}."""
@@ -94,9 +97,17 @@ class _EPICSMonitor(QObject):
                     connection_callback=self._on_connect,
                 )
                 self._pvs[pvname] = pv
+                # Subscribe to .DESC (static 40-char EPICS description string)
+                desc_pvname = pvname + ".DESC"
+                self._desc_map[desc_pvname] = (dev_name, sig_name)
+                self._desc_pvs[desc_pvname] = epics.PV(
+                    desc_pvname,
+                    auto_monitor=True,
+                    callback=self._on_desc_change,
+                )
 
     def clear(self):
-        for pv in self._pvs.values():
+        for pv in list(self._pvs.values()) + list(self._desc_pvs.values()):
             try:
                 pv.clear_callbacks()
                 pv.disconnect()
@@ -104,6 +115,8 @@ class _EPICSMonitor(QObject):
                 pass
         self._pvs.clear()
         self._map.clear()
+        self._desc_pvs.clear()
+        self._desc_map.clear()
 
     def _on_change(self, pvname='', value=None, units='', **kw):
         info = self._map.get(pvname)
@@ -114,6 +127,22 @@ class _EPICSMonitor(QObject):
         info = self._map.get(pvname)
         if info:
             self.connection_changed.emit(info[0], info[1], bool(conn))
+
+    def _on_desc_change(self, pvname='', value=None, **kw):
+        info = self._desc_map.get(pvname)
+        if info and value is not None:
+            if isinstance(value, bytes):
+                desc = value.decode('latin-1', errors='replace')
+            else:
+                desc = str(value)
+            self.desc_changed.emit(info[0], info[1], desc.strip())
+
+    def put_value(self, pvname: str, value):
+        try:
+            import epics
+            epics.caput(pvname, value, wait=False)
+        except Exception:
+            pass
 
 
 # ── Tab widget ──────────────────────────────────────────────────────────────────
@@ -129,9 +158,12 @@ class DevicesPlansTab(QWidget):
         self._device_items: dict  = {}   # dev_name → QTreeWidgetItem
         self._signal_items: dict  = {}   # (dev_name, sig_name) → QTreeWidgetItem
         self._primary_signal: dict = {}  # dev_name → sig_name shown on device row
+        self._readback_values: dict = {}  # dev_name → float (current readback)
+        self._tweak_pvnames: dict = {}    # dev_name → user_setpoint pvname
         self._epics_monitor = _EPICSMonitor(self)
         self._epics_monitor.value_changed.connect(self._on_pv_changed)
         self._epics_monitor.connection_changed.connect(self._on_pv_connected)
+        self._epics_monitor.desc_changed.connect(self._on_desc_changed)
         self._pending_pv_map: dict = {}
         self._installer: _EpicsInstaller | None = None
         self._build()
@@ -187,7 +219,9 @@ class DevicesPlansTab(QWidget):
         vlay.addWidget(self._status_lbl)
 
         self.devices_tree = QTreeWidget()
-        self.devices_tree.setHeaderLabels(["Device / Signal", "Kind", "Value", "Units"])
+        self.devices_tree.setHeaderLabels(
+            ["Device / Signal", "Kind", "Value", "Units", "Description", "Tweak"]
+        )
         self.devices_tree.setRootIsDecorated(True)
         self.devices_tree.setAlternatingRowColors(True)
         self.devices_tree.setSortingEnabled(False)
@@ -257,7 +291,7 @@ class DevicesPlansTab(QWidget):
             self.devices_tree.addTopLevelItem(group_item)
 
         self.devices_tree.expandAll()
-        for i in range(4):
+        for i in range(6):
             self.devices_tree.resizeColumnToContents(i)
 
     def setup_epics_monitors(self, pv_map: dict):
@@ -276,6 +310,7 @@ class DevicesPlansTab(QWidget):
         self._epics_monitor.clear()
         self._signal_items.clear()
         self._primary_signal.clear()
+        self._tweak_pvnames.clear()
 
         dim = QColor("#666666")
 
@@ -296,17 +331,26 @@ class DevicesPlansTab(QWidget):
             self._primary_signal[dev_name] = primary
 
             for sig_name, pvname in sigs.items():
-                sig_item = QTreeWidgetItem([f"  {sig_name}", "", "○ Connecting…", ""])
+                sig_item = QTreeWidgetItem(
+                    [f"  {sig_name}", "", "○ Connecting…", "", "", ""]
+                )
                 sig_item.setForeground(0, dim)
                 sig_item.setForeground(2, QColor("#aaaaaa"))
                 sig_item.setToolTip(0, pvname)
                 item.addChild(sig_item)
                 self._signal_items[(dev_name, sig_name)] = sig_item
 
-            # Initialise device row too
-            if item:
-                item.setText(2, "○ Connecting…")
-                item.setForeground(2, QColor("#aaaaaa"))
+            # Initialise device row
+            item.setText(2, "○ Connecting…")
+            item.setForeground(2, QColor("#aaaaaa"))
+
+            # Tweak widget for motor devices (have user_setpoint signal)
+            if "user_setpoint" in sigs:
+                sp_pvname = sigs["user_setpoint"]
+                self._tweak_pvnames[dev_name] = sp_pvname
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_tweak_widget(dev_name, sp_pvname)
+                )
 
         self._epics_monitor.setup(pv_map)
 
@@ -316,7 +360,7 @@ class DevicesPlansTab(QWidget):
         self._refresh_btn.setEnabled(True)
         self._refresh_btn.setText("⟳ Reconnect")
 
-        for i in range(4):
+        for i in range(6):
             self.devices_tree.resizeColumnToContents(i)
 
     def on_pv_names_error(self, msg: str):
@@ -378,6 +422,54 @@ class DevicesPlansTab(QWidget):
                 dev_item.setText(2, _fmt_value(value))
                 dev_item.setText(3, units)
                 dev_item.setForeground(2, green)
+
+        # Track numeric readback for tweak calculations
+        if sig_name in ("user_readback", "readback") or (
+            self._primary_signal.get(dev_name) == sig_name
+        ):
+            if isinstance(value, (int, float)):
+                self._readback_values[dev_name] = float(value)
+
+    def _on_desc_changed(self, dev_name: str, sig_name: str, desc: str):
+        sig_item = self._signal_items.get((dev_name, sig_name))
+        if sig_item:
+            sig_item.setText(4, desc)
+        if self._primary_signal.get(dev_name) == sig_name:
+            dev_item = self._device_items.get(dev_name)
+            if dev_item:
+                dev_item.setText(4, desc)
+
+    def _make_tweak_widget(self, dev_name: str, setpoint_pvname: str) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 0, 2, 0)
+        h.setSpacing(2)
+
+        step = QDoubleSpinBox()
+        step.setRange(0.0001, 100000)
+        step.setValue(0.1)
+        step.setDecimals(4)
+        step.setFixedWidth(82)
+        step.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
+        step.setToolTip("Tweak step size")
+
+        btn_minus = QPushButton("◀")
+        btn_plus  = QPushButton("▶")
+        for btn in (btn_minus, btn_plus):
+            btn.setFixedWidth(24)
+            btn.setFixedHeight(22)
+
+        def _move(sign: int):
+            cur = self._readback_values.get(dev_name, 0.0)
+            self._epics_monitor.put_value(setpoint_pvname, cur + sign * step.value())
+
+        btn_minus.clicked.connect(lambda: _move(-1))
+        btn_plus.clicked.connect(lambda: _move(+1))
+
+        h.addWidget(btn_minus)
+        h.addWidget(step)
+        h.addWidget(btn_plus)
+        return w
 
     def _on_install_done(self, success: bool, msg: str):
         if success:
