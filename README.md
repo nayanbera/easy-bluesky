@@ -304,6 +304,8 @@ A floating find bar is available in every code editor and the RE Console:
 
 All matches in the current document are highlighted immediately as you type. The current match is shown in orange; other matches in amber. A `N / M` counter shows which match is selected. The search field turns red when no matches are found.
 
+The bar stays open and remains at the top-right of the text area while you navigate — clicking ▲/▼ or pressing Enter/Shift+Enter scrolls to the next/previous match without closing or moving the bar.
+
 The Replace row (Ctrl+R) offers **Replace** (current match) and **Replace All** buttons. Replace operations are undoable as a single action.
 
 ### Starter template
@@ -576,25 +578,25 @@ The **Devices & Plans** tab shows all devices registered in the open RE environm
 
 ### How it works
 
-When the RE environment transitions from `closed` → `idle`, the app calls `get_device_pvnames()` in the RE worker namespace to retrieve a map of every device's signals and their PV names. It then opens a persistent CA monitor for each PV using `pyepics`. Value and connection-change callbacks fire on the CA background thread and are forwarded to Qt via queued signals — fully thread-safe.
+When the RE environment transitions from `closed` → `idle`, the app calls `get_device_pvnames()` in the RE worker namespace to retrieve a map of every device's signals and their PV names. It then opens a persistent CA monitor for each PV using `pyepics` with `form='ctrl'` (DBR_CTRL subscription). DBR_CTRL callbacks deliver the current value **and** the engineering units (EGU field) together in every update, with no extra round-trip to the IOC. Value and connection-change callbacks fire on the CA background thread and are forwarded to Qt via queued signals — fully thread-safe.
 
 ### Device tree layout
 
 ```
 AVAILABLE DEVICES
-┌─────────────────────────────────────────────────────────────────────┐
-│ Device / Signal            Kind        Value       Units            │
-│ ─────────────────────────────────────────────────────────────────── │
-│ ▼ ophyd.epics_motor  (2)                                           │
-│   ▼ sample_x         hinted      12.5000      mm   ← live CA value │
-│       user_readback             12.5000      mm                     │
-│       user_setpoint             12.5000      mm                     │
-│   ▼ sample_y         hinted       0.0000      mm                   │
-│       user_readback              0.0000      mm                     │
-│ ▼ ophyd.areadetector  (1)                                          │
-│   ▼ Pil300K           hinted   ○ Connecting…                       │
-│       count_time               ○ Connecting…                       │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ Device / Signal            Kind        Value        Units            │
+│ ──────────────────────────────────────────────────────────────────── │
+│ ▼ ophyd.epics_motor  (2)                                            │
+│   ▼ sample_x         hinted      12.5000       mm  ← value + units  │
+│       user_readback             12.5000       mm                     │
+│       user_setpoint             12.5000       mm                     │
+│   ▼ sample_y         hinted       0.0000       mm                   │
+│       user_readback              0.0000       mm                     │
+│ ▼ ophyd.areadetector  (1)                                           │
+│   ▼ Pil300K           hinted   ○ Connecting…                        │
+│       count_time               ○ Connecting…                        │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Green value** on the device row — primary signal is connected and live
