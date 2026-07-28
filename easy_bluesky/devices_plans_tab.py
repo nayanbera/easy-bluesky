@@ -89,6 +89,7 @@ class _EPICSMonitor(QObject):
                 pv = epics.PV(
                     pvname,
                     auto_monitor=True,
+                    form='ctrl',             # DBR_CTRL callbacks include units
                     callback=self._on_change,
                     connection_callback=self._on_connect,
                 )
@@ -107,13 +108,7 @@ class _EPICSMonitor(QObject):
     def _on_change(self, pvname='', value=None, units='', **kw):
         info = self._map.get(pvname)
         if info:
-            if not units:
-                pv = self._pvs.get(pvname)
-                try:
-                    units = pv.units or ''
-                except Exception:
-                    units = ''
-            self.value_changed.emit(info[0], info[1], value, units)
+            self.value_changed.emit(info[0], info[1], value, units or '')
 
     def _on_connect(self, pvname='', conn=True, **kw):
         info = self._map.get(pvname)
