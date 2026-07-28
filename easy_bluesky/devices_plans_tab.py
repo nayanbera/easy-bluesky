@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
     QPlainTextEdit, QPushButton,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread
 from PyQt6.QtGui import QColor, QFont
 
 from .config import ACCENT
@@ -34,6 +34,28 @@ def _fmt_value(val) -> str:
     if isinstance(val, list):
         return f"[{len(val)} items]"
     return str(val)
+
+
+# ── pyepics installer ───────────────────────────────────────────────────────────
+
+class _EpicsInstaller(QThread):
+    """Installs pyepics via pip in a background thread."""
+    done = pyqtSignal(bool, str)   # success, message
+
+    def run(self):
+        import subprocess, sys, importlib
+        try:
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "pyepics"],
+                capture_output=True, text=True, timeout=120,
+            )
+            importlib.invalidate_caches()
+            if r.returncode == 0:
+                self.done.emit(True, "pyepics installed")
+            else:
+                self.done.emit(False, (r.stderr or r.stdout).strip()[-200:])
+        except Exception as e:
+            self.done.emit(False, str(e))
 
 
 # ── EPICS CA monitor ────────────────────────────────────────────────────────────
@@ -109,6 +131,8 @@ class DevicesPlansTab(QWidget):
         self._epics_monitor = _EPICSMonitor(self)
         self._epics_monitor.value_changed.connect(self._on_pv_changed)
         self._epics_monitor.connection_changed.connect(self._on_pv_connected)
+        self._pending_pv_map: dict = {}
+        self._installer: _EpicsInstaller | None = None
         self._build()
 
     def _build(self):
@@ -237,6 +261,17 @@ class DevicesPlansTab(QWidget):
 
     def setup_epics_monitors(self, pv_map: dict):
         """Receive PV name map, create signal sub-rows and open CA monitors."""
+        try:
+            import epics  # noqa: F401
+        except ImportError:
+            self._pending_pv_map = pv_map
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
+            self._status_lbl.setText("pyepics not found — installing…")
+            self._installer = _EpicsInstaller(self)
+            self._installer.done.connect(self._on_install_done)
+            self._installer.start()
+            return
+
         self._epics_monitor.clear()
         self._signal_items.clear()
         self._primary_signal.clear()
@@ -342,6 +377,15 @@ class DevicesPlansTab(QWidget):
                 dev_item.setText(2, _fmt_value(value))
                 dev_item.setText(3, units)
                 dev_item.setForeground(2, green)
+
+    def _on_install_done(self, success: bool, msg: str):
+        if success:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
+            self._status_lbl.setText("✓ pyepics installed — connecting monitors…")
+            self.setup_epics_monitors(self._pending_pv_map)
+        else:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
+            self._status_lbl.setText(f"⚠ Failed to install pyepics: {msg[:120]}")
 
     def _on_reconnect_clicked(self):
         self._refresh_btn.setEnabled(False)
