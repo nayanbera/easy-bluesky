@@ -74,8 +74,8 @@ class _EPICSMonitor(QObject):
         super().__init__(parent)
         self._pvs: dict      = {}   # pvname → epics.PV  (strong refs)
         self._map: dict      = {}   # pvname → (dev_name, sig_name)
-        self._desc_pvs: dict = {}   # pvname.DESC → epics.PV
-        self._desc_map: dict = {}   # pvname.DESC → (dev_name, sig_name)
+        self._desc_pvs: dict = {}   # record.DESC → epics.PV  (one per record base)
+        self._desc_map: dict = {}   # record.DESC → [(dev_name, sig_name), ...]
 
     def setup(self, pv_map: dict):
         """Open CA monitors for every PV in pv_map = {dev: {sig: pvname}}."""
@@ -97,14 +97,17 @@ class _EPICSMonitor(QObject):
                     connection_callback=self._on_connect,
                 )
                 self._pvs[pvname] = pv
-                # Subscribe to .DESC (static 40-char EPICS description string)
-                desc_pvname = pvname + ".DESC"
-                self._desc_map[desc_pvname] = (dev_name, sig_name)
-                self._desc_pvs[desc_pvname] = epics.PV(
-                    desc_pvname,
-                    auto_monitor=True,
-                    callback=self._on_desc_change,
-                )
+                # Strip field suffix (e.g. "IOC:M1.RBV" → "IOC:M1") then add .DESC.
+                # Appending .DESC directly would give "IOC:M1.RBV.DESC" (invalid).
+                record_base = pvname.rsplit('.', 1)[0] if '.' in pvname else pvname
+                desc_pvname = record_base + ".DESC"
+                self._desc_map.setdefault(desc_pvname, []).append((dev_name, sig_name))
+                if desc_pvname not in self._desc_pvs:
+                    self._desc_pvs[desc_pvname] = epics.PV(
+                        desc_pvname,
+                        auto_monitor=True,
+                        callback=self._on_desc_change,
+                    )
 
     def clear(self):
         for pv in list(self._pvs.values()) + list(self._desc_pvs.values()):
@@ -129,13 +132,16 @@ class _EPICSMonitor(QObject):
             self.connection_changed.emit(info[0], info[1], bool(conn))
 
     def _on_desc_change(self, pvname='', value=None, **kw):
-        info = self._desc_map.get(pvname)
-        if info and value is not None:
-            if isinstance(value, bytes):
-                desc = value.decode('latin-1', errors='replace')
-            else:
-                desc = str(value)
-            self.desc_changed.emit(info[0], info[1], desc.strip())
+        infos = self._desc_map.get(pvname)
+        if not infos or value is None:
+            return
+        if isinstance(value, bytes):
+            desc = value.decode('latin-1', errors='replace')
+        else:
+            desc = str(value)
+        desc = desc.strip()
+        for dev_name, sig_name in infos:
+            self.desc_changed.emit(dev_name, sig_name, desc)
 
     def put_value(self, pvname: str, value):
         try:
