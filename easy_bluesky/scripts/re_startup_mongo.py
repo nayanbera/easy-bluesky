@@ -111,6 +111,31 @@ def prime_detector(det):
     yield from _bps.null()
 
 
+def get_device_pvnames():
+    """Return {dev_name: {sig_name: pv_name}} for all top-level ophyd devices."""
+    import ophyd as _oph
+    out = {}
+    for _n, _obj in list(globals().items()):
+        if _n.startswith('_') or not isinstance(_obj, _oph.Device):
+            continue
+        pvs = {}
+        try:
+            _read_attrs = list(_obj.read_attrs)
+        except Exception:
+            _read_attrs = list(getattr(_obj, 'component_names', []))
+        for _attr in _read_attrs:
+            if '.' in _attr:
+                continue  # skip nested sub-device signals
+            try:
+                _sig = getattr(_obj, _attr, None)
+                if _sig is not None and hasattr(_sig, 'pvname') and not isinstance(_sig, _oph.Device):
+                    pvs[_attr] = _sig.pvname
+            except Exception:
+                pass
+        out[_n] = pvs
+    return out
+
+
 def read_devices_status():
     """Return {name: {connected, kind, reading:{sig:{value,units}}, error}} for all top-level devices."""
     import ophyd as _oph

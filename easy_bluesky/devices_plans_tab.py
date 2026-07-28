@@ -3,16 +3,15 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QPushButton, QCheckBox, QSpinBox,
+    QPlainTextEdit, QPushButton,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QColor, QFont
 
 from .config import ACCENT
 
 
 def _device_color(module: str) -> tuple:
-    """Return (fg_color, type_label) based on module path."""
     m = (module or "").lower()
     if "sim" in m:
         return "#ff7f0e", "Simulated"
@@ -37,31 +36,84 @@ def _fmt_value(val) -> str:
     return str(val)
 
 
-class DevicesPlansTab(QWidget):
-    """Two-panel tab: color-coded device tree with live readings (left) | plans + details (right)."""
+# ── EPICS CA monitor ────────────────────────────────────────────────────────────
 
-    refresh_requested = pyqtSignal()
+class _EPICSMonitor(QObject):
+    """
+    Wraps pyepics PV monitors and forwards value-change callbacks to Qt signals.
+    Callbacks arrive on a CA background thread; emitting a pyqtSignal queues
+    the update safely onto the main-thread event loop.
+    """
+    value_changed = pyqtSignal(str, str, object, str)   # dev, sig, value, units
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pvs: dict = {}   # pvname → epics.PV  (strong refs)
+        self._map: dict = {}   # pvname → (dev_name, sig_name)
+
+    def setup(self, pv_map: dict):
+        """Open CA monitors for every PV in pv_map = {dev: {sig: pvname}}."""
+        self.clear()
+        try:
+            import epics
+        except ImportError:
+            return
+        for dev_name, sigs in pv_map.items():
+            for sig_name, pvname in sigs.items():
+                if not pvname:
+                    continue
+                self._map[pvname] = (dev_name, sig_name)
+                pv = epics.PV(
+                    pvname,
+                    auto_monitor=True,
+                    callback=self._on_change,
+                )
+                self._pvs[pvname] = pv
+
+    def clear(self):
+        for pv in self._pvs.values():
+            try:
+                pv.clear_callbacks()
+                pv.disconnect()
+            except Exception:
+                pass
+        self._pvs.clear()
+        self._map.clear()
+
+    # Called from CA background thread — emit queues to main thread
+    def _on_change(self, pvname='', value=None, units='', **kw):
+        info = self._map.get(pvname)
+        if info:
+            self.value_changed.emit(info[0], info[1], value, units or '')
+
+
+# ── Tab widget ──────────────────────────────────────────────────────────────────
+
+class DevicesPlansTab(QWidget):
+    """Two-panel tab: live device tree (left) | plans + details (right)."""
+
+    fetch_pvnames_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plans: dict = {}
-        self._readings: dict = {}
-        self._device_items: dict = {}   # name → QTreeWidgetItem for fast update
-        self._auto_timer = QTimer(self)
-        self._auto_timer.timeout.connect(self.refresh_requested)
+        self._device_items: dict  = {}   # dev_name → QTreeWidgetItem
+        self._signal_items: dict  = {}   # (dev_name, sig_name) → QTreeWidgetItem
+        self._primary_signal: dict = {}  # dev_name → sig_name shown on device row
+        self._epics_monitor = _EPICSMonitor(self)
+        self._epics_monitor.value_changed.connect(self._on_pv_changed)
         self._build()
 
     def _build(self):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_devices())
         splitter.addWidget(self._build_plans())
         splitter.setSizes([600, 400])
         lay.addWidget(splitter)
 
-    # ── Devices panel ──────────────────────────────────────────────────────────
+    # ── Devices panel ───────────────────────────────────────────────────────────
 
     def _build_devices(self) -> QWidget:
         w = QWidget()
@@ -69,40 +121,21 @@ class DevicesPlansTab(QWidget):
         vlay.setContentsMargins(8, 8, 8, 8)
         vlay.setSpacing(6)
 
-        # Header row: title + refresh controls
         hdr = QHBoxLayout()
         lbl = QLabel("AVAILABLE DEVICES")
         lbl.setObjectName("section_title")
         hdr.addWidget(lbl)
         hdr.addStretch()
 
-        self._auto_cb = QCheckBox("Auto")
-        self._auto_cb.setToolTip("Auto-refresh device readings")
-        self._auto_cb.toggled.connect(self._on_auto_toggled)
-        hdr.addWidget(self._auto_cb)
-
-        self._interval_spin = QSpinBox()
-        self._interval_spin.setRange(2, 60)
-        self._interval_spin.setValue(5)
-        self._interval_spin.setSuffix(" s")
-        self._interval_spin.setFixedWidth(60)
-        self._interval_spin.setToolTip("Auto-refresh interval")
-        self._interval_spin.valueChanged.connect(self._on_interval_changed)
-        hdr.addWidget(self._interval_spin)
-
-        self._refresh_btn = QPushButton("⟳ Refresh")
-        self._refresh_btn.setFixedWidth(80)
-        self._refresh_btn.setToolTip("Read current values from all devices")
-        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
+        self._refresh_btn = QPushButton("⟳ Reconnect")
+        self._refresh_btn.setFixedWidth(95)
+        self._refresh_btn.setToolTip(
+            "Re-fetch PV names from RE environment and reconnect CA monitors"
+        )
+        self._refresh_btn.clicked.connect(self._on_reconnect_clicked)
         hdr.addWidget(self._refresh_btn)
-
         vlay.addLayout(hdr)
 
-        self._status_lbl = QLabel("")
-        self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
-        vlay.addWidget(self._status_lbl)
-
-        # Legend row
         legend = QHBoxLayout()
         for color, label in [
             ("#ff7f0e", "Simulated"),
@@ -117,6 +150,10 @@ class DevicesPlansTab(QWidget):
         legend.addStretch()
         vlay.addLayout(legend)
 
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
+        vlay.addWidget(self._status_lbl)
+
         self.devices_tree = QTreeWidget()
         self.devices_tree.setHeaderLabels(["Device / Signal", "Kind", "Value", "Units"])
         self.devices_tree.setRootIsDecorated(True)
@@ -125,7 +162,7 @@ class DevicesPlansTab(QWidget):
         vlay.addWidget(self.devices_tree, 1)
         return w
 
-    # ── Plans panel ────────────────────────────────────────────────────────────
+    # ── Plans panel ─────────────────────────────────────────────────────────────
 
     def _build_plans(self) -> QWidget:
         w = QWidget()
@@ -152,11 +189,13 @@ class DevicesPlansTab(QWidget):
         vlay.addWidget(self.plan_detail, 1)
         return w
 
-    # ── Public update slots ────────────────────────────────────────────────────
+    # ── Public slots ────────────────────────────────────────────────────────────
 
     def update_devices(self, devices: dict):
         self.devices_tree.clear()
         self._device_items.clear()
+        self._signal_items.clear()
+        self._primary_signal.clear()
 
         groups: dict = {}
         for name, info in devices.items():
@@ -189,22 +228,54 @@ class DevicesPlansTab(QWidget):
         for i in range(4):
             self.devices_tree.resizeColumnToContents(i)
 
-        # Re-apply any readings already in hand
-        if self._readings:
-            self._apply_readings(self._readings)
+    def setup_epics_monitors(self, pv_map: dict):
+        """Receive PV name map, create signal sub-rows and open CA monitors."""
+        self._epics_monitor.clear()
+        self._signal_items.clear()
+        self._primary_signal.clear()
 
-    def update_readings(self, readings: dict):
-        self._readings = readings
-        self._apply_readings(readings)
-        n = len(readings)
+        dim = QColor("#666666")
+
+        for dev_name, sigs in pv_map.items():
+            item = self._device_items.get(dev_name)
+            if item is None or not sigs:
+                continue
+
+            # Remove old signal children
+            while item.childCount() > 0:
+                item.removeChild(item.child(0))
+
+            # Choose which signal shows on the device row
+            primary = next(
+                (s for s in ("user_readback", "readback", dev_name) if s in sigs),
+                next(iter(sigs)),
+            )
+            self._primary_signal[dev_name] = primary
+
+            for sig_name, pvname in sigs.items():
+                sig_item = QTreeWidgetItem([f"  {sig_name}", "", "…", ""])
+                sig_item.setForeground(0, dim)
+                sig_item.setForeground(2, QColor("#aaaaaa"))
+                sig_item.setToolTip(0, pvname)
+                item.addChild(sig_item)
+                self._signal_items[(dev_name, sig_name)] = sig_item
+
+        self._epics_monitor.setup(pv_map)
+
+        total = sum(len(v) for v in pv_map.values())
         self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
-        self._status_lbl.setText(f"✓ {n} device(s) read")
-        self._refresh_done()
+        self._status_lbl.setText(f"● Live — monitoring {total} PV(s)")
+        self._refresh_btn.setEnabled(True)
+        self._refresh_btn.setText("⟳ Reconnect")
 
-    def on_read_error(self, msg: str):
+        for i in range(4):
+            self.devices_tree.resizeColumnToContents(i)
+
+    def on_pv_names_error(self, msg: str):
         self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
         self._status_lbl.setText(f"⚠ {msg[:120]}")
-        self._refresh_done()
+        self._refresh_btn.setEnabled(True)
+        self._refresh_btn.setText("⟳ Reconnect")
 
     def update_plans(self, plans: dict):
         self._plans = plans
@@ -221,97 +292,33 @@ class DevicesPlansTab(QWidget):
                     self.plans_list.setCurrentRow(i)
                     break
 
-    # ── Internal ───────────────────────────────────────────────────────────────
+    # ── Internal ────────────────────────────────────────────────────────────────
 
-    def _apply_readings(self, readings: dict):
-        grey  = QColor("#888888")
-        red   = QColor("#e05050")
+    def _on_pv_changed(self, dev_name: str, sig_name: str, value, units: str):
         green = QColor("#2ca02c")
         dim   = QColor("#666666")
 
-        for dev_name, info in readings.items():
-            item = self._device_items.get(dev_name)
-            if item is None:
-                continue
+        # Update signal sub-row
+        sig_item = self._signal_items.get((dev_name, sig_name))
+        if sig_item:
+            sig_item.setText(2, _fmt_value(value))
+            sig_item.setText(3, units)
+            sig_item.setForeground(2, dim)
 
-            # Remove old signal children
-            while item.childCount() > 0:
-                item.removeChild(item.child(0))
+        # Update device row if this is the primary signal
+        if self._primary_signal.get(dev_name) == sig_name:
+            dev_item = self._device_items.get(dev_name)
+            if dev_item:
+                dev_item.setText(2, _fmt_value(value))
+                dev_item.setText(3, units)
+                dev_item.setForeground(2, green)
 
-            connected = info.get('connected', False)
-            error     = info.get('error')
-            reading   = info.get('reading', {})
-
-            if error:
-                item.setText(2, f"⚠ {error[:50]}")
-                item.setForeground(2, red)
-                item.setText(3, "")
-            elif not connected:
-                item.setText(2, "○ Disconnected")
-                item.setForeground(2, grey)
-                item.setText(3, "")
-            else:
-                # Pick the primary value to show on the device row
-                primary_key = None
-                for candidate in (
-                    dev_name,
-                    f"{dev_name}_user_readback",
-                    f"{dev_name}_readback",
-                ):
-                    if candidate in reading:
-                        primary_key = candidate
-                        break
-                if primary_key is None and reading:
-                    primary_key = next(iter(reading))
-
-                if primary_key:
-                    val   = _fmt_value(reading[primary_key]['value'])
-                    units = reading[primary_key]['units']
-                    item.setText(2, val)
-                    item.setText(3, units)
-                    item.setForeground(2, green)
-                else:
-                    item.setText(2, "—")
-                    item.setText(3, "")
-
-                # Signal sub-rows
-                for sig_name, sig_data in reading.items():
-                    short = sig_name[len(dev_name) + 1:] if sig_name.startswith(dev_name + '_') else sig_name
-                    sig_item = QTreeWidgetItem([
-                        f"  {short}",
-                        "",
-                        _fmt_value(sig_data['value']),
-                        str(sig_data['units']),
-                    ])
-                    sig_item.setForeground(0, dim)
-                    sig_item.setForeground(2, dim)
-                    item.addChild(sig_item)
-
-        for i in range(4):
-            self.devices_tree.resizeColumnToContents(i)
-
-    def _on_refresh_clicked(self):
+    def _on_reconnect_clicked(self):
         self._refresh_btn.setEnabled(False)
-        self._refresh_btn.setText("Reading…")
+        self._refresh_btn.setText("Fetching…")
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
-        self._status_lbl.setText("Reading device values…")
-        self.refresh_requested.emit()
-        QTimer.singleShot(20_000, self._refresh_done)  # fallback re-enable
-
-    def _refresh_done(self):
-        self._refresh_btn.setEnabled(True)
-        self._refresh_btn.setText("⟳ Refresh")
-
-    def _on_auto_toggled(self, checked: bool):
-        if checked:
-            self._auto_timer.start(self._interval_spin.value() * 1000)
-            self._on_refresh_clicked()
-        else:
-            self._auto_timer.stop()
-
-    def _on_interval_changed(self, value: int):
-        if self._auto_timer.isActive():
-            self._auto_timer.setInterval(value * 1000)
+        self._status_lbl.setText("Fetching PV names from RE environment…")
+        self.fetch_pvnames_requested.emit()
 
     def _on_plan_selected(self, current: QListWidgetItem, _previous):
         if not current:

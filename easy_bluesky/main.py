@@ -878,9 +878,9 @@ class MainWindow(QMainWindow):
 
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
         self.worker.devices_updated.connect(self.devices_plans_tab.update_devices)
-        self.worker.device_readings_updated.connect(self.devices_plans_tab.update_readings)
-        self.worker.device_read_error.connect(self.devices_plans_tab.on_read_error)
-        self.devices_plans_tab.refresh_requested.connect(self.worker.read_devices_status)
+        self.worker.pv_names_ready.connect(self.devices_plans_tab.setup_epics_monitors)
+        self.worker.pv_names_error.connect(self.devices_plans_tab.on_pv_names_error)
+        self.devices_plans_tab.fetch_pvnames_requested.connect(self.worker.fetch_device_pvnames)
 
         self.worker.console_updated.connect(self.re_console.append)
         self.worker.connected.connect(self.re_console.on_connected)

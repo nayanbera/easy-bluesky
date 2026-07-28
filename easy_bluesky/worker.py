@@ -383,6 +383,44 @@ def _get_scripts_dir() -> Path:
                     os.chmod(dest, 0o755)
     return _USER_SCRIPTS_DIR
 
+class _PVNamesReader(QThread):
+    """Background thread: calls get_device_pvnames() via function_execute."""
+    pv_names_ready = pyqtSignal(dict)
+    read_error     = pyqtSignal(str)
+
+    def __init__(self, rm, parent=None):
+        super().__init__(parent)
+        self._rm = rm
+
+    def run(self):
+        try:
+            from bluesky_queueserver_api import BFunc
+            r = self._rm.function_execute(item=BFunc("get_device_pvnames"))
+            if not r.get("success"):
+                self.read_error.emit(r.get("msg", "function_execute failed"))
+                return
+            task_uid = r["task_uid"]
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                time.sleep(0.3)
+                res = self._rm.task_result(task_uid=task_uid)
+                state = res.get("status", "")
+                if state == "completed":
+                    result = res.get("result", {})
+                    if not result.get("success", True):
+                        self.read_error.emit(str(result.get("return_value", "unknown error"))[:200])
+                        return
+                    rv = result.get("return_value", {})
+                    self.pv_names_ready.emit(rv if isinstance(rv, dict) else {})
+                    return
+                if state in ("failed", "aborted", "not_found"):
+                    self.read_error.emit(res.get("msg", f"Task {state}"))
+                    return
+            self.read_error.emit("get_device_pvnames timed out")
+        except Exception as e:
+            self.read_error.emit(str(e))
+
+
 class _DeviceStatusReader(QThread):
     """Background thread: calls read_devices_status() via function_execute and waits for result."""
     readings_ready = pyqtSignal(dict)
@@ -433,6 +471,8 @@ class ZMQWorker(QObject):
     devices_updated         = pyqtSignal(dict)
     device_readings_updated = pyqtSignal(dict)
     device_read_error       = pyqtSignal(str)
+    pv_names_ready          = pyqtSignal(dict)
+    pv_names_error          = pyqtSignal(str)
     error_occurred          = pyqtSignal(str)
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
@@ -450,6 +490,7 @@ class ZMQWorker(QObject):
         self._log_tailer     = _SSHLogTailer()
         self._doc_writer     = _LocalDocWriter()
         self._device_reader  = None   # strong ref to _DeviceStatusReader
+        self._pv_names_reader = None  # strong ref to _PVNamesReader
 
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
@@ -673,6 +714,7 @@ class ZMQWorker(QObject):
                     _was_open = _prev_env_state in ("idle", "executing_plan", "paused")
                     if _env_open and not _was_open:
                         self._load_plans_devices()
+                        self.fetch_device_pvnames()
                     _prev_env_state = env_state
 
                     # Drain both ZMQ subscriber and SSH log tailer
@@ -835,3 +877,14 @@ class ZMQWorker(QObject):
         self._device_reader.read_error.connect(self.device_read_error)
         self._device_reader.read_error.connect(self.error_occurred)
         self._device_reader.start()
+
+    def fetch_device_pvnames(self):
+        """Fetch PV names for all devices from the RE environment and emit pv_names_ready."""
+        if self.rm is None:
+            return
+        if self._pv_names_reader is not None and self._pv_names_reader.isRunning():
+            return
+        self._pv_names_reader = _PVNamesReader(self.rm, self)
+        self._pv_names_reader.pv_names_ready.connect(self.pv_names_ready)
+        self._pv_names_reader.read_error.connect(self.pv_names_error)
+        self._pv_names_reader.start()
