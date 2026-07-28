@@ -397,7 +397,14 @@ class _PVNamesReader(QThread):
             from bluesky_queueserver_api import BFunc
             r = self._rm.function_execute(item=BFunc("get_device_pvnames"))
             if not r.get("success"):
-                self.read_error.emit(r.get("msg", "function_execute failed"))
+                msg = r.get("msg", "function_execute failed")
+                if "not found in the worker namespace" in msg or "not allowed" in msg:
+                    self.read_error.emit(
+                        "Restart RE Manager to enable live monitoring "
+                        "(re_startup_mongo.py needs to be re-uploaded)"
+                    )
+                else:
+                    self.read_error.emit(msg)
                 return
             task_uid = r["task_uid"]
             deadline = time.monotonic() + 15.0
@@ -408,7 +415,14 @@ class _PVNamesReader(QThread):
                 if state == "completed":
                     result = res.get("result", {})
                     if not result.get("success", True):
-                        self.read_error.emit(str(result.get("return_value", "unknown error"))[:200])
+                        tb = str(result.get("return_value", "unknown error"))
+                        if "not found in the worker namespace" in tb:
+                            self.read_error.emit(
+                                "Restart RE Manager to enable live monitoring "
+                                "(re_startup_mongo.py needs to be re-uploaded)"
+                            )
+                        else:
+                            self.read_error.emit(tb[:200])
                         return
                     rv = result.get("return_value", {})
                     self.pv_names_ready.emit(rv if isinstance(rv, dict) else {})
