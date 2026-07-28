@@ -401,11 +401,19 @@ class _DeviceStatusReader(QThread):
                 res = self._rm.task_result(task_uid=task_uid)
                 state = res.get("status", "")
                 if state == "completed":
-                    rv = res.get("result", {}).get("return_value", {})
+                    result = res.get("result", {})
+                    if not result.get("success", True):
+                        tb = result.get("return_value", "Unknown error")
+                        self.read_error.emit(f"read_devices_status raised:\n{str(tb)[:300]}")
+                        return
+                    rv = result.get("return_value", {})
                     self.readings_ready.emit(rv if isinstance(rv, dict) else {})
                     return
                 if state in ("failed", "aborted"):
                     self.read_error.emit(res.get("msg", f"Task {state}"))
+                    return
+                if state == "not_found":
+                    self.read_error.emit(f"Task result expired (uid={task_uid})")
                     return
             self.read_error.emit("read_devices_status timed out (>15 s)")
         except Exception as e:
@@ -419,6 +427,7 @@ class ZMQWorker(QObject):
     plans_updated   = pyqtSignal(dict)
     devices_updated         = pyqtSignal(dict)
     device_readings_updated = pyqtSignal(dict)
+    device_read_error       = pyqtSignal(str)
     error_occurred          = pyqtSignal(str)
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
@@ -818,5 +827,6 @@ class ZMQWorker(QObject):
             return  # already in progress
         self._device_reader = _DeviceStatusReader(self.rm, self)
         self._device_reader.readings_ready.connect(self.device_readings_updated)
+        self._device_reader.read_error.connect(self.device_read_error)
         self._device_reader.read_error.connect(self.error_occurred)
         self._device_reader.start()

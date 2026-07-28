@@ -93,10 +93,14 @@ class DevicesPlansTab(QWidget):
         self._refresh_btn = QPushButton("⟳ Refresh")
         self._refresh_btn.setFixedWidth(80)
         self._refresh_btn.setToolTip("Read current values from all devices")
-        self._refresh_btn.clicked.connect(self.refresh_requested)
+        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
         hdr.addWidget(self._refresh_btn)
 
         vlay.addLayout(hdr)
+
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
+        vlay.addWidget(self._status_lbl)
 
         # Legend row
         legend = QHBoxLayout()
@@ -192,6 +196,15 @@ class DevicesPlansTab(QWidget):
     def update_readings(self, readings: dict):
         self._readings = readings
         self._apply_readings(readings)
+        n = len(readings)
+        self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
+        self._status_lbl.setText(f"✓ {n} device(s) read")
+        self._refresh_done()
+
+    def on_read_error(self, msg: str):
+        self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
+        self._status_lbl.setText(f"⚠ {msg[:120]}")
+        self._refresh_done()
 
     def update_plans(self, plans: dict):
         self._plans = plans
@@ -277,10 +290,22 @@ class DevicesPlansTab(QWidget):
         for i in range(4):
             self.devices_tree.resizeColumnToContents(i)
 
+    def _on_refresh_clicked(self):
+        self._refresh_btn.setEnabled(False)
+        self._refresh_btn.setText("Reading…")
+        self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
+        self._status_lbl.setText("Reading device values…")
+        self.refresh_requested.emit()
+        QTimer.singleShot(20_000, self._refresh_done)  # fallback re-enable
+
+    def _refresh_done(self):
+        self._refresh_btn.setEnabled(True)
+        self._refresh_btn.setText("⟳ Refresh")
+
     def _on_auto_toggled(self, checked: bool):
         if checked:
             self._auto_timer.start(self._interval_spin.value() * 1000)
-            self.refresh_requested.emit()
+            self._on_refresh_clicked()
         else:
             self._auto_timer.stop()
 
