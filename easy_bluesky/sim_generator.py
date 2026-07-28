@@ -49,7 +49,7 @@ def parse_devices(script_path: str | Path) -> list[dict]:
     Return list of dicts: {'var', 'name', 'class', 'kind'}
     kind ∈ {'motor', 'area_det', 'scalar_det', 'unknown_device'}
     """
-    source = Path(script_path).read_text()
+    source = Path(script_path).read_text(encoding='utf-8', errors='replace')
     tree   = ast.parse(source)
 
     # Collect class defs that inherit from AD or motor bases so user-defined
@@ -252,5 +252,5 @@ def generate_sim_script(real_script_path: str | Path,
         "sim_ad = SimAreaDetector(name='sim_ad')",
     ]
 
-    output_path.write_text('\n'.join(lines) + '\n')
+    output_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return output_path
