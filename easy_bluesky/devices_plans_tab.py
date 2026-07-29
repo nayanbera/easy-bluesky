@@ -268,6 +268,15 @@ class DevicesPlansTab(QWidget):
         self._device_items.clear()
         self._signal_items.clear()
         self._primary_signal.clear()
+        self._readback_values.clear()
+        self._tweak_pvnames.clear()
+        self._epics_monitor.clear()
+
+        if not devices:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
+            self._status_lbl.setText("● No devices — open the RE environment")
+            self._refresh_btn.setEnabled(False)
+            return
 
         groups: dict = {}
         for name, info in devices.items():
@@ -299,6 +308,13 @@ class DevicesPlansTab(QWidget):
         self.devices_tree.expandAll()
         for i in range(6):
             self.devices_tree.resizeColumnToContents(i)
+
+        # Auto-start PV monitoring whenever a new device list arrives.
+        self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
+        self._status_lbl.setText("● Fetching PV names…")
+        self._refresh_btn.setEnabled(False)
+        self._refresh_btn.setText("Fetching…")
+        self.fetch_pvnames_requested.emit()
 
     def setup_epics_monitors(self, pv_map: dict):
         """Receive PV name map, create signal sub-rows and open CA monitors."""
