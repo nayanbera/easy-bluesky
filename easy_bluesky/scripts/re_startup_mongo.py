@@ -136,6 +136,16 @@ def get_device_pvnames():
     return out
 
 
+def set_sim_device(name: str, value: float):
+    """Move a simulated device (SynAxis etc.) to *value*. Blocks until done."""
+    import ophyd as _oph
+    _obj = globals().get(name)
+    if _obj is None or not isinstance(_obj, _oph.Device):
+        raise ValueError(f"Device '{name}' not found in RE namespace")
+    _st = _obj.set(float(value))
+    _st.wait(timeout=10)
+
+
 def read_devices_status():
     """Return {name: {connected, kind, reading:{sig:{value,units}}, error}} for all top-level devices."""
     import ophyd as _oph

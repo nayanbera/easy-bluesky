@@ -892,6 +892,21 @@ class ZMQWorker(QObject):
         self._device_reader.read_error.connect(self.error_occurred)
         self._device_reader.start()
 
+    def set_sim_device(self, name: str, value: float):
+        """Call set_sim_device() in the RE environment (fire-and-forget background thread)."""
+        if self.rm is None:
+            return
+        def _run():
+            try:
+                from bluesky_queueserver_api import BFunc
+                self.rm.function_execute(
+                    item=BFunc("set_sim_device", name=name, value=value)
+                )
+            except Exception:
+                pass
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+
     def fetch_device_pvnames(self):
         """Fetch PV names for all devices from the RE environment and emit pv_names_ready."""
         if self.rm is None:

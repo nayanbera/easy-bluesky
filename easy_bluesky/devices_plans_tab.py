@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
     QPlainTextEdit, QPushButton, QDoubleSpinBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, QTimer
 from PyQt6.QtGui import QColor, QFont
 
 from .config import ACCENT
@@ -156,7 +156,9 @@ class _EPICSMonitor(QObject):
 class DevicesPlansTab(QWidget):
     """Two-panel tab: live device tree (left) | plans + details (right)."""
 
-    fetch_pvnames_requested = pyqtSignal()
+    fetch_pvnames_requested  = pyqtSignal()
+    poll_sim_values_requested = pyqtSignal()   # triggers worker.read_devices_status()
+    set_sim_device_requested = pyqtSignal(str, float)  # dev_name, new_value
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -165,7 +167,10 @@ class DevicesPlansTab(QWidget):
         self._signal_items: dict  = {}   # (dev_name, sig_name) → QTreeWidgetItem
         self._primary_signal: dict = {}  # dev_name → sig_name shown on device row
         self._readback_values: dict = {}  # dev_name → float (current readback)
-        self._tweak_pvnames: dict = {}    # dev_name → user_setpoint pvname
+        self._tweak_pvnames: dict = {}    # dev_name → user_setpoint pvname (EPICS)
+        self._device_classes: dict = {}   # dev_name → classname (for sim detection)
+        self._sim_mode: bool = False
+        self._sim_timer: QTimer | None = None
         self._epics_monitor = _EPICSMonitor(self)
         self._epics_monitor.value_changed.connect(self._on_pv_changed)
         self._epics_monitor.connection_changed.connect(self._on_pv_connected)
@@ -264,12 +269,18 @@ class DevicesPlansTab(QWidget):
     # ── Public slots ────────────────────────────────────────────────────────────
 
     def update_devices(self, devices: dict):
+        if self._sim_timer is not None:
+            self._sim_timer.stop()
+            self._sim_timer = None
+        self._sim_mode = False
+
         self.devices_tree.clear()
         self._device_items.clear()
         self._signal_items.clear()
         self._primary_signal.clear()
         self._readback_values.clear()
         self._tweak_pvnames.clear()
+        self._device_classes.clear()
         self._epics_monitor.clear()
 
         if not devices:
@@ -302,6 +313,7 @@ class DevicesPlansTab(QWidget):
                 child.setToolTip(0, f"Module: {module}")
                 group_item.addChild(child)
                 self._device_items[name] = child
+                self._device_classes[name] = classname
 
             self.devices_tree.addTopLevelItem(group_item)
 
@@ -374,13 +386,32 @@ class DevicesPlansTab(QWidget):
                     item, 5, self._make_tweak_widget(dev_name, sp_pvname)
                 )
 
-        self._epics_monitor.setup(pv_map)
-
         total = sum(len(v) for v in pv_map.values())
-        self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
-        self._status_lbl.setText(f"● Live — monitoring {total} PV(s)")
-        self._refresh_btn.setEnabled(True)
-        self._refresh_btn.setText("⟳ Reconnect")
+
+        if total == 0 and pv_map:
+            # All devices are simulated — no EPICS PVs.  Add tweak widgets for
+            # SynAxis devices and start a polling timer to read back values.
+            self._sim_mode = True
+            _SIM_MOTOR_CLASSES = {"SynAxis"}
+            for dev_name, item in self._device_items.items():
+                if self._device_classes.get(dev_name) in _SIM_MOTOR_CLASSES:
+                    self.devices_tree.setItemWidget(
+                        item, 5, self._make_tweak_widget(dev_name, None)
+                    )
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #ff7f0e;")
+            self._status_lbl.setText("● Sim — polling device values…")
+            self._refresh_btn.setEnabled(True)
+            self._refresh_btn.setText("⟳ Reconnect")
+            self._sim_timer = QTimer(self)
+            self._sim_timer.setInterval(2000)
+            self._sim_timer.timeout.connect(self._on_sim_poll)
+            self._sim_timer.start()
+        else:
+            self._epics_monitor.setup(pv_map)
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
+            self._status_lbl.setText(f"● Live — monitoring {total} PV(s)")
+            self._refresh_btn.setEnabled(True)
+            self._refresh_btn.setText("⟳ Reconnect")
 
         for i in range(6):
             self.devices_tree.resizeColumnToContents(i)
@@ -461,7 +492,7 @@ class DevicesPlansTab(QWidget):
             if dev_item:
                 dev_item.setText(4, desc)
 
-    def _make_tweak_widget(self, dev_name: str, setpoint_pvname: str) -> QWidget:
+    def _make_tweak_widget(self, dev_name: str, setpoint_pvname: str | None) -> QWidget:
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(2, 0, 2, 0)
@@ -483,7 +514,12 @@ class DevicesPlansTab(QWidget):
 
         def _move(sign: int):
             cur = self._readback_values.get(dev_name, 0.0)
-            self._epics_monitor.put_value(setpoint_pvname, cur + sign * step.value())
+            new_val = cur + sign * step.value()
+            if setpoint_pvname is None:
+                self.set_sim_device_requested.emit(dev_name, new_val)
+                self._readback_values[dev_name] = new_val  # optimistic update
+            else:
+                self._epics_monitor.put_value(setpoint_pvname, new_val)
 
         btn_minus.clicked.connect(lambda: _move(-1))
         btn_plus.clicked.connect(lambda: _move(+1))
@@ -492,6 +528,32 @@ class DevicesPlansTab(QWidget):
         h.addWidget(step)
         h.addWidget(btn_plus)
         return w
+
+    def _on_sim_poll(self):
+        """Timer callback — requests a fresh device value poll from the worker."""
+        self.poll_sim_values_requested.emit()
+
+    def update_sim_values(self, readings: dict):
+        """Update the Value column for simulated devices from read_devices_status() result."""
+        for dev_name, data in readings.items():
+            item = self._device_items.get(dev_name)
+            if item is None:
+                continue
+            reading = data.get("reading", {})
+            if not reading:
+                continue
+            # Pick the primary hinted signal value
+            key = next(iter(reading))
+            val_data = reading[key]
+            val = val_data.get("value")
+            if val is None:
+                continue
+            display = _fmt_value(val)
+            item.setText(2, display)
+            item.setForeground(2, QColor("#dddddd"))
+            # Track readback for tweak
+            if isinstance(val, (int, float)):
+                self._readback_values[dev_name] = float(val)
 
     def _on_install_done(self, success: bool, msg: str):
         if success:
