@@ -21,6 +21,7 @@ easy_bluesky/ (PyQt6 GUI)   SSH    bluesky-queueserver v0.0.25
   ssh_manager.py   ──SSH log tail──  log: /tmp/re-manager-<slug>.log
                                      startup: ~/.easy_bluesky/scripts/re_startup_mongo.py
                                      devices: ~/.easy_bluesky/scripts/devices_ASWAXS.py
+                                              ~/.easy_bluesky/scripts/devices_sim.py (sim)
 ```
 
 ## Key files
@@ -34,6 +35,8 @@ easy_bluesky/ (PyQt6 GUI)   SSH    bluesky-queueserver v0.0.25
 | `easy_bluesky/experiments_tab.py` | Experiment creation, plan log, data browser |
 | `easy_bluesky/connection_settings.py` | Profile schema, settings file `~/.easy_bluesky/connection.json` |
 | `easy_bluesky/config.py` | Path constants (`EXPERIMENTS_DIR`, `ACTIVE_EXPERIMENT_FILE`, etc.) |
+| `easy_bluesky/devices_plans_tab.py` | Available Devices tree + Available Plans panel |
+| `easy_bluesky/sim_generator.py` | Parses real devices file → generates `devices_sim.py` |
 | `easy_bluesky/scripts/re_startup_mongo.py` | Remote RE Manager startup script — auto-uploaded on every restart |
 
 ## Connection settings (local only, never committed)
@@ -52,7 +55,9 @@ Stored at `~/.easy_bluesky/connection.json`. Key fields per profile:
     "devices_file": "devices_ASWAXS.py",
     "control_port": 60615,
     "info_port": 60625,
-    "procserv_port": 60635
+    "procserv_port": 60635,
+    "epics_ca_addr_list": "",
+    "epics_ca_auto_addr_list": true
   }]
 }
 ```
@@ -60,17 +65,103 @@ Stored at `~/.easy_bluesky/connection.json`. Key fields per profile:
 - **No passwords ever** — SSH key auth only.
 - `devices_file` is a bare filename (e.g. `devices_ASWAXS.py`) — resolved relative to
   `~/.easy_bluesky/scripts/` on the remote machine. Absolute paths also work.
+- `epics_ca_addr_list` / `epics_ca_auto_addr_list` set `EPICS_CA_ADDR_LIST` /
+  `EPICS_CA_AUTO_ADDR_LIST` in the local process before pyepics initialises libca.
+  Applied by `apply_epics_env()` in `connection_settings.py` at startup and on
+  settings change.
 
 ## Remote RE Manager lifecycle
 
 `ssh_manager.restart_re_manager()`:
 1. Opens SSH, detects remote `$HOME`, creates `~/.easy_bluesky/scripts/` if needed.
-2. SFTPs the local `re_startup_mongo.py` to the remote scripts dir (always uploads latest).
-3. Writes a launcher shell script to `/tmp/_easy_bluesky_<slug>.sh` via SFTP.
-4. **Stop** (separate SSH channel): kills by pid file + `pkill -f start-re-manager`.
+2. SFTPs the local `re_startup_mongo.py` and `user_group_permissions.yaml` from the
+   **package** `easy_bluesky/scripts/` to the remote scripts dir (always uploads latest).
+3. If `~/.easy_bluesky/scripts/devices_sim.py` exists locally, SFTPs it to remote too
+   (auto-syncs without a separate "Copy to Remote?" step).
+4. Writes a launcher shell script to `/tmp/_easy_bluesky_<slug>.sh` via SFTP.
+   The launcher exports `EASY_BLUESKY_DEVICES_FILE=<devices_file>` before starting
+   `start-re-manager`.
+5. **Stop** (separate SSH channel): kills by pid file + `pkill -f start-re-manager`.
    The channel may self-terminate (pkill matches the ssh bash process) — that's expected.
-5. `time.sleep(2)` between stop and start.
-6. **Start** (fresh SSH channel): launches via `procServ` (preferred) or `nohup+setsid`.
+6. `time.sleep(2)` between stop and start.
+7. **Start** (fresh SSH channel): launches via `procServ` (preferred) or `nohup+setsid`.
+
+## Simulation profile (`devices_sim.py`)
+
+- **Generate**: `File → Generate Sim Devices` parses the active profile's real devices
+  file (e.g. `devices_ASWAXS.py`) and writes `~/.easy_bluesky/scripts/devices_sim.py`.
+  If the active profile already points at `devices_sim.py` (circular), the generator
+  searches other profiles and the scripts directory for a non-sim devices file.
+- **Upload**: The generated file is SFTPed to the remote immediately (dialog) and also
+  auto-uploaded on every subsequent RE Manager restart.
+- **Devices file**: the sim profile's `devices_file` must be `devices_sim.py` (not
+  `device_sim.py` — note the `s`).
+- **SynGauss caveat**: do **not** use `noise='poisson'` in `SynGauss` calls. Newer
+  numpy returns a 1-element array from `random_state.poisson(..., 1)` and `int()` fails.
+  The generator omits `noise=` entirely.
+
+## Available Devices tab
+
+`devices_plans_tab.py` — `DevicesPlansTab`:
+
+### Tree columns
+`["Device / Signal", "Class", "Value", "Units", "Description", "Tweak"]`
+
+- **Class**: ophyd classname from `devices_allowed()` (e.g. `EpicsMotor`, `SynAxis`).
+- **Value / Units**: live CA readback via pyepics DBR_CTRL subscriptions (real mode) or
+  polled via `read_devices_status()` every 2 s (sim mode).
+- **Description**: EPICS `.DESC` field, fetched by subscribing to `{record_base}.DESC`.
+  Field suffixes are stripped before appending `.DESC` — e.g. `IOC:M1.RBV` →
+  `IOC:M1.DESC`, not `IOC:M1.RBV.DESC`.
+- **Tweak**: motor devices (`user_setpoint` signal present) get `[◀][step][▶]` inline
+  widget. Mouse-wheel on the step spinbox is disabled.
+
+### EPICS monitoring flow (real mode)
+1. `update_devices(devices)` populates group/device rows, then auto-emits
+   `fetch_pvnames_requested` → `worker.fetch_device_pvnames()`.
+2. `_PVNamesReader` calls `get_device_pvnames()` in the RE environment via
+   `function_execute` and emits `pv_names_ready(pv_map)`.
+3. `setup_epics_monitors(pv_map)` adds signal sub-rows and starts CA subscriptions.
+4. CA callbacks (`value_changed`, `connection_changed`, `desc_changed`) update tree
+   cells. Units and descriptions are also cached to
+   `~/.easy_bluesky/device_metadata.json` for reuse in sim mode.
+
+### Sim monitoring flow
+Triggered when `pv_map` has zero total PVs (all devices are `ophyd.sim` objects):
+1. `setup_epics_monitors` detects sim mode, adds Tweak widgets for `SynAxis` devices,
+   starts a 2-second `QTimer`.
+2. On each tick, `poll_sim_values_requested` → `worker.read_devices_status()` →
+   `_DeviceStatusReader` calls `read_devices_status()` in the RE environment.
+3. `update_sim_values(readings)` fills the Value column from the readings dict, and
+   populates Units / Description from the cached `device_metadata.json` if available.
+4. Tweak buttons emit `set_sim_device_requested(dev_name, value)` →
+   `worker.set_sim_device()` → calls `set_sim_device(name, value)` in the RE
+   environment via `function_execute` (blocks until `device.set().wait()` completes).
+
+### Search
+A search bar above the tree filters device rows by name, class, or description as the
+user types. Group headers hide when all their children are filtered out.
+
+### State reset
+`update_devices({})` (empty devices — e.g. RE Manager crash) stops the sim timer,
+clears CA subscriptions, resets the status label, and disables the Reconnect button.
+
+## `re_startup_mongo.py` functions
+
+Callable via `function_execute` from the app:
+
+| Function | Purpose |
+|---|---|
+| `get_device_pvnames()` | Returns `{dev_name: {sig_name: pvname}}` for all EPICS signals |
+| `read_devices_status()` | Returns `{dev_name: {connected, kind, reading, error}}` — used by sim monitor |
+| `set_sim_device(name, value)` | Calls `device.set(value).wait()` on a sim device — used by sim tweak |
+| `get_device_pvnames()` | Used to detect sim mode (returns empty dicts for ophyd.sim devices) |
+
+## `re_startup_mongo.py` subscriptions (in order)
+
+1. `suitcase.jsonl` via `RunRouter` — writes JSONL run files
+2. `BestEffortCallback` — prints live scan table to stdout/log
+3. ZMQ PUB socket on port 60630 — for Live Viewer tab
 
 ## Console output (RE console tab)
 
@@ -115,11 +206,16 @@ in the log and therefore in the RE console widget.
 - **Plan summary display**: `_plan_summary()` is duplicated in `queue_manager.py` and
   `experiments_tab.py` (both as `@staticmethod`). Changes must be made in both files.
 
-## `re_startup_mongo.py` subscriptions (in order)
+- **DESC subscription field stripping**: `_EPICSMonitor` strips any field suffix from
+  a PV name before appending `.DESC`. `IOC:M1.RBV` → `IOC:M1.DESC`. Without this,
+  `IOC:M1.RBV.DESC` is an invalid CA address and the DESC column stays empty.
 
-1. `suitcase.jsonl` via `RunRouter` — writes JSONL run files
-2. `BestEffortCallback` — prints live scan table to stdout/log
-3. ZMQ PUB socket on port 60630 — for Live Viewer tab
+- **`_desc_map` is a list**: multiple signals on the same record share one DESC PV.
+  `_desc_map` maps `desc_pvname → list[(dev_name, sig_name)]`, not a single tuple.
+
+- **Sim profile `devices_file` typo**: profile must have `"devices_file": "devices_sim.py"`
+  (with the `s`). A typo (`device_sim.py`) causes RE Manager to fail with ImportError
+  and AVAILABLE DEVICES to be empty.
 
 ## Running locally
 
