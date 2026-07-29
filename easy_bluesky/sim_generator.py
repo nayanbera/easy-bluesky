@@ -241,7 +241,7 @@ def generate_sim_script(real_script_path: str | Path,
             if ref:
                 lines.append(
                     f"{var} = SynGauss('{name}', {ref}, '{ref}', "
-                    f"center=0, Imax=1000, sigma=0.5, noise='poisson')"
+                    f"center=0, Imax=1000, sigma=0.5)"
                 )
             else:
                 lines.append(
