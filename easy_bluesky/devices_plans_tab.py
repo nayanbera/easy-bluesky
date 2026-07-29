@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QPushButton, QDoubleSpinBox,
+    QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit,
 )
 import json
 from pathlib import Path
@@ -245,6 +245,12 @@ class DevicesPlansTab(QWidget):
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
         vlay.addWidget(self._status_lbl)
 
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText("Search devices…")
+        self._search_box.setClearButtonEnabled(True)
+        self._search_box.textChanged.connect(self._on_device_search)
+        vlay.addWidget(self._search_box)
+
         self.devices_tree = QTreeWidget()
         self.devices_tree.setHeaderLabels(
             ["Device / Signal", "Class", "Value", "Units", "Description", "Tweak"]
@@ -343,6 +349,26 @@ class DevicesPlansTab(QWidget):
         self._refresh_btn.setEnabled(False)
         self._refresh_btn.setText("Fetching…")
         self.fetch_pvnames_requested.emit()
+
+    def _on_device_search(self, text: str):
+        """Show only device rows whose name, class, or description match *text*."""
+        q = text.strip().lower()
+        root = self.devices_tree.invisibleRootItem()
+        for gi in range(root.childCount()):
+            group = root.child(gi)
+            any_visible = False
+            for di in range(group.childCount()):
+                dev = group.child(di)
+                match = (
+                    not q
+                    or q in dev.text(0).lower()
+                    or q in dev.text(1).lower()
+                    or q in dev.text(4).lower()
+                )
+                dev.setHidden(not match)
+                if match:
+                    any_visible = True
+            group.setHidden(not any_visible)
 
     def setup_epics_monitors(self, pv_map: dict):
         """Receive PV name map, create signal sub-rows and open CA monitors."""
