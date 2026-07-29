@@ -154,6 +154,16 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
                 except Exception:
                     pass  # non-fatal
 
+        # If the user has a locally-generated devices_sim.py, push it so the
+        # remote is always in sync without a separate "Copy to Remote?" step.
+        _user_scripts = Path.home() / ".easy_bluesky" / "scripts"
+        _sim_local = _user_scripts / "devices_sim.py"
+        if _remote_scripts_dir and _sim_local.exists():
+            try:
+                sftp.put(str(_sim_local), f"{_remote_scripts_dir}/devices_sim.py")
+            except Exception:
+                pass  # non-fatal
+
         sftp.close()
 
         # ── Stop ──────────────────────────────────────────────────────────────

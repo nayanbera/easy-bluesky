@@ -1229,19 +1229,36 @@ class MainWindow(QMainWindow):
         scripts_dir  = _get_scripts_dir()
         sim_devices  = scripts_dir / "devices_sim.py"
 
-        # Use the active profile's devices file as the primary source so all
-        # real motors (e.g. devices_ASWAXS.py) are picked up.  Fall back to
-        # re_startup_mongo.py only if the devices file isn't available locally.
-        profile      = get_active_profile(self._conn_settings)
+        # Pick the real hardware devices file as source.  If the active profile
+        # already points at devices_sim.py (circular), search other profiles and
+        # the local scripts dir for any non-sim devices file first.
+        profile       = get_active_profile(self._conn_settings)
         devices_fname = profile.get("devices_file", "devices.py")
-        real_script  = scripts_dir / devices_fname
-        if not real_script.exists():
+
+        _SIM_NAMES = {"devices_sim.py", "devices_sim"}
+        if devices_fname in _SIM_NAMES or not (scripts_dir / devices_fname).exists():
+            # Try other profiles
+            devices_fname = ""
+            for p in self._conn_settings.get("profiles", []):
+                fn = p.get("devices_file", "")
+                if fn and fn not in _SIM_NAMES and (scripts_dir / fn).exists():
+                    devices_fname = fn
+                    break
+            if not devices_fname:
+                # Scan scripts dir for any devices_*.py that isn't the sim file
+                for candidate in sorted(scripts_dir.glob("devices_*.py")):
+                    if candidate.name not in _SIM_NAMES:
+                        devices_fname = candidate.name
+                        break
+
+        real_script = scripts_dir / devices_fname if devices_fname else None
+        if not real_script or not real_script.exists():
             real_script = scripts_dir / "re_startup_mongo.py"
         if not real_script.exists():
             QMessageBox.warning(self, "Not Found",
-                f"Devices file not found locally:\n{scripts_dir / devices_fname}\n\n"
-                "Restart the RE Manager once so the devices file is uploaded, "
-                "then try again.")
+                f"No hardware devices file found in:\n{scripts_dir}\n\n"
+                "Open 'Edit Devices File' for a real-hardware profile to cache "
+                "the remote devices file locally, then try again.")
             return
         try:
             out = generate_sim_script(real_script, sim_devices)
