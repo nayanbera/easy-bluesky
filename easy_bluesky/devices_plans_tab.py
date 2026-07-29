@@ -5,10 +5,15 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
     QPlainTextEdit, QPushButton, QDoubleSpinBox,
 )
+import json
+from pathlib import Path
+
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, QTimer
 from PyQt6.QtGui import QColor, QFont
 
 from .config import ACCENT
+
+_METADATA_PATH = Path.home() / ".easy_bluesky" / "device_metadata.json"
 
 
 def _device_color(module: str) -> tuple:
@@ -171,6 +176,17 @@ class DevicesPlansTab(QWidget):
         self._device_classes: dict = {}   # dev_name → classname (for sim detection)
         self._sim_mode: bool = False
         self._sim_timer: QTimer | None = None
+        # Persistent cache of units/desc from real EPICS so sim mode can show them
+        self._metadata_cache: dict = {}   # dev_name → {"units": str, "desc": str}
+        self._metadata_save_timer = QTimer(self)
+        self._metadata_save_timer.setSingleShot(True)
+        self._metadata_save_timer.setInterval(3000)
+        self._metadata_save_timer.timeout.connect(self._save_metadata_cache)
+        try:
+            if _METADATA_PATH.exists():
+                self._metadata_cache = json.loads(_METADATA_PATH.read_text())
+        except Exception:
+            pass
         self._epics_monitor = _EPICSMonitor(self)
         self._epics_monitor.value_changed.connect(self._on_pv_changed)
         self._epics_monitor.connection_changed.connect(self._on_pv_connected)
@@ -483,6 +499,11 @@ class DevicesPlansTab(QWidget):
             if isinstance(value, (int, float)):
                 self._readback_values[dev_name] = float(value)
 
+        # Cache units for sim mode reuse
+        if units:
+            self._metadata_cache.setdefault(dev_name, {})["units"] = units
+            self._metadata_save_timer.start()
+
     def _on_desc_changed(self, dev_name: str, sig_name: str, desc: str):
         sig_item = self._signal_items.get((dev_name, sig_name))
         if sig_item:
@@ -491,6 +512,18 @@ class DevicesPlansTab(QWidget):
             dev_item = self._device_items.get(dev_name)
             if dev_item:
                 dev_item.setText(4, desc)
+
+        # Cache description for sim mode reuse
+        if desc:
+            self._metadata_cache.setdefault(dev_name, {})["desc"] = desc
+            self._metadata_save_timer.start()
+
+    def _save_metadata_cache(self):
+        try:
+            _METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _METADATA_PATH.write_text(json.dumps(self._metadata_cache, indent=2))
+        except Exception:
+            pass
 
     def _make_tweak_widget(self, dev_name: str, setpoint_pvname: str | None) -> QWidget:
         w = QWidget()
@@ -505,6 +538,7 @@ class DevicesPlansTab(QWidget):
         step.setFixedWidth(82)
         step.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         step.setToolTip("Tweak step size")
+        step.wheelEvent = lambda e: e.ignore()
 
         btn_minus = QPushButton("◀")
         btn_plus  = QPushButton("▶")
@@ -534,7 +568,9 @@ class DevicesPlansTab(QWidget):
         self.poll_sim_values_requested.emit()
 
     def update_sim_values(self, readings: dict):
-        """Update the Value column for simulated devices from read_devices_status() result."""
+        """Update Value/Units/Description columns for simulated devices."""
+        if not self._sim_mode:
+            return
         for dev_name, data in readings.items():
             item = self._device_items.get(dev_name)
             if item is None:
@@ -542,18 +578,21 @@ class DevicesPlansTab(QWidget):
             reading = data.get("reading", {})
             if not reading:
                 continue
-            # Pick the primary hinted signal value
             key = next(iter(reading))
             val_data = reading[key]
             val = val_data.get("value")
             if val is None:
                 continue
-            display = _fmt_value(val)
-            item.setText(2, display)
+            item.setText(2, _fmt_value(val))
             item.setForeground(2, QColor("#dddddd"))
-            # Track readback for tweak
             if isinstance(val, (int, float)):
                 self._readback_values[dev_name] = float(val)
+
+            meta = self._metadata_cache.get(dev_name, {})
+            if meta.get("units"):
+                item.setText(3, meta["units"])
+            if meta.get("desc"):
+                item.setText(4, meta["desc"])
 
     def _on_install_done(self, success: bool, msg: str):
         if success:
