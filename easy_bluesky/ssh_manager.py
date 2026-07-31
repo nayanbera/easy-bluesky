@@ -254,6 +254,39 @@ def stop_re_manager(settings: dict, profile: dict) -> tuple:
         return False, f"SSH stop failed: {e}"
 
 
+def get_used_ports_ssh(settings: dict) -> set:
+    """SSH to the remote and return the set of TCP ports currently listening.
+
+    Runs 'ss -tlnH' (or netstat fallback) on the remote — one round-trip,
+    sub-second.  Returns an empty set on any error so callers can fall back
+    gracefully.
+    """
+    try:
+        client = _get_client(settings)
+        _, stdout, _ = client.exec_command(
+            "ss -tlnH 2>/dev/null || netstat -tlnp 2>/dev/null",
+            timeout=8,
+        )
+        output = stdout.read().decode()
+        client.close()
+    except Exception:
+        return set()
+
+    ports = set()
+    for line in output.splitlines():
+        # ss:      LISTEN 0 128 0.0.0.0:60615  0.0.0.0:*
+        # netstat: tcp    0   0 0.0.0.0:60615  0.0.0.0:* LISTEN
+        for token in line.split():
+            if ":" in token:
+                try:
+                    port = int(token.rsplit(":", 1)[-1])
+                    if 1 <= port <= 65535:
+                        ports.add(port)
+                except ValueError:
+                    pass
+    return ports
+
+
 def wait_for_port(host: str, port: int, timeout: int = 30) -> bool:
     """Poll host:port every 2 s until it accepts a connection or timeout expires."""
     import socket, time
