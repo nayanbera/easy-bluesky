@@ -25,6 +25,7 @@ from .themes import (
     theme_names, THEMES,
 )
 from .worker import ZMQWorker
+from .registry import fetch_registry, merge_into_profiles, probe_all_instances
 from .re_control_bar import REControlBar
 from .queue_manager import QueueManager
 from .plan_builder import PlanBuilder
@@ -712,6 +713,29 @@ class _HelpDialog(QDialog):
         self.activateWindow()
 
 
+# ── Startup discovery worker ───────────────────────────────────────────────────
+
+class _DiscoveryWorker(QThread):
+    """Background thread: fetch registry via SSH then TCP-probe all instances."""
+    done   = pyqtSignal(list)   # list of instance dicts with extra 'running' key
+    failed = pyqtSignal(str)
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+
+    def run(self):
+        try:
+            reg       = fetch_registry(self._settings)
+            instances = reg.get("instances", [])
+            running   = probe_all_instances(instances)
+            result    = [{**inst, "running": running.get(inst.get("name", ""), False)}
+                         for inst in instances]
+            self.done.emit(result)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 # ── Main window ────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -725,7 +749,7 @@ class MainWindow(QMainWindow):
         self.worker = ZMQWorker()
         self._setup_ui()
         self._setup_worker()
-        self._connect()
+        self._start_discovery_or_connect()
         self.apply_theme(self._current_theme)
 
     def _setup_ui(self):
@@ -780,6 +804,8 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("File")
         act_conn = file_menu.addAction("Connection Settings…")
         act_conn.triggered.connect(self._on_connection_settings)
+        act_reg = file_menu.addAction("Registry Admin…")
+        act_reg.triggered.connect(self._on_registry_admin)
         file_menu.addSeparator()
         act_edit_dev = file_menu.addAction("Edit Devices File…")
         act_edit_dev.triggered.connect(self._on_edit_devices)
@@ -914,8 +940,11 @@ class MainWindow(QMainWindow):
         self.worker_thread.start()
 
     def _connect(self):
-        poll_thread = threading.Thread(target=self.worker.poll, daemon=True)
-        poll_thread.start()
+        # Only start poll thread here when discovery didn't already start it.
+        # (_start_discovery_or_connect starts the thread before discovery runs.)
+        if not getattr(self, "_discovery", None):
+            poll_thread = threading.Thread(target=self.worker.poll, daemon=True)
+            poll_thread.start()
         QTimer.singleShot(100, self._do_connect)
 
     def _do_connect(self):
@@ -1312,6 +1341,92 @@ class MainWindow(QMainWindow):
             return True, f"Copied to {settings['host']}:~/{remote_path}"
         except Exception as e:
             return False, f"SFTP upload failed: {e}"
+
+    # ── registry admin ─────────────────────────────────────────────────────────
+
+    def _on_registry_admin(self):
+        from .registry_admin import RegistryAdminWindow
+        dlg = RegistryAdminWindow(self._conn_settings, parent=self)
+        dlg.exec()
+
+    # ── startup discovery ──────────────────────────────────────────────────────
+
+    def _start_discovery_or_connect(self):
+        """Run registry discovery then auto-connect; fall back to direct connect."""
+        registry_host = (
+            self._conn_settings.get("registry_host", "").strip()
+            or self._conn_settings.get("host", "")
+        )
+        ssh_ready = bool(
+            registry_host
+            and self._conn_settings.get("ssh_user", "")
+            and self._conn_settings.get("ssh_key_path", "")
+        )
+        if not ssh_ready:
+            # No registry configured — connect immediately as before
+            self._connect()
+            return
+
+        self.status_bar.showMessage(
+            f"Discovering instances on {registry_host}…"
+        )
+        self._discovery = _DiscoveryWorker(self._conn_settings, parent=self)
+        self._discovery.done.connect(self._on_discovery_done)
+        self._discovery.failed.connect(self._on_discovery_failed)
+        self._discovery.start()
+        # Start the poll loop now so the UI is live while discovery runs
+        poll_thread = threading.Thread(target=self.worker.poll, daemon=True)
+        poll_thread.start()
+
+    def _on_discovery_done(self, instances: list):
+        if not instances:
+            self.status_bar.showMessage("Registry returned no instances.")
+            QTimer.singleShot(100, self._do_connect)
+            return
+
+        # Merge discovered instances into local profiles
+        profiles = self._conn_settings.get("profiles", [])
+        profiles, added, updated = merge_into_profiles(profiles, instances)
+        self._conn_settings["profiles"] = profiles
+        save_connection(self._conn_settings)
+
+        # Update the profile combo
+        names  = [p.get("name", "") for p in profiles]
+        active = self._conn_settings.get("active_profile", "Default")
+        self.re_bar.update_profiles(names, active)
+
+        running_names = [i["name"] for i in instances if i.get("running")]
+        n_run = len(running_names)
+        n_tot = len(instances)
+        self.status_bar.showMessage(
+            f"Registry: {n_tot} instance(s) found, {n_run} running"
+            + (f"  |  merged {added} new, {updated} updated" if added or updated else "")
+        )
+
+        # Auto-connect if the active profile is running
+        active_running = any(
+            i["name"] == active and i.get("running") for i in instances
+        )
+        if active_running:
+            QTimer.singleShot(100, self._do_connect)
+        else:
+            # Active profile not running — show status but don't block the UI
+            if active not in [i["name"] for i in instances]:
+                note = f"Profile '{active}' not in registry"
+            elif running_names:
+                note = (f"Profile '{active}' not running — "
+                        f"running: {', '.join(running_names)}")
+            else:
+                note = f"Profile '{active}' is not running"
+            self._log(f"[EasyBluesky] {note}")
+            self.conn_label.setText("⬤  Not running")
+            self.conn_label.setStyleSheet("color: #ff7f0e;")
+            self.re_bar.set_disconnected()
+
+    def _on_discovery_failed(self, msg: str):
+        self._log(f"[EasyBluesky] Registry discovery failed: {msg}")
+        self.status_bar.showMessage("Registry unavailable — connecting directly")
+        QTimer.singleShot(100, self._do_connect)
 
     def _on_connection_settings(self):
         dlg = ConnectionDialog(self)

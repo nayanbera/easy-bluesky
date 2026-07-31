@@ -74,6 +74,21 @@ def _instance_files(profile_name: str) -> tuple:
     )
 
 
+def _settings_for_profile(settings: dict, profile: dict) -> dict:
+    """Return settings with host set to the profile's own host (if set).
+
+    Profiles running on different machines in the network carry their own
+    'host' field.  SSH operations (restart, stop, log tail) must target
+    that host rather than the global settings host.
+    """
+    profile_host = profile.get("host", "").strip()
+    if profile_host:
+        s = dict(settings)
+        s["host"] = profile_host
+        return s
+    return settings
+
+
 def restart_re_manager(settings: dict, profile: dict) -> tuple:
     """
     SSH into the remote RE Manager host and restart the instance for *profile*.
@@ -86,7 +101,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
     Returns (success, message).
     """
     try:
-        client = _get_client(settings)
+        client = _get_client(_settings_for_profile(settings, profile))
     except Exception as e:
         return False, str(e)
 
@@ -218,7 +233,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
 def stop_re_manager(settings: dict, profile: dict) -> tuple:
     """SSH into the remote host and kill the RE Manager instance for *profile*."""
     try:
-        client = _get_client(settings)
+        client = _get_client(_settings_for_profile(settings, profile))
     except Exception as e:
         return False, str(e)
 

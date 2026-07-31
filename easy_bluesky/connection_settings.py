@@ -18,6 +18,7 @@ _SETTINGS_FILE = Path.home() / ".easy_bluesky" / "connection.json"
 
 _PROFILE_DEFAULTS = {
     "name": "Default",
+    "host": "",           # per-profile host override; empty = use global host
     "devices_file": "devices.py",
     "is_local": False,
     "control_port": 60615,
@@ -34,6 +35,8 @@ _DEFAULTS = {
     "ssh_service": "",
     "conda_env": "",
     "conda_path": "~/miniconda3",
+    "registry_host": "",   # host where registry.json lives; empty = use global host
+    "registry_path": "",   # path on registry host; empty = ~/.easy_bluesky/registry.json
     "active_profile": "Default",
     "profiles": [_PROFILE_DEFAULTS.copy()],
     "deleted_profiles": [],
@@ -168,13 +171,20 @@ def get_active_profile(settings: dict) -> dict:
 
 
 def make_zmq_addrs(settings: dict) -> tuple:
-    """Return (control_addr, info_addr, doc_addr) for the active profile."""
+    """Return (control_addr, info_addr, doc_addr) for the active profile.
+
+    Per-profile host (profile["host"]) overrides the global host so that
+    instances running on different machines in the network can each be
+    addressed correctly from a single client machine.
+    """
     profile = get_active_profile(settings)
-    # Local profiles always connect to localhost regardless of global host setting
     if profile.get("is_local", False):
         h = "localhost"
     else:
-        h = settings.get("host", "localhost") or "localhost"
+        # Profile-specific host takes priority over the global host
+        h = (profile.get("host", "").strip()
+             or settings.get("host", "localhost")
+             or "localhost")
     return (
         f"tcp://{h}:{profile['control_port']}",
         f"tcp://{h}:{profile['info_port']}",
@@ -620,6 +630,55 @@ class ConnectionDialog(QDialog):
 
         lay.addLayout(ca_form)
 
+        # ── Registry section ───────────────────────────────────────────────────
+        sep_reg = QFrame()
+        sep_reg.setFrameShape(QFrame.Shape.HLine)
+        sep_reg.setFrameShadow(QFrame.Shadow.Sunken)
+        lay.addWidget(sep_reg)
+
+        reg_title = QLabel("Instance Registry")
+        reg_title.setStyleSheet("font-weight: bold; font-size: 12px;")
+        lay.addWidget(reg_title)
+
+        reg_note = QLabel(
+            "Central registry of RE Manager instances across the network.\n"
+            "registry.json lives on the registry host; clients fetch it at startup\n"
+            "to discover available instances and their running status."
+        )
+        reg_note.setWordWrap(True)
+        reg_note.setObjectName("dim_text")
+        lay.addWidget(reg_note)
+
+        reg_form = QFormLayout()
+        reg_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        reg_form.setHorizontalSpacing(12)
+
+        self._reg_host = QLineEdit(self._settings.get("registry_host", ""))
+        self._reg_host.setPlaceholderText(
+            "hostname or IP  (leave empty to use the main Host above)"
+        )
+        reg_form.addRow("Registry host:", self._reg_host)
+
+        self._reg_path = QLineEdit(self._settings.get("registry_path", ""))
+        self._reg_path.setPlaceholderText("~/.easy_bluesky/registry.json")
+        reg_form.addRow("Registry path:", self._reg_path)
+
+        lay.addLayout(reg_form)
+
+        reg_btn_row = QHBoxLayout()
+        btn_sync = QPushButton("Sync Profiles from Registry")
+        btn_sync.setToolTip(
+            "SSH to the registry host, read registry.json, and merge\n"
+            "its instances into the local profile list."
+        )
+        btn_sync.clicked.connect(self._on_sync_registry)
+        reg_btn_row.addWidget(btn_sync, alignment=Qt.AlignmentFlag.AlignLeft)
+        lay.addLayout(reg_btn_row)
+
+        self._reg_status = QLabel("")
+        self._reg_status.setWordWrap(True)
+        lay.addWidget(self._reg_status)
+
         # ── Profiles section ───────────────────────────────────────────────────
         sep_prof = QFrame()
         sep_prof.setFrameShape(QFrame.Shape.HLine)
@@ -676,6 +735,13 @@ class ConnectionDialog(QDialog):
         self._prof_name = QLineEdit()
         self._prof_name.setPlaceholderText("Profile name (e.g. ASWAXS, SURF)")
         self._prof_form.addRow("Name:", self._prof_name)
+
+        self._prof_host = QLineEdit()
+        self._prof_host.setPlaceholderText(
+            "hostname or IP  (leave empty to use the global Host above)"
+        )
+        self._prof_host.textChanged.connect(self._update_zmq_label)
+        self._prof_form.addRow("Host override:", self._prof_host)
 
         self._prof_is_local = QCheckBox("Local (runs on this computer)")
         self._prof_is_local.setToolTip(
@@ -789,6 +855,7 @@ class ConnectionDialog(QDialog):
             return
         p = profiles[row]
         self._prof_name.setText(p.get("name", ""))
+        self._prof_host.setText(p.get("host", ""))
         self._prof_is_local.setChecked(p.get("is_local", False))
         self._prof_devices.setText(p.get("devices_file", "devices.py"))
         self._prof_ctrl.setValue(p.get("control_port", _PROFILE_DEFAULTS["control_port"]))
@@ -813,13 +880,14 @@ class ConnectionDialog(QDialog):
         is_local = self._prof_is_local.isChecked()
 
         profiles[row] = {
-            "name": new_name,
+            "name":         new_name,
+            "host":         self._prof_host.text().strip(),
             "devices_file": self._prof_devices.text().strip() or "devices.py",
-            "is_local": is_local,
+            "is_local":     is_local,
             "control_port": self._prof_ctrl.value(),
-            "info_port": self._prof_info.value(),
-            "doc_port": self._prof_doc.value(),
-            "procserv_port": self._prof_procserv.value(),
+            "info_port":    self._prof_info.value(),
+            "doc_port":     self._prof_doc.value(),
+            "procserv_port":self._prof_procserv.value(),
         }
 
         if old_name == self._settings.get("active_profile") and new_name != old_name:
@@ -944,9 +1012,14 @@ class ConnectionDialog(QDialog):
             )
 
     def _update_zmq_label(self):
-        host = self._host.text().strip() or "localhost"
         is_local = self._prof_is_local.isChecked()
-        h = "localhost" if is_local else host
+        if is_local:
+            h = "localhost"
+        else:
+            # Per-profile host takes priority over global host
+            h = (self._prof_host.text().strip()
+                 or self._host.text().strip()
+                 or "localhost")
         ctrl = self._prof_ctrl.value()
         info = self._prof_info.value()
         self._zmq_addr_label.setText(
@@ -1027,6 +1100,40 @@ class ConnectionDialog(QDialog):
             installed_path = self._key_installer._key_path
             self._ssh_key.setText(str(installed_path))
 
+    def _on_sync_registry(self):
+        settings = self._collect_top_level()
+        self._reg_status.setText("Fetching registry via SSH…")
+        self._reg_status.setStyleSheet("color: #888;")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        try:
+            from .registry import fetch_registry, merge_into_profiles
+            registry = fetch_registry(settings)
+            instances = registry.get("instances", [])
+            if not instances:
+                self._reg_status.setText("Registry is empty or could not be reached.")
+                self._reg_status.setStyleSheet("color: #ff7f0e;")
+                return
+            if self._current_row is not None and self._current_row >= 0:
+                self._save_current_editor()
+            profiles = self._settings.get("profiles", [])
+            profiles, added, updated = merge_into_profiles(profiles, instances)
+            self._settings["profiles"] = profiles
+            self._current_row = None
+            self._populate_profile_list()
+            active = self._settings.get("active_profile", "Default")
+            for i in range(self._profile_list.count()):
+                if self._profile_list.item(i).data(Qt.ItemDataRole.UserRole) == active:
+                    self._profile_list.setCurrentRow(i)
+                    break
+            self._reg_status.setText(
+                f"✓  Added {added} new profile(s), updated {updated} existing."
+            )
+            self._reg_status.setStyleSheet("color: #2ca02c;")
+        except Exception as e:
+            self._reg_status.setText(f"✗  {e}")
+            self._reg_status.setStyleSheet("color: #d62728;")
+
     def _collect_top_level(self) -> dict:
         return {
             **self._settings,
@@ -1037,6 +1144,8 @@ class ConnectionDialog(QDialog):
             "ssh_service":              self._ssh_service.text().strip(),
             "conda_env":                self._conda_env.text().strip(),
             "conda_path":               self._conda_path.text().strip() or "~/miniconda3",
+            "registry_host":            self._reg_host.text().strip(),
+            "registry_path":            self._reg_path.text().strip(),
             "epics_ca_addr_list":       self._ca_addr_list.text().strip(),
             "epics_ca_auto_addr_list":  self._ca_auto.isChecked(),
         }
