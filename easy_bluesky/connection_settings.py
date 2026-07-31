@@ -482,6 +482,7 @@ class ConnectionDialog(QDialog):
         host_form.setHorizontalSpacing(12)
         self._host = QLineEdit(self._settings.get("host", "localhost"))
         self._host.setPlaceholderText("localhost or 192.168.1.50")
+        self._host.textChanged.connect(self._update_zmq_label)
         host_form.addRow("Host / IP:", self._host)
         lay.addLayout(host_form)
 
@@ -681,6 +682,9 @@ class ConnectionDialog(QDialog):
         self._prof_procserv.setRange(1, 65535)
         self._prof_form.addRow("procServ port:", self._prof_procserv)
 
+        for _sb in (self._prof_ctrl, self._prof_info):
+            _sb.valueChanged.connect(self._update_zmq_label)
+
         right_lay.addLayout(self._prof_form)
 
         self._prof_local_note = QLabel(
@@ -695,6 +699,15 @@ class ConnectionDialog(QDialog):
         btn_auto.setToolTip("Find 4 free ports and assign them to this profile")
         btn_auto.clicked.connect(self._on_auto_assign_ports)
         right_lay.addWidget(btn_auto, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self._auto_assign_note = QLabel("")
+        self._auto_assign_note.setObjectName("dim_text")
+        right_lay.addWidget(self._auto_assign_note)
+
+        self._zmq_addr_label = QLabel("")
+        self._zmq_addr_label.setObjectName("dim_text")
+        self._zmq_addr_label.setWordWrap(True)
+        right_lay.addWidget(self._zmq_addr_label)
         right_lay.addStretch()
 
         prof_h.addWidget(right_w, 1)
@@ -712,7 +725,7 @@ class ConnectionDialog(QDialog):
         active = self._settings.get("active_profile", "Default")
         selected = False
         for i in range(self._profile_list.count()):
-            if self._profile_list.item(i).text().split("  ")[0] == active:
+            if self._profile_list.item(i).data(Qt.ItemDataRole.UserRole) == active:
                 self._profile_list.setCurrentRow(i)
                 selected = True
                 break
@@ -722,6 +735,7 @@ class ConnectionDialog(QDialog):
     def _on_is_local_toggled(self, checked: bool):
         self._prof_local_note.setVisible(checked)
         self._prof_form.setRowVisible(self._prof_procserv, not checked)
+        self._update_zmq_label()
 
     def _populate_profile_list(self):
         active = self._settings.get("active_profile", "Default")
@@ -730,7 +744,10 @@ class ConnectionDialog(QDialog):
         for p in self._settings.get("profiles", []):
             name = p.get("name", "")
             label = f"{name}  [LOCAL]" if p.get("is_local") else name
+            if name == active:
+                label += "  [active]"
             item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, name)
             if name == active:
                 font = item.font()
                 font.setBold(True)
@@ -757,6 +774,8 @@ class ConnectionDialog(QDialog):
         self._prof_procserv.setValue(p.get("procserv_port", _PROFILE_DEFAULTS["procserv_port"]))
         # Show/hide procServ row based on is_local
         self._on_is_local_toggled(p.get("is_local", False))
+        self._auto_assign_note.setText("")
+        self._update_zmq_label()
 
     def _save_current_editor(self):
         row = self._current_row
@@ -785,9 +804,12 @@ class ConnectionDialog(QDialog):
 
         item = self._profile_list.item(row)
         if item:
-            label = f"{new_name}  [LOCAL]" if is_local else new_name
-            item.setText(label)
             current_active = self._settings.get("active_profile", "Default")
+            label = f"{new_name}  [LOCAL]" if is_local else new_name
+            if new_name == current_active:
+                label += "  [active]"
+            item.setText(label)
+            item.setData(Qt.ItemDataRole.UserRole, new_name)
             font = item.font()
             font.setBold(new_name == current_active)
             item.setFont(font)
@@ -817,7 +839,9 @@ class ConnectionDialog(QDialog):
         self._current_row = None
         self._profile_list.blockSignals(True)
         label = f"{new_profile['name']}  [LOCAL]" if new_profile["is_local"] else new_profile["name"]
-        self._profile_list.addItem(label)
+        _new_item = QListWidgetItem(label)
+        _new_item.setData(Qt.ItemDataRole.UserRole, new_profile["name"])
+        self._profile_list.addItem(_new_item)
         self._profile_list.blockSignals(False)
 
         new_row = len(profiles) - 1
@@ -872,6 +896,23 @@ class ConnectionDialog(QDialog):
             self._prof_info.setValue(ports[1])
             self._prof_doc.setValue(ports[2])
             self._prof_procserv.setValue(ports[3])
+            self._auto_assign_note.setText(
+                f"Assigned: ctrl={ports[0]}  info={ports[1]}"
+                f"  doc={ports[2]}  procServ={ports[3]}"
+            )
+        else:
+            self._auto_assign_note.setText("Could not find enough free ports.")
+
+    def _update_zmq_label(self):
+        host = self._host.text().strip() or "localhost"
+        is_local = self._prof_is_local.isChecked()
+        h = "localhost" if is_local else host
+        ctrl = self._prof_ctrl.value()
+        info = self._prof_info.value()
+        self._zmq_addr_label.setText(
+            f"Will connect to:  tcp://{h}:{ctrl}  (control)"
+            f"  ·  tcp://{h}:{info}  (info)"
+        )
 
     def _browse_key(self):
         start = str(Path(self._ssh_key.text()).expanduser().parent)
