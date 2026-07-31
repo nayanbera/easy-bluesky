@@ -509,8 +509,37 @@ class ZMQWorker(QObject):
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
         try:
+            ctrl_addr = zmq_control or ZMQ_CONTROL
+            # TCP pre-check: probe the control port before creating the ZMQ
+            # API object.  ZMQ's lazy connect means the first status() call
+            # blocks for timeout_recv (2 s) × several internal retries when
+            # nothing is listening — totalling several minutes on Windows where
+            # there is no fast ICMP unreachable.  A TCP probe gives an
+            # immediate ConnectionRefusedError when the port is free (no server)
+            # and times out in at most 3 s when the host is unreachable.
+            try:
+                _parts = ctrl_addr.replace("tcp://", "").rsplit(":", 1)
+                _host, _port = (_parts[0] or "localhost"), int(_parts[1])
+                import socket as _sock
+                try:
+                    _sock.create_connection((_host, _port), timeout=3).close()
+                except ConnectionRefusedError:
+                    self.rm = None
+                    self.error_occurred.emit(
+                        f"Nothing is listening on {_host}:{_port}.\n"
+                        "Start the RE Manager first (Restart RE Manager button),\n"
+                        "or check that the correct profile is selected."
+                    )
+                    return False
+                except OSError:
+                    # Timeout or network error — let ZMQ try; it will fail with
+                    # its own error message.
+                    pass
+            except Exception:
+                pass  # address parse error — proceed and let ZMQ handle it
+
             self.rm = REManagerAPI(
-                zmq_control_addr=zmq_control or ZMQ_CONTROL,
+                zmq_control_addr=ctrl_addr,
                 zmq_info_addr=zmq_info or ZMQ_INFO,
             )
             status = self.rm.status()

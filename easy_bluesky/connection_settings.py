@@ -222,6 +222,44 @@ def find_free_ports(count: int = 4, start: int = 60615, used: set = None) -> lis
     return result
 
 
+def port_in_use_remote(host: str, port: int, timeout: float = 1.5) -> bool:
+    """Return True if host:port is already accepting TCP connections.
+
+    Used to probe the *remote* machine before assigning ports, so we don't
+    accidentally pick ports already bound by another RE Manager instance there.
+    ConnectionRefusedError (fast) → port is free.
+    Successful connect → something is listening → port is in use.
+    Timeout → assume in use (firewall dropping packets; don't steal the port).
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True          # something answered → in use
+    except ConnectionRefusedError:
+        return False             # active refusal → port is free
+    except OSError:
+        return True              # timeout / unreachable → treat as in use
+
+
+def find_free_ports_remote(host: str, count: int = 4, start: int = 60615,
+                           used: set = None) -> list:
+    """Like find_free_ports but probes the actual remote host via TCP.
+
+    Checks whether the RE Manager host itself already has something listening
+    on each candidate port — catches ports bound by another RE Manager profile
+    running on the same remote machine.
+    """
+    if used is None:
+        used = set()
+    result = []
+    port = start
+    while len(result) < count and port <= 65535:
+        if port not in used and not port_in_use_remote(host, port):
+            result.append(port)
+            used = used | {port}
+        port += 1
+    return result
+
+
 def _fix_port_conflicts(settings: dict) -> bool:
     """
     Scan all profiles for duplicate port numbers and reassign duplicates.
@@ -889,7 +927,18 @@ class ConnectionDialog(QDialog):
                         used.add(val)
 
         start = (max(used) + 1) if used else 60615
-        ports = find_free_ports(count=4, start=start, used=used)
+
+        # For remote profiles, probe the actual remote host so we don't pick
+        # ports already owned by another RE Manager instance running there.
+        host = self._host.text().strip() or "localhost"
+        is_local = self._prof_is_local.isChecked()
+        if not is_local and host.lower() not in ("localhost", "127.0.0.1", "::1", ""):
+            self._auto_assign_note.setText(f"Probing {host} for free ports…")
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+            ports = find_free_ports_remote(host, count=4, start=start, used=used)
+        else:
+            ports = find_free_ports(count=4, start=start, used=used)
 
         if len(ports) >= 4:
             self._prof_ctrl.setValue(ports[0])
