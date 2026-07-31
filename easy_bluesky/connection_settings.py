@@ -200,14 +200,21 @@ def _all_used_ports(settings: dict) -> set:
 def find_free_ports(count: int = 4, start: int = 60615, used: set = None) -> list:
     if used is None:
         used = set()
+    # SO_REUSEADDR on Windows allows binding to an in-use port (different from Unix),
+    # causing false "free" results.  SO_EXCLUSIVEADDRUSE enforces exclusive binding on
+    # Windows; SO_REUSEADDR is the correct probe option on Unix (handles TIME_WAIT).
+    _excl = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
     result = []
     port = start
     while len(result) < count and port <= 65535:
         if port not in used:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    s.bind(("", port))
+                    if _excl is not None:
+                        s.setsockopt(socket.SOL_SOCKET, _excl, 1)
+                    else:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind(("0.0.0.0", port))
                     result.append(port)
             except OSError:
                 pass
