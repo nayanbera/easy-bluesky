@@ -136,6 +136,7 @@ class ExperimentHistoryWidget(QWidget):
         events: list = []
         start_doc: dict = {}
         n_lines = 0
+        doc_counts: dict = {}
         try:
             with open(filepath) as f:
                 for line in f:
@@ -147,6 +148,7 @@ class ExperimentHistoryWidget(QWidget):
                         name, doc = json.loads(line)
                     except Exception:
                         continue  # skip malformed lines; don't abort the whole file
+                    doc_counts[name] = doc_counts.get(name, 0) + 1
                     if name == "start":
                         start_doc = doc
                     elif name == "event":
@@ -169,11 +171,12 @@ class ExperimentHistoryWidget(QWidget):
         if not events:
             plan_name = start_doc.get("plan_name", "")
             hint = f"{plan_name} — " if plan_name else ""
+            counts_str = ", ".join(f"{k}×{v}" for k, v in sorted(doc_counts.items()))
             return None, (
-                f"{hint}no event data in file ({n_lines} lines)\n"
+                f"{hint}no event data ({counts_str})\n"
                 f"{Path(filepath).name}\n"
-                f"Data is written via ZMQ stream — confirm ZMQ PUB is running\n"
-                f"(RE console should show: ZMQ PUB → tcp://*:60632)"
+                f"Events may fail to serialize — check RE console for "
+                f"'ZMQ publish error' messages after running a scan."
             )
 
         try:

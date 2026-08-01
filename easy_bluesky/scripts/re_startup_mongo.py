@@ -362,11 +362,26 @@ try:
     _zmq_sock.setsockopt(_zmq.SNDHWM, 100)
     _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
 
+    import numpy as _np
+
+    class _NumpyEncoder(_json.JSONEncoder):
+        """JSON encoder that converts numpy scalars/arrays to native Python types."""
+        def default(self, obj):
+            if isinstance(obj, _np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, _np.generic):
+                return obj.item()
+            if isinstance(obj, bytes):
+                return obj.decode("utf-8", errors="replace")
+            return super().default(obj)
+
     def _zmq_publish(name, doc):
         try:
-            _zmq_sock.send_string(_json.dumps([name, dict(_sanitize(doc))]))
-        except Exception:
-            pass
+            _zmq_sock.send_string(
+                _json.dumps([name, dict(_sanitize(doc))], cls=_NumpyEncoder)
+            )
+        except Exception as _ze:
+            print(f"[re_startup_mongo] ZMQ publish error ({name}): {_ze}")
 
     RE.subscribe(_zmq_publish)
     print(f"[re_startup_mongo] ZMQ PUB → tcp://*:{_ZMQ_PUB_PORT}")
