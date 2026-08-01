@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
     QMainWindow, QLineEdit, QFormLayout, QGroupBox, QMenu, QFrame,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QThread
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer
 from PyQt6.QtGui import QColor, QFont
 
 from .config import (
@@ -302,8 +302,10 @@ class ExperimentsTab(QWidget):
         self.queue_compact = QListWidget()
         self.queue_compact.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.queue_compact.setToolTip("Double-click to edit plan; Ctrl/Shift-click to select multiple")
+        self.queue_compact.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.queue_compact.setToolTip("Double-click to edit plan; Ctrl/Shift-click to select multiple; drag to reorder")
         self.queue_compact.itemDoubleClicked.connect(self._on_queue_item_clicked)
+        self.queue_compact.model().rowsMoved.connect(self._on_compact_queue_reorder)
         vlay.addWidget(self.queue_compact, 1)
 
         q_btns = QHBoxLayout()
@@ -456,6 +458,17 @@ class ExperimentsTab(QWidget):
             item = self._inject_metadata(dlg.result_item)
             ok, msg = self.worker.add_item(item)
             self._log(f"{'✓' if ok else '✗'} Add plan: {msg}")
+
+    def _on_compact_queue_reorder(self, parent, start, end, dest, row):
+        QTimer.singleShot(100, self._sync_compact_queue_order)
+
+    def _sync_compact_queue_order(self):
+        if not self.worker:
+            return
+        for i in range(self.queue_compact.count()):
+            uid = self.queue_compact.item(i).data(Qt.ItemDataRole.UserRole)
+            if uid:
+                self.worker.move_item(uid, i)
 
     def _remove_plan(self):
         if not self.worker:
