@@ -507,7 +507,7 @@ class ZMQWorker(QObject):
         self._pv_names_reader = None  # strong ref to _PVNamesReader
 
     @pyqtSlot(str, str)
-    def connect(self, zmq_control=None, zmq_info=None):
+    def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
         self._is_connecting = True
         try:
             ctrl_addr = zmq_control or ZMQ_CONTROL
@@ -551,7 +551,7 @@ class ZMQWorker(QObject):
             info_addr = zmq_info or ZMQ_INFO
             msg = self._console_mon.start(info_addr)
             self.console_updated.emit(f"[EasyBluesky] {msg}\n")
-            self._doc_writer.start(ZMQ_DOC_ADDR)
+            self._doc_writer.start(zmq_doc or ZMQ_DOC_ADDR)
             return True
         except Exception as e:
             self.rm = None

@@ -1390,8 +1390,10 @@ class MainWindow(QMainWindow):
 
     def _auto_reconnect(self):
         self._log(f"[{self._ts()}] Auto-reconnecting…")
-        ok = self.worker.connect()
+        ctrl, info, doc = make_zmq_addrs(self._conn_settings)
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info, zmq_doc=doc)
         if ok:
+            self.experiments_tab.live_viewer.restart_zmq(doc)
             self._log(f"[{self._ts()}] ✓ Connected")
         else:
             self.re_bar.set_disconnected()
@@ -1400,7 +1402,7 @@ class MainWindow(QMainWindow):
     def _auto_reconnect_mode(self):
         ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self._log(f"[{self._ts()}] Auto-reconnecting to {ctrl}…")
-        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info, zmq_doc=doc)
         if ok:
             self._log(f"[{self._ts()}] ✓ Connected")
             self.experiments_tab.live_viewer.restart_zmq(doc)
@@ -1410,9 +1412,10 @@ class MainWindow(QMainWindow):
 
     def _on_reconnect_requested(self):
         self._log(f"[{self._ts()}] Reconnecting to RE Manager…")
-        ctrl, info, _ = make_zmq_addrs(self._conn_settings)
-        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        ctrl, info, doc = make_zmq_addrs(self._conn_settings)
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info, zmq_doc=doc)
         if ok:
+            self.experiments_tab.live_viewer.restart_zmq(doc)
             self._log(f"[{self._ts()}] ✓ Reconnected")
         else:
             self.re_bar.set_disconnected()
@@ -1436,7 +1439,7 @@ class MainWindow(QMainWindow):
         save_connection(self._conn_settings)
         ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self._log(f"[{self._ts()}] Switching to profile '{name}' → {ctrl}")
-        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info, zmq_doc=doc)
         if ok:
             self._log(f"[{self._ts()}] ✓ Connected to profile '{name}'")
         else:
@@ -1716,7 +1719,7 @@ class MainWindow(QMainWindow):
         apply_epics_env(self._conn_settings)
         ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage(f"Reconnecting to {self._conn_settings['host']}…")
-        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info, zmq_doc=doc)
         if ok:
             self._log(f"[{self._ts()}] ✓ Connected to {self._conn_settings['host']}")
         else:
