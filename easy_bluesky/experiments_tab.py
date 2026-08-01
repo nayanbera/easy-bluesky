@@ -1,17 +1,9 @@
-"""experiments_tab.py — Experiments tab: experiment manager, queue, live/history plots."""
+"""experiments_tab.py — Experiments tab: experiment manager, queue, live plot, plan log."""
 
 import json
 import re
 from datetime import datetime
 from pathlib import Path
-
-import numpy as np
-
-try:
-    import pyqtgraph as pg
-    PG_AVAILABLE = True
-except ImportError:
-    PG_AVAILABLE = False
 
 try:
     import h5py
@@ -23,19 +15,18 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
-    QMainWindow, QLineEdit, QFormLayout, QGroupBox, QMenu,
+    QMainWindow, QLineEdit, QFormLayout, QGroupBox, QMenu, QFrame,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QThread
 from PyQt6.QtGui import QColor, QFont
 
 from .config import (
     SUCCESS, DANGER, ACCENT,
-    EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS, DATA_RUNS_DIR,
+    EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS,
 )
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
 from .queue_manager import RunDetailDialog
-from .plot_tools import setup_crosshair
 
 # Plans that never produce detector data — shown in neutral color in logs
 _MOTION_PLANS = frozenset({
@@ -49,307 +40,99 @@ def _is_motion_only(name: str, kwargs: dict) -> bool:
     return name.lower() in _MOTION_PLANS
 
 
-# ── Embedded single-run history plot ──────────────────────────────────────────
+# ── MongoDB-based HDF5 exporter (whole experiment) ────────────────────────────
 
-class ExperimentHistoryWidget(QWidget):
-    """Plots one or more runs' data loaded directly from JSONL files."""
+class _MongoHDF5Exporter(QThread):
+    """Export all runs for an experiment from MongoDB to one HDF5 file."""
+    progress = pyqtSignal(int, int)   # (done, total)
+    done     = pyqtSignal(str)
+    error    = pyqtSignal(str)
 
-    COLORS = PLOT_COLORS
-    move_requested = pyqtSignal(str, float)   # (motor_name, position)
-
-    def __init__(self, parent=None):
+    def __init__(self, host, port, db_name, exp_dir, entries, path, parent=None):
         super().__init__(parent)
-        self._dfs: list = []    # list of (pd.DataFrame, label_str)
-        self._curves: dict = {}
-        self._crosshair_cleanup = None
-        self._build()
+        self._host    = host
+        self._port    = port
+        self._db      = db_name
+        self._exp_dir = exp_dir
+        self._entries = entries   # list of plans_log.jsonl dicts
+        self._path    = path
 
-    def _build(self):
-        main = QVBoxLayout(self)
-        main.setContentsMargins(8, 8, 8, 8)
-        main.setSpacing(6)
-
-        axis_row = QHBoxLayout()
-        axis_row.addWidget(QLabel("X:"))
-        self.x_combo = QComboBox()
-        self.x_combo.setMinimumWidth(130)
-        axis_row.addWidget(self.x_combo)
-
-        axis_row.addWidget(QLabel("Y:"))
-        self.y_list = QListWidget()
-        self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.y_list.setMaximumHeight(56)
-        self.y_list.setMaximumWidth(220)
-        axis_row.addWidget(self.y_list)
-
-        axis_row.addWidget(QLabel("Norm by:"))
-        self.norm_combo = QComboBox()
-        self.norm_combo.setMinimumWidth(110)
-        self.norm_combo.addItem("None", userData=None)
-        axis_row.addWidget(self.norm_combo)
-
-        btn_plot = QPushButton("Plot")
-        btn_plot.setObjectName("btn_primary")
-        btn_plot.clicked.connect(self._plot)
-        axis_row.addWidget(btn_plot)
-
-        self.run_label = QLabel("← Click a plan in the log to view its data")
-        self.run_label.setObjectName("dim_text")
-        self.run_label.setStyleSheet("font-size: 12px; padding: 0 8px;")
-        axis_row.addWidget(self.run_label)
-        axis_row.addStretch()
-        main.addLayout(axis_row)
-
-        if PG_AVAILABLE:
-            self.plot_widget = pg.PlotWidget(background="#1e1e1e")
-            self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
-            self.plot_widget.addLegend()
-            main.addWidget(self.plot_widget, 1)
-
-            self.plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
-        else:
-            main.addWidget(
-                QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
-
-        # Bottom bar: stats left, cursor coords right
-        bot = QHBoxLayout()
-        bot.setContentsMargins(0, 0, 0, 0)
-        self.stats_label = QLabel("")
-        self.stats_label.setObjectName("dim_text")
-        bot.addWidget(self.stats_label, 1)
-
-        self.coord_label = QLabel("")
-        self.coord_label.setObjectName("dim_text")
-        self.coord_label.setStyleSheet("font-size: 11px; padding: 2px 4px; font-family: Menlo, Monaco, Courier New, monospace;")
-        bot.addWidget(self.coord_label)
-        main.addLayout(bot)
-
-        if PG_AVAILABLE:
-            self._crosshair_cleanup = setup_crosshair(
-                self.plot_widget, self.coord_label, lambda: self._curves
-            )
-
-    # ── Data loading ────────────────────────────────────────────────────────────
-
-    def _parse_jsonl(self, filepath: str):
-        """Parse one JSONL file. Returns (DataFrame, label) or (None, reason)."""
-        events: list = []
-        start_doc: dict = {}
-        n_lines = 0
-        doc_counts: dict = {}
+    def run(self):
         try:
-            with open(filepath) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    n_lines += 1
-                    try:
-                        name, doc = json.loads(line)
-                    except Exception:
-                        continue  # skip malformed lines; don't abort the whole file
-                    doc_counts[name] = doc_counts.get(name, 0) + 1
-                    if name == "start":
-                        start_doc = doc
-                    elif name == "event":
-                        row = {"seq_num": doc.get("seq_num"), "time": doc.get("time")}
-                        row.update(doc.get("data", {}))
-                        events.append(row)
-                    elif name == "event_page":
-                        times    = doc.get("time", [])
-                        seqs     = doc.get("seq_num", [])
-                        data_col = doc.get("data", {})
-                        for i in range(len(times)):
-                            row = {"seq_num": seqs[i] if i < len(seqs) else None,
-                                   "time":    times[i]}
-                            row.update({k: v[i] for k, v in data_col.items()
-                                        if i < len(v)})
-                            events.append(row)
-        except Exception as e:
-            return None, f"Error reading file: {e}"
-
-        if not events:
-            plan_name = start_doc.get("plan_name", "")
-            hint = f"{plan_name} — " if plan_name else ""
-            counts_str = ", ".join(f"{k}×{v}" for k, v in sorted(doc_counts.items()))
-            return None, (
-                f"{hint}no event data ({counts_str})\n"
-                f"{Path(filepath).name}\n"
-                f"Events may fail to serialize — check RE console for "
-                f"'ZMQ publish error' messages after running a scan."
+            import pymongo
+            from .mongo_browser import _fetch_streams
+            client = pymongo.MongoClient(
+                self._host, self._port, serverSelectionTimeoutMS=5000
             )
+            db = client[self._db]
 
-        try:
-            import pandas as pd
-            df = pd.DataFrame(events)
-        except ImportError:
-            return None, "pandas not installed — pip install pandas"
+            with h5py.File(self._path, "w") as hf:
+                meta = hf.create_group("metadata")
+                exp_name = Path(self._exp_dir).name if self._exp_dir else ""
+                if exp_name:
+                    meta.attrs["experiment_name"] = exp_name
+                if self._exp_dir:
+                    meta.attrs["exp_dir"] = self._exp_dir
+                meta.attrs["n_scans"] = len(self._entries)
 
-        plan  = start_doc.get("plan_name", "?")
-        uid8  = start_doc.get("uid", filepath)[:8]
-        label = f"{plan} [{uid8}]  {len(events)} pts"
-        return df, label
+                for i, entry in enumerate(self._entries):
+                    run_uids  = entry.get("run_uids", [])
+                    uid       = run_uids[0] if run_uids else ""
+                    scan_num  = entry.get("scan_num", i + 1)
+                    name      = entry.get("name", "?")
+                    kwargs    = entry.get("kwargs", {}) or {}
+                    md        = kwargs.get("md", {}) or {}
+                    grp_name  = f"scan_{scan_num:04d}"
 
-    def load_jsonl_file(self, filepath: str):
-        """Load a single JSONL file and plot it."""
-        df, label = self._parse_jsonl(filepath)
-        if df is None:
-            self.run_label.setText(label)
-            return
-        self._dfs = [(df, label)]
-        self._setup_axes([df])
-        self.run_label.setText(label)
+                    grp = hf.create_group(grp_name)
+                    grp.attrs["plan_name"]   = name
+                    grp.attrs["scan_num"]    = int(scan_num)
+                    grp.attrs["exit_status"] = entry.get("exit_status", "")
+                    grp.attrs["timestamp"]   = entry.get("timestamp", "")
+                    if entry.get("duration_s") is not None:
+                        grp.attrs["duration_s"] = float(entry["duration_s"])
+                    for attr in ("sample_name", "sample_description", "exp_dir"):
+                        v = md.get(attr, "")
+                        if v:
+                            grp.attrs[attr] = str(v)
+                    if uid:
+                        grp.attrs["uid"] = uid
 
-    def load_jsonl_files(self, filepaths: list):
-        """Load multiple JSONL files and overlay them."""
-        self._dfs = []
-        first_fail_reason = ""
-        for fp in filepaths[:8]:
-            df, label = self._parse_jsonl(str(fp))
-            if df is not None:
-                self._dfs.append((df, label))
-            elif not first_fail_reason:
-                first_fail_reason = label
+                    if uid:
+                        streams = _fetch_streams(db, uid)
+                        primary = streams.get("primary", {})
+                        n_events = 0
+                        for field, arr in primary.items():
+                            if field == "data_keys":
+                                continue
+                            try:
+                                grp.create_dataset(
+                                    field, data=arr.astype(float), compression="gzip"
+                                )
+                                if field == "time":
+                                    n_events = len(arr)
+                            except Exception:
+                                pass
+                        if n_events:
+                            grp.attrs["n_events"] = n_events
 
-        if not self._dfs:
-            self.run_label.setText(first_fail_reason or "No data found in selected runs")
-            return
-        self._setup_axes([df for df, _ in self._dfs])
-        if len(self._dfs) > 1:
-            self.run_label.setText(f"{len(self._dfs)} runs overlaid")
+                    self.progress.emit(i + 1, len(self._entries))
 
-    def _setup_axes(self, dfs: list):
-        """Populate X/Y combos with columns common to all DataFrames."""
-        if not dfs:
-            return
+            client.close()
+            self.done.emit(self._path)
+        except Exception as exc:
+            self.error.emit(str(exc))
 
-        # Numeric columns in each DataFrame
-        def numeric_cols(df):
-            return [c for c in df.columns if df[c].dtype.kind in ("f", "i", "u")]
 
-        # Intersection: only columns present in ALL DataFrames
-        col_sets = [set(numeric_cols(df)) for df in dfs]
-        common   = col_sets[0].intersection(*col_sets[1:]) if len(col_sets) > 1 else col_sets[0]
-        # Preserve order from the first DataFrame
-        cols = [c for c in numeric_cols(dfs[0]) if c in common]
+# ── Placeholder class (kept to avoid AttributeError on legacy code paths) ─────
 
-        self.x_combo.clear()
-        self.x_combo.addItems(cols)
-        self.y_list.clear()
-        for c in cols:
-            self.y_list.addItem(QListWidgetItem(c))
+class _HistoryWidgetStub:
+    """Minimal stub so any remaining references to history_widget don't crash."""
+    def load_jsonl_file(self, *a):  pass
+    def load_jsonl_files(self, *a): pass
+    run_label = type("_L", (), {"setText": lambda *a: None})()
 
-        prev_norm = self.norm_combo.currentData()
-        self.norm_combo.blockSignals(True)
-        self.norm_combo.clear()
-        self.norm_combo.addItem("None", userData=None)
-        for c in cols:
-            self.norm_combo.addItem(c, userData=c)
-        for i in range(self.norm_combo.count()):
-            if self.norm_combo.itemData(i) == prev_norm:
-                self.norm_combo.setCurrentIndex(i)
-                break
-        self.norm_combo.blockSignals(False)
 
-        motor_cols = [c for c in cols
-                      if any(w in c.lower() for w in ("motor", "pos", "stage", "enc"))]
-        det_cols   = [c for c in cols
-                      if c not in motor_cols and c not in ("seq_num", "time")]
-        x_default  = motor_cols[0] if motor_cols else (cols[0] if cols else "")
-        if x_default:
-            self.x_combo.setCurrentText(x_default)
-        for i in range(self.y_list.count()):
-            sig = self.y_list.item(i).text()
-            self.y_list.item(i).setSelected(
-                sig in det_cols or (not det_cols and sig != x_default))
-        self._plot()
-
-    def _plot(self):
-        if not self._dfs or not PG_AVAILABLE:
-            return
-        # Remove existing curves without clearing the whole widget (which would
-        # destroy the crosshair InfiniteLines added by setup_crosshair).
-        for curve in self._curves.values():
-            try:
-                self.plot_widget.removeItem(curve)
-            except Exception:
-                pass
-        pi = self.plot_widget.getPlotItem()
-        if pi.legend:
-            pi.legend.clear()
-        self._curves = {}
-        xc  = self.x_combo.currentText()
-        ycs = [self.y_list.item(i).text()
-               for i in range(self.y_list.count())
-               if self.y_list.item(i).isSelected()]
-        if not xc or not ycs:
-            return
-
-        norm_col = self.norm_combo.currentData()
-
-        color_idx = 0
-        stats = []
-        for df, df_label in self._dfs:
-            if xc not in df.columns:
-                continue
-            x = df[xc].values.astype(float)
-            norm_vals = df[norm_col].values.astype(float) if norm_col and norm_col in df.columns else None
-            for yc in ycs:
-                if yc not in df.columns:
-                    continue
-                y = df[yc].values.astype(float)
-                if norm_vals is not None:
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        y = np.where(norm_vals != 0, y / norm_vals, np.nan)
-                mask = np.isfinite(x) & np.isfinite(y)
-                x_, y_ = x[mask], y[mask]
-                if not len(x_):
-                    continue
-                color = self.COLORS[color_idx % len(self.COLORS)]
-                pen   = pg.mkPen(color=color, width=2)
-                label = yc if not norm_col else f"{yc}/{norm_col}"
-                curve_name = label if len(self._dfs) == 1 else f"{label}  [{df_label[:20]}]"
-                curve = self.plot_widget.plot(x_, y_, pen=pen, name=curve_name,
-                                              symbol="o", symbolSize=5,
-                                              symbolBrush=color, symbolPen=None)
-                self._curves[curve_name] = curve
-                color_idx += 1
-                stats.append(f"{curve_name}: min={y_.min():.4g}  max={y_.max():.4g}")
-
-        self.plot_widget.setLabel("bottom", xc)
-        y_label = ", ".join(ycs)
-        if norm_col:
-            y_label += f"  /  {norm_col}"
-        self.plot_widget.setLabel("left", y_label)
-        self.stats_label.setText("   ".join(stats))
-
-    # ── Double-click: move motor ───────────────────────────────────────────────
-
-    def _on_plot_clicked(self, event):
-        if not event.double():
-            return
-        pos = event.scenePos()
-        if not self.plot_widget.sceneBoundingRect().contains(pos):
-            return
-
-        vb = self.plot_widget.getPlotItem().vb
-        mp = vb.mapSceneToView(pos)
-        x_val   = mp.x()
-        x_label = self.x_combo.currentText() or ""
-
-        motor_guess = x_label
-        for suffix in ("_readback", "_setpoint", "_user_readback", "_user_setpoint"):
-            if motor_guess.endswith(suffix):
-                motor_guess = motor_guess[: -len(suffix)]
-                break
-
-        r = QMessageBox.question(
-            self, "Move Motor",
-            f"Move  '{motor_guess}'  to  {x_val:.5g} ?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if r == QMessageBox.StandardButton.Yes:
-            self.move_requested.emit(motor_guess, x_val)
 
 
 # ── Main experiments tab ───────────────────────────────────────────────────────
@@ -358,10 +141,11 @@ class ExperimentsTab(QWidget):
     """Three-panel layout:
       Left  — experiment info, sample fields, plan log
       Middle — compact queue + console
-      Right  — Live / History plot tabs (detachable)
+      Right  — Live plot tab (detachable)
     """
 
     experiment_changed = pyqtSignal(str)   # emits runs_dir path
+    scan_completed     = pyqtSignal()      # emits when a new scan is logged
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -378,6 +162,9 @@ class ExperimentsTab(QWidget):
         self._plot_placeholder = None
         self._sample_name: str = ""
         self._sample_description: str = ""
+        self._settings: dict   = {}         # connection settings for MongoDB export
+        self._hdf5_exporter    = None
+        self.history_widget    = _HistoryWidgetStub()
         self._build()
         self._load_active_experiment()
 
@@ -552,12 +339,9 @@ class ExperimentsTab(QWidget):
         self._plot_container_lay.setContentsMargins(0, 0, 0, 0)
         self._plot_container_lay.setSpacing(0)
 
-        self.plot_tabs = QTabWidget()
-        self.live_viewer    = LiveViewer(worker=self.worker)
-        self.history_widget = ExperimentHistoryWidget()
-        self.history_widget.move_requested.connect(self._on_move_requested)
-        self.plot_tabs.addTab(self.live_viewer,    "📡  Live")
-        self.plot_tabs.addTab(self.history_widget, "📂  History")
+        self.plot_tabs   = QTabWidget()
+        self.live_viewer = LiveViewer(worker=self.worker)
+        self.plot_tabs.addTab(self.live_viewer, "📡  Live")
 
         self._detach_btn = QPushButton("⊔  Detach")
         self._detach_btn.setFixedHeight(22)
@@ -620,19 +404,10 @@ class ExperimentsTab(QWidget):
         self._detached_win = None
         self._detach_btn.setText("⊔  Detach")
 
-    # ── Motor move (from history plot double-click) ────────────────────────────
+    # ── Settings (for MongoDB-backed HDF5 export) ─────────────────────────────
 
-    def _on_move_requested(self, motor: str, position: float):
-        if not self.worker:
-            return
-        item = {
-            "name":      "mv",
-            "args":      [motor, position],
-            "kwargs":    {},
-            "item_type": "plan",
-        }
-        ok, msg = self.worker.execute_item(item)
-        self._log(f"{'✓' if ok else '✗'} Move {motor} → {position:.5g}: {msg}")
+    def update_settings(self, settings: dict):
+        self._settings = settings
 
     # ── Queue operations ───────────────────────────────────────────────────────
 
@@ -888,7 +663,7 @@ class ExperimentsTab(QWidget):
         entries.sort(key=lambda x: x[0], reverse=True)
         return [(path, info) for _, path, info in entries[:limit]]
 
-    # ── HDF5 export / import ───────────────────────────────────────────────────
+    # ── HDF5 export ────────────────────────────────────────────────────────────
 
     def _export_hdf5(self):
         if not H5PY_AVAILABLE:
@@ -900,6 +675,46 @@ class ExperimentsTab(QWidget):
                                 "Open or create an experiment first.")
             return
 
+        from .connection_settings import get_active_profile
+        profile = get_active_profile(self._settings)
+        db      = profile.get("mongo_db", "").strip()
+        if not db:
+            QMessageBox.warning(
+                self, "No MongoDB",
+                "MongoDB is not configured for the active profile.\n"
+                "Add a Database name in File → Connection Settings,\n"
+                "or use Export HDF5 in the MongoDB Browser tab."
+            )
+            return
+        host = profile.get("mongo_host", "") or "localhost"
+        port = int(profile.get("mongo_port", 27017))
+
+        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
+        if not log_file.exists():
+            QMessageBox.warning(self, "No Data",
+                                "No plan log found for this experiment.")
+            return
+
+        entries: list = []
+        try:
+            with open(log_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(json.loads(line))
+                        except Exception:
+                            pass
+        except Exception as e:
+            QMessageBox.critical(self, "Read Error", str(e))
+            return
+
+        next_n = 1
+        for e in entries:
+            if e.get("scan_num") is None:
+                e["scan_num"] = next_n
+            next_n = max(next_n, e.get("scan_num", 0)) + 1
+
         exp_name     = self.exp_name_label.text()
         default_path = str(Path(self._active_exp_path) / f"{exp_name}.h5")
         path, _      = QFileDialog.getSaveFileName(
@@ -909,101 +724,32 @@ class ExperimentsTab(QWidget):
         if not path:
             return
 
-        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
-        if not log_file.exists():
-            QMessageBox.warning(self, "No Data",
-                                "No plan log found for this experiment.")
+        if self._hdf5_exporter and self._hdf5_exporter.isRunning():
+            QMessageBox.warning(self, "Busy", "An export is already in progress.")
             return
 
-        try:
-            entries: list = []
-            with open(log_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            entries.append(json.loads(line))
-                        except Exception:
-                            pass
+        self._btn_export_h5.setEnabled(False)
+        self._log(f"Exporting {len(entries)} scans to HDF5…")
+        self._hdf5_exporter = _MongoHDF5Exporter(
+            host, port, db, self._active_exp_path, entries, path, parent=self
+        )
+        self._hdf5_exporter.progress.connect(
+            lambda done, total: self._log(f"  Exporting… {done}/{total}")
+        )
+        self._hdf5_exporter.done.connect(self._on_hdf5_done)
+        self._hdf5_exporter.error.connect(self._on_hdf5_error)
+        self._hdf5_exporter.start()
 
-            # Back-fill scan numbers for old entries without the field
-            next_n = 1
-            for e in entries:
-                if e.get("scan_num") is None:
-                    e["scan_num"] = next_n
-                next_n = max(next_n, e.get("scan_num", 0)) + 1
+    def _on_hdf5_done(self, path: str):
+        self._btn_export_h5.setEnabled(True)
+        n = len(self.plan_log_list)
+        self._log(f"✓ Exported → {Path(path).name}")
+        QMessageBox.information(self, "Export Complete", f"Saved to:\n{path}")
 
-            with h5py.File(path, "w") as hf:
-                # ── Experiment-level metadata ──────────────────────────────
-                meta = hf.create_group("metadata")
-                meta.attrs["experiment_name"] = exp_name
-                meta.attrs["exp_dir"]         = self._active_exp_path
-                meta.attrs["n_scans"]         = len(entries)
-                if self._sample_name:
-                    meta.attrs["sample_name"] = self._sample_name
-                if self._sample_description:
-                    meta.attrs["sample_description"] = self._sample_description
-
-                # ── One group per plan ─────────────────────────────────────
-                for entry in entries:
-                    scan_num   = entry.get("scan_num", 0)
-                    name       = entry.get("name", "?")
-                    args       = entry.get("args", []) or []
-                    kwargs     = entry.get("kwargs", {}) or {}
-                    md         = kwargs.get("md", {}) or {}
-                    group_name = f"scan_{scan_num:04d}"
-
-                    grp = hf.create_group(group_name)
-                    grp.attrs["plan_name"]   = name
-                    grp.attrs["scan_num"]    = scan_num
-                    grp.attrs["timestamp"]   = entry.get("timestamp", "")
-                    grp.attrs["exit_status"] = entry.get("exit_status", "")
-                    if entry.get("duration_s") is not None:
-                        grp.attrs["duration_s"] = float(entry["duration_s"])
-                    for attr in ("sample_name", "sample_description", "exp_dir"):
-                        val = md.get(attr, "")
-                        if val:
-                            grp.attrs[attr] = val
-
-                    motor = kwargs.get("motor") or (
-                        args[0] if name.lower() in _MOTION_PLANS and args else "")
-                    if motor:
-                        grp.attrs["motor"] = str(motor)
-                    dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
-                    if isinstance(dets, str):
-                        dets = [dets]
-                    if dets:
-                        grp.attrs["detectors"] = ",".join(str(d) for d in dets)
-
-                    # ── Event data ─────────────────────────────────────────
-                    run_file = entry.get("run_file", "")
-                    if not run_file:
-                        found = self._find_run_file_for_entry(entry)
-                        run_file = str(found) if found else ""
-
-                    if run_file and Path(run_file).exists():
-                        df, _ = self.history_widget._parse_jsonl(run_file)
-                        if df is not None:
-                            for col in df.columns:
-                                try:
-                                    arr = df[col].to_numpy(dtype=float,
-                                                           na_value=float("nan"))
-                                    grp.create_dataset(col, data=arr,
-                                                       compression="gzip")
-                                except Exception:
-                                    pass
-                            grp.attrs["n_events"] = len(df)
-
-            n_scans = len(entries)
-            self._log(f"✓ Exported {n_scans} scans → {Path(path).name}")
-            QMessageBox.information(
-                self, "Export Complete",
-                f"Exported {n_scans} plans to:\n{path}"
-            )
-
-        except Exception as e:
-            self._log(f"✗ HDF5 export failed: {e}")
-            QMessageBox.critical(self, "Export Failed", str(e))
+    def _on_hdf5_error(self, msg: str):
+        self._btn_export_h5.setEnabled(True)
+        self._log(f"✗ HDF5 export failed: {msg}")
+        QMessageBox.critical(self, "Export Failed", msg)
 
     def _write_active_experiment(self, info: dict):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
@@ -1127,81 +873,18 @@ class ExperimentsTab(QWidget):
 
         return "  " + "  |  ".join(parts) if parts else ""
 
-    def _search_dirs(self) -> list:
-        dirs = []
-        if self._active_exp_path:
-            dirs.append(Path(self._active_exp_path) / "runs")
-        exps = Path(EXPERIMENTS_DIR)
-        if exps.exists():
-            for d in sorted(exps.iterdir(), reverse=True):
-                rd = d / "runs"
-                if rd.is_dir() and rd not in dirs:
-                    dirs.append(rd)
-        dirs.append(Path(DATA_RUNS_DIR))
-        return dirs
-
-    @staticmethod
-    def _run_file_exists(runs_dir: Path, run_uids: list) -> bool:
-        return any((runs_dir / f"{r}.jsonl").exists() for r in run_uids)
-
-    def _find_run_file_for_entry(self, entry: dict) -> "Path | None":
-        stored = entry.get("run_file", "")
-        if stored and Path(stored).exists():
-            return Path(stored)
-
-        run_uids = entry.get("run_uids", [])
-        for ruid in run_uids:
-            for d in self._search_dirs():
-                f = d / f"{ruid}.jsonl"
-                if f.exists():
-                    return f
-
-        plan_name = entry.get("name", "")
-        ts_str    = entry.get("timestamp", "")
-        if not ts_str:
-            return None
-        try:
-            entry_ts = datetime.fromisoformat(ts_str).timestamp()
-        except Exception:
-            return None
-
-        for search_dir in self._search_dirs():
-            if not search_dir.exists():
-                continue
-            candidates = sorted(
-                search_dir.glob("*.jsonl"),
-                key=lambda p: p.stat().st_mtime, reverse=True,
-            )[:60]
-            for fpath in candidates:
-                try:
-                    mtime = fpath.stat().st_mtime
-                    if abs(mtime - entry_ts) > 180:
-                        continue
-                    with open(fpath) as f:
-                        first_line = f.readline()
-                    _, doc = json.loads(first_line)
-                    if doc.get("plan_name") == plan_name:
-                        return fpath
-                except Exception:
-                    pass
-        return None
-
-    def _entry_belongs_here(self, entry: dict, runs_dir: Path) -> bool:
-        stored = entry.get("run_file", "")
-        if stored and Path(stored).exists():
-            return True
-        run_uids = entry.get("run_uids", [])
-        if run_uids:
-            for d in self._search_dirs():
-                if self._run_file_exists(d, run_uids):
-                    return True
-            return False
+    def _entry_belongs_here(self, entry: dict) -> bool:
+        """True when this entry's timestamp falls within the experiment's lifetime."""
         ts_str = entry.get("timestamp", "")
         try:
             ts = datetime.fromisoformat(ts_str).timestamp()
-            return ts >= self._exp_created_at
+            if self._exp_created_at and ts < self._exp_created_at:
+                return False
+            if self._exp_end_time and ts >= self._exp_end_time:
+                return False
+            return True
         except Exception:
-            return False
+            return True
 
     def _filter_plan_log(self, text: str):
         q = text.strip().lower()
@@ -1210,10 +893,11 @@ class ExperimentsTab(QWidget):
             item.setHidden(bool(q and q not in item.text().lower()))
 
     def _load_plan_log(self, exp_path: str, auto_select_newest: bool = False):
-        runs_dir = Path(exp_path) / "runs"
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
         self._logged_uids = set()
+
+        # Collect UIDs from all experiments so we don't double-log after switching.
         exps_dir = Path(EXPERIMENTS_DIR)
         if exps_dir.exists():
             for d in exps_dir.iterdir():
@@ -1245,7 +929,7 @@ class ExperimentsTab(QWidget):
                         uid   = entry.get("uid", "")
                         if uid:
                             self._logged_uids.add(uid)
-                        if not self._entry_belongs_here(entry, runs_dir):
+                        if not self._entry_belongs_here(entry):
                             continue
                         entries.append(entry)
                     except Exception:
@@ -1336,7 +1020,7 @@ class ExperimentsTab(QWidget):
                 if t_stop else datetime.now().isoformat()
             )
             dur = (t_stop - t_start) if (t_stop and t_start) else None
-            tmp_entry = {
+            entry = {
                 "timestamp":   timestamp,
                 "uid":         uid,
                 "run_uids":    run_uids,
@@ -1345,11 +1029,8 @@ class ExperimentsTab(QWidget):
                 "kwargs":      item.get("kwargs", {}) or {},
                 "exit_status": exit_status,
                 "duration_s":  round(dur, 2) if dur else None,
-                "run_file":    "",
                 "scan_num":    self._next_scan_num,
             }
-            found = self._find_run_file_for_entry(tmp_entry)
-            entry = {**tmp_entry, "run_file": str(found) if found else ""}
             try:
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
@@ -1370,6 +1051,7 @@ class ExperimentsTab(QWidget):
 
         if changed:
             self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+            self.scan_completed.emit()
 
     def update_compact_queue(self, items: list):
         self.queue_compact.clear()
@@ -1389,50 +1071,20 @@ class ExperimentsTab(QWidget):
     # ── Internal slots ─────────────────────────────────────────────────────────
 
     def _on_plan_log_selection_changed(self):
-        """Called whenever selection changes in the plan log list."""
+        """Show run UID(s) for the selected plan log entry.
+
+        Data browsing is done in the MongoDB Browser tab.
+        """
         selected = self.plan_log_list.selectedItems()
         if not selected:
             return
-
-        entries = []
-        for li in selected:
-            entry = li.data(Qt.ItemDataRole.UserRole)
-            if entry:
-                entries.append(entry)
-
-        # Skip motion-only plans (nothing to plot)
-        plottable = [e for e in entries
-                     if not _is_motion_only(e.get("name", ""), e.get("kwargs", {}) or {})]
-        if not plottable:
+        entries = [li.data(Qt.ItemDataRole.UserRole) for li in selected if li.data(Qt.ItemDataRole.UserRole)]
+        if not entries:
             return
-
-        self.plot_tabs.setCurrentIndex(1)  # switch to History tab before any message
-
-        paths = [self._find_run_file_for_entry(e) for e in plottable]
-        paths = [p for p in paths if p]
-        if not paths:
-            run_uids = [u for e in plottable for u in (e.get("run_uids") or [])]
-            search_dirs = self._search_dirs()
-            runs_dir = str(search_dirs[0]) if search_dirs else "unknown"
-            import glob as _glob
-            n_files = len(_glob.glob(f"{runs_dir}/*.jsonl")) if search_dirs and search_dirs[0].exists() else 0
-            if run_uids:
-                uid_hint = run_uids[0][:8]
-                msg = (f"No local data file for run {uid_hint}…  "
-                       f"({n_files} JSONL files in runs dir)\n"
-                       f"Searched: {runs_dir}\n"
-                       f"Data is captured via ZMQ stream from the RE Manager — "
-                       f"confirm Doc Port in Connection Settings and restart RE Manager.")
-            else:
-                msg = ("No run UIDs recorded for this plan — "
-                       "it may have completed without producing a bluesky run.")
-            self.history_widget.run_label.setText(msg)
-            return
-
-        if len(paths) == 1:
-            self.history_widget.load_jsonl_file(str(paths[0]))
-        else:
-            self.history_widget.load_jsonl_files(paths)
+        all_uids = [uid for e in entries for uid in (e.get("run_uids") or [])]
+        if all_uids:
+            uid_str = "  ".join(u[:8] + "…" for u in all_uids[:4])
+            self._log(f"Selected run(s): {uid_str}  — view data in the MongoDB Browser tab")
 
     def _on_plan_log_double_clicked(self, li: QListWidgetItem):
         """Double-click: open PlanDialog pre-populated so the user can edit & re-queue."""

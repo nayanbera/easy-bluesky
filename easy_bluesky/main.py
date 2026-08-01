@@ -1001,6 +1001,7 @@ class MainWindow(QMainWindow):
         self.watchdog_tab       = PVWatchdogTab()
         self.mongo_browser      = MongoDataBrowserTab(self._conn_settings)
         self.hdf5_viewer        = HDF5Viewer()
+        self.experiments_tab.update_settings(self._conn_settings)
         self.re_console         = REConsoleWidget()
 
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
@@ -1178,6 +1179,7 @@ class MainWindow(QMainWindow):
         self.re_bar.profile_changed.connect(self._on_profile_changed)
 
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
+        self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
 
         self._connect_requested.connect(self.worker.connect)
 
@@ -1450,6 +1452,7 @@ class MainWindow(QMainWindow):
             self.re_bar.set_disconnected()
         self.experiments_tab.live_viewer.restart_zmq(doc)
         self.mongo_browser.update_settings(self._conn_settings)
+        self.experiments_tab.update_settings(self._conn_settings)
 
     def _on_open_hdf5(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -1731,10 +1734,13 @@ class MainWindow(QMainWindow):
         active = self._conn_settings.get("active_profile", "Default")
         self.re_bar.update_profiles(names, active)
         self.mongo_browser.update_settings(self._conn_settings)
+        self.experiments_tab.update_settings(self._conn_settings)
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
         self._refresh_recent_menu()
+        exp_dir = str(Path(runs_dir).parent)
+        self.mongo_browser.set_active_experiment(exp_dir)
 
     def closeEvent(self, event):
         self.worker.stop()

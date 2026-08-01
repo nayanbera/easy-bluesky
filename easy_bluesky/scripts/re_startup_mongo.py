@@ -243,48 +243,6 @@ except ImportError:
 except Exception as _e:
     print(f"[re_startup_mongo] WARNING: BestEffortCallback not subscribed: {_e}")
 
-# ── suitcase.jsonl serializer ──────────────────────────────────────────────────
-_script_dir = Path(__file__).parent
-_default_data_dir = _script_dir.parent / "data" / "runs"
-_DATA_DIR = Path(os.getenv("BLUESKY_DATA_DIR", str(_default_data_dir)))
-_DATA_DIR.mkdir(parents=True, exist_ok=True)
-_ACTIVE_EXP_FILE = _script_dir.parent / "data" / "active_experiment.json"
-
-try:
-    import suitcase.jsonl
-    from event_model import RunRouter
-
-    def _jsonl_factory(name, doc):
-        runs_dir = _DATA_DIR  # fallback
-        try:
-            # Priority 1: exp_dir passed in plan metadata (works for remote RE Manager
-            # because the local app injects it into every plan's md kwargs).
-            exp_dir = doc.get("exp_dir", "")
-            if exp_dir:
-                candidate = Path(exp_dir) / "runs"
-                candidate.mkdir(parents=True, exist_ok=True)
-                runs_dir = candidate
-                print(f"[re_startup_mongo] run → {runs_dir} (from exp_dir md)")
-            # Priority 2: active_experiment.json on this machine (local-mode only).
-            elif _ACTIVE_EXP_FILE.exists():
-                import json as _j
-                info = _j.loads(_ACTIVE_EXP_FILE.read_text())
-                candidate = Path(info["path"]) / "runs"
-                candidate.mkdir(parents=True, exist_ok=True)
-                runs_dir = candidate
-                print(f"[re_startup_mongo] run → {runs_dir}")
-            else:
-                print(f"[re_startup_mongo] no active experiment — run → {runs_dir}")
-        except Exception as e:
-            print(f"[re_startup_mongo] routing error ({e}) — falling back to {runs_dir}")
-        return [suitcase.jsonl.Serializer(str(runs_dir))], []
-
-    RE.subscribe(RunRouter([_jsonl_factory]))
-    print(f"[re_startup_mongo] suitcase.jsonl (RunRouter) ready"
-          f" — fallback dir: {_DATA_DIR}")
-except Exception as e:
-    print(f"[re_startup_mongo] WARNING: suitcase.jsonl not subscribed: {e}")
-
 # ── MongoDB (direct pymongo write — no suitcase dependency) ───────────────────
 # Activated only when EASY_BLUESKY_MONGO_DB is set in the profile's Connection
 # Settings.  Each profile uses its own database so runs from different profiles
