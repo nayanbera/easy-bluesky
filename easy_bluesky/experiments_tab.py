@@ -301,8 +301,8 @@ class ExperimentsTab(QWidget):
 
         self.queue_compact = QListWidget()
         self.queue_compact.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection)
-        self.queue_compact.setToolTip("Double-click to edit plan")
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.queue_compact.setToolTip("Double-click to edit plan; Ctrl/Shift-click to select multiple")
         self.queue_compact.itemDoubleClicked.connect(self._on_queue_item_clicked)
         vlay.addWidget(self.queue_compact, 1)
 
@@ -460,13 +460,20 @@ class ExperimentsTab(QWidget):
     def _remove_plan(self):
         if not self.worker:
             return
-        li = self.queue_compact.currentItem()
-        if not li:
+        selected = self.queue_compact.selectedItems()
+        if not selected:
             return
-        uid = li.data(Qt.ItemDataRole.UserRole)
-        if uid:
-            ok, msg = self.worker.remove_item(uid)
-            self._log(f"{'✓' if ok else '✗'} Remove: {msg}")
+        removed = 0
+        for li in selected:
+            uid = li.data(Qt.ItemDataRole.UserRole)
+            if uid:
+                ok, msg = self.worker.remove_item(uid)
+                if ok:
+                    removed += 1
+                else:
+                    self._log(f"✗ Remove: {msg}")
+        if removed:
+            self._log(f"✓ Removed {removed} plan(s) from queue")
 
     def _clear_queue(self):
         if not self.worker:
