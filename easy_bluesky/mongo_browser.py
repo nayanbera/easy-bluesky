@@ -20,9 +20,9 @@ except ImportError:
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFrame, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem, QMessageBox,
-    QPushButton, QSizePolicy, QSplitter,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
+    QMessageBox, QPushButton, QSizePolicy, QSplitter,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -1022,19 +1022,8 @@ class MongoDataBrowserTab(QWidget):
     def _save_screenshot(self):
         if not PG_AVAILABLE or self._plot_widget is None:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Plot Screenshot", "mongodb_plot.png",
-            "PNG Images (*.png);;All Files (*)"
-        )
-        if not path:
-            return
-        try:
-            import pyqtgraph.exporters as _exp
-            exporter = _exp.ImageExporter(self._plot_widget.plotItem)
-            exporter.export(path)
-            self._set_status(f"✓ Screenshot saved → {Path(path).name}")
-        except Exception as exc:
-            QMessageBox.warning(self, "Screenshot Failed", str(exc))
+        QApplication.clipboard().setPixmap(self._plot_widget.grab())
+        self._set_status("✓ Plot copied to clipboard — paste into any document")
 
     # ── HDF5 export ────────────────────────────────────────────────────────────
 

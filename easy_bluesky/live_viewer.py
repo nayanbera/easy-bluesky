@@ -18,7 +18,7 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox,
-    QFileDialog,
+    QApplication,
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
@@ -413,18 +413,8 @@ class LiveViewer(QWidget):
     def _save_screenshot(self):
         if not PYQTGRAPH_AVAILABLE:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Live Plot Screenshot", "live_plot.png",
-            "PNG Images (*.png);;All Files (*)"
-        )
-        if not path:
-            return
-        try:
-            import pyqtgraph.exporters as _exp
-            exporter = _exp.ImageExporter(self.plot_widget.plotItem)
-            exporter.export(path)
-        except Exception as exc:
-            QMessageBox.warning(self, "Screenshot Failed", str(exc))
+        QApplication.clipboard().setPixmap(self.plot_widget.grab())
+        self.status_bar.setText("Plot copied to clipboard — paste into any document")
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
