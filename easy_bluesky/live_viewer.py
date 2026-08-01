@@ -24,10 +24,6 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
 from .plot_tools import setup_crosshair
 
-try:
-    import pyqtgraph.exporters  # noqa: F401 — ensure exporters are registered
-except ImportError:
-    pass
 
 
 class ZMQDocThread(QThread):
@@ -254,8 +250,44 @@ class LiveViewer(QWidget):
                 self._data.setdefault(k, []).append(float(v))
             except (TypeError, ValueError):
                 pass
+
+        # Descriptor was missed (ZMQ subscriber connected after it was published).
+        # Auto-populate X/Y controls from the event data so plotting still works.
+        if self.y_list.count() == 0 and data:
+            self._auto_setup_from_event(data)
+
         self._update_plot()
         self.status_bar.setText(f"Event #{seq}")
+
+    def _auto_setup_from_event(self, data):
+        """Populate X/Y controls from event data keys when the descriptor was missed."""
+        keys = sorted(data.keys())
+        if not keys:
+            return
+        all_cols = keys + ["time"]
+
+        self.x_combo.blockSignals(True)
+        self.x_combo.clear()
+        self.x_combo.addItems(all_cols)
+        self.x_combo.blockSignals(False)
+
+        self.y_list.blockSignals(True)
+        self.y_list.clear()
+        for k in all_cols:
+            self.y_list.addItem(QListWidgetItem(k))
+        self.y_list.blockSignals(False)
+
+        motor_keys = [k for k in keys
+                      if any(w in k.lower() for w in ("motor", "pos", "stage", "enc"))]
+        x_default  = motor_keys[0] if motor_keys else keys[0]
+        det_keys   = [k for k in keys if k != x_default]
+
+        self.x_combo.setCurrentText(x_default)
+        self._x_signal = x_default
+
+        for i in range(self.y_list.count()):
+            sig = self.y_list.item(i).text()
+            self.y_list.item(i).setSelected(sig in det_keys)
 
     # ── Plot ───────────────────────────────────────────────────────────────────
 
@@ -388,7 +420,8 @@ class LiveViewer(QWidget):
         if not path:
             return
         try:
-            exporter = pg.exporters.ImageExporter(self.plot_widget.plotItem)
+            import pyqtgraph.exporters as _exp
+            exporter = _exp.ImageExporter(self.plot_widget.plotItem)
             exporter.export(path)
         except Exception as exc:
             QMessageBox.warning(self, "Screenshot Failed", str(exc))

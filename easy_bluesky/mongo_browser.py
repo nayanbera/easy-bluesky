@@ -26,10 +26,6 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-try:
-    import pyqtgraph.exporters  # noqa: F401 — ensure exporters are registered
-except ImportError:
-    pass
 
 from .config import PLOT_COLORS
 
@@ -1033,7 +1029,8 @@ class MongoDataBrowserTab(QWidget):
         if not path:
             return
         try:
-            exporter = pg.exporters.ImageExporter(self._plot_widget.plotItem)
+            import pyqtgraph.exporters as _exp
+            exporter = _exp.ImageExporter(self._plot_widget.plotItem)
             exporter.export(path)
             self._set_status(f"✓ Screenshot saved → {Path(path).name}")
         except Exception as exc:
