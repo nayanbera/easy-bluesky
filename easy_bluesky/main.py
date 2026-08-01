@@ -1059,7 +1059,7 @@ class MainWindow(QMainWindow):
         self.devices_plans_tab.set_sim_device_requested.connect(self.worker.set_sim_device)
         self.worker.device_readings_updated.connect(self.devices_plans_tab.update_sim_values)
 
-        self.worker.console_updated.connect(self.re_console.append)
+        self.worker.console_updated.connect(self._on_console_line)
         self.worker.connected.connect(self.re_console.on_connected)
         self.worker.disconnected.connect(self.re_console.on_disconnected)
         self.re_console.diagnose_requested.connect(self._on_console_diagnose)
@@ -1096,9 +1096,14 @@ class MainWindow(QMainWindow):
 
     def _do_connect(self):
         ctrl, info, _ = make_zmq_addrs(self._conn_settings)
-        ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
-        if not ok:
-            self.re_bar.set_disconnected()
+        # Run in a background thread: the TCP pre-check + ZMQ status() call can
+        # block for several seconds (especially on Windows without fast ICMP
+        # unreachable), freezing the UI if called on the main thread.
+        def _run():
+            ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
+            if not ok:
+                QTimer.singleShot(0, self.re_bar.set_disconnected)
+        threading.Thread(target=_run, daemon=True).start()
 
     # ── Worker signal handlers ─────────────────────────────────────────────────
 
@@ -1139,6 +1144,20 @@ class MainWindow(QMainWindow):
         self.conn_label.setText("⬤  Error")
         self.conn_label.setStyleSheet("color: #ff7f0e;")
         self._log(f"[ERROR] {msg}")
+
+    def _on_console_line(self, text: str):
+        """Forward console text to the RE Console widget and inject diagnostic hints."""
+        self.re_console.append(text)
+        # Detect the most common mis-configuration: start-re-manager not on PATH
+        # because conda_env / conda_path are not set in Connection Settings.
+        if "start-re-manager" in text and "not found" in text:
+            self.re_console.append(
+                "[EasyBluesky] ⚠ start-re-manager not found on the remote host.\n"
+                "  → Open File → Connection Settings and set:\n"
+                "      Conda Environment  (e.g. easy-bluesky)\n"
+                "      Conda Path         (e.g. ~/anaconda3 or ~/miniconda3)\n"
+                "  Then click ‘Restart RE Manager’ to try again.\n"
+            )
 
     def _on_plans_updated(self, plans):
         self.queue_mgr.plans = plans

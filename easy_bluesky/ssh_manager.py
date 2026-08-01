@@ -131,12 +131,34 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
         remote_script, log_file, pid_file = _instance_files(profile_name)
 
         # Write launcher script via SFTP — avoids all shell-quoting issues.
-        # It sources .bash_profile for EPICS env vars, exports EASY_BLUESKY_DEVICES_FILE,
-        # then exec's start-re-manager.
+        # It sources .bash_profile for EPICS env vars, optionally activates the
+        # conda env, then exec's start-re-manager.
+        conda_env  = settings.get("conda_env",  "").strip()
+        conda_path = settings.get("conda_path", "~/miniconda3").strip().replace("~", "$HOME")
+        if conda_env:
+            # Belt-and-suspenders: source conda.sh and activate the env even
+            # when the full path is already used.  Helps when conda_path is
+            # slightly wrong but the env name is correct and conda is on PATH.
+            conda_block = (
+                f"__conda_sh={conda_path}/etc/profile.d/conda.sh\n"
+                f"[ -f \"$__conda_sh\" ] && source \"$__conda_sh\" 2>/dev/null\n"
+                f"conda activate {conda_env} 2>/dev/null || true\n"
+            )
+        else:
+            conda_block = ""
         script_body = (
             "#!/bin/bash\n"
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
+            + conda_block +
             f"export EASY_BLUESKY_DEVICES_FILE={devices_file}\n"
+            # Pre-exec sanity check: emit a clear error instead of the cryptic
+            # bash 127 exit before trying to exec.
+            f"if ! command -v \"{exe}\" >/dev/null 2>&1; then\n"
+            f"  echo \"ERROR: {exe} not found.\"\n"
+            f"  echo \"  Set Conda Environment and Conda Path in EasyBluesky"
+            f" Connection Settings.\"\n"
+            f"  exit 1\n"
+            f"fi\n"
             f"exec {exe}"
             f" --zmq-control-addr tcp://*:{ctrl_port}"
             f" --zmq-info-addr tcp://*:{info_port}"
