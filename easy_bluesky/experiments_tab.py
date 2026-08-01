@@ -158,7 +158,6 @@ class ExperimentsTab(QWidget):
         self._exp_created_at: float = 0.0
         self._exp_end_time: float   = 0.0
         self._next_scan_num: int    = 1
-        self._verified_run_uids: set = set()  # run_uids whose scan_num == MongoDB scan_id
         self._detached_win     = None
         self._plot_placeholder = None
         self._sample_name: str = ""
@@ -784,7 +783,6 @@ class ExperimentsTab(QWidget):
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()
-        self._verified_run_uids = set()
         created = info.get("created", "")
         try:
             self._exp_created_at = datetime.fromisoformat(created).timestamp()
@@ -920,8 +918,7 @@ class ExperimentsTab(QWidget):
         if not log_file.exists():
             return
         try:
-            # Read ALL raw entries without timestamp filtering so we can
-            # sync MongoDB scan_ids across the full file, then filter for display.
+            # Read ALL raw entries without timestamp filtering.
             all_entries = []
             with open(log_file) as f:
                 for line in f:
@@ -937,11 +934,22 @@ class ExperimentsTab(QWidget):
                     except Exception:
                         pass
 
-            # Sync scan_ids from MongoDB for any entries not yet verified this
-            # session (single connection, batch queries).  Rewrite the file only
-            # when at least one entry changed so the numbers stay in sync with
-            # the MongoDB browser even across app restarts.
-            if self._sync_mongo_scan_ids(all_entries):
+            # Renumber in file order: entries with non-empty run_uids are actual
+            # scans and get sequential numbers 1, 2, 3…; motion-only plans (empty
+            # run_uids) get scan_num = None.  The MongoDB browser column shows the
+            # same time-ordered position, so the numbers match across both tables.
+            scan_counter = 1
+            file_changed = False
+            for e in all_entries:
+                new_num = scan_counter if e.get("run_uids") else None
+                if e.get("scan_num") != new_num:
+                    e["scan_num"] = new_num
+                    file_changed = True
+                if e.get("run_uids"):
+                    scan_counter += 1
+            self._next_scan_num = scan_counter  # next unused number
+
+            if file_changed:
                 try:
                     with open(log_file, "w") as f:
                         for e in all_entries:
@@ -949,18 +957,8 @@ class ExperimentsTab(QWidget):
                 except Exception:
                     pass
 
-            # Apply experiment time-window filter for display.
+            # Filter for display (experiment time window).
             entries = [e for e in all_entries if self._entry_belongs_here(e)]
-
-            # Back-fill scan_num for entries that predate this field.
-            next_backfill = 1
-            for e in entries:
-                if e.get("scan_num") is None:
-                    e["scan_num"] = next_backfill
-                next_backfill = max(next_backfill, e.get("scan_num", 0)) + 1
-
-            max_num = max((e.get("scan_num", 0) for e in entries), default=0)
-            self._next_scan_num = max_num + 1
 
             for entry in reversed(entries):
                 name    = entry.get("name", "?")
@@ -1006,71 +1004,6 @@ class ExperimentsTab(QWidget):
 
     # ── Public update slots ────────────────────────────────────────────────────
 
-    def _fetch_mongo_scan_id(self, run_uid: str):
-        """Return the MongoDB scan_id for *run_uid*, or None if unavailable."""
-        if not self._settings or not run_uid:
-            return None
-        try:
-            from .connection_settings import get_active_profile
-            import pymongo
-            p  = get_active_profile(self._settings)
-            db = p.get("mongo_db", "").strip()
-            if not db:
-                return None
-            host = p.get("mongo_host", "") or "localhost"
-            port = int(p.get("mongo_port", 27017))
-            client = pymongo.MongoClient(host, port, serverSelectionTimeoutMS=1000)
-            doc    = client[db]["run_start"].find_one(
-                {"uid": run_uid}, {"scan_id": 1}
-            )
-            client.close()
-            self._verified_run_uids.add(run_uid)
-            return int(doc["scan_id"]) if doc and "scan_id" in doc else None
-        except Exception:
-            return None
-
-    def _sync_mongo_scan_ids(self, entries: list) -> bool:
-        """Batch-update scan_num from MongoDB for unverified entries.
-
-        Returns True if any entry's scan_num was changed so the caller knows
-        to rewrite the file.  Uses a single MongoDB connection for the batch.
-        """
-        if not self._settings:
-            return False
-        to_check = [
-            e for e in entries
-            if (e.get("run_uids") or [])
-            and e["run_uids"][0] not in self._verified_run_uids
-        ]
-        if not to_check:
-            return False
-        try:
-            from .connection_settings import get_active_profile
-            import pymongo
-            p      = get_active_profile(self._settings)
-            db     = p.get("mongo_db", "").strip()
-            if not db:
-                return False
-            host   = p.get("mongo_host", "") or "localhost"
-            port   = int(p.get("mongo_port", 27017))
-            client = pymongo.MongoClient(host, port, serverSelectionTimeoutMS=1000)
-            changed = False
-            for e in to_check:
-                run_uid = e["run_uids"][0]
-                doc = client[db]["run_start"].find_one(
-                    {"uid": run_uid}, {"scan_id": 1}
-                )
-                self._verified_run_uids.add(run_uid)
-                if doc and "scan_id" in doc:
-                    mid = int(doc["scan_id"])
-                    if e.get("scan_num") != mid:
-                        e["scan_num"] = mid
-                        changed = True
-            client.close()
-            return changed
-        except Exception:
-            return False
-
     def update_history(self, items: list):
         if not self._active_exp_path:
             return
@@ -1096,15 +1029,10 @@ class ExperimentsTab(QWidget):
                 self._logged_uids.add(uid)
                 continue
 
-            # Use MongoDB scan_id for plans that generated bluesky runs; this
-            # keeps the plan log number consistent with the MongoDB browser.
-            # Fall back to the per-experiment counter when MongoDB is unavailable
-            # (sim mode, unconfigured) or for motion-only plans (no run_uids).
-            scan_num = self._next_scan_num
-            if run_uids:
-                mongo_id = self._fetch_mongo_scan_id(run_uids[0])
-                if mongo_id is not None:
-                    scan_num = mongo_id
+            # Scans (non-empty run_uids) get the next sequential number;
+            # motion-only plans (mv etc.) get None — they don't appear in
+            # MongoDB browser so shouldn't consume a scan slot.
+            scan_num = self._next_scan_num if run_uids else None
 
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
@@ -1128,7 +1056,8 @@ class ExperimentsTab(QWidget):
                 self._logged_uids.add(uid)
                 # Keep _next_scan_num ahead of the highest assigned number so
                 # motion plans (no run_uids / no MongoDB) never collide.
-                self._next_scan_num = max(self._next_scan_num, scan_num) + 1
+                if run_uids:
+                    self._next_scan_num += 1
                 changed = True
             except Exception:
                 pass

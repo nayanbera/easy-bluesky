@@ -561,7 +561,9 @@ class MongoDataBrowserTab(QWidget):
 
             self._run_table.insertRow(row)
 
-            scan_id = str(start.get("scan_id", "—"))
+            # Sequential scan number: oldest run in the result set = #1,
+            # newest = #N.  The query sorts time desc so row 0 is newest.
+            seq_num = str(len(runs) - row)
             plan    = start.get("plan_name", "—")
             ts      = start.get("time", 0)
             dt_str  = (datetime.fromtimestamp(ts).strftime("%Y-%m-%d  %H:%M:%S")
@@ -580,7 +582,7 @@ class MongoDataBrowserTab(QWidget):
             else:
                 status_color, status_icon = "#888888", "… running"
 
-            cols = [scan_id, plan, dt_str, status_icon, num_ev, dets]
+            cols = [seq_num, plan, dt_str, status_icon, num_ev, dets]
             for col, text in enumerate(cols):
                 item = QTableWidgetItem(text)
                 if col in (0, 4):
@@ -625,7 +627,7 @@ class MongoDataBrowserTab(QWidget):
         start = run["start"]
         stop  = run["stop"]
 
-        scan_id  = start.get("scan_id", "—")
+        seq_num  = len(self._runs) - row
         plan     = start.get("plan_name", "—")
         ts_start = start.get("time", 0)
         ts_stop  = stop.get("time", 0) if stop else 0
@@ -636,7 +638,7 @@ class MongoDataBrowserTab(QWidget):
         exit_st  = stop.get("exit_status", "running") if stop else "running"
 
         self._info_label.setText(
-            f"Scan ID : {scan_id}\n"
+            f"Scan #  : {seq_num}\n"
             f"Plan    : {plan}\n"
             f"Start   : {datetime.fromtimestamp(ts_start).strftime('%Y-%m-%d %H:%M:%S') if ts_start else '—'}\n"
             f"Duration: {dur}\n"
@@ -676,9 +678,9 @@ class MongoDataBrowserTab(QWidget):
                 continue
             start   = self._runs[row]["start"]
             uid     = start.get("uid", "")
-            scan_id = start.get("scan_id", "?")
+            seq_num = len(self._runs) - row
             plan    = start.get("plan_name", "?")
-            uid_labels.append((uid, f"#{scan_id} {plan}"))
+            uid_labels.append((uid, f"#{seq_num} {plan}"))
 
         if not uid_labels:
             return
@@ -944,9 +946,9 @@ class MongoDataBrowserTab(QWidget):
         rows = self._run_table.selectionModel().selectedRows()
         if rows and rows[0].row() < len(self._runs):
             start   = self._runs[rows[0].row()]["start"]
-            scan_id = start.get("scan_id", "")
+            seq_num = len(self._runs) - rows[0].row()
             plan    = start.get("plan_name", "")
-            title   = f"Scan {scan_id}  —  {plan}"
+            title   = f"Scan {seq_num}  —  {plan}"
             if len(rows) > 1:
                 title += f"  (+{len(rows)-1} more)"
             self._plot_widget.setTitle(title)
