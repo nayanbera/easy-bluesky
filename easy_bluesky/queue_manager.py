@@ -312,7 +312,7 @@ class QueueManager(QWidget):
 
         self.queue_list = QListWidget()
         self.queue_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.queue_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.queue_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.queue_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.queue_list.customContextMenuRequested.connect(self._queue_context_menu)
         self.queue_list.itemDoubleClicked.connect(self._edit_plan)
@@ -410,13 +410,20 @@ class QueueManager(QWidget):
             self._log(f"{'✓' if ok else '✗'} Update plan: {msg}")
 
     def _remove_selected(self):
-        item = self._current_queue_item()
-        if not item:
+        selected = self.queue_list.selectedItems()
+        if not selected:
             return
-        uid = item.get("item_uid")
-        if uid:
-            ok, msg = self.worker.remove_item(uid)
-            self._log(f"{'✓' if ok else '✗'} Remove: {msg}")
+        removed = 0
+        for li in selected:
+            uid = li.data(Qt.ItemDataRole.UserRole)
+            if uid:
+                ok, msg = self.worker.remove_item(uid)
+                if ok:
+                    removed += 1
+                else:
+                    self._log(f"✗ Remove: {msg}")
+        if removed:
+            self._log(f"✓ Removed {removed} plan(s) from queue")
 
     def _clear_queue(self):
         r = QMessageBox.question(self, "Clear Queue",
@@ -474,6 +481,11 @@ class QueueManager(QWidget):
     # ── Data update slots ──────────────────────────────────────────────────────
 
     def update_queue(self, items):
+        selected_uids = {
+            self.queue_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.queue_list.count())
+            if self.queue_list.item(i).isSelected()
+        }
         current_uid = None
         cur = self.queue_list.currentItem()
         if cur:
@@ -494,6 +506,8 @@ class QueueManager(QWidget):
             self.queue_list.addItem(li)
             if uid == current_uid:
                 self.queue_list.setCurrentItem(li)
+            if uid and uid in selected_uids:
+                li.setSelected(True)
 
         self.queue_list.blockSignals(False)
         self.queue_count.setText(f"{len(items)} item{'s' if len(items) != 1 else ''}")
