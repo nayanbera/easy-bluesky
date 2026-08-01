@@ -680,8 +680,10 @@ class PVWatchdogTab(QWidget):
         queue_running = self._manager_state == "executing_queue"
 
         if not all_ok:
-            self._cancel_resume_timer()
             if (re_running or queue_running) and not self._paused_by_us:
+                # Fresh failure during an active scan — cancel any pending resume
+                # and issue the pause.
+                self._cancel_resume_timer()
                 failing = [c for c in enabled_conds if not c.is_ok()]
                 desc = "; ".join(
                     f'"{c.name}" ({c.value_str()} expected {c.condition_label()})'
@@ -696,6 +698,8 @@ class PVWatchdogTab(QWidget):
                     # Defer the dialog so the pause ZMQ call completes first
                     from PyQt6.QtCore import QTimer
                     QTimer.singleShot(150, lambda f=list(failing): self._show_failure_alert(f))
+            # If _paused_by_us is already True and the resume timer is running,
+            # leave it alone — _do_resume re-checks conditions before resuming.
         else:
             if self._paused_by_us and re_paused and self._resume_timer is None:
                 delay = self._delay_spin.value()
@@ -753,6 +757,9 @@ class PVWatchdogTab(QWidget):
             self._stopped_queue = False
             self._alert_shown   = False
             self._cancel_resume_timer()
+        # Re-evaluate on every status tick so the resume timer starts even when
+        # PV values are stable (no fresh CA callbacks arriving).
+        self._evaluate()
 
     def on_connected(self):
         if self._watchdog_on:
