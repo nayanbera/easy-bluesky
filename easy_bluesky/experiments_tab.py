@@ -1191,7 +1191,7 @@ class ExperimentsTab(QWidget):
             item = self.plan_log_list.item(i)
             item.setHidden(bool(q and q not in item.text().lower()))
 
-    def _load_plan_log(self, exp_path: str):
+    def _load_plan_log(self, exp_path: str, auto_select_newest: bool = False):
         runs_dir = Path(exp_path) / "runs"
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
@@ -1272,6 +1272,19 @@ class ExperimentsTab(QWidget):
             pass
         self._filter_plan_log(self._plan_log_search.text())
 
+        if auto_select_newest and self.plan_log_list.count() > 0:
+            # Auto-select the newest (top) plottable entry and refresh the plot
+            for i in range(self.plan_log_list.count()):
+                item = self.plan_log_list.item(i)
+                if item and item.isHidden():
+                    continue
+                entry = item.data(Qt.ItemDataRole.UserRole) if item else None
+                if entry and not _is_motion_only(entry.get("name", ""), entry.get("kwargs", {}) or {}):
+                    self.plan_log_list.clearSelection()
+                    self.plan_log_list.setCurrentItem(item)
+                    self._on_plan_log_selection_changed()
+                    break
+
     # ── Public update slots ────────────────────────────────────────────────────
 
     def update_history(self, items: list):
@@ -1337,7 +1350,7 @@ class ExperimentsTab(QWidget):
                 )
 
         if changed:
-            self._load_plan_log(self._active_exp_path)
+            self._load_plan_log(self._active_exp_path, auto_select_newest=True)
 
     def update_compact_queue(self, items: list):
         self.queue_compact.clear()
