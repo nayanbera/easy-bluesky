@@ -292,6 +292,10 @@ _PROFILE_DEFAULTS = {
     "info_port": 60625,
     "doc_port": 60630,
     "procserv_port": 60635,
+    # MongoDB / databroker — empty mongo_db disables subscription
+    "mongo_db":   "",
+    "mongo_host": "",      # empty → localhost on the RE machine
+    "mongo_port": 27017,
 }
 
 _DEFAULTS = {
@@ -1022,6 +1026,46 @@ class ConnectionDialog(QDialog):
         self._prof_procserv.setRange(1, 65535)
         self._prof_form.addRow("procServ port:", self._prof_procserv)
 
+        # ── MongoDB / databroker section ───────────────────────────────────────
+        _sep_mongo = QFrame()
+        _sep_mongo.setFrameShape(QFrame.Shape.HLine)
+        _sep_mongo.setFrameShadow(QFrame.Shadow.Sunken)
+        self._prof_form.addRow(_sep_mongo)
+
+        _mongo_title = QLabel("MongoDB (Databroker)")
+        _mongo_title.setStyleSheet("font-weight: bold;")
+        self._prof_form.addRow(_mongo_title)
+
+        _mongo_note = QLabel(
+            "Leave Database empty to disable MongoDB subscription for this profile."
+        )
+        _mongo_note.setWordWrap(True)
+        _mongo_note.setObjectName("dim_text")
+        self._prof_form.addRow(_mongo_note)
+
+        self._prof_mongo_db = QLineEdit()
+        self._prof_mongo_db.setPlaceholderText(
+            "e.g. aswaxs_real  (empty = disabled)"
+        )
+        self._prof_mongo_db.setToolTip(
+            "Each profile writes to its own MongoDB database.\n"
+            "The RE manager subscribes suitcase.mongo_normalized on startup."
+        )
+        self._prof_form.addRow("Database:", self._prof_mongo_db)
+
+        self._prof_mongo_host = QLineEdit()
+        self._prof_mongo_host.setPlaceholderText("localhost  (default)")
+        self._prof_mongo_host.setToolTip(
+            "MongoDB server hostname or IP as seen from the RE machine.\n"
+            "Leave empty to use localhost on the RE machine."
+        )
+        self._prof_form.addRow("Mongo host:", self._prof_mongo_host)
+
+        self._prof_mongo_port = NoScrollSpinBox()
+        self._prof_mongo_port.setRange(1, 65535)
+        self._prof_mongo_port.setValue(27017)
+        self._prof_form.addRow("Mongo port:", self._prof_mongo_port)
+
         for _sb in (self._prof_ctrl, self._prof_info):
             _sb.valueChanged.connect(self._update_zmq_label)
 
@@ -1123,6 +1167,9 @@ class ConnectionDialog(QDialog):
         self._prof_info.setValue(p.get("info_port", _PROFILE_DEFAULTS["info_port"]))
         self._prof_doc.setValue(p.get("doc_port", _PROFILE_DEFAULTS["doc_port"]))
         self._prof_procserv.setValue(p.get("procserv_port", _PROFILE_DEFAULTS["procserv_port"]))
+        self._prof_mongo_db.setText(p.get("mongo_db", ""))
+        self._prof_mongo_host.setText(p.get("mongo_host", ""))
+        self._prof_mongo_port.setValue(p.get("mongo_port", 27017))
         # Show/hide procServ row based on is_local
         self._on_is_local_toggled(p.get("is_local", False))
         self._auto_assign_note.setText("")
@@ -1149,6 +1196,9 @@ class ConnectionDialog(QDialog):
             "info_port":    self._prof_info.value(),
             "doc_port":     self._prof_doc.value(),
             "procserv_port":self._prof_procserv.value(),
+            "mongo_db":     self._prof_mongo_db.text().strip(),
+            "mongo_host":   self._prof_mongo_host.text().strip(),
+            "mongo_port":   self._prof_mongo_port.value(),
         }
 
         if old_name == self._settings.get("active_profile") and new_name != old_name:

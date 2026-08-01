@@ -610,9 +610,16 @@ class ZMQWorker(QObject):
         if startup_script.exists():
             cmd += ["--startup-script", str(startup_script)]
 
-        # Pass the devices file via environment variable
+        # Pass the devices file and MongoDB settings via environment variables
         env = dict(os.environ)
         env["EASY_BLUESKY_DEVICES_FILE"] = devices_file
+        mongo_db   = profile.get("mongo_db",   "").strip()
+        mongo_host = profile.get("mongo_host", "").strip() or "localhost"
+        mongo_port = str(int(profile.get("mongo_port", 27017)))
+        if mongo_db:
+            env["EASY_BLUESKY_MONGO_DB"]   = mongo_db
+            env["EASY_BLUESKY_MONGO_HOST"] = mongo_host
+            env["EASY_BLUESKY_MONGO_PORT"] = mongo_port
 
         try:
             self._re_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, env=env)

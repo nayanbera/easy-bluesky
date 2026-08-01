@@ -149,11 +149,21 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             )
         else:
             conda_block = ""
+        mongo_db   = profile.get("mongo_db",   "").strip()
+        mongo_host = profile.get("mongo_host", "").strip() or "localhost"
+        mongo_port = int(profile.get("mongo_port", 27017))
+        mongo_exports = (
+            f"export EASY_BLUESKY_MONGO_DB={mongo_db}\n"
+            f"export EASY_BLUESKY_MONGO_HOST={mongo_host}\n"
+            f"export EASY_BLUESKY_MONGO_PORT={mongo_port}\n"
+        ) if mongo_db else ""
+
         script_body = (
             "#!/bin/bash\n"
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
             + conda_block +
             f"export EASY_BLUESKY_DEVICES_FILE={devices_file}\n"
+            + mongo_exports
             # Pre-exec sanity check: emit a clear error instead of the cryptic
             # bash 127 exit before trying to exec.
             f"if ! command -v \"{exe}\" >/dev/null 2>&1; then\n"
