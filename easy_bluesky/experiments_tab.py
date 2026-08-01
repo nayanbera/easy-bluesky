@@ -242,7 +242,7 @@ class ExperimentsTab(QWidget):
 
         vlay.addWidget(sample_grp)
 
-        lbl_log = QLabel("PLAN LOG  (click to plot · multi-select to overlay)")
+        lbl_log = QLabel("PLAN LOG")
         lbl_log.setObjectName("section_title")
         vlay.addWidget(lbl_log)
 
@@ -260,6 +260,15 @@ class ExperimentsTab(QWidget):
         self.plan_log_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.plan_log_list.customContextMenuRequested.connect(self._plan_log_context_menu)
         vlay.addWidget(self.plan_log_list, 1)
+
+        self._btn_requeue = QPushButton("↑  Add Selected to Queue")
+        self._btn_requeue.setEnabled(False)
+        self._btn_requeue.setToolTip(
+            "Add all selected plan log entries to the queue using their saved settings.\n"
+            "Double-click a single entry to edit it before queuing."
+        )
+        self._btn_requeue.clicked.connect(self._requeue_selected)
+        vlay.addWidget(self._btn_requeue)
 
         self._btn_export_h5 = QPushButton("Export HDF5…")
         self._btn_export_h5.setObjectName("btn_primary")
@@ -957,8 +966,8 @@ class ExperimentsTab(QWidget):
                 except Exception:
                     pass
 
-            # Filter for display (experiment time window).
-            entries = [e for e in all_entries if self._entry_belongs_here(e)]
+            # Show all entries in the file — no time-window cap.
+            entries = all_entries
 
             for entry in reversed(entries):
                 name    = entry.get("name", "?")
@@ -989,18 +998,7 @@ class ExperimentsTab(QWidget):
         self._filter_plan_log(self._plan_log_search.text())
 
         if auto_select_newest and self.plan_log_list.count() > 0:
-            # Auto-select the newest (top) plottable entry and refresh the plot
-            for i in range(self.plan_log_list.count()):
-                item = self.plan_log_list.item(i)
-                if item and item.isHidden():
-                    continue
-                entry = item.data(Qt.ItemDataRole.UserRole) if item else None
-                if entry and not _is_motion_only(entry.get("name", ""), entry.get("kwargs", {}) or {}):
-                    self.plan_log_list.clearSelection()
-                    item.setSelected(True)
-                    self.plan_log_list.setCurrentItem(item)
-                    self._on_plan_log_selection_changed()
-                    break
+            self.plan_log_list.scrollToTop()
 
     # ── Public update slots ────────────────────────────────────────────────────
 
@@ -1093,20 +1091,33 @@ class ExperimentsTab(QWidget):
     # ── Internal slots ─────────────────────────────────────────────────────────
 
     def _on_plan_log_selection_changed(self):
-        """Show run UID(s) for the selected plan log entry.
+        self._btn_requeue.setEnabled(bool(self.plan_log_list.selectedItems()))
 
-        Data browsing is done in the MongoDB Browser tab.
-        """
+    def _requeue_selected(self):
+        """Add all selected plan log entries to the queue using their saved settings."""
         selected = self.plan_log_list.selectedItems()
-        if not selected:
+        if not selected or not self.worker:
             return
-        entries = [li.data(Qt.ItemDataRole.UserRole) for li in selected if li.data(Qt.ItemDataRole.UserRole)]
-        if not entries:
-            return
-        all_uids = [uid for e in entries for uid in (e.get("run_uids") or [])]
-        if all_uids:
-            uid_str = "  ".join(u[:8] + "…" for u in all_uids[:4])
-            self._log(f"Selected run(s): {uid_str}  — view data in the MongoDB Browser tab")
+        added = 0
+        for li in selected:
+            entry = li.data(Qt.ItemDataRole.UserRole)
+            if not entry:
+                continue
+            item = {
+                "name":      entry.get("name", ""),
+                "args":      entry.get("args", []) or [],
+                "kwargs":    {k: v for k, v in (entry.get("kwargs", {}) or {}).items()
+                              if k != "md"},
+                "item_type": "plan",
+            }
+            item = self._inject_metadata(item)
+            ok, msg = self.worker.add_item(item)
+            if ok:
+                added += 1
+            else:
+                self._log(f"✗ Re-queue '{item['name']}': {msg}")
+        if added:
+            self._log(f"✓ Added {added} plan(s) to queue")
 
     def _on_plan_log_double_clicked(self, li: QListWidgetItem):
         """Double-click: open PlanDialog pre-populated so the user can edit & re-queue."""
