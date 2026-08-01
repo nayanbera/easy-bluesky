@@ -72,6 +72,8 @@ class LiveViewer(QWidget):
         self._curves   = {}   # y_signal → PlotDataItem
         self._run_uid  = None
         self._x_signal = None
+        self._saved_x: str  = ""    # X signal from the previous run (for restore)
+        self._saved_y: list = []    # selected Y signals from the previous run
         self._crosshair_cleanup = None
         self._build()
         self._start_zmq()
@@ -104,10 +106,6 @@ class LiveViewer(QWidget):
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._update_plot)
         ctrl.addWidget(self.norm_combo)
-
-        btn_clear = QPushButton("Clear")
-        btn_clear.clicked.connect(self._reset_run)
-        ctrl.addWidget(btn_clear)
 
         btn_screenshot = QPushButton("Screenshot")
         btn_screenshot.setToolTip("Save the current plot as a PNG image")
@@ -172,6 +170,14 @@ class LiveViewer(QWidget):
 
     def _on_doc(self, name, doc):
         if name == "start":
+            # Save current selections before resetting so they can be restored
+            # when the new run's descriptor arrives (if signals match).
+            self._saved_x = self._x_signal or ""
+            self._saved_y = [
+                self.y_list.item(i).text()
+                for i in range(self.y_list.count())
+                if self.y_list.item(i).isSelected()
+            ]
             self._run_uid = doc.get("uid", "")
             self._reset_run()
             self.run_label.setText(
@@ -206,15 +212,28 @@ class LiveViewer(QWidget):
 
             motor_keys = [k for k in keys if any(w in k.lower() for w in ("motor", "pos", "stage", "enc"))]
             det_keys   = [k for k in keys if k not in motor_keys]
+            x_default  = motor_keys[0] if motor_keys else (keys[0] if keys else "time")
+            avail      = set(all_cols)
 
-            x_default = motor_keys[0] if motor_keys else (keys[0] if keys else "time")
-            self.x_combo.setCurrentText(x_default)
-            self._x_signal = x_default
+            # Restore previous X if the signal exists in the new run
+            if self._saved_x and self._saved_x in avail:
+                self.x_combo.setCurrentText(self._saved_x)
+                self._x_signal = self._saved_x
+            else:
+                self.x_combo.setCurrentText(x_default)
+                self._x_signal = x_default
 
-            for i in range(self.y_list.count()):
-                sig = self.y_list.item(i).text()
-                self.y_list.item(i).setSelected(
-                    sig in det_keys or (not det_keys and sig != x_default and sig != "time"))
+            # Restore previous Y selection if any saved signals exist; else default
+            restored_y = [s for s in self._saved_y if s in avail]
+            if restored_y:
+                for i in range(self.y_list.count()):
+                    self.y_list.item(i).setSelected(
+                        self.y_list.item(i).text() in restored_y)
+            else:
+                for i in range(self.y_list.count()):
+                    sig = self.y_list.item(i).text()
+                    self.y_list.item(i).setSelected(
+                        sig in det_keys or (not det_keys and sig != x_default and sig != "time"))
 
             self.status_bar.setText(f"Signals: {', '.join(all_cols)}")
 
@@ -265,6 +284,7 @@ class LiveViewer(QWidget):
         if not keys:
             return
         all_cols = keys + ["time"]
+        avail    = set(all_cols)
 
         self.x_combo.blockSignals(True)
         self.x_combo.clear()
@@ -282,12 +302,22 @@ class LiveViewer(QWidget):
         x_default  = motor_keys[0] if motor_keys else keys[0]
         det_keys   = [k for k in keys if k != x_default]
 
-        self.x_combo.setCurrentText(x_default)
-        self._x_signal = x_default
+        if self._saved_x and self._saved_x in avail:
+            self.x_combo.setCurrentText(self._saved_x)
+            self._x_signal = self._saved_x
+        else:
+            self.x_combo.setCurrentText(x_default)
+            self._x_signal = x_default
 
-        for i in range(self.y_list.count()):
-            sig = self.y_list.item(i).text()
-            self.y_list.item(i).setSelected(sig in det_keys)
+        restored_y = [s for s in self._saved_y if s in avail]
+        if restored_y:
+            for i in range(self.y_list.count()):
+                self.y_list.item(i).setSelected(
+                    self.y_list.item(i).text() in restored_y)
+        else:
+            for i in range(self.y_list.count()):
+                sig = self.y_list.item(i).text()
+                self.y_list.item(i).setSelected(sig in det_keys)
 
     # ── Plot ───────────────────────────────────────────────────────────────────
 

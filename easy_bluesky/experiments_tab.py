@@ -158,6 +158,7 @@ class ExperimentsTab(QWidget):
         self._exp_created_at: float = 0.0
         self._exp_end_time: float   = 0.0
         self._next_scan_num: int    = 1
+        self._verified_run_uids: set = set()  # run_uids whose scan_num == MongoDB scan_id
         self._detached_win     = None
         self._plot_placeholder = None
         self._sample_name: str = ""
@@ -293,8 +294,8 @@ class ExperimentsTab(QWidget):
         self.queue_compact = QListWidget()
         self.queue_compact.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection)
-        self.queue_compact.setToolTip("Click to edit plan")
-        self.queue_compact.itemClicked.connect(self._on_queue_item_clicked)
+        self.queue_compact.setToolTip("Double-click to edit plan")
+        self.queue_compact.itemDoubleClicked.connect(self._on_queue_item_clicked)
         vlay.addWidget(self.queue_compact, 1)
 
         q_btns = QHBoxLayout()
@@ -783,6 +784,7 @@ class ExperimentsTab(QWidget):
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()
+        self._verified_run_uids = set()
         created = info.get("created", "")
         try:
             self._exp_created_at = datetime.fromisoformat(created).timestamp()
@@ -918,7 +920,9 @@ class ExperimentsTab(QWidget):
         if not log_file.exists():
             return
         try:
-            entries = []
+            # Read ALL raw entries without timestamp filtering so we can
+            # sync MongoDB scan_ids across the full file, then filter for display.
+            all_entries = []
             with open(log_file) as f:
                 for line in f:
                     line = line.strip()
@@ -926,17 +930,29 @@ class ExperimentsTab(QWidget):
                         continue
                     try:
                         entry = json.loads(line)
-                        uid   = entry.get("uid", "")
+                        all_entries.append(entry)
+                        uid = entry.get("uid", "")
                         if uid:
                             self._logged_uids.add(uid)
-                        if not self._entry_belongs_here(entry):
-                            continue
-                        entries.append(entry)
                     except Exception:
                         pass
 
-            # Back-fill scan_num for old entries that predate this field.
-            # Entries are in file order (chronological), so assign 1, 2, 3…
+            # Sync scan_ids from MongoDB for any entries not yet verified this
+            # session (single connection, batch queries).  Rewrite the file only
+            # when at least one entry changed so the numbers stay in sync with
+            # the MongoDB browser even across app restarts.
+            if self._sync_mongo_scan_ids(all_entries):
+                try:
+                    with open(log_file, "w") as f:
+                        for e in all_entries:
+                            f.write(json.dumps(e) + "\n")
+                except Exception:
+                    pass
+
+            # Apply experiment time-window filter for display.
+            entries = [e for e in all_entries if self._entry_belongs_here(e)]
+
+            # Back-fill scan_num for entries that predate this field.
             next_backfill = 1
             for e in entries:
                 if e.get("scan_num") is None:
@@ -1008,9 +1024,52 @@ class ExperimentsTab(QWidget):
                 {"uid": run_uid}, {"scan_id": 1}
             )
             client.close()
+            self._verified_run_uids.add(run_uid)
             return int(doc["scan_id"]) if doc and "scan_id" in doc else None
         except Exception:
             return None
+
+    def _sync_mongo_scan_ids(self, entries: list) -> bool:
+        """Batch-update scan_num from MongoDB for unverified entries.
+
+        Returns True if any entry's scan_num was changed so the caller knows
+        to rewrite the file.  Uses a single MongoDB connection for the batch.
+        """
+        if not self._settings:
+            return False
+        to_check = [
+            e for e in entries
+            if (e.get("run_uids") or [])
+            and e["run_uids"][0] not in self._verified_run_uids
+        ]
+        if not to_check:
+            return False
+        try:
+            from .connection_settings import get_active_profile
+            import pymongo
+            p      = get_active_profile(self._settings)
+            db     = p.get("mongo_db", "").strip()
+            if not db:
+                return False
+            host   = p.get("mongo_host", "") or "localhost"
+            port   = int(p.get("mongo_port", 27017))
+            client = pymongo.MongoClient(host, port, serverSelectionTimeoutMS=1000)
+            changed = False
+            for e in to_check:
+                run_uid = e["run_uids"][0]
+                doc = client[db]["run_start"].find_one(
+                    {"uid": run_uid}, {"scan_id": 1}
+                )
+                self._verified_run_uids.add(run_uid)
+                if doc and "scan_id" in doc:
+                    mid = int(doc["scan_id"])
+                    if e.get("scan_num") != mid:
+                        e["scan_num"] = mid
+                        changed = True
+            client.close()
+            return changed
+        except Exception:
+            return False
 
     def update_history(self, items: list):
         if not self._active_exp_path:
