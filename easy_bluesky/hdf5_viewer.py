@@ -189,6 +189,13 @@ class HDF5Viewer(QWidget):
         self.y_list.itemSelectionChanged.connect(self._replot)
         axis_row.addWidget(self.y_list)
 
+        axis_row.addWidget(QLabel("Norm by:"))
+        self.norm_combo = QComboBox()
+        self.norm_combo.setMinimumWidth(110)
+        self.norm_combo.addItem("None", userData=None)
+        self.norm_combo.currentIndexChanged.connect(self._replot)
+        axis_row.addWidget(self.norm_combo)
+
         btn_plot = QPushButton("Plot")
         btn_plot.setObjectName("btn_primary")
         btn_plot.clicked.connect(self._replot)
@@ -363,6 +370,18 @@ class HDF5Viewer(QWidget):
             self.y_list.addItem(QListWidgetItem(c))
         self.y_list.blockSignals(False)
 
+        prev_norm = self.norm_combo.currentData()
+        self.norm_combo.blockSignals(True)
+        self.norm_combo.clear()
+        self.norm_combo.addItem("None", userData=None)
+        for c in cols:
+            self.norm_combo.addItem(c, userData=c)
+        for i in range(self.norm_combo.count()):
+            if self.norm_combo.itemData(i) == prev_norm:
+                self.norm_combo.setCurrentIndex(i)
+                break
+        self.norm_combo.blockSignals(False)
+
         motor_cols = [c for c in cols
                       if any(w in c.lower()
                              for w in ("motor", "pos", "stage", "enc"))]
@@ -401,23 +420,30 @@ class HDF5Viewer(QWidget):
             pi.legend.clear()
         self._curves = {}
 
+        norm_col  = self.norm_combo.currentData()
         color_idx = 0
         stats     = []
         for df, df_label in self._dfs:
             if xc not in df.columns:
                 continue
             x = df[xc].values.astype(float)
+            norm_vals = df[norm_col].values.astype(float) \
+                        if norm_col and norm_col in df.columns else None
             for yc in ycs:
                 if yc not in df.columns:
                     continue
-                y    = df[yc].values.astype(float)
+                y = df[yc].values.astype(float)
+                if norm_vals is not None:
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        y = np.where(norm_vals != 0, y / norm_vals, np.nan)
                 mask = np.isfinite(x) & np.isfinite(y)
                 x_, y_ = x[mask], y[mask]
                 if not len(x_):
                     continue
                 color      = self.COLORS[color_idx % len(self.COLORS)]
                 pen        = pg.mkPen(color=color, width=2)
-                curve_name = yc if len(self._dfs) == 1 else f"{yc}  [{df_label}]"
+                label      = yc if not norm_col else f"{yc}/{norm_col}"
+                curve_name = label if len(self._dfs) == 1 else f"{label}  [{df_label}]"
                 curve = self.plot_widget.plot(
                     x_, y_, pen=pen, name=curve_name,
                     symbol="o", symbolSize=5,
@@ -425,10 +451,13 @@ class HDF5Viewer(QWidget):
                 )
                 self._curves[curve_name] = curve
                 color_idx += 1
-                stats.append(f"{yc}: min={y_.min():.4g}  max={y_.max():.4g}")
+                stats.append(f"{curve_name}: min={y_.min():.4g}  max={y_.max():.4g}")
 
         self.plot_widget.setLabel("bottom", xc)
-        self.plot_widget.setLabel("left", ", ".join(ycs))
+        y_label = ", ".join(ycs)
+        if norm_col:
+            y_label += f"  /  {norm_col}"
+        self.plot_widget.setLabel("left", y_label)
         self.stats_label.setText("   ".join(stats))
 
     # ── Double-click → details dialog ─────────────────────────────────────────

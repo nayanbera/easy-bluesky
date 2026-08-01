@@ -96,6 +96,13 @@ class LiveViewer(QWidget):
         self.y_list.itemSelectionChanged.connect(self._update_plot)
         ctrl.addWidget(self.y_list)
 
+        ctrl.addWidget(QLabel("Norm by:"))
+        self.norm_combo = QComboBox()
+        self.norm_combo.setMinimumWidth(110)
+        self.norm_combo.addItem("None", userData=None)
+        self.norm_combo.currentIndexChanged.connect(self._update_plot)
+        ctrl.addWidget(self.norm_combo)
+
         btn_clear = QPushButton("Clear")
         btn_clear.clicked.connect(self._reset_run)
         ctrl.addWidget(btn_clear)
@@ -178,6 +185,18 @@ class LiveViewer(QWidget):
                 self.y_list.addItem(QListWidgetItem(k))
             self.y_list.blockSignals(False)
 
+            prev_norm = self.norm_combo.currentData()
+            self.norm_combo.blockSignals(True)
+            self.norm_combo.clear()
+            self.norm_combo.addItem("None", userData=None)
+            for k in all_cols:
+                self.norm_combo.addItem(k, userData=k)
+            for i in range(self.norm_combo.count()):
+                if self.norm_combo.itemData(i) == prev_norm:
+                    self.norm_combo.setCurrentIndex(i)
+                    break
+            self.norm_combo.blockSignals(False)
+
             motor_keys = [k for k in keys if any(w in k.lower() for w in ("motor", "pos", "stage", "enc"))]
             det_keys   = [k for k in keys if k not in motor_keys]
 
@@ -247,31 +266,49 @@ class LiveViewer(QWidget):
             for i in range(self.y_list.count())
             if self.y_list.item(i).isSelected()
         ]
+        norm_key = self.norm_combo.currentData()
+        norm_arr = np.array(self._data.get(norm_key, []), dtype=float) \
+                   if norm_key and norm_key in self._data else None
 
-        for sig in list(self._curves):
-            if sig not in y_signals:
-                self.plot_widget.removeItem(self._curves.pop(sig))
+        # Curve names change when norm_key changes — clear and rebuild
+        expected = {
+            (sig if not norm_key else f"{sig}/{norm_key}")
+            for sig in y_signals
+        }
+        for name in list(self._curves):
+            if name not in expected:
+                self.plot_widget.removeItem(self._curves.pop(name))
 
         for i, sig in enumerate(y_signals):
             y_vals = self._data.get(sig, [])
             n = min(len(x_arr), len(y_vals))
+            if norm_arr is not None:
+                n = min(n, len(norm_arr))
             if n == 0:
                 continue
             x = x_arr[:n]
             y = np.array(y_vals[:n], dtype=float)
+            if norm_arr is not None:
+                denom = norm_arr[:n]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    y = np.where(denom != 0, y / denom, np.nan)
+            curve_name = sig if not norm_key else f"{sig}/{norm_key}"
             color = self.COLORS[i % len(self.COLORS)]
-            if sig not in self._curves:
+            if curve_name not in self._curves:
                 pen = pg.mkPen(color=color, width=2)
-                self._curves[sig] = self.plot_widget.plot(
-                    x, y, pen=pen, name=sig,
+                self._curves[curve_name] = self.plot_widget.plot(
+                    x, y, pen=pen, name=curve_name,
                     symbol="o", symbolSize=5,
                     symbolBrush=color, symbolPen=None,
                 )
             else:
-                self._curves[sig].setData(x, y)
+                self._curves[curve_name].setData(x, y)
 
         self.plot_widget.setLabel("bottom", x_key)
-        self.plot_widget.setLabel("left",   ", ".join(y_signals) if y_signals else "Y")
+        y_label = ", ".join(y_signals) if y_signals else "Y"
+        if norm_key:
+            y_label += f"  /  {norm_key}"
+        self.plot_widget.setLabel("left", y_label)
 
     def _reset_run(self):
         self._data = {}
