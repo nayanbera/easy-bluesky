@@ -1081,6 +1081,11 @@ class ExperimentsTab(QWidget):
             self.scan_completed.emit()
 
     def update_compact_queue(self, items: list):
+        selected_uids = {
+            self.queue_compact.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.queue_compact.count())
+            if self.queue_compact.item(i).isSelected()
+        }
         self.queue_compact.clear()
         for i, item in enumerate(items):
             name    = item.get("name", "unknown")
@@ -1092,6 +1097,8 @@ class ExperimentsTab(QWidget):
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
             self.queue_compact.addItem(li)
+            if uid and uid in selected_uids:
+                li.setSelected(True)
         n = len(items)
         self.queue_count_label.setText(f"{n} item{'s' if n != 1 else ''}")
 
