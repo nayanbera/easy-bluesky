@@ -128,7 +128,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
         ctrl_port      = profile.get("control_port", 60615)
         info_port      = profile.get("info_port", 60625)
         procserv_port  = profile.get("procserv_port", 60635)
-        _zmq_pub_port  = 60630  # ZMQ PUB port used by re_startup_mongo.py
+        _zmq_pub_port  = profile.get("doc_port", 60632)
         profile_name   = profile.get("name", "Default")
         instance_name  = f"RE-{profile_name}"
 
@@ -164,6 +164,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
             + conda_block +
             f"export EASY_BLUESKY_DEVICES_FILE={devices_file}\n"
+            f"export BLUESKY_ZMQ_PUB_PORT={_zmq_pub_port}\n"
             "export PYTHONUNBUFFERED=1\n"
             + mongo_exports
             + f"if ! command -v \"{exe}\" >/dev/null 2>&1; then\n"
