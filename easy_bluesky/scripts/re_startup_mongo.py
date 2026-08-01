@@ -302,7 +302,7 @@ if _MONGO_DB:
         print(
             f"[re_startup_mongo] WARNING: MongoDB not subscribed — "
             f"suitcase.mongo_normalized unavailable: {_e}\n"
-            f"  Install with:  pip install suitcase-mongo-normalized"
+            f"  Install with:  conda install -c conda-forge suitcase-mongo-normalized"
         )
     except Exception as _e:
         print(f"[re_startup_mongo] WARNING: MongoDB not subscribed: {_e}")
