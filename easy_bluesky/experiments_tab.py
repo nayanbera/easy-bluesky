@@ -1387,16 +1387,33 @@ class ExperimentsTab(QWidget):
         if not plottable:
             return
 
+        self.plot_tabs.setCurrentIndex(1)  # switch to History tab before any message
+
         paths = [self._find_run_file_for_entry(e) for e in plottable]
         paths = [p for p in paths if p]
         if not paths:
+            run_uids = [u for e in plottable for u in (e.get("run_uids") or [])]
+            search_dirs = self._search_dirs()
+            runs_dir = str(search_dirs[0]) if search_dirs else "unknown"
+            import glob as _glob
+            n_files = len(_glob.glob(f"{runs_dir}/*.jsonl")) if search_dirs and search_dirs[0].exists() else 0
+            if run_uids:
+                uid_hint = run_uids[0][:8]
+                msg = (f"No local data file for run {uid_hint}…  "
+                       f"({n_files} JSONL files in runs dir)\n"
+                       f"Searched: {runs_dir}\n"
+                       f"Data is captured via ZMQ stream from the RE Manager — "
+                       f"confirm Doc Port in Connection Settings and restart RE Manager.")
+            else:
+                msg = ("No run UIDs recorded for this plan — "
+                       "it may have completed without producing a bluesky run.")
+            self.history_widget.run_label.setText(msg)
             return
 
         if len(paths) == 1:
             self.history_widget.load_jsonl_file(str(paths[0]))
         else:
             self.history_widget.load_jsonl_files(paths)
-        self.plot_tabs.setCurrentIndex(1)
 
     def _on_plan_log_double_clicked(self, li: QListWidgetItem):
         """Double-click: open PlanDialog pre-populated so the user can edit & re-queue."""
