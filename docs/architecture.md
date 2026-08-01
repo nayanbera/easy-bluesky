@@ -5,70 +5,178 @@
 ```
 easy-bluesky
 ├── UI Layer (PyQt6)
-│   ├── QueueManager    — queue control, RE buttons, history
-│   ├── PlanBuilder     — visual canvas + code editor
-│   ├── LiveViewer      — Kafka streaming + pyqtgraph
-│   └── DataBrowser     — Databroker historical runs
+│   ├── MainWindow          — tab container, toolbar, profile switching
+│   ├── REControlBar        — RE state toolbar (start/pause/abort/env/profile)
+│   ├── QueueManager        — queue list, history, plan detail panel
+│   ├── PlanBuilder         — Visual Composer + Code Editor
+│   ├── ExperimentsTab      — experiment lifecycle, plan log, HDF5 export
+│   ├── LiveViewer          — ZMQ doc subscriber + pyqtgraph live plots
+│   ├── MongoDataBrowserTab — browse/plot/export runs from MongoDB
+│   ├── HDF5Viewer          — open and browse exported HDF5 files
+│   ├── DevicesPlansTab     — live device tree (CA monitor + sim monitor)
+│   ├── REConsole           — SSH log tail (live RE output)
+│   └── PVWatchdog          — PV alarm monitor
 │
 ├── Communication Layer
-│   ├── ZMQWorker       — bluesky-queueserver-api ZMQ transport
-│   ├── KafkaThread     — confluent-kafka consumer (QThread)
-│   └── DataBrowser     — databroker catalog access
+│   ├── ZMQWorker           — bluesky-queueserver ZMQ transport (poll thread)
+│   ├── ZMQDocThread        — ZMQ SUB thread for live bluesky documents
+│   └── SSHLogTailer        — SSH `tail -f` of RE Manager log file
+│
+├── Data Layer
+│   ├── MongoDB             — primary run store (via pymongo, written by RE Manager)
+│   ├── plans_log.jsonl     — lightweight experiment plan index (local)
+│   └── device_metadata.json— cached PV units/descriptions for sim mode
 │
 └── Config Layer
-    └── config.py       — all constants, env-overridable
+    ├── config.py           — constants, env-overridable
+    └── connection.json     — profiles, ports, SSH settings (local, never committed)
 ```
 
 ## Thread Model
 
 ```
 Main Thread (Qt event loop)
-    ├── UI updates (all Qt widget changes)
-    └── ZMQ calls (blocking — called from poll thread via signals)
+    ├── All Qt widget updates
+    ├── CA callbacks (forwarded via queued signals from pyepics CA thread)
+    └── ZMQ execute_item() calls (blocking — only called from UI actions)
 
-poll_thread (daemon thread)
-    └── ZMQWorker.poll() — polls RE Manager every 1s
+ZMQWorker poll thread (QThread)
+    └── worker.poll() — polls RE Manager status every 1 s
         └── emits Qt signals → main thread updates UI
+            ├── status_updated(dict)
+            ├── console_line(str)
+            ├── devices_updated(dict)
+            └── connected() / disconnected()
 
-KafkaThread (QThread)
-    └── polls Kafka every 0.5s
-        └── emits doc_received signal → LiveViewer._on_doc()
+ZMQDocThread (QThread — per LiveViewer)
+    └── zmq.SUB socket — receives bluesky documents in real time
+        └── emits doc_received(name, doc) → LiveViewer._on_doc()
+
+SSHLogTailer (QThread — inside ZMQWorker)
+    └── SSH `tail -n 50 -f <log_file>` — streams RE Manager stdout
+        └── lines queued → poll loop drains → console_line signal
+
+_RunListFetcher / _MultiRunDataFetcher / _HDF5Exporter (QThread)
+    └── pymongo queries on background threads → signals back to UI
+
+_PVNamesReader / _DeviceStatusReader (QThread)
+    └── RE environment function_execute calls → signals back to DevicesPlansTab
+
+pyepics CA thread (internal)
+    └── CA callbacks → forwarded to Qt via pyqtSignal (queued connection)
 ```
 
 ## Data Flow
 
-### Live scan
+### Live scan (ZMQ documents)
+
 ```
-RE Manager → Kafka publisher (startup script)
-           → Kafka topic (bluesky.runengine.documents)
-           → KafkaThread.doc_received signal
-           → LiveViewer._on_doc()
-           → pyqtgraph plot update
+RE Manager
+  → _zmq_publish() (re_startup_mongo.py) → ZMQ PUB port (doc_port)
+  → ZMQDocThread.doc_received signal
+  → LiveViewer._on_doc()
+  → pyqtgraph plot update (events arrive individually or as event_page)
+```
+
+### Scan data storage (MongoDB)
+
+```
+RE Manager
+  → _mongo_write() (re_startup_mongo.py)
+  → MongoDB collections: run_start, run_stop, event_descriptor, event/event_page
+  → MongoDataBrowserTab reads via pymongo on background QThreads
 ```
 
 ### Queue control
+
 ```
 User clicks button
-→ ZMQWorker method (e.g. queue_start())
-→ bluesky-queueserver-api ZMQ call
+→ ZMQWorker method (e.g. queue_start(), execute_item())
+→ ZMQ REQ/REP call to RE Manager control port
 → RE Manager acts
 → ZMQWorker.poll() detects state change
 → status_updated signal
-→ QueueManager.update_status()
+→ QueueManager / REControlBar update
 ```
 
-### Historical data
+### Device CA monitoring (real mode)
+
 ```
-DataBrowser.run_list click
-→ databroker.catalog[uid].primary.read()
-→ xarray Dataset → pandas DataFrame
-→ pyqtgraph plot
+RE environment opens (closed → idle)
+→ _PVNamesReader calls get_device_pvnames() via function_execute
+→ pv_names_ready(pv_map) signal → DevicesPlansTab.setup_epics_monitors()
+→ pyepics ca.subscribe() with DBR_CTRL for each PV
+→ CA callback (pyepics thread) → queued signal → tree cell update
 ```
+
+### Device monitoring (sim mode)
+
+```
+RE environment opens, pv_map is empty (all ophyd.sim devices)
+→ QTimer fires every 2 s
+→ poll_sim_values_requested signal → ZMQWorker.read_devices_status()
+→ _DeviceStatusReader calls read_devices_status() via function_execute
+→ update_sim_values(readings) → tree cell update
+```
+
+### Motor move from plot (MongoDB Browser or Live Viewer)
+
+```
+User double-clicks plot
+→ _on_plot_clicked() maps scene coords to view coords
+→ QMessageBox confirmation (shows motor name + target + last scan position)
+→ move_requested.emit(motor, position)         [MongoDB Browser]
+   OR worker.execute_item({"name": "mv", ...}) [Live Viewer, direct]
+→ ZMQ execute_item() → RE Manager runs mv(motor, position)
+```
+
+### RE console output
+
+```
+RE Manager stdout → log file (/tmp/re-manager-<slug>.log)
+→ SSHLogTailer: SSH `tail -f` → line queue
+→ ZMQWorker.poll() drains queue → console_line signal
+→ REConsole widget appends line (color-coded)
+```
+
+## Key Design Decisions
+
+### No suitcase.jsonl
+
+Run data is written directly to MongoDB by `re_startup_mongo.py` (via `_mongo_write`, a plain pymongo callable). The old suitcase.jsonl serializer was removed. This eliminates the `suitcase-mongo-normalized` dependency and works with any MongoDB version.
+
+`plans_log.jsonl` is kept as a fast local index (scan IDs, status, timestamps) for the Experiments tab plan log — it is not a full data store.
+
+### RE console via SSH log tail
+
+bluesky-queueserver 0.0.25 does not forward worker stdout over ZMQ console. `SSHLogTailer` runs `tail -n 50 -f <log_file>` over SSH and drains lines into the console widget on each poll tick. `BestEffortCallback` is subscribed in the startup script so live scan tables appear in the log and therefore in the RE Console tab.
+
+### CA callbacks are thread-safe via queued signals
+
+pyepics calls CA callbacks on a background CA thread. All callbacks immediately put data into a Python `queue.Queue` or emit a `pyqtSignal` with `Qt.ConnectionType.QueuedConnection`. Widget updates only happen on the Qt main thread — no mutex needed.
+
+### Sim mode auto-detection
+
+`setup_epics_monitors(pv_map)` checks whether `pv_map` contains any PV names. If all devices are `ophyd.sim` objects, `get_device_pvnames()` returns empty dicts, and the function switches to sim-polling mode automatically.
+
+### MongoDB Browser auto-plot
+
+The MongoDB Browser has no Plot button. The plot re-renders automatically via signal connections:
+
+- `_run_table.itemSelectionChanged` → 180 ms `QTimer` debounce → `_MultiRunDataFetcher` → `_on_data_ready` → `_plot()`
+- `_x_combo.currentIndexChanged` → `_auto_plot()`
+- `_y_list.itemChanged` → `_auto_plot()`
+- `_norm_combo.currentIndexChanged` → `_auto_plot()`
+- `_log_y_cb.stateChanged` → `_auto_plot()`
+
+`_y_list` signals are blocked during `_update_field_lists()` rebuilds to prevent spurious re-plots.
 
 ## Adding New Features
 
 ### New RE Manager command
+
 Add a method to `ZMQWorker` in `worker.py`:
+
 ```python
 def my_command(self, arg):
     try:
@@ -79,9 +187,25 @@ def my_command(self, arg):
 ```
 
 ### New plan parameter type
+
 Add a branch in `ParamForm._make_widget()` in `widgets.py`.
 
 ### New tab
+
 1. Create `easy_bluesky/my_tab.py` with a `QWidget` subclass
 2. In `main.py`: `from .my_tab import MyTab`
 3. In `MainWindow._setup_ui()`: `self.tabs.addTab(MyTab(), "My Tab")`
+
+### New MongoDB Browser axis control
+
+Connect the new control's change signal to `self._auto_plot` in `_build_ui()`. Block signals during `_update_field_lists()` if the control is rebuilt there.
+
+### New startup script function
+
+Add a plain Python function to `re_startup_mongo.py`. Call it from the app via:
+
+```python
+ok, result = self.worker.function_execute("my_function", args=[], kwargs={})
+```
+
+`function_execute` runs the callable in the RE worker namespace and returns the result synchronously.

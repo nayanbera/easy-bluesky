@@ -4,18 +4,19 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 
 ## Features
 
-- **Experiments** — Create and manage experiments with sample metadata, plan log, motor/detector summaries, and overlay plotting.
+- **Experiments** — Create and manage experiments with sample metadata and plan log.
 - **Queue Manager** — Add, reorder, and delete plans. Full RE controls (open environment, start, pause, resume, abort, stop).
 - **Plan Builder** — Two-panel interface: a **Visual Composer** for assembling scan sequences from drag-and-drop blocks (no Python required), and a **Code Editor** for full custom plans with syntax highlighting, auto-indent, and templates.
-- **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move.
-- **History Plot** — Browse completed runs. Multi-select overlay with common-column intersection.
+- **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move, screenshot.
+- **MongoDB Browser** — Browse completed runs stored in MongoDB. Filters automatically to the active experiment; select multiple runs for overlay plotting with common-column intersection; auto-plots when selection or axis choices change; double-click the plot to move the motor; screenshot; HDF5 export.
 - **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata.
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
 - **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
 - **Local Profiles** — Run RE Manager as a local subprocess with zero setup. Starts automatically when you launch the profile and stops when you close the app. Ideal for learning and testing with simulated devices.
 - **Edit Devices File** — Full code editor for any profile's devices file: line numbers, current-line highlight, auto-indent, Tab→spaces, and ophyd-aware autocomplete. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP.
 - **Live Device Monitor** — Real-time EPICS Channel Access (CA) monitoring in the Devices & Plans tab. Each device shows its connected/disconnected status and live PV readings that update instantly as values change — no polling during scans. pyepics is auto-installed if missing.
-- **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors. Highlights all matches with per-match navigation; read-only panels (RE Console) get search-only.
+- **Sim Device Monitor** — In simulation mode, device values are polled from the RE environment every 2 seconds via `read_devices_status()`. Tweak widgets on motor rows allow nudging simulated motors without running a full plan.
+- **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
 
@@ -36,7 +37,7 @@ EasyBluesky separates the **client** (this app) from the **RE Manager host**:
 │   Needs:                    │          │                                   │
 │   • easy-bluesky            │          │   Needs:                          │
 │   • Python ≥ 3.10           │          │   • bluesky-queueserver           │
-│                             │          │   • hardware ophyd drivers        │
+│   • pymongo (optional)      │          │   • hardware ophyd drivers        │
 │                             │          │   • startup scripts               │
 └─────────────────────────────┘          └───────────────────────────────────┘
 ```
@@ -74,6 +75,13 @@ Only `bluesky-queueserver` and `pyepics` need to be installed — not the full E
 pip install bluesky-queueserver pyepics
 ```
 
+For MongoDB data storage (recommended):
+
+```bash
+pip install pymongo          # on both client and RE Manager host
+# then install and start MongoDB on the RE Manager host
+```
+
 > **Startup scripts** (`re_startup_mongo.py`, YAML permission files) must also be present on the RE Manager host. See [Startup Scripts](#startup-scripts) below.
 
 ---
@@ -94,6 +102,7 @@ The app starts the RE Manager locally and connects automatically.
 
 - **Queue Manager** tab → add a `count` or `scan` plan using `det`, `motor1`, etc.
 - **Live Viewer** tab → see real-time plots as plans run
+- **MongoDB Browser** tab → browse completed runs, select runs to plot
 
 ### 3. Add your real hardware
 
@@ -116,6 +125,7 @@ If you prefer to start the RE Manager yourself rather than using a Local profile
 
 ```bash
 EASY_BLUESKY_DEVICES_FILE=devices.py \
+EASY_BLUESKY_MONGO_DB=mybeamline \
 start-re-manager \
   --zmq-control-addr tcp://*:60615 \
   --zmq-info-addr    tcp://*:60625 \
@@ -303,8 +313,6 @@ A floating find bar is available in every code editor and the RE Console:
 | Escape | Close bar | Find bar focused |
 
 All matches in the current document are highlighted immediately as you type. The current match is shown in orange; other matches in amber. A `N / M` counter shows which match is selected. The search field turns red when no matches are found.
-
-The bar stays open and remains at the top-right of the text area while you navigate — clicking ▲/▼ or pressing Enter/Shift+Enter scrolls to the next/previous match without closing or moving the bar.
 
 The Replace row (Ctrl+R) offers **Replace** (current match) and **Replace All** buttons. Replace operations are undoable as a single action.
 
@@ -498,7 +506,7 @@ With the host set to a non-localhost IP and SSH configured, **⚡ Start RE Mgr**
 3. Launches `procServ ... /bin/bash /tmp/_easy_bluesky_<profile>.sh`
 4. Waits (polling every 2 s) until the ZMQ control port opens, then reconnects
 
-The launcher script exports `EASY_BLUESKY_DEVICES_FILE=<profile's devices file>` so `re_startup_mongo.py` loads the right devices.
+The launcher script exports `EASY_BLUESKY_DEVICES_FILE=<profile's devices file>` and `EASY_BLUESKY_MONGO_DB=<db name>` so `re_startup_mongo.py` loads the right devices and writes to the right database.
 
 **⏹ Stop RE Mgr** kills only the active profile's instance (via its PID file), leaving all other profiles running.
 
@@ -580,29 +588,32 @@ The **Devices & Plans** tab shows all devices registered in the open RE environm
 
 When the RE environment transitions from `closed` → `idle`, the app calls `get_device_pvnames()` in the RE worker namespace to retrieve a map of every device's signals and their PV names. It then opens a persistent CA monitor for each PV using `pyepics` with `form='ctrl'` (DBR_CTRL subscription). DBR_CTRL callbacks deliver the current value **and** the engineering units (EGU field) together in every update, with no extra round-trip to the IOC. Value and connection-change callbacks fire on the CA background thread and are forwarded to Qt via queued signals — fully thread-safe.
 
+Units and descriptions are also cached to `~/.easy_bluesky/device_metadata.json` so they can be reused in sim mode display without a CA connection.
+
 ### Device tree layout
 
 ```
 AVAILABLE DEVICES
-┌──────────────────────────────────────────────────────────────────────┐
-│ Device / Signal            Kind        Value        Units            │
-│ ──────────────────────────────────────────────────────────────────── │
-│ ▼ ophyd.epics_motor  (2)                                            │
-│   ▼ sample_x         hinted      12.5000       mm  ← value + units  │
-│       user_readback             12.5000       mm                     │
-│       user_setpoint             12.5000       mm                     │
-│   ▼ sample_y         hinted       0.0000       mm                   │
-│       user_readback              0.0000       mm                     │
-│ ▼ ophyd.areadetector  (1)                                           │
-│   ▼ Pil300K           hinted   ○ Connecting…                        │
-│       count_time               ○ Connecting…                        │
-└──────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Device / Signal    Class        Value       Units  Description   Tweak     │
+│ ──────────────────────────────────────────────────────────────────────────│
+│ ▼ EpicsMotor  (2)                                                          │
+│   ▼ sample_x        EpicsMotor  12.5000     mm     Sample X     [◀][0.1][▶]│
+│       user_readback             12.5000     mm                             │
+│       user_setpoint             12.5000     mm                             │
+│   ▼ sample_y        EpicsMotor   0.0000     mm     Sample Y     [◀][0.1][▶]│
+│ ▼ AreaDetector  (1)                                                        │
+│   ▼ Pil300K         AreaDetector ○ Connecting…                             │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Green value** on the device row — primary signal is connected and live
 - **"○ Disconnected"** in red — CA connection lost (IOC down or PV name mismatch)
 - **"○ Connecting…"** in grey — waiting for the first CA callback
+- **Tweak column** — motor devices get `[◀][step][▶]` inline widgets to nudge the motor by the step size. Mouse-wheel on the step spinbox is disabled to prevent accidental moves.
 - Signal sub-rows (indented) show all readable signals; hovering shows the raw PV name
+
+A **search bar** above the tree filters by device name, class, or description as you type. Group headers hide when all their children are filtered out.
 
 The **primary signal** displayed on the device row is chosen in priority order: `user_readback` → `readback` → signal with the same name as the device → first available signal.
 
@@ -610,11 +621,131 @@ The **primary signal** displayed on the device row is chosen in priority order: 
 
 Click **⟳ Reconnect** to re-fetch PV names from the RE environment and reopen all CA monitors. Useful after restarting the RE Manager or changing the devices file.
 
+### Sim mode
+
+In simulation profiles (devices are `ophyd.sim` objects), PV names are empty so CA monitoring is unavailable. Instead, the app polls device values every 2 seconds by calling `read_devices_status()` in the RE environment. Units and descriptions are populated from the cached `device_metadata.json` when available.
+
+Tweak buttons in sim mode call `set_sim_device(name, value)` in the RE environment via `function_execute` — the device is moved without adding a queue item.
+
 ### pyepics auto-install
 
-If `pyepics` is not installed in the app's Python environment, a background thread runs `pip install pyepics` automatically the first time live monitoring is attempted. No manual installation step is needed. Once installed, monitors are opened without requiring an app restart.
+If `pyepics` is not installed in the app's Python environment, a background thread runs `pip install pyepics` automatically the first time live monitoring is attempted. No manual installation step is needed.
 
 > **Network requirement:** the client machine running the app must be on the same network as the EPICS IOCs (or have the appropriate CA gateway configured). CA connections go directly from the client to the IOC — they do not pass through the RE Manager host.
+
+---
+
+## MongoDB Browser
+
+The **MongoDB Browser** tab is the primary interface for reviewing and analyzing completed runs. It replaces the old history plot with a richer multi-run workflow.
+
+### Setup
+
+Enable MongoDB in Connection Settings for each profile:
+
+| Field | Example | Notes |
+|-------|---------|-------|
+| Database | `aswaxs_runs` | One database per profile |
+| Mongo Host | `localhost` | Host where `mongod` is running |
+| Mongo Port | `27017` | Default MongoDB port |
+
+The RE Manager writes runs to MongoDB during acquisition (via `re_startup_mongo.py`). The app reads from the same database.
+
+`pymongo` must be installed on **both** the client machine and the RE Manager host:
+
+```bash
+pip install pymongo
+```
+
+### Experiment filtering
+
+When you open or switch experiments, the MongoDB Browser automatically filters the run list to show only runs from that experiment. The experiment name is shown in the top bar. To see all runs (across all experiments), tick **All runs**.
+
+### Multi-run overlay
+
+Hold Shift or Ctrl/Cmd and click rows in the run table to select multiple runs. The app computes the **intersection of available columns** across all selected runs and offers only common fields for plotting — so every selected Y signal has data in every run.
+
+Up to 10 runs can be selected simultaneously.
+
+### Auto-plotting
+
+The plot updates automatically whenever:
+- The run selection changes (180 ms debounce)
+- The X-axis field changes
+- A Y signal checkbox is toggled
+- The Norm field changes
+- Log Y is toggled
+
+No Plot button to click — the plot always reflects the current selection.
+
+Each unique (run, field) pair gets a distinct color. A legend identifies every curve.
+
+### Double-click to move motor
+
+Double-click any point on the plot to move the X-axis motor to that position. This works when the X-axis is a motor field (not time or sequence number).
+
+The confirmation dialog shows:
+- The motor name (derived by stripping readback suffixes like `_user_readback`)
+- The target position (where you clicked)
+- The last known position from the scan data
+
+Click **Yes** to execute `mv(motor, position)` immediately on the RE Manager.
+
+### Screenshot
+
+Click **Screenshot** to save the current plot as a PNG. A file dialog lets you choose the output path.
+
+### HDF5 export
+
+Select one or more runs and click **Export HDF5…** to save them as a portable `.h5` file. The file is compatible with the **HDF5 Viewer** tab:
+
+```
+my_export.h5
+├── metadata/          # global attrs: n_scans
+│   └── (attrs)
+├── scan_0001/         # one group per scan
+│   ├── (attrs)        # plan_name, uid, exit_status, timestamp, duration_s, motor, detectors
+│   ├── time           # dataset: timestamps
+│   ├── motor_pos      # dataset: motor positions
+│   └── det_counts     # dataset: detector readings
+└── scan_0002/
+    └── ...
+```
+
+### Run table columns
+
+| Column | Content |
+|--------|---------|
+| Scan # | Monotonically increasing scan ID |
+| Plan | Plan name (scan, count, rel_scan, …) |
+| Date / Time | Start time |
+| Status | ✓ success / ✗ fail / ⊘ abort / … running |
+| Points | Number of primary-stream events |
+| Detectors | Detector names from the run start document |
+
+---
+
+## Live Viewer
+
+The **Live Viewer** tab shows real-time plots as a scan runs. Documents are received over ZMQ from the RE Manager's PUB socket on the doc port.
+
+### Controls
+
+| Control | Purpose |
+|---------|---------|
+| X combo | Choose the X-axis signal |
+| Y list | Select one or more Y signals (multi-select) |
+| Norm by | Divide Y by this signal (e.g. beam monitor) |
+| Clear | Reset the plot and data buffer |
+| Screenshot | Save the current plot as a PNG |
+
+### Double-click motor move
+
+Double-click any point on the live plot to move the X-axis motor to that position. The confirmation dialog shows the motor name and target value.
+
+### Crosshair cursor
+
+A crosshair follows the mouse and a tooltip shows the nearest curve's value at the cursor position.
 
 ---
 
@@ -821,7 +952,16 @@ You can also split hardware across multiple files and import them from `devices.
 
 ### `re_startup_mongo.py` — do not edit
 
-Handles RE setup, data routing (suitcase.jsonl), and ZMQ doc publishing. Reads `EASY_BLUESKY_DEVICES_FILE` from the environment to decide which devices file to load. **All profiles share this single startup script** — no per-profile startup scripts needed.
+Handles RE setup, MongoDB data routing, and ZMQ doc publishing. Reads `EASY_BLUESKY_DEVICES_FILE` and `EASY_BLUESKY_MONGO_DB` from the environment. **All profiles share this single startup script** — no per-profile startup scripts needed.
+
+Callable functions (via `function_execute`):
+
+| Function | Purpose |
+|----------|---------|
+| `get_device_pvnames()` | Returns `{dev_name: {sig_name: pvname}}` — used by the CA monitor |
+| `read_devices_status()` | Returns live readings for all devices — used by the sim monitor |
+| `set_sim_device(name, value)` | Moves a simulated device — used by tweak buttons in sim mode |
+| `prime_detector(det)` | Warms up area detector file plugins before first scan |
 
 ### `devices_sim.py` — simulation devices
 
@@ -832,6 +972,36 @@ Auto-generated by **File → Generate Sim Devices…**. Contains simulated equiv
 - `existing_plans_and_devices.yaml` — device/plan list for the Default profile (auto-updated when environment opens)
 - `existing_plans_and_devices_sim.yaml` — device/plan list for the Sim profile (kept separate so real and sim don't overwrite each other)
 - `user_group_permissions.yaml` — controls which user groups can run which plans
+
+---
+
+## Data Storage
+
+Bluesky run data is stored in **MongoDB** — the primary data store for all runs. No JSONL run files are written.
+
+### MongoDB document schema
+
+Documents are stored in collections that match bluesky document names:
+
+| Collection | Contents |
+|-----------|---------|
+| `run_start` | One doc per run: plan name, scan ID, motor/detector lists, timestamps, `exp_dir` |
+| `run_stop` | One doc per run: exit status, timestamps, event counts |
+| `event_descriptor` | One doc per stream: field definitions |
+| `event` / `event_page` | Event data: timestamps and field readings |
+| `resource` / `datum` | File references (area detectors) |
+
+The `exp_dir` field in `run_start` links each run to an experiment and is used by the MongoDB Browser's experiment filter.
+
+### Experiment folder layout
+
+```
+experiments/<timestamp>_<name>/
+├── experiment.json       # experiment metadata (sample, description)
+└── plans_log.jsonl       # lightweight plan execution log (scan IDs, status, timestamps)
+```
+
+`plans_log.jsonl` is a fast local index — full data lives in MongoDB. Use **Export HDF5…** in the MongoDB Browser to bundle run data into a portable `.h5` file.
 
 ---
 
@@ -857,16 +1027,10 @@ Connection settings are stored in `~/.easy_bluesky/connection.json` (local only,
       "control_port": 60615,
       "info_port": 60625,
       "doc_port": 60630,
-      "procserv_port": 60635
-    },
-    {
-      "name": "SURF",
-      "devices_file": "devices_surf.py",
-      "is_local": false,
-      "control_port": 60640,
-      "info_port": 60641,
-      "doc_port": 60642,
-      "procserv_port": 60643
+      "procserv_port": 60635,
+      "mongo_db": "aswaxs_runs",
+      "mongo_host": "localhost",
+      "mongo_port": 27017
     },
     {
       "name": "Local Sim",
@@ -875,7 +1039,10 @@ Connection settings are stored in `~/.easy_bluesky/connection.json` (local only,
       "control_port": 60644,
       "info_port": 60645,
       "doc_port": 60646,
-      "procserv_port": 60647
+      "procserv_port": 60647,
+      "mongo_db": "sim_runs",
+      "mongo_host": "localhost",
+      "mongo_port": 27017
     }
   ],
   "deleted_profiles": []
@@ -890,22 +1057,6 @@ Environment variable overrides:
 | `BLUESKY_ZMQ_INFO` | `tcp://localhost:60625` | RE Manager info address |
 | `BLUESKY_ZMQ_PUB_HOST` | `localhost` | Live doc stream host |
 | `BLUESKY_ZMQ_PUB_PORT` | `60630` | Live doc stream port |
-
----
-
-## Data Storage
-
-Runs are written as JSONL files using [suitcase-jsonl](https://blueskyproject.io/suitcase-jsonl/):
-
-```
-experiments/<timestamp>_<name>/
-├── experiment.json       # experiment metadata
-├── plans_log.jsonl       # plan execution log (scan numbers, status)
-├── runs/                 # one JSONL file per scan UID
-└── samples/<name>/       # sample-specific subfolders
-```
-
-Use **Export HDF5…** to bundle all runs into a single portable `.h5` file.
 
 ---
 
@@ -925,13 +1076,16 @@ easy-bluesky/
 │   ├── sim_generator.py      # Auto-generate sim devices file from real script
 │   ├── re_control_bar.py     # RE control toolbar (status + buttons + profile dropdown)
 │   ├── re_console.py         # RE console output tab
-│   ├── experiments_tab.py    # Experiments tab (plan log, plots, HDF5 export)
+│   ├── experiments_tab.py    # Experiments tab (plan log, HDF5 export)
 │   ├── queue_manager.py      # Queue Manager tab
 │   ├── plan_builder.py       # Plan Builder tab + code editor (uses CodeEditor)
 │   ├── widgets.py            # Shared widgets (ScanArgsWidget, ParamForm, …)
-│   ├── live_viewer.py        # Live Viewer (ZMQ + pyqtgraph)
+│   ├── live_viewer.py        # Live Viewer (ZMQ + pyqtgraph, screenshot)
+│   ├── mongo_browser.py      # MongoDB Browser (multi-run, auto-plot, motor move, screenshot)
 │   ├── hdf5_viewer.py        # HDF5 Viewer tab
-│   ├── devices_plans_tab.py  # Devices & Plans tab
+│   ├── devices_plans_tab.py  # Devices & Plans tab (CA monitor, sim monitor, tweak, search)
+│   ├── plot_tools.py         # Shared plot utilities (crosshair, norm combo)
+│   ├── pv_watchdog.py        # PV Watchdog tab
 │   ├── themes.py             # Theme definitions + stylesheet builder
 │   └── scripts/              # Bundled default scripts (copied to ~/.easy_bluesky/scripts/)
 │       ├── devices.py            ← edit this to add hardware (never overwritten)
