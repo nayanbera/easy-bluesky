@@ -312,15 +312,14 @@ _ZMQ_PUB_PORT = int(os.getenv("BLUESKY_ZMQ_PUB_PORT", "60630"))
 try:
     import zmq as _zmq
     import json as _json
-    from event_model import sanitize_doc as _sanitize
-
-    _zmq_ctx  = _zmq.Context()
-    _zmq_sock = _zmq_ctx.socket(_zmq.PUB)
-    _zmq_sock.setsockopt(_zmq.LINGER, 0)
-    _zmq_sock.setsockopt(_zmq.SNDHWM, 100)
-    _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
-
     import numpy as _np
+
+    # sanitize_doc available in event_model ≥1.19; fall back to identity for older envs
+    try:
+        from event_model import sanitize_doc as _sanitize
+    except ImportError:
+        def _sanitize(d):
+            return d
 
     class _NumpyEncoder(_json.JSONEncoder):
         """JSON encoder that converts numpy scalars/arrays to native Python types."""
@@ -332,6 +331,12 @@ try:
             if isinstance(obj, bytes):
                 return obj.decode("utf-8", errors="replace")
             return super().default(obj)
+
+    _zmq_ctx  = _zmq.Context()
+    _zmq_sock = _zmq_ctx.socket(_zmq.PUB)
+    _zmq_sock.setsockopt(_zmq.LINGER, 0)
+    _zmq_sock.setsockopt(_zmq.SNDHWM, 100)
+    _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
 
     def _zmq_publish(name, doc):
         try:

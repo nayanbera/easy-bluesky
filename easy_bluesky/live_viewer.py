@@ -354,7 +354,8 @@ class LiveViewer(QWidget):
         self.plot_widget.setLabel("left", y_label)
 
     def _reset_run(self):
-        self._data = {}
+        self._data    = {}
+        self._x_signal = None
         if PYQTGRAPH_AVAILABLE:
             for curve in self._curves.values():
                 try:
@@ -365,6 +366,12 @@ class LiveViewer(QWidget):
             if pi.legend:
                 pi.legend.clear()
         self._curves = {}
+        self.x_combo.blockSignals(True)
+        self.x_combo.clear()
+        self.x_combo.blockSignals(False)
+        self.y_list.blockSignals(True)
+        self.y_list.clear()
+        self.y_list.blockSignals(False)
 
     # ── Double-click: move motor ───────────────────────────────────────────────
 
