@@ -925,7 +925,7 @@ class ZMQWorker(QObject):
             return
         if self._device_reader is not None and self._device_reader.isRunning():
             return  # already in progress
-        self._device_reader = _DeviceStatusReader(self.rm, self)
+        self._device_reader = _DeviceStatusReader(self.rm)
         self._device_reader.readings_ready.connect(self.device_readings_updated)
         self._device_reader.read_error.connect(self.device_read_error)
         self._device_reader.read_error.connect(self.error_occurred)
@@ -952,7 +952,7 @@ class ZMQWorker(QObject):
             return
         if self._pv_names_reader is not None and self._pv_names_reader.isRunning():
             return
-        self._pv_names_reader = _PVNamesReader(self.rm, self)
+        self._pv_names_reader = _PVNamesReader(self.rm)
         self._pv_names_reader.pv_names_ready.connect(self.pv_names_ready)
         self._pv_names_reader.read_error.connect(self.pv_names_error)
         self._pv_names_reader.start()
