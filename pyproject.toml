@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy-bluesky"
-version = "0.1.1"
+version = "0.1.2"
 description = "PyQt6 desktop app for controlling Bluesky experiments via the queue server"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,7 @@ dependencies = [
     "suitcase-jsonl>=0.2",
     "bluesky-queueserver-api>=0.0.13",
     "paramiko>=3.0",
+    "pymongo>=4.0",
 ]
 
 [project.optional-dependencies]
