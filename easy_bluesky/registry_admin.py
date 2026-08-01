@@ -221,6 +221,12 @@ class RegistryAdminWindow(QDialog):
         iv = QVBoxLayout(inner)
         iv.setSpacing(12)
 
+        self._pw_host_label = QLabel("")
+        self._pw_host_label.setStyleSheet(
+            "font-size: 11px; color: #888; padding: 2px 0 6px 0;"
+        )
+        iv.addWidget(self._pw_host_label)
+
         self._pw_title = QLabel("Admin Password")
         self._pw_title.setStyleSheet("font-size: 14px; font-weight: bold;")
         iv.addWidget(self._pw_title)
@@ -495,6 +501,9 @@ class RegistryAdminWindow(QDialog):
     def _on_fetch_done(self, registry: dict, running: dict):
         self._registry = registry
         self._running  = running
+        self._pw_host_label.setText(
+            f"Registry on:  {self._effective_registry_host()}"
+        )
         has_hash = bool(registry.get("admin_password_hash", ""))
         if has_hash:
             self._pw_title.setText("Admin Password")

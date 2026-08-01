@@ -7,13 +7,279 @@ import socket
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 from .widgets import NoScrollSpinBox
+
+
+# ── Registry helper: background SSH fetch ─────────────────────────────────────
+
+class _RegistryFetchWorker(QThread):
+    """Fetch registry.json via SSH and probe all instances in background."""
+    done  = pyqtSignal(dict, dict)   # (registry_dict, {name: running_bool})
+    error = pyqtSignal(str)
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+
+    def run(self):
+        try:
+            from .registry import fetch_registry, probe_all_instances
+            reg     = fetch_registry(self._settings)
+            running = probe_all_instances(reg.get("instances", []))
+            self.done.emit(reg, running)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ── Import from Registry dialog ────────────────────────────────────────────────
+
+class _ImportFromRegistryDialog(QDialog):
+    """Show registry instances as a checklist; caller imports the selection."""
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings   = settings
+        self._instances  = []
+        self._checkboxes = []
+        self.setWindowTitle("Import from Registry")
+        self.setMinimumWidth(440)
+
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        host = settings.get("registry_host") or settings.get("host", "")
+        host_lbl = QLabel(f"Registry on:  <b>{host}</b>")
+        v.addWidget(host_lbl)
+
+        self._status = QLabel("Connecting…")
+        self._status.setObjectName("dim_text")
+        v.addWidget(self._status)
+
+        # Checkbox list (hidden until fetch completes)
+        self._list_w = QWidget()
+        self._list_lay = QVBoxLayout(self._list_w)
+        self._list_lay.setContentsMargins(0, 0, 0, 0)
+        self._list_lay.setSpacing(4)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidget(self._list_w)
+        self._scroll.setMinimumHeight(150)
+        self._scroll.setVisible(False)
+        v.addWidget(self._scroll)
+
+        btn_row = QHBoxLayout()
+        self._btn_import = QPushButton("Import Selected")
+        self._btn_import.setEnabled(False)
+        self._btn_import.clicked.connect(self.accept)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(self._btn_import)
+        v.addLayout(btn_row)
+
+        self._worker = _RegistryFetchWorker(settings, parent=self)
+        self._worker.done.connect(self._on_fetched)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
+
+    def _on_fetched(self, registry: dict, running: dict):
+        instances = registry.get("instances", [])
+        if not instances:
+            self._status.setText("Registry is empty — no instances to import.")
+            return
+        self._instances = instances
+        self._status.setText(
+            f"Found {len(instances)} instance(s).  Select which to add as local profiles:"
+        )
+        for inst in instances:
+            name = inst.get("name", "(unnamed)")
+            host = inst.get("host", "")
+            ctrl = inst.get("control_port", "?")
+            cb = QCheckBox(f"{name}   ({host}:{ctrl})")
+            cb.setChecked(True)
+            self._checkboxes.append(cb)
+            self._list_w.layout().addWidget(cb)
+        self._list_w.layout().addStretch()
+        self._scroll.setVisible(True)
+        self._btn_import.setEnabled(True)
+
+    def _on_error(self, msg: str):
+        self._status.setText(f"✗  {msg}")
+        self._status.setStyleSheet("color: #d62728;")
+
+    def selected_instances(self) -> list:
+        return [
+            inst for inst, cb in zip(self._instances, self._checkboxes)
+            if cb.isChecked()
+        ]
+
+
+# ── Publish to Registry dialog ─────────────────────────────────────────────────
+
+class _PublishToRegistryDialog(QDialog):
+    """Authenticate against the registry on the profile's host, then push the profile."""
+
+    def __init__(self, settings: dict, profile: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self._profile  = profile
+        self._registry = {}
+        self.setWindowTitle("Publish to Registry")
+        self.setMinimumWidth(420)
+
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        host = settings.get("registry_host") or settings.get("host", "")
+        v.addWidget(QLabel(f"Registry on:  <b>{host}</b>"))
+
+        name = profile.get("name", "")
+        ctrl = profile.get("control_port", "?")
+        info_lbl = QLabel(
+            f"Publishing profile <b>{name}</b> (control port {ctrl}) to the registry."
+        )
+        info_lbl.setWordWrap(True)
+        v.addWidget(info_lbl)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        v.addWidget(sep)
+
+        self._pw_title = QLabel("Fetching registry…")
+        self._pw_title.setStyleSheet("font-weight: bold;")
+        v.addWidget(self._pw_title)
+
+        self._pw_sub = QLabel("")
+        self._pw_sub.setWordWrap(True)
+        self._pw_sub.setObjectName("dim_text")
+        v.addWidget(self._pw_sub)
+
+        self._pw_form = QFormLayout()
+        self._pw_form.setHorizontalSpacing(12)
+        self._pw_entry = QLineEdit()
+        self._pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        self._pw_entry.setPlaceholderText("Password")
+        self._pw_entry.returnPressed.connect(self._on_publish)
+        self._pw_form.addRow("Password:", self._pw_entry)
+        self._pw_confirm = QLineEdit()
+        self._pw_confirm.setEchoMode(QLineEdit.EchoMode.Password)
+        self._pw_confirm.setPlaceholderText("Confirm password")
+        self._pw_confirm.returnPressed.connect(self._on_publish)
+        self._pw_form.addRow("Confirm:", self._pw_confirm)
+        v.addLayout(self._pw_form)
+
+        self._pw_error = QLabel("")
+        self._pw_error.setStyleSheet("color: #d62728;")
+        self._pw_error.setWordWrap(True)
+        v.addWidget(self._pw_error)
+
+        self._pub_status = QLabel("")
+        self._pub_status.setObjectName("dim_text")
+        v.addWidget(self._pub_status)
+
+        btn_row = QHBoxLayout()
+        self._btn_publish = QPushButton("Publish")
+        self._btn_publish.setDefault(True)
+        self._btn_publish.setEnabled(False)
+        self._btn_publish.clicked.connect(self._on_publish)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(self._btn_publish)
+        v.addLayout(btn_row)
+
+        self._worker = _RegistryFetchWorker(settings, parent=self)
+        self._worker.done.connect(self._on_fetched)
+        self._worker.error.connect(self._on_fetch_error)
+        self._worker.start()
+
+    def _on_fetched(self, registry: dict, _running: dict):
+        self._registry = registry
+        has_hash = bool(registry.get("admin_password_hash", ""))
+        if has_hash:
+            self._pw_title.setText("Admin Password")
+            self._pw_sub.setText(
+                "Enter the admin password to publish to this registry."
+            )
+            self._pw_form.setRowVisible(self._pw_confirm, False)
+        else:
+            self._pw_title.setText("Create Admin Password")
+            self._pw_sub.setText(
+                "No admin password is set yet. "
+                "Create one to protect the registry from unauthorised changes."
+            )
+            self._pw_form.setRowVisible(self._pw_confirm, True)
+        self._btn_publish.setEnabled(True)
+        self._pw_entry.setFocus()
+
+    def _on_fetch_error(self, msg: str):
+        self._pw_title.setText("Connection failed")
+        self._pw_sub.setText(f"✗  {msg}")
+        self._pw_sub.setStyleSheet("color: #d62728;")
+
+    def _on_publish(self):
+        from .registry import hash_password, verify_password, save_registry
+        password = self._pw_entry.text()
+        stored   = self._registry.get("admin_password_hash", "")
+        if not stored:
+            confirm = self._pw_confirm.text()
+            if not password:
+                self._pw_error.setText("Password cannot be empty.")
+                return
+            if password != confirm:
+                self._pw_error.setText("Passwords do not match.")
+                return
+            self._registry["admin_password_hash"] = hash_password(password)
+        else:
+            if not verify_password(password, stored):
+                self._pw_error.setText("Incorrect password.")
+                self._pw_entry.clear()
+                self._pw_entry.setFocus()
+                return
+
+        # Add or update this profile as a registry instance
+        instances = self._registry.setdefault("instances", [])
+        name      = self._profile.get("name", "")
+        existing  = next((i for i in instances if i.get("name") == name), None)
+        inst = {
+            "name":         name,
+            "host":         self._profile.get("host", ""),
+            "description":  self._profile.get("description", ""),
+            "control_port": self._profile.get("control_port", 60615),
+            "info_port":    self._profile.get("info_port",    60625),
+            "doc_port":     self._profile.get("doc_port",     60630),
+            "procserv_port":self._profile.get("procserv_port",60635),
+            "devices_file": self._profile.get("devices_file", "devices.py"),
+            "conda_env":    self._profile.get("conda_env",    ""),
+            "conda_path":   self._profile.get("conda_path",   "~/miniconda3"),
+        }
+        if existing:
+            existing.update(inst)
+        else:
+            instances.append(inst)
+
+        self._btn_publish.setEnabled(False)
+        self._pub_status.setText("Saving…")
+        self._pw_error.setText("")
+        try:
+            save_registry(self._settings, self._registry)
+            self._pub_status.setText("✓  Published successfully.")
+            self._pub_status.setStyleSheet("color: #2ca02c;")
+            QTimer.singleShot(1200, self.accept)
+        except Exception as e:
+            self._pub_status.setText(f"✗  {e}")
+            self._pub_status.setStyleSheet("color: #d62728;")
+            self._btn_publish.setEnabled(True)
+
 
 _SETTINGS_FILE = Path.home() / ".easy_bluesky" / "connection.json"
 
@@ -642,38 +908,22 @@ class ConnectionDialog(QDialog):
         lay.addWidget(reg_title)
 
         reg_note = QLabel(
-            "Central registry of RE Manager instances across the network.\n"
-            "registry.json lives on the registry host; clients fetch it at startup\n"
-            "to discover available instances and their running status."
+            "The registry is a shared list of RE Manager instances stored on the "
+            "beamline host (registry.json).  Use Import to pull instances from the "
+            "host into your local profiles, or Publish to push a profile up to the registry."
         )
         reg_note.setWordWrap(True)
         reg_note.setObjectName("dim_text")
         lay.addWidget(reg_note)
 
-        reg_form = QFormLayout()
-        reg_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        reg_form.setHorizontalSpacing(12)
-
-        self._reg_host = QLineEdit(self._settings.get("registry_host", ""))
-        self._reg_host.setPlaceholderText(
-            "hostname or IP  (leave empty to use the main Host above)"
-        )
-        reg_form.addRow("Registry host:", self._reg_host)
-
-        self._reg_path = QLineEdit(self._settings.get("registry_path", ""))
-        self._reg_path.setPlaceholderText("~/.easy_bluesky/registry.json")
-        reg_form.addRow("Registry path:", self._reg_path)
-
-        lay.addLayout(reg_form)
-
         reg_btn_row = QHBoxLayout()
-        btn_sync = QPushButton("Sync Profiles from Registry")
-        btn_sync.setToolTip(
-            "SSH to the registry host, read registry.json, and merge\n"
-            "its instances into the local profile list."
+        btn_import = QPushButton("⬇  Import from Registry…")
+        btn_import.setToolTip(
+            "SSH to the active profile's host, read registry.json, and\n"
+            "add the instances you select as local profiles."
         )
-        btn_sync.clicked.connect(self._on_sync_registry)
-        reg_btn_row.addWidget(btn_sync, alignment=Qt.AlignmentFlag.AlignLeft)
+        btn_import.clicked.connect(self._on_import_from_registry)
+        reg_btn_row.addWidget(btn_import, alignment=Qt.AlignmentFlag.AlignLeft)
         lay.addLayout(reg_btn_row)
 
         self._reg_status = QLabel("")
@@ -785,10 +1035,20 @@ class ConnectionDialog(QDialog):
         self._prof_local_note.setVisible(False)
         right_lay.addWidget(self._prof_local_note)
 
+        prof_btn_row = QHBoxLayout()
         btn_auto = QPushButton("Auto-assign Ports")
         btn_auto.setToolTip("Find 4 free ports and assign them to this profile")
         btn_auto.clicked.connect(self._on_auto_assign_ports)
-        right_lay.addWidget(btn_auto, alignment=Qt.AlignmentFlag.AlignLeft)
+        prof_btn_row.addWidget(btn_auto)
+        btn_publish = QPushButton("⬆  Publish to Registry…")
+        btn_publish.setToolTip(
+            "Push this profile to the registry stored on its host.\n"
+            "Other clients can then import it."
+        )
+        btn_publish.clicked.connect(self._on_publish_to_registry)
+        prof_btn_row.addWidget(btn_publish)
+        prof_btn_row.addStretch()
+        right_lay.addLayout(prof_btn_row)
 
         self._auto_assign_note = QLabel("")
         self._auto_assign_note.setObjectName("dim_text")
@@ -1101,39 +1361,70 @@ class ConnectionDialog(QDialog):
             installed_path = self._key_installer._key_path
             self._ssh_key.setText(str(installed_path))
 
-    def _on_sync_registry(self):
+    def _on_import_from_registry(self):
         settings = self._collect_top_level()
-        self._reg_status.setText("Fetching registry via SSH…")
-        self._reg_status.setStyleSheet("color: #888;")
-        from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents()
-        try:
-            from .registry import fetch_registry, merge_into_profiles
-            registry = fetch_registry(settings)
-            instances = registry.get("instances", [])
-            if not instances:
-                self._reg_status.setText("Registry is empty or could not be reached.")
-                self._reg_status.setStyleSheet("color: #ff7f0e;")
-                return
-            if self._current_row is not None and self._current_row >= 0:
-                self._save_current_editor()
-            profiles = self._settings.get("profiles", [])
-            profiles, added, updated = merge_into_profiles(profiles, instances)
-            self._settings["profiles"] = profiles
-            self._current_row = None
-            self._populate_profile_list()
-            active = self._settings.get("active_profile", "Default")
-            for i in range(self._profile_list.count()):
-                if self._profile_list.item(i).data(Qt.ItemDataRole.UserRole) == active:
-                    self._profile_list.setCurrentRow(i)
-                    break
+        # Use active profile's host as registry host
+        profile = get_active_profile(settings)
+        host = (profile.get("host", "").strip()
+                or settings.get("host", "").strip())
+        if not host:
             self._reg_status.setText(
-                f"✓  Added {added} new profile(s), updated {updated} existing."
+                "✗  No host configured. Set a host in the active profile first."
             )
-            self._reg_status.setStyleSheet("color: #2ca02c;")
-        except Exception as e:
-            self._reg_status.setText(f"✗  {e}")
             self._reg_status.setStyleSheet("color: #d62728;")
+            return
+        reg_settings = dict(settings)
+        reg_settings["registry_host"] = host
+        dlg = _ImportFromRegistryDialog(reg_settings, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        instances = dlg.selected_instances()
+        if not instances:
+            return
+        from .registry import merge_into_profiles
+        if self._current_row is not None and self._current_row >= 0:
+            self._save_current_editor()
+        profiles = self._settings.get("profiles", [])
+        profiles, added, updated = merge_into_profiles(profiles, instances)
+        self._settings["profiles"] = profiles
+        # Remember the registry host for Registry Admin use
+        self._settings["registry_host"] = host
+        self._current_row = None
+        self._populate_profile_list()
+        active = self._settings.get("active_profile", "Default")
+        for i in range(self._profile_list.count()):
+            if self._profile_list.item(i).data(Qt.ItemDataRole.UserRole) == active:
+                self._profile_list.setCurrentRow(i)
+                break
+        self._reg_status.setText(
+            f"✓  Added {added} new profile(s), updated {updated} existing."
+        )
+        self._reg_status.setStyleSheet("color: #2ca02c;")
+
+    def _on_publish_to_registry(self):
+        if self._current_row is None or self._current_row < 0:
+            return
+        self._save_current_editor()
+        settings = self._collect_top_level()
+        profiles = self._settings.get("profiles", [])
+        if self._current_row >= len(profiles):
+            return
+        profile = profiles[self._current_row]
+        host = (profile.get("host", "").strip()
+                or settings.get("host", "").strip())
+        if not host:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "No host",
+                "Set a host (Host override or global Host) in this profile first."
+            )
+            return
+        reg_settings = dict(settings)
+        reg_settings["registry_host"] = host
+        dlg = _PublishToRegistryDialog(reg_settings, profile, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            # Remember the registry host so Registry Admin can reach it
+            self._settings["registry_host"] = host
 
     def _collect_top_level(self) -> dict:
         return {
@@ -1145,8 +1436,8 @@ class ConnectionDialog(QDialog):
             "ssh_service":              self._ssh_service.text().strip(),
             "conda_env":                self._conda_env.text().strip(),
             "conda_path":               self._conda_path.text().strip() or "~/miniconda3",
-            "registry_host":            self._reg_host.text().strip(),
-            "registry_path":            self._reg_path.text().strip(),
+            "registry_host":            self._settings.get("registry_host", ""),
+            "registry_path":            self._settings.get("registry_path", ""),
             "epics_ca_addr_list":       self._ca_addr_list.text().strip(),
             "epics_ca_auto_addr_list":  self._ca_auto.isChecked(),
         }
