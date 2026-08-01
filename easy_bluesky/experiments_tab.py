@@ -990,6 +990,28 @@ class ExperimentsTab(QWidget):
 
     # ── Public update slots ────────────────────────────────────────────────────
 
+    def _fetch_mongo_scan_id(self, run_uid: str):
+        """Return the MongoDB scan_id for *run_uid*, or None if unavailable."""
+        if not self._settings or not run_uid:
+            return None
+        try:
+            from .connection_settings import get_active_profile
+            import pymongo
+            p  = get_active_profile(self._settings)
+            db = p.get("mongo_db", "").strip()
+            if not db:
+                return None
+            host = p.get("mongo_host", "") or "localhost"
+            port = int(p.get("mongo_port", 27017))
+            client = pymongo.MongoClient(host, port, serverSelectionTimeoutMS=1000)
+            doc    = client[db]["run_start"].find_one(
+                {"uid": run_uid}, {"scan_id": 1}
+            )
+            client.close()
+            return int(doc["scan_id"]) if doc and "scan_id" in doc else None
+        except Exception:
+            return None
+
     def update_history(self, items: list):
         if not self._active_exp_path:
             return
@@ -1015,6 +1037,16 @@ class ExperimentsTab(QWidget):
                 self._logged_uids.add(uid)
                 continue
 
+            # Use MongoDB scan_id for plans that generated bluesky runs; this
+            # keeps the plan log number consistent with the MongoDB browser.
+            # Fall back to the per-experiment counter when MongoDB is unavailable
+            # (sim mode, unconfigured) or for motion-only plans (no run_uids).
+            scan_num = self._next_scan_num
+            if run_uids:
+                mongo_id = self._fetch_mongo_scan_id(run_uids[0])
+                if mongo_id is not None:
+                    scan_num = mongo_id
+
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
                 if t_stop else datetime.now().isoformat()
@@ -1029,13 +1061,15 @@ class ExperimentsTab(QWidget):
                 "kwargs":      item.get("kwargs", {}) or {},
                 "exit_status": exit_status,
                 "duration_s":  round(dur, 2) if dur else None,
-                "scan_num":    self._next_scan_num,
+                "scan_num":    scan_num,
             }
             try:
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
-                self._next_scan_num += 1
+                # Keep _next_scan_num ahead of the highest assigned number so
+                # motion plans (no run_uids / no MongoDB) never collide.
+                self._next_scan_num = max(self._next_scan_num, scan_num) + 1
                 changed = True
             except Exception:
                 pass

@@ -1214,10 +1214,11 @@ class MainWindow(QMainWindow):
     def _on_connected(self):
         self.conn_label.setText("⬤  Connected")
         self.conn_label.setStyleSheet("color: #2ca02c;")
-        ctrl_addr, _, _ = make_zmq_addrs(self._conn_settings)
+        ctrl_addr, _, doc_addr = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("Connected to RE Manager at " + ctrl_addr)
         profile = get_active_profile(self._conn_settings)
         self.watchdog_tab.load_for_profile(profile.get("name", "Default"))
+        self.experiments_tab.live_viewer.restart_zmq(doc_addr)
         # If this is an SSH-managed instance, tail the procServ log file so
         # that worker stdout (startup script output, plan progress) reaches the
         # RE Console regardless of whether the manager publishes to ZMQ.
