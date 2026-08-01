@@ -220,12 +220,26 @@ def read_devices_status():
 
 print("[re_startup_mongo] RE created, devices and plans loaded")
 
-# ── BestEffortCallback (live scan table in console) ────────────────────────────
+# ── BestEffortCallback / LiveTable (live scan table in console) ────────────────
 try:
     from bluesky.callbacks.best_effort import BestEffortCallback as _BEC
     bec = _BEC()
     RE.subscribe(bec)
     print("[re_startup_mongo] BestEffortCallback subscribed")
+except ImportError:
+    # matplotlib not available — subscribe a LiveTable per run instead
+    try:
+        from bluesky.callbacks import LiveTable as _LiveTable
+        from event_model import RunRouter as _RunRouter
+
+        def _live_table_factory(name, doc):
+            keys = list(doc.get("data_keys", {}).keys())
+            return [_LiveTable(keys)], []
+
+        RE.subscribe(_RunRouter([_live_table_factory]))
+        print("[re_startup_mongo] LiveTable subscribed (matplotlib not available)")
+    except Exception as _e2:
+        print(f"[re_startup_mongo] WARNING: no live table callback: {_e2}")
 except Exception as _e:
     print(f"[re_startup_mongo] WARNING: BestEffortCallback not subscribed: {_e}")
 
@@ -291,7 +305,6 @@ if _MONGO_DB:
         _mongo_client = _pymongo.MongoClient(_MONGO_HOST, _MONGO_PORT,
                                              serverSelectionTimeoutMS=5000)
         _mongo_client.admin.command("ping")
-        _mongo_db_obj = _mongo_client[_MONGO_DB]
 
         _MONGO_COLL = {
             'start':      'run_start',
@@ -302,16 +315,25 @@ if _MONGO_DB:
             'datum':      'datum',
         }
 
-        def _mongo_write(name, doc):
-            try:
-                doc_copy = dict(doc)
-                if 'uid' in doc_copy:
-                    doc_copy['_id'] = doc_copy['uid']
-                _mongo_db_obj[_MONGO_COLL.get(name, name)].insert_one(doc_copy)
-            except Exception as _we:
-                if 'duplicate key' not in str(_we).lower():
-                    print(f"[re_startup_mongo] MongoDB write error ({name}): {_we}")
+        def _make_mongo_write(_client, _db_name):
+            # Capture the Database object inside a closure so it is NOT a bare
+            # module-level variable.  pymongo >= 4 raises NotImplementedError for
+            # bool(Database), and bluesky-queueserver calls `if obj:` on every
+            # name in the startup-script namespace when building its device list.
+            _db = _client[_db_name]
+            def _write(name, doc):
+                try:
+                    doc_copy = dict(doc)
+                    if 'uid' in doc_copy:
+                        doc_copy['_id'] = doc_copy['uid']
+                    _db[_MONGO_COLL.get(name, name)].insert_one(doc_copy)
+                except Exception as _we:
+                    if 'duplicate key' not in str(_we).lower():
+                        print(f"[re_startup_mongo] MongoDB write error ({name}): {_we}")
+            return _write
 
+        _mongo_write = _make_mongo_write(_mongo_client, _MONGO_DB)
+        del _mongo_client  # remove MongoClient from namespace for the same reason
         RE.subscribe(_mongo_write)
         print(
             f"[re_startup_mongo] MongoDB → {_MONGO_HOST}:{_MONGO_PORT}"
@@ -336,7 +358,15 @@ try:
 
     _zmq_ctx  = _zmq.Context()
     _zmq_sock = _zmq_ctx.socket(_zmq.PUB)
-    _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
+    _zmq_sock.setsockopt(_zmq.LINGER, 0)
+    _zmq_sock.setsockopt(_zmq.SNDHWM, 100)
+    try:
+        _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
+    except _zmq.error.ZMQError:
+        # Previous RE Manager instance left the port bound; wait briefly and retry.
+        import time as _time
+        _time.sleep(1)
+        _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
 
     def _zmq_publish(name, doc):
         try:
