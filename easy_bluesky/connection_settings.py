@@ -747,6 +747,203 @@ class _SshKeyInstaller(QThread):
         raise ValueError(f"Cannot read public key from {key_path}")
 
 
+# ── MongoDB setup checker ─────────────────────────────────────────────────────
+
+class _MongoCheckWorker(QThread):
+    """SSH to the RE machine and run a MongoDB + Python package diagnostic."""
+    line_ready = pyqtSignal(str, str)   # (text, color)  '#2ca02c'=OK '#d62728'=fail etc.
+    finished_ok = pyqtSignal(bool)      # True if all checks passed
+
+    # One-liner Python script executed on the remote machine.
+    # Uses only stdlib + packages we want to verify — no bluesky imports needed.
+    _DIAG = """\
+python3 - <<'PYEOF'
+import sys, subprocess, importlib
+
+# ── 1. mongod running ────────────────────────────────────────────────────────
+r = subprocess.run(['pgrep', '-x', 'mongod'], capture_output=True)
+if r.returncode == 0:
+    print('OK:mongod is running (pid', r.stdout.decode().strip(), ')')
+else:
+    # Try systemctl as fallback
+    r2 = subprocess.run(['systemctl', 'is-active', 'mongod'],
+                        capture_output=True, text=True)
+    if r2.stdout.strip() == 'active':
+        print('OK:mongod service is active')
+    else:
+        print('FAIL:mongod is NOT running')
+        print('CMD:sudo systemctl start mongod')
+        print('CMD:sudo systemctl enable mongod')
+
+# ── 2. pymongo ───────────────────────────────────────────────────────────────
+try:
+    import pymongo
+    print('OK:pymongo', pymongo.version, 'installed')
+    # Try connecting
+    try:
+        c = pymongo.MongoClient('MONGO_HOST', MONGO_PORT,
+                                serverSelectionTimeoutMS=3000)
+        c.admin.command('ping')
+        c.close()
+        print('OK:MongoDB connection to MONGO_HOST:MONGO_PORT succeeded')
+    except Exception as e:
+        print('FAIL:MongoDB connection to MONGO_HOST:MONGO_PORT failed -', str(e)[:120])
+except ImportError:
+    print('FAIL:pymongo not installed')
+    print('CMD:pip install pymongo')
+
+# ── 3. suitcase.mongo_normalized ────────────────────────────────────────────
+try:
+    import suitcase.mongo_normalized
+    print('OK:suitcase.mongo_normalized installed')
+except ImportError:
+    print('FAIL:suitcase.mongo_normalized not installed')
+    print('CMD:pip install suitcase-mongo-normalized')
+PYEOF"""
+
+    def __init__(self, settings: dict, mongo_host: str, mongo_port: int,
+                 conda_env: str, conda_path: str, parent=None):
+        super().__init__(parent)
+        self._settings    = settings
+        self._mongo_host  = mongo_host
+        self._mongo_port  = mongo_port
+        self._conda_env   = conda_env
+        self._conda_path  = conda_path
+
+    def run(self):
+        script = (
+            self._DIAG
+            .replace("MONGO_HOST", self._mongo_host)
+            .replace("MONGO_PORT", str(self._mongo_port))
+        )
+        # Wrap in conda activation if needed
+        if self._conda_env:
+            base = (self._conda_path or "~/miniconda3").replace("~", "$HOME")
+            prefix = (
+                f"source {base}/etc/profile.d/conda.sh 2>/dev/null; "
+                f"conda activate {self._conda_env} 2>/dev/null; "
+            )
+            script = prefix + script
+
+        all_ok = True
+        try:
+            from .ssh_manager import _get_client
+            client = _get_client(self._settings)
+            _, stdout, stderr = client.exec_command(script, timeout=20)
+            for raw_line in stdout:
+                line = raw_line.rstrip()
+                if line.startswith("OK:"):
+                    self.line_ready.emit("✓  " + line[3:], "#2ca02c")
+                elif line.startswith("FAIL:"):
+                    self.line_ready.emit("✗  " + line[5:], "#d62728")
+                    all_ok = False
+                elif line.startswith("CMD:"):
+                    self.line_ready.emit("   → " + line[4:], "#ff7f0e")
+                elif line.strip():
+                    self.line_ready.emit("   " + line, "#888888")
+            err = stderr.read().decode(errors="replace").strip()
+            if err:
+                for el in err.splitlines():
+                    if el.strip():
+                        self.line_ready.emit("   " + el, "#888888")
+            client.close()
+        except Exception as exc:
+            self.line_ready.emit(f"✗  SSH error: {exc}", "#d62728")
+            all_ok = False
+        self.finished_ok.emit(all_ok)
+
+
+class _MongoCheckDialog(QDialog):
+    """Show the MongoDB diagnostic output in a small scrollable log."""
+
+    def __init__(self, settings: dict, db_name: str,
+                 mongo_host: str, mongo_port: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("MongoDB Setup Check")
+        self.setMinimumSize(520, 340)
+
+        conda_env  = settings.get("conda_env",  "").strip()
+        conda_path = settings.get("conda_path", "~/miniconda3").strip()
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(6)
+
+        info = QLabel(
+            f"Checking MongoDB on  <b>{settings.get('host', 'localhost')}</b>"
+            f"  (database: <b>{db_name}</b>)"
+        )
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
+        from PyQt6.QtWidgets import QPlainTextEdit
+        from PyQt6.QtGui import QFont, QTextCharFormat, QColor, QTextCursor
+        self._log = QPlainTextEdit()
+        self._log.setReadOnly(True)
+        f = QFont("Menlo")
+        f.setStyleHint(QFont.StyleHint.Monospace)
+        f.setPointSize(11)
+        self._log.setFont(f)
+        self._log.setMaximumBlockCount(200)
+        lay.addWidget(self._log, 1)
+
+        self._summary = QLabel("Running checks…")
+        self._summary.setWordWrap(True)
+        lay.addWidget(self._summary)
+
+        # Install-help section (hidden until a failure is found)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(sep)
+
+        self._help_label = QLabel(
+            "<b>Manual installation on the RE machine:</b><br>"
+            "<b>1. MongoDB server</b> (run as root / sudo):<br>"
+            "<code style='color:#ff7f0e'>  # Ubuntu / Debian<br>"
+            "  sudo apt-get install -y mongodb-org<br>"
+            "  sudo systemctl enable --now mongod</code><br><br>"
+            "<b>2. Python packages</b> (in the conda env):<br>"
+            "<code style='color:#ff7f0e'>  pip install pymongo suitcase-mongo-normalized</code>"
+        )
+        self._help_label.setTextFormat(Qt.TextFormat.RichText)
+        self._help_label.setWordWrap(True)
+        self._help_label.setVisible(False)
+        lay.addWidget(self._help_label)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        lay.addWidget(btn_close, 0, Qt.AlignmentFlag.AlignRight)
+
+        self._worker = _MongoCheckWorker(
+            settings, mongo_host, mongo_port,
+            conda_env, conda_path, parent=self,
+        )
+        self._worker.line_ready.connect(self._append_line)
+        self._worker.finished_ok.connect(self._on_done)
+        self._worker.start()
+
+    def _append_line(self, text: str, color: str):
+        from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor
+        cursor = self._log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.insertText(text + "\n", fmt)
+        self._log.setTextCursor(cursor)
+        self._log.ensureCursorVisible()
+
+    def _on_done(self, all_ok: bool):
+        if all_ok:
+            self._summary.setText("✓  All checks passed — MongoDB is ready.")
+            self._summary.setStyleSheet("color: #2ca02c; font-weight: bold;")
+        else:
+            self._summary.setText(
+                "✗  One or more checks failed.  "
+                "Run the commands shown in orange on the RE machine."
+            )
+            self._summary.setStyleSheet("color: #d62728; font-weight: bold;")
+            self._help_label.setVisible(True)
+
+
 # ── Connection dialog ──────────────────────────────────────────────────────────
 
 class ConnectionDialog(QDialog):
@@ -1066,6 +1263,18 @@ class ConnectionDialog(QDialog):
         self._prof_mongo_port.setValue(27017)
         self._prof_form.addRow("Mongo port:", self._prof_mongo_port)
 
+        btn_test_mongo = QPushButton("Test MongoDB Setup…")
+        btn_test_mongo.setToolTip(
+            "SSH to the RE machine and check whether MongoDB is running\n"
+            "and the required Python packages are installed."
+        )
+        btn_test_mongo.clicked.connect(self._on_test_mongo)
+        self._prof_form.addRow("", btn_test_mongo)
+
+        self._mongo_result = QLabel("")
+        self._mongo_result.setWordWrap(True)
+        self._prof_form.addRow("", self._mongo_result)
+
         for _sb in (self._prof_ctrl, self._prof_info):
             _sb.valueChanged.connect(self._update_zmq_label)
 
@@ -1359,6 +1568,32 @@ class ConnectionDialog(QDialog):
         self._ssh_result.setStyleSheet(
             "color: #2ca02c;" if ok else "color: #d62728;"
         )
+
+    def _on_test_mongo(self):
+        """SSH to the RE machine and verify MongoDB + Python package setup."""
+        self._save_current_editor()
+        profile  = self._current_mongo_profile()
+        settings = self._collect_top_level()
+        db       = profile.get("mongo_db", "").strip()
+        host     = profile.get("mongo_host", "").strip() or "localhost"
+        port     = profile.get("mongo_port", 27017)
+
+        if not db:
+            self._mongo_result.setText("Set a Database name first.")
+            self._mongo_result.setStyleSheet("color: #d62728;")
+            return
+
+        self._mongo_result.setText("Checking…")
+        self._mongo_result.setStyleSheet("color: #ff7f0e;")
+
+        dlg = _MongoCheckDialog(settings, db, host, int(port), parent=self)
+        dlg.exec()
+        self._mongo_result.setText("")
+
+    def _current_mongo_profile(self) -> dict:
+        row = self._current_row if self._current_row is not None else 0
+        profiles = self._settings.get("profiles", [])
+        return profiles[row] if 0 <= row < len(profiles) else {}
 
     def _setup_ssh_key(self):
         settings = self._collect_top_level()
