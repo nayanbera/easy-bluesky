@@ -26,6 +26,11 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+try:
+    import pyqtgraph.exporters  # noqa: F401 — ensure exporters are registered
+except ImportError:
+    pass
+
 from .config import PLOT_COLORS
 
 
@@ -243,6 +248,8 @@ class MongoDataBrowserTab(QWidget):
 
     COLORS = PLOT_COLORS
 
+    move_requested = pyqtSignal(str, float)   # (motor_name, target_position)
+
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
         self._settings       = settings
@@ -382,6 +389,7 @@ class MongoDataBrowserTab(QWidget):
         x_col.addWidget(QLabel("X axis:"))
         self._x_combo = QComboBox()
         self._x_combo.setMinimumWidth(130)
+        self._x_combo.currentIndexChanged.connect(self._auto_plot)
         x_col.addWidget(self._x_combo)
         x_col.addStretch()
         ctrl_lay.addLayout(x_col)
@@ -396,6 +404,7 @@ class MongoDataBrowserTab(QWidget):
         self._y_list.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
+        self._y_list.itemChanged.connect(self._auto_plot)
         y_col.addWidget(self._y_list)
         ctrl_lay.addLayout(y_col, 1)
 
@@ -406,6 +415,7 @@ class MongoDataBrowserTab(QWidget):
         self._norm_combo = QComboBox()
         self._norm_combo.setMinimumWidth(120)
         self._norm_combo.addItem("None", userData=None)
+        self._norm_combo.currentIndexChanged.connect(self._auto_plot)
         norm_col.addWidget(self._norm_combo)
         norm_col.addStretch()
         ctrl_lay.addLayout(norm_col)
@@ -413,23 +423,16 @@ class MongoDataBrowserTab(QWidget):
         ctrl_lay.addWidget(_vline())
 
         opt_col = QVBoxLayout()
-        self._log_y_cb   = QCheckBox("Log Y")
-        self._overlay_cb = QCheckBox("Overlay")
-        self._overlay_cb.setToolTip("Keep previous curves when plotting again")
+        self._log_y_cb = QCheckBox("Log Y")
+        self._log_y_cb.stateChanged.connect(self._auto_plot)
         opt_col.addWidget(self._log_y_cb)
-        opt_col.addWidget(self._overlay_cb)
         opt_col.addStretch()
 
-        btn_plot = QPushButton("Plot")
-        btn_plot.setFixedHeight(32)
-        btn_plot.setDefault(True)
-        btn_plot.clicked.connect(self._plot)
-        opt_col.addWidget(btn_plot)
-
-        btn_clear = QPushButton("Clear")
-        btn_clear.setFixedHeight(28)
-        btn_clear.clicked.connect(self._clear_plot)
-        opt_col.addWidget(btn_clear)
+        btn_screenshot = QPushButton("Screenshot")
+        btn_screenshot.setFixedHeight(28)
+        btn_screenshot.setToolTip("Save the current plot as a PNG image")
+        btn_screenshot.clicked.connect(self._save_screenshot)
+        opt_col.addWidget(btn_screenshot)
 
         self._btn_export_hdf5 = QPushButton("Export HDF5…")
         self._btn_export_hdf5.setFixedHeight(28)
@@ -449,6 +452,7 @@ class MongoDataBrowserTab(QWidget):
             self._plot_widget = pg.PlotWidget(background="#1e1e1e")
             self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self._plot_widget.addLegend()
+            self._plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
             rlayout.addWidget(self._plot_widget, 1)
         else:
             self._plot_widget = None
@@ -607,6 +611,7 @@ class MongoDataBrowserTab(QWidget):
             self._info_label.setText("Select a run to see details.")
             self._run_data_list = []
             self._clear_axis_controls()
+            self._clear_plot()
             return
 
         if len(rows) == 1:
@@ -709,6 +714,8 @@ class MongoDataBrowserTab(QWidget):
         if len(rows) == 1 and rows[0].row() < len(self._runs):
             self._update_info_single(rows[0].row())
 
+        self._plot()
+
     # ── Axis controls ──────────────────────────────────────────────────────────
 
     def _clear_axis_controls(self):
@@ -743,6 +750,7 @@ class MongoDataBrowserTab(QWidget):
 
     def _on_stream_changed(self, _idx: int):
         self._update_field_lists()
+        self._auto_plot()
 
     def _update_field_lists(self):
         if not self._run_data_list:
@@ -807,6 +815,7 @@ class MongoDataBrowserTab(QWidget):
         if rows and rows[0].row() < len(self._runs):
             motor_names = set(self._runs[rows[0].row()]["start"].get("motors", []))
 
+        self._y_list.blockSignals(True)
         self._y_list.clear()
         for k in sorted(keys):
             item = QListWidgetItem(k)
@@ -816,6 +825,7 @@ class MongoDataBrowserTab(QWidget):
                 Qt.CheckState.Unchecked if is_motor else Qt.CheckState.Checked
             )
             self._y_list.addItem(item)
+        self._y_list.blockSignals(False)
 
         # ── Norm by ───────────────────────────────────────────────────────────
         prev_norm = self._norm_combo.currentData()
@@ -852,19 +862,18 @@ class MongoDataBrowserTab(QWidget):
             self._set_status("Select at least one Y signal.", error=True)
             return
 
-        if not self._overlay_cb.isChecked():
-            for curve in self._curves.values():
-                try:
-                    self._plot_widget.removeItem(curve)
-                except Exception:
-                    pass
-            pi = self._plot_widget.getPlotItem()
-            if pi.legend:
-                pi.legend.clear()
-            self._curves = {}
+        for curve in self._curves.values():
+            try:
+                self._plot_widget.removeItem(curve)
+            except Exception:
+                pass
+        pi = self._plot_widget.getPlotItem()
+        if pi.legend:
+            pi.legend.clear()
+        self._curves = {}
 
         log_y     = self._log_y_cb.isChecked()
-        color_idx = len(self._curves)
+        color_idx = 0
         multi_run = len(self._run_data_list) > 1
 
         for rd in self._run_data_list:
@@ -959,6 +968,76 @@ class MongoDataBrowserTab(QWidget):
             pi.legend.clear()
         self._curves = {}
         self._plot_widget.setTitle("")
+
+    def _auto_plot(self, *_args):
+        """Re-plot whenever axis controls change — guard against no data."""
+        if self._run_data_list:
+            self._plot()
+
+    # ── Double-click: move motor ───────────────────────────────────────────────
+
+    def _on_plot_clicked(self, event):
+        if not event.double():
+            return
+        pos = event.scenePos()
+        if not self._plot_widget.sceneBoundingRect().contains(pos):
+            return
+
+        vb     = self._plot_widget.getPlotItem().vb
+        mp     = vb.mapSceneToView(pos)
+        x_val  = mp.x()
+
+        x_field = self._x_combo.currentData() or self._x_combo.currentText()
+        if x_field in ("time", "seq_num", None, ""):
+            return   # time/sequence axes are not motor positions
+
+        # Strip common readback suffixes to get the motor name
+        motor_guess = x_field
+        for suffix in ("_user_readback", "_readback", "_user_setpoint", "_setpoint"):
+            if motor_guess.endswith(suffix):
+                motor_guess = motor_guess[: -len(suffix)]
+                break
+
+        # Show last known position from the run data as context
+        last_pos = None
+        if self._run_data_list:
+            stream = self._stream_combo.currentText()
+            sdata  = self._run_data_list[-1]["streams"].get(stream, {})
+            arr    = sdata.get(x_field)
+            if arr is not None and len(arr):
+                last_pos = float(arr[-1])
+
+        msg = f"Move  '{motor_guess}'  to  {x_val:.6g}"
+        if last_pos is not None:
+            msg += f"\n\nLast scan end position: {last_pos:.6g}"
+        msg += f"\n\n(X-axis signal: {x_field})"
+
+        r = QMessageBox.question(
+            self, "Move Motor", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
+
+        self.move_requested.emit(motor_guess, x_val)
+
+    # ── Screenshot ─────────────────────────────────────────────────────────────
+
+    def _save_screenshot(self):
+        if not PG_AVAILABLE or self._plot_widget is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Plot Screenshot", "mongodb_plot.png",
+            "PNG Images (*.png);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            exporter = pg.exporters.ImageExporter(self._plot_widget.plotItem)
+            exporter.export(path)
+            self._set_status(f"✓ Screenshot saved → {Path(path).name}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Screenshot Failed", str(exc))
 
     # ── HDF5 export ────────────────────────────────────────────────────────────
 

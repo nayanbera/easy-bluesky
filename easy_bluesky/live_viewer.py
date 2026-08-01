@@ -18,10 +18,16 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox,
+    QFileDialog,
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
 from .plot_tools import setup_crosshair
+
+try:
+    import pyqtgraph.exporters  # noqa: F401 — ensure exporters are registered
+except ImportError:
+    pass
 
 
 class ZMQDocThread(QThread):
@@ -106,6 +112,11 @@ class LiveViewer(QWidget):
         btn_clear = QPushButton("Clear")
         btn_clear.clicked.connect(self._reset_run)
         ctrl.addWidget(btn_clear)
+
+        btn_screenshot = QPushButton("Screenshot")
+        btn_screenshot.setToolTip("Save the current plot as a PNG image")
+        btn_screenshot.clicked.connect(self._save_screenshot)
+        ctrl.addWidget(btn_screenshot)
         ctrl.addStretch()
 
         self.run_label = QLabel("No active run")
@@ -364,6 +375,23 @@ class LiveViewer(QWidget):
         ok, msg = self.worker.execute_item(item)
         if not ok:
             QMessageBox.warning(self, "Move Failed", msg)
+
+    # ── Screenshot ─────────────────────────────────────────────────────────────
+
+    def _save_screenshot(self):
+        if not PYQTGRAPH_AVAILABLE:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Live Plot Screenshot", "live_plot.png",
+            "PNG Images (*.png);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            exporter = pg.exporters.ImageExporter(self.plot_widget.plotItem)
+            exporter.export(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Screenshot Failed", str(exc))
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 

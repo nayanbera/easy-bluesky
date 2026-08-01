@@ -1180,6 +1180,7 @@ class MainWindow(QMainWindow):
 
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
         self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
+        self.mongo_browser.move_requested.connect(self._on_mongo_move_requested)
 
         self._connect_requested.connect(self.worker.connect)
 
@@ -1741,6 +1742,20 @@ class MainWindow(QMainWindow):
         self._refresh_recent_menu()
         exp_dir = str(Path(runs_dir).parent)
         self.mongo_browser.set_active_experiment(exp_dir)
+
+    def _on_mongo_move_requested(self, motor: str, position: float):
+        if not self.worker:
+            return
+        item = {
+            "name":      "mv",
+            "args":      [motor, position],
+            "kwargs":    {},
+            "item_type": "plan",
+        }
+        ok, msg = self.worker.execute_item(item)
+        if not ok:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Move Failed", msg)
 
     def closeEvent(self, event):
         self.worker.stop()
