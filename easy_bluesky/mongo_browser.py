@@ -87,7 +87,7 @@ class _DataFetcher(QThread):
                 times     = []
                 field_data = {k: [] for k in data_keys}
 
-                # suitcase.mongo_normalized writes event_page documents
+                # Try event_page first (suitcase.mongo_normalized format), then event
                 pages = list(
                     db["event_page"].find({"descriptor": desc_uid})
                 )

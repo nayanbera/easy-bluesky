@@ -792,13 +792,6 @@ except ImportError:
     print('FAIL:pymongo not installed')
     print('CMD:pip install pymongo')
 
-# ── 3. suitcase.mongo_normalized ────────────────────────────────────────────
-try:
-    import suitcase.mongo_normalized
-    print('OK:suitcase.mongo_normalized installed')
-except ImportError:
-    print('FAIL:suitcase.mongo_normalized not installed')
-    print('CMD:conda install -c conda-forge suitcase-mongo-normalized')
 PYEOF"""
 
     def __init__(self, settings: dict, mongo_host: str, mongo_port: int,
@@ -902,8 +895,7 @@ class _MongoCheckDialog(QDialog):
             "  sudo apt-get install -y mongodb-org<br>"
             "  sudo systemctl enable --now mongod</code><br><br>"
             "<b>2. Python packages</b> (in the conda env):<br>"
-            "<code style='color:#ff7f0e'>  pip install pymongo<br>"
-            "  conda install -c conda-forge suitcase-mongo-normalized</code>"
+            "<code style='color:#ff7f0e'>  pip install pymongo</code>"
         )
         self._help_label.setTextFormat(Qt.TextFormat.RichText)
         self._help_label.setWordWrap(True)

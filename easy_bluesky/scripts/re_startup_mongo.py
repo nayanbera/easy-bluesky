@@ -271,10 +271,15 @@ try:
 except Exception as e:
     print(f"[re_startup_mongo] WARNING: suitcase.jsonl not subscribed: {e}")
 
-# ── MongoDB / databroker (suitcase.mongo_normalized) ─────────────────────────
+# ── MongoDB (direct pymongo write — no suitcase dependency) ───────────────────
 # Activated only when EASY_BLUESKY_MONGO_DB is set in the profile's Connection
 # Settings.  Each profile uses its own database so runs from different profiles
 # never share the same MongoDB namespace.
+#
+# Documents are stored in collections matching the bluesky document names:
+#   start → run_start,  stop → run_stop,  descriptor → event_descriptor,
+#   event → event,  resource → resource,  datum → datum
+# This schema is readable by the MongoDataBrowserTab in EasyBluesky.
 _MONGO_DB   = os.getenv("EASY_BLUESKY_MONGO_DB",   "")
 _MONGO_HOST = os.getenv("EASY_BLUESKY_MONGO_HOST",  "localhost")
 _MONGO_PORT = int(os.getenv("EASY_BLUESKY_MONGO_PORT", "27017"))
@@ -282,27 +287,40 @@ _MONGO_PORT = int(os.getenv("EASY_BLUESKY_MONGO_PORT", "27017"))
 if _MONGO_DB:
     try:
         import pymongo as _pymongo
-        from suitcase.mongo_normalized import Serializer as _MongoSerializer
 
         _mongo_client = _pymongo.MongoClient(_MONGO_HOST, _MONGO_PORT,
                                              serverSelectionTimeoutMS=5000)
-        # Ping to confirm connectivity before subscribing
         _mongo_client.admin.command("ping")
-
-        # Both metadatastore and asset registry live in the same named database.
-        # Using a single DB is the most common beamline configuration.
         _mongo_db_obj = _mongo_client[_MONGO_DB]
-        _mongo_serializer = _MongoSerializer(_mongo_db_obj, _mongo_db_obj)
-        RE.subscribe(_mongo_serializer)
+
+        _MONGO_COLL = {
+            'start':      'run_start',
+            'stop':       'run_stop',
+            'descriptor': 'event_descriptor',
+            'event':      'event',
+            'resource':   'resource',
+            'datum':      'datum',
+        }
+
+        def _mongo_write(name, doc):
+            try:
+                doc_copy = dict(doc)
+                if 'uid' in doc_copy:
+                    doc_copy['_id'] = doc_copy['uid']
+                _mongo_db_obj[_MONGO_COLL.get(name, name)].insert_one(doc_copy)
+            except Exception as _we:
+                if 'duplicate key' not in str(_we).lower():
+                    print(f"[re_startup_mongo] MongoDB write error ({name}): {_we}")
+
+        RE.subscribe(_mongo_write)
         print(
             f"[re_startup_mongo] MongoDB → {_MONGO_HOST}:{_MONGO_PORT}"
             f"  database: {_MONGO_DB}"
         )
-    except ImportError as _e:
+    except ImportError:
         print(
-            f"[re_startup_mongo] WARNING: MongoDB not subscribed — "
-            f"suitcase.mongo_normalized unavailable: {_e}\n"
-            f"  Install with:  conda install -c conda-forge suitcase-mongo-normalized"
+            "[re_startup_mongo] WARNING: MongoDB not subscribed — pymongo not installed.\n"
+            "  Install with:  pip install pymongo"
         )
     except Exception as _e:
         print(f"[re_startup_mongo] WARNING: MongoDB not subscribed: {_e}")
