@@ -3,7 +3,7 @@
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
+    QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QPushButton, QScrollArea, QSpinBox, QStackedWidget, QVBoxLayout,
     QWidget,
@@ -341,6 +341,20 @@ class RegistryAdminWindow(QDialog):
         self._inst_form.setHorizontalSpacing(12)
         self._inst_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
+        # "Load from profile" shortcut — picks a local profile and fills all fields
+        load_row = QHBoxLayout()
+        self._profile_combo = QComboBox()
+        self._profile_combo.addItem("— select a profile —")
+        for p in self._settings.get("profiles", []):
+            self._profile_combo.addItem(p.get("name", ""))
+        btn_load_profile = QPushButton("Load")
+        btn_load_profile.setFixedWidth(54)
+        btn_load_profile.setToolTip("Fill all fields from the selected local profile")
+        btn_load_profile.clicked.connect(self._on_load_from_profile)
+        load_row.addWidget(self._profile_combo, 1)
+        load_row.addWidget(btn_load_profile)
+        self._inst_form.addRow("From profile:", load_row)
+
         self._inst_name = QLineEdit()
         self._inst_name.setPlaceholderText("ASWAXS")
         self._inst_form.addRow("Name:", self._inst_name)
@@ -673,6 +687,31 @@ class RegistryAdminWindow(QDialog):
         self._zmq_label.setText(
             f"ZMQ: tcp://{host}:{ctrl}  (control)  ·  tcp://{host}:{info}  (info)"
         )
+
+    def _on_load_from_profile(self):
+        """Fill instance editor fields from the selected local profile."""
+        idx = self._profile_combo.currentIndex()
+        if idx <= 0:
+            return
+        profiles = self._settings.get("profiles", [])
+        if idx - 1 >= len(profiles):
+            return
+        p = profiles[idx - 1]
+        name = p.get("name", "")
+        host = (p.get("host", "").strip()
+                or self._settings.get("host", "").strip())
+        if not self._inst_name.text().strip():
+            self._inst_name.setText(name)
+        self._inst_host.setText(host)
+        self._inst_ctrl.setValue(p.get("control_port", 60615))
+        self._inst_info.setValue(p.get("info_port",    60625))
+        self._inst_doc.setValue( p.get("doc_port",     60630))
+        self._inst_ps.setValue(  p.get("procserv_port",60635))
+        self._inst_devices.setText(   p.get("devices_file", ""))
+        self._inst_conda_env.setText( p.get("conda_env",    "")
+                                      or self._settings.get("conda_env", ""))
+        self._inst_conda_path.setText(p.get("conda_path",   "")
+                                      or self._settings.get("conda_path", ""))
 
     def _on_auto_assign(self):
         if self._current_row is not None and self._current_row >= 0:
