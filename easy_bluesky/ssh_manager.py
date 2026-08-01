@@ -214,13 +214,19 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
         # receives SIGTERM and may die early; that is intentional and harmless
         # here because pkill has already dispatched signals to all matching RE
         # Manager processes before bash exits.
+        # Kill procServ wrappers first so they don't restart RE Manager
+        # immediately after pkill.  Use SIGTERM then SIGKILL with a brief
+        # pause to ensure all children exit before we try to bind the ports.
         stop_cmd = (
             f"kill $(cat {pid_file} 2>/dev/null) 2>/dev/null; "
             f"rm -f {pid_file}; "
+            f"pkill -f 'procServ.*{ctrl_port}' 2>/dev/null; "
             f"pkill -f start-re-manager 2>/dev/null; "
+            f"sleep 1; "
+            f"pkill -9 -f start-re-manager 2>/dev/null; "
             f"true"
         )
-        _, stdout, _ = client.exec_command(stop_cmd, timeout=12)
+        _, stdout, _ = client.exec_command(stop_cmd, timeout=15)
         try:
             stdout.channel.recv_exit_status()
         except Exception:
@@ -271,16 +277,18 @@ def stop_re_manager(settings: dict, profile: dict) -> tuple:
             ctrl_port = profile.get("control_port", 60615)
             _, log_file, pid_file = _instance_files(profile_name)
             cmd = (
-                # Kill the specific instance we launched (via pid file),
-                # then kill ALL remaining start-re-manager processes so
-                # stale instances from previous sessions can't impersonate
-                # this profile on the same control port.
+                # Kill procServ wrapper first (prevents immediate restart),
+                # then kill RE Manager processes.  SIGKILL after 1 s for
+                # any that ignored SIGTERM.
                 f"if [ -f {pid_file} ]; then "
                 f"  kill $(cat {pid_file}) 2>/dev/null; "
                 f"  rm -f {pid_file}; "
                 f"fi; "
+                f"pkill -f 'procServ.*{ctrl_port}' 2>/dev/null; "
                 f"pkill -f start-re-manager 2>/dev/null; "
-                f"sleep 1; true"
+                f"sleep 1; "
+                f"pkill -9 -f start-re-manager 2>/dev/null; "
+                f"true"
             )
         _, stdout, stderr = client.exec_command(cmd, timeout=10)
         stdout.channel.recv_exit_status()

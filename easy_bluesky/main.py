@@ -891,6 +891,9 @@ class _DiscoveryWorker(QThread):
 # ── Main window ────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
+    # Emitted on the main thread; queued delivery runs connect() on worker_thread.
+    _connect_requested = pyqtSignal(str, str)  # ctrl_addr, info_addr
+
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
         self.setWindowTitle("EasyBluesky")
@@ -1091,6 +1094,8 @@ class MainWindow(QMainWindow):
 
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
 
+        self._connect_requested.connect(self.worker.connect)
+
         self.worker_thread.start()
 
     def _connect(self):
@@ -1103,14 +1108,10 @@ class MainWindow(QMainWindow):
 
     def _do_connect(self):
         ctrl, info, _ = make_zmq_addrs(self._conn_settings)
-        # Run in a background thread: the TCP pre-check + ZMQ status() call can
-        # block for several seconds (especially on Windows without fast ICMP
-        # unreachable), freezing the UI if called on the main thread.
-        def _run():
-            ok = self.worker.connect(zmq_control=ctrl, zmq_info=info)
-            if not ok:
-                QTimer.singleShot(0, self.re_bar.set_disconnected)
-        threading.Thread(target=_run, daemon=True).start()
+        # Emit signal — Qt queues delivery to worker_thread's event loop so
+        # the TCP pre-check + ZMQ status() call runs there, not on the main
+        # thread, keeping the UI responsive.
+        self._connect_requested.emit(ctrl, info)
 
     # ── Worker signal handlers ─────────────────────────────────────────────────
 

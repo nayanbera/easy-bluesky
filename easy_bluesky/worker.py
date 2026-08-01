@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_ADDR
 
@@ -506,6 +506,7 @@ class ZMQWorker(QObject):
         self._device_reader  = None   # strong ref to _DeviceStatusReader
         self._pv_names_reader = None  # strong ref to _PVNamesReader
 
+    @pyqtSlot(str, str)
     def connect(self, zmq_control=None, zmq_info=None):
         self._is_connecting = True
         try:
@@ -530,6 +531,7 @@ class ZMQWorker(QObject):
                         "Start the RE Manager first (Restart RE Manager button),\n"
                         "or check that the correct profile is selected."
                     )
+                    self.disconnected.emit()
                     return False
                 except OSError:
                     # Timeout or network error — let ZMQ try; it will fail with
@@ -554,6 +556,7 @@ class ZMQWorker(QObject):
         except Exception as e:
             self.rm = None
             self.error_occurred.emit(f"Connection failed: {e}")
+            self.disconnected.emit()
             return False
         finally:
             self._is_connecting = False
