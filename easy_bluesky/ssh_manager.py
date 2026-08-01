@@ -164,9 +164,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             + conda_block +
             f"export EASY_BLUESKY_DEVICES_FILE={devices_file}\n"
             + mongo_exports
-            # Pre-exec sanity check: emit a clear error instead of the cryptic
-            # bash 127 exit before trying to exec.
-            f"if ! command -v \"{exe}\" >/dev/null 2>&1; then\n"
+            + f"if ! command -v \"{exe}\" >/dev/null 2>&1; then\n"
             f"  echo \"ERROR: {exe} not found.\"\n"
             f"  echo \"  Set Conda Environment and Conda Path in EasyBluesky"
             f" Connection Settings.\"\n"
