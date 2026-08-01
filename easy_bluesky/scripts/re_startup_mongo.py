@@ -112,27 +112,48 @@ def prime_detector(det):
 
 
 def get_device_pvnames():
-    """Return {dev_name: {sig_name: pv_name}} for all top-level ophyd devices."""
+    """Return {dev_name: {sig_name: pv_name}} for all top-level ophyd devices.
+
+    Handles two cases:
+    - Device subclass (EpicsMotor, custom Device): iterates read_attrs for
+      all signals that have a pvname.
+    - Plain EpicsSignal / EpicsSignalRO (not wrapped in a Device): treated as
+      a single-signal device whose signal name equals the variable name.
+      Without this, plain signal objects appear in the Devices tree but get no
+      CA subscription and the Value column stays blank.
+    """
     import ophyd as _oph
     out = {}
     for _n, _obj in list(globals().items()):
-        if _n.startswith('_') or not isinstance(_obj, _oph.Device):
+        if _n.startswith('_'):
             continue
-        pvs = {}
-        try:
-            _read_attrs = list(_obj.read_attrs)
-        except Exception:
-            _read_attrs = list(getattr(_obj, 'component_names', []))
-        for _attr in _read_attrs:
-            if '.' in _attr:
-                continue  # skip nested sub-device signals
+        if isinstance(_obj, _oph.Device):
+            # Full Device subclass — iterate read_attrs
+            pvs = {}
             try:
-                _sig = getattr(_obj, _attr, None)
-                if _sig is not None and hasattr(_sig, 'pvname') and not isinstance(_sig, _oph.Device):
-                    pvs[_attr] = _sig.pvname
+                _read_attrs = list(_obj.read_attrs)
+            except Exception:
+                _read_attrs = list(getattr(_obj, 'component_names', []))
+            for _attr in _read_attrs:
+                if '.' in _attr:
+                    continue  # skip nested sub-device signals
+                try:
+                    _sig = getattr(_obj, _attr, None)
+                    if (_sig is not None
+                            and hasattr(_sig, 'pvname')
+                            and not isinstance(_sig, _oph.Device)):
+                        pvs[_attr] = _sig.pvname
+                except Exception:
+                    pass
+            out[_n] = pvs
+        elif isinstance(_obj, _oph.Signal) and hasattr(_obj, 'pvname'):
+            # Plain EpicsSignal / EpicsSignalRO — single PV, signal name = device name
+            try:
+                pv = _obj.pvname
+                if pv:
+                    out[_n] = {_n: pv}
             except Exception:
                 pass
-        out[_n] = pvs
     return out
 
 
