@@ -32,6 +32,7 @@ from .plan_builder import PlanBuilder
 from .experiments_tab import ExperimentsTab
 from .devices_plans_tab import DevicesPlansTab
 from .pv_watchdog import PVWatchdogTab
+from .mongo_browser import MongoDataBrowserTab
 from .hdf5_viewer import HDF5Viewer
 from .re_console import REConsoleWidget
 
@@ -998,6 +999,7 @@ class MainWindow(QMainWindow):
         self.plan_builder       = PlanBuilder(self.worker)
         self.devices_plans_tab  = DevicesPlansTab()
         self.watchdog_tab       = PVWatchdogTab()
+        self.mongo_browser      = MongoDataBrowserTab(self._conn_settings)
         self.hdf5_viewer        = HDF5Viewer()
         self.re_console         = REConsoleWidget()
 
@@ -1006,6 +1008,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.plan_builder,      "🔧  Plan Builder")
         self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
         self.tabs.addTab(self.watchdog_tab,      "🔭  PV Watchdog")
+        self.tabs.addTab(self.mongo_browser,     "📊  MongoDB Browser")
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
         self.tabs.addTab(self.re_console,        "🖥  RE Console")
 
@@ -1443,6 +1446,7 @@ class MainWindow(QMainWindow):
             )
             self.re_bar.set_disconnected()
         self.experiments_tab.live_viewer.restart_zmq(doc)
+        self.mongo_browser.update_settings(self._conn_settings)
 
     def _on_open_hdf5(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -1723,6 +1727,7 @@ class MainWindow(QMainWindow):
         names = [p.get("name", "") for p in profiles]
         active = self._conn_settings.get("active_profile", "Default")
         self.re_bar.update_profiles(names, active)
+        self.mongo_browser.update_settings(self._conn_settings)
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
