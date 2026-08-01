@@ -145,6 +145,19 @@ def get_device_pvnames():
                         pvs[_attr] = _sig.pvname
                 except Exception:
                     pass
+            # Fallback for devices that create signals manually in __init__
+            # instead of via Component — those don't appear in read_attrs.
+            if not pvs:
+                for _attr, _sig in vars(_obj).items():
+                    if _attr.startswith('_'):
+                        continue
+                    try:
+                        if (isinstance(_sig, _oph.Signal)
+                                and hasattr(_sig, 'pvname')
+                                and _sig.pvname):
+                            pvs[_attr] = _sig.pvname
+                    except Exception:
+                        pass
             out[_n] = pvs
         elif isinstance(_obj, _oph.Signal) and hasattr(_obj, 'pvname'):
             # Plain EpicsSignal / EpicsSignalRO — single PV, signal name = device name
