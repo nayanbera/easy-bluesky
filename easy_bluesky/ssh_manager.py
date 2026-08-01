@@ -163,6 +163,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
             + conda_block +
             f"export EASY_BLUESKY_DEVICES_FILE={devices_file}\n"
+            "export PYTHONUNBUFFERED=1\n"
             + mongo_exports
             + f"if ! command -v \"{exe}\" >/dev/null 2>&1; then\n"
             f"  echo \"ERROR: {exe} not found.\"\n"
