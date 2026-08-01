@@ -132,16 +132,21 @@ class ExperimentHistoryWidget(QWidget):
     # ── Data loading ────────────────────────────────────────────────────────────
 
     def _parse_jsonl(self, filepath: str):
-        """Parse one JSONL file. Returns (DataFrame, label) or (None, '')."""
+        """Parse one JSONL file. Returns (DataFrame, label) or (None, reason)."""
         events: list = []
         start_doc: dict = {}
+        n_lines = 0
         try:
             with open(filepath) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    name, doc = json.loads(line)
+                    n_lines += 1
+                    try:
+                        name, doc = json.loads(line)
+                    except Exception:
+                        continue  # skip malformed lines; don't abort the whole file
                     if name == "start":
                         start_doc = doc
                     elif name == "event":
@@ -159,16 +164,23 @@ class ExperimentHistoryWidget(QWidget):
                                         if i < len(v)})
                             events.append(row)
         except Exception as e:
-            return None, f"Error: {e}"
+            return None, f"Error reading file: {e}"
 
         if not events:
-            return None, "no events"
+            plan_name = start_doc.get("plan_name", "")
+            hint = f"{plan_name} — " if plan_name else ""
+            return None, (
+                f"{hint}no event data in file ({n_lines} lines)\n"
+                f"{Path(filepath).name}\n"
+                f"Data is written via ZMQ stream — confirm ZMQ PUB is running\n"
+                f"(RE console should show: ZMQ PUB → tcp://*:60632)"
+            )
 
         try:
             import pandas as pd
             df = pd.DataFrame(events)
         except ImportError:
-            return None, "pandas missing"
+            return None, "pandas not installed — pip install pandas"
 
         plan  = start_doc.get("plan_name", "?")
         uid8  = start_doc.get("uid", filepath)[:8]
@@ -188,13 +200,16 @@ class ExperimentHistoryWidget(QWidget):
     def load_jsonl_files(self, filepaths: list):
         """Load multiple JSONL files and overlay them."""
         self._dfs = []
+        first_fail_reason = ""
         for fp in filepaths[:8]:
             df, label = self._parse_jsonl(str(fp))
             if df is not None:
                 self._dfs.append((df, label))
+            elif not first_fail_reason:
+                first_fail_reason = label
 
         if not self._dfs:
-            self.run_label.setText("No data found in selected runs")
+            self.run_label.setText(first_fail_reason or "No data found in selected runs")
             return
         self._setup_axes([df for df, _ in self._dfs])
         if len(self._dfs) > 1:
@@ -1281,6 +1296,7 @@ class ExperimentsTab(QWidget):
                 entry = item.data(Qt.ItemDataRole.UserRole) if item else None
                 if entry and not _is_motion_only(entry.get("name", ""), entry.get("kwargs", {}) or {}):
                     self.plan_log_list.clearSelection()
+                    item.setSelected(True)
                     self.plan_log_list.setCurrentItem(item)
                     self._on_plan_log_selection_changed()
                     break
