@@ -22,8 +22,8 @@ INSTANCE_DEFAULTS = {
     "doc_port": 60630,
     "procserv_port": 60635,
     "devices_file": "devices.py",
-    "conda_env": "",
-    "conda_path": "~/miniconda3",
+    "conda_env":    "",
+    "conda_path":   "~/miniconda3",
 }
 
 
@@ -155,8 +155,8 @@ def merge_into_profiles(profiles: list, instances: list) -> tuple:
             continue
         if name in by_name:
             p = by_name[name]
-            for field in ("host", "control_port", "info_port",
-                          "doc_port", "procserv_port", "devices_file"):
+            for field in ("host", "control_port", "info_port", "doc_port",
+                          "procserv_port", "devices_file", "conda_env", "conda_path"):
                 if inst.get(field) not in (None, ""):
                     p[field] = inst[field]
             updated += 1
@@ -170,6 +170,8 @@ def merge_into_profiles(profiles: list, instances: list) -> tuple:
                 "info_port":    inst.get("info_port",     _PROFILE_DEFAULTS["info_port"]),
                 "doc_port":     inst.get("doc_port",      _PROFILE_DEFAULTS["doc_port"]),
                 "procserv_port":inst.get("procserv_port", _PROFILE_DEFAULTS["procserv_port"]),
+                "conda_env":    inst.get("conda_env",    ""),
+                "conda_path":   inst.get("conda_path",   "~/miniconda3"),
             })
             by_name[name] = profiles[-1]
             added += 1

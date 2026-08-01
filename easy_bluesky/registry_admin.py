@@ -33,21 +33,34 @@ class _FetchWorker(QThread):
             self.error.emit(str(e))
 
 
+# Page indices
+_PAGE_SETUP    = 0
+_PAGE_LOADING  = 1
+_PAGE_PASSWORD = 2
+_PAGE_EDITOR   = 3
+_PAGE_ERROR    = 4
+
+
 class RegistryAdminWindow(QDialog):
     """
     Password-protected registry admin window.
 
-    Open flow:
-      Loading page (SSH fetch) → Password page → Editor page
-    The admin password hash lives in registry.json and is verified locally —
-    no password is transmitted over SSH.
+    If no registry host is configured the dialog opens on the Setup page
+    so the user can enter the host and SSH credentials right here — there
+    is no need to close the dialog and go to Connection Settings first.
+
+    Open flow (first time or no host configured):
+      Setup page → Loading page (SSH fetch) → Password page → Editor page
+
+    Normal open flow (host already configured):
+      Loading page → Password page → Editor page
     """
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Registry Admin")
-        self.setMinimumSize(860, 580)
-        self._settings     = settings
+        self.setMinimumSize(880, 600)
+        self._settings     = settings   # live reference — changes are written back
         self._registry     = {}
         self._running      = {}
         self._current_row  = None
@@ -57,15 +70,130 @@ class RegistryAdminWindow(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._stack)
 
-        self._build_loading_page()   # 0
-        self._build_password_page()  # 1
-        self._build_editor_page()    # 2
-        self._build_error_page()     # 3
+        self._build_setup_page()     # 0 — shown when registry host not configured
+        self._build_loading_page()   # 1
+        self._build_password_page()  # 2
+        self._build_editor_page()    # 3
+        self._build_error_page()     # 4
 
-        self._stack.setCurrentIndex(0)
-        self._start_fetch()
+        # Decide start page
+        if self._is_registry_configured():
+            self._stack.setCurrentIndex(_PAGE_LOADING)
+            self._start_fetch()
+        else:
+            self._stack.setCurrentIndex(_PAGE_SETUP)
+            self._setup_host.setFocus()
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _is_registry_configured(self) -> bool:
+        """True when all info needed to SSH to the registry host is present."""
+        host = (self._settings.get("registry_host", "").strip()
+                or self._settings.get("host", "").strip())
+        return bool(
+            host
+            and self._settings.get("ssh_user", "").strip()
+            and self._settings.get("ssh_key_path", "").strip()
+        )
+
+    def _effective_registry_host(self) -> str:
+        return (self._settings.get("registry_host", "").strip()
+                or self._settings.get("host", "").strip())
 
     # ── page builders ──────────────────────────────────────────────────────────
+
+    def _build_setup_page(self):
+        """Page 0 — collect registry host and SSH credentials on first use."""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.addStretch()
+
+        inner = QWidget()
+        inner.setMaximumWidth(460)
+        iv = QVBoxLayout(inner)
+        iv.setSpacing(12)
+
+        title = QLabel("Registry Setup")
+        title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        iv.addWidget(title)
+
+        desc = QLabel(
+            "The Registry is a shared JSON file on one designated machine. "
+            "Any EasyBluesky client on the network can read it over SSH to "
+            "discover available RE Manager instances automatically.\n\n"
+            "Enter the hostname or IP address of the machine that will host "
+            "the registry file (usually the same machine that runs the RE "
+            "Managers) and the SSH credentials used to reach it."
+        )
+        desc.setWordWrap(True)
+        desc.setObjectName("dim_text")
+        iv.addWidget(desc)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        iv.addWidget(sep)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+
+        self._setup_host = QLineEdit()
+        self._setup_host.setPlaceholderText("e.g. 164.54.169.92  or  beamline-pc.example.org")
+        self._setup_host.setText(
+            self._settings.get("registry_host", "").strip()
+            or self._settings.get("host", "").strip()
+        )
+        self._setup_host.returnPressed.connect(self._on_setup_continue)
+        form.addRow("Registry host / IP:", self._setup_host)
+
+        self._setup_ssh_user = QLineEdit()
+        self._setup_ssh_user.setPlaceholderText("Linux username on that machine")
+        self._setup_ssh_user.setText(self._settings.get("ssh_user", ""))
+        self._setup_ssh_user.returnPressed.connect(self._on_setup_continue)
+        form.addRow("SSH user:", self._setup_ssh_user)
+
+        self._setup_ssh_key = QLineEdit()
+        self._setup_ssh_key.setPlaceholderText("~/.ssh/id_ed25519")
+        self._setup_ssh_key.setText(
+            self._settings.get("ssh_key_path", "~/.ssh/id_rsa")
+        )
+        self._setup_ssh_key.returnPressed.connect(self._on_setup_continue)
+        form.addRow("SSH key path:", self._setup_ssh_key)
+
+        iv.addLayout(form)
+
+        note = QLabel(
+            "The SSH key must already be authorised on the registry host "
+            "(ssh-copy-id or equivalent). No passwords are stored or transmitted."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("dim_text")
+        note.setStyleSheet("font-size: 11px;")
+        iv.addWidget(note)
+
+        self._setup_error = QLabel("")
+        self._setup_error.setStyleSheet("color: #d62728;")
+        self._setup_error.setWordWrap(True)
+        iv.addWidget(self._setup_error)
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_continue = QPushButton("Connect →")
+        btn_continue.setDefault(True)
+        btn_continue.clicked.connect(self._on_setup_continue)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_continue)
+        iv.addLayout(btn_row)
+
+        center = QHBoxLayout()
+        center.addStretch()
+        center.addWidget(inner)
+        center.addStretch()
+        v.addLayout(center)
+        v.addStretch()
+        self._stack.addWidget(w)
 
     def _build_loading_page(self):
         w = QWidget()
@@ -75,12 +203,10 @@ class RegistryAdminWindow(QDialog):
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setStyleSheet("font-size: 14px;")
         v.addWidget(lbl)
-        host = (self._settings.get("registry_host", "").strip()
-                or self._settings.get("host", ""))
-        sub = QLabel(f"SSH → {host}")
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setObjectName("dim_text")
-        v.addWidget(sub)
+        self._loading_sub = QLabel("")
+        self._loading_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_sub.setObjectName("dim_text")
+        v.addWidget(self._loading_sub)
         v.addStretch()
         self._stack.addWidget(w)
 
@@ -149,13 +275,19 @@ class RegistryAdminWindow(QDialog):
         outer.setSpacing(6)
         outer.setContentsMargins(8, 8, 8, 8)
 
-        # Header: registry info + Change Password
+        # ── Header: editable registry host + Change Password ───────────────────
         header = QHBoxLayout()
-        host = (self._settings.get("registry_host", "").strip()
-                or self._settings.get("host", ""))
-        info = QLabel(f"Registry: {host}  ·  ~/.easy_bluesky/registry.json")
-        info.setObjectName("dim_text")
-        header.addWidget(info)
+        header.addWidget(QLabel("Registry host:"))
+        self._reg_host_edit = QLineEdit()
+        self._reg_host_edit.setPlaceholderText("host / IP where registry.json lives")
+        self._reg_host_edit.setToolTip(
+            "Change the host that stores registry.json.\n"
+            "Saved to your local connection settings when you click 'Save to Registry'."
+        )
+        header.addWidget(self._reg_host_edit, 1)
+        path_lbl = QLabel("  ·  ~/.easy_bluesky/registry.json")
+        path_lbl.setObjectName("dim_text")
+        header.addWidget(path_lbl)
         header.addStretch()
         btn_chpw = QPushButton("Change Password…")
         btn_chpw.clicked.connect(self._on_change_password)
@@ -288,13 +420,56 @@ class RegistryAdminWindow(QDialog):
         self._err_label.setWordWrap(True)
         self._err_label.setStyleSheet("color: #d62728; font-size: 13px;")
         v.addWidget(self._err_label)
-        btn = QPushButton("Close")
-        btn.clicked.connect(self.reject)
-        v.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        btn_row = QHBoxLayout()
+        btn_retry = QPushButton("← Change Host / SSH Settings")
+        btn_retry.clicked.connect(self._on_error_retry)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_retry)
+        btn_row.addWidget(btn_close)
+        v.addLayout(btn_row)
         v.addStretch()
         self._stack.addWidget(w)
 
+    # ── setup page flow ────────────────────────────────────────────────────────
+
+    def _on_setup_continue(self):
+        host     = self._setup_host.text().strip()
+        ssh_user = self._setup_ssh_user.text().strip()
+        ssh_key  = self._setup_ssh_key.text().strip()
+
+        if not host:
+            self._setup_error.setText("Enter the registry host or IP address.")
+            self._setup_host.setFocus()
+            return
+        if not ssh_user:
+            self._setup_error.setText("Enter the SSH user.")
+            self._setup_ssh_user.setFocus()
+            return
+        if not ssh_key:
+            self._setup_error.setText("Enter the SSH key path.")
+            self._setup_ssh_key.setFocus()
+            return
+
+        # Persist to local connection settings
+        self._settings["registry_host"] = host
+        self._settings["ssh_user"]      = ssh_user
+        self._settings["ssh_key_path"]  = ssh_key
+        from .connection_settings import save_connection
+        save_connection(self._settings)
+
+        self._go_loading(host)
+
     # ── fetch flow ─────────────────────────────────────────────────────────────
+
+    def _go_loading(self, host: str = ""):
+        """Switch to Loading page and start the registry fetch."""
+        if not host:
+            host = self._effective_registry_host()
+        self._loading_sub.setText(f"SSH → {host}")
+        self._stack.setCurrentIndex(_PAGE_LOADING)
+        self._start_fetch()
 
     def _start_fetch(self):
         self._fetch_worker = _FetchWorker(self._settings, parent=self)
@@ -322,15 +497,25 @@ class RegistryAdminWindow(QDialog):
         self._pw_entry.clear()
         self._pw_confirm.clear()
         self._pw_error.setText("")
-        self._stack.setCurrentIndex(1)
+        self._stack.setCurrentIndex(_PAGE_PASSWORD)
         self._pw_entry.setFocus()
 
     def _on_fetch_error(self, msg: str):
         self._err_label.setText(
-            f"Could not load registry:\n\n{msg}\n\n"
-            "Check Connection Settings — registry host and SSH credentials."
+            f"Could not connect to registry host:\n\n{msg}\n\n"
+            "Check the host address and SSH credentials below."
         )
-        self._stack.setCurrentIndex(3)
+        self._stack.setCurrentIndex(_PAGE_ERROR)
+
+    def _on_error_retry(self):
+        """Go back to setup page so the user can correct the host / credentials."""
+        # Pre-fill setup fields with whatever was last tried
+        self._setup_host.setText(self._effective_registry_host())
+        self._setup_ssh_user.setText(self._settings.get("ssh_user", ""))
+        self._setup_ssh_key.setText(self._settings.get("ssh_key_path", ""))
+        self._setup_error.setText("")
+        self._stack.setCurrentIndex(_PAGE_SETUP)
+        self._setup_host.setFocus()
 
     # ── password flow ──────────────────────────────────────────────────────────
 
@@ -352,8 +537,9 @@ class RegistryAdminWindow(QDialog):
                 self._pw_entry.clear()
                 self._pw_entry.setFocus()
                 return
+        self._reg_host_edit.setText(self._effective_registry_host())
         self._populate_inst_list()
-        self._stack.setCurrentIndex(2)
+        self._stack.setCurrentIndex(_PAGE_EDITOR)
 
     def _on_change_password(self):
         pw, ok = QInputDialog.getText(
@@ -409,8 +595,8 @@ class RegistryAdminWindow(QDialog):
         self._inst_doc.setValue(inst.get("doc_port",       INSTANCE_DEFAULTS["doc_port"]))
         self._inst_ps.setValue(inst.get("procserv_port",   INSTANCE_DEFAULTS["procserv_port"]))
         self._inst_devices.setText(inst.get("devices_file",  INSTANCE_DEFAULTS["devices_file"]))
-        self._inst_conda_env.setText(inst.get("conda_env",   INSTANCE_DEFAULTS["conda_env"]))
-        self._inst_conda_path.setText(inst.get("conda_path", INSTANCE_DEFAULTS["conda_path"]))
+        self._inst_conda_env.setText(inst.get("conda_env",   INSTANCE_DEFAULTS.get("conda_env", "")))
+        self._inst_conda_path.setText(inst.get("conda_path", INSTANCE_DEFAULTS.get("conda_path", "~/miniconda3")))
         self._ports_note.setText("")
         self._update_zmq_label()
 
@@ -531,6 +717,14 @@ class RegistryAdminWindow(QDialog):
     def _on_save(self):
         if self._current_row is not None and self._current_row >= 0:
             self._save_current_inst()
+
+        # If the registry host was changed in the editor, persist it locally
+        new_reg_host = self._reg_host_edit.text().strip()
+        if new_reg_host and new_reg_host != self._effective_registry_host():
+            self._settings["registry_host"] = new_reg_host
+            from .connection_settings import save_connection
+            save_connection(self._settings)
+
         self._save_status.setText("Saving…")
         self._save_status.setStyleSheet("color: #888;")
         from PyQt6.QtWidgets import QApplication

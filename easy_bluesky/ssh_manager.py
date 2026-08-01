@@ -46,19 +46,22 @@ def _get_client(settings: dict):
     return client
 
 
-def _re_manager_exe(settings: dict) -> str:
+def _re_manager_exe(settings: dict, profile: dict = None) -> str:
     """
     Return the path to start-re-manager on the remote host.
 
-    When conda_env is set, constructs the full path directly into the env's
-    bin directory — no 'conda run' or activation needed:
+    Looks in *profile* first (per-instance conda settings from the registry),
+    then falls back to global *settings*.  When conda_env is set, constructs
+    the full path directly into the env's bin directory — no activation needed:
         {conda_path}/envs/{conda_env}/bin/start-re-manager
 
     Falls back to bare 'start-re-manager' (relies on PATH) when not set.
     ~ is replaced with $HOME for safe remote-shell expansion.
     """
-    env  = settings.get("conda_env", "").strip()
-    base = settings.get("conda_path", "").strip().replace("~", "$HOME")
+    src  = profile or settings
+    env  = src.get("conda_env", "").strip() or settings.get("conda_env", "").strip()
+    base = (src.get("conda_path", "").strip()
+            or settings.get("conda_path", "").strip()).replace("~", "$HOME")
     if env and base:
         return f"{base}/envs/{env}/bin/start-re-manager"
     return "start-re-manager"
@@ -106,7 +109,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
         return False, str(e)
 
     service = settings.get("ssh_service", "").strip()
-    exe     = _re_manager_exe(settings)
+    exe     = _re_manager_exe(settings, profile)
 
     try:
         if service:

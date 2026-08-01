@@ -658,25 +658,32 @@ designated host, read and written over SSH.</p>
     file — never transmitted over the wire.</td></tr>
 </table>
 
-<h3>Step 1 — Configure the registry host</h3>
-<p>Open <b>File → Connection Settings</b> and fill in the <b>Registry</b> section:</p>
+<h3>Step 1 — Open Registry Admin</h3>
+<p>Click <b>File → Registry Admin…</b>.  No prior configuration is needed.</p>
+<p>If the registry host has not been set up yet, the dialog opens a
+<b>Setup page</b> that asks for:</p>
 <table>
 <tr><th>Field</th><th>Example</th><th>Notes</th></tr>
-<tr><td><b>Registry host</b></td><td><code>beamline-pc.example.org</code></td>
+<tr><td><b>Registry host / IP</b></td><td><code>164.54.169.92</code></td>
     <td>The machine that stores <code>registry.json</code>.  Usually the same
     machine that runs the RE Managers, but any SSH-reachable host works.</td></tr>
-<tr><td><b>Registry path</b></td><td>(leave blank)</td>
-    <td>Optional.  Defaults to <code>~/.easy_bluesky/registry.json</code>.
-    Set this only if you need the file in a non-standard location.</td></tr>
+<tr><td><b>SSH user</b></td><td><code>chem_epics</code></td>
+    <td>The Linux username on that machine.  Must have key-based SSH access.</td></tr>
+<tr><td><b>SSH key path</b></td><td><code>~/.ssh/id_ed25519</code></td>
+    <td>Your private key.  The matching public key must be in
+    <code>~/.ssh/authorized_keys</code> on the registry host.</td></tr>
 </table>
-<div class="tip">The registry host uses the same SSH credentials (user / key path)
-as the rest of your connection settings.  No extra setup is needed.</div>
+<p>Click <b>Connect →</b>.  These settings are saved to your local profile so
+future sessions go straight to the loading step.</p>
+<div class="tip">You can also set the registry host later in
+<b>File → Connection Settings → Registry</b>, or change it directly inside
+the Registry Admin editor page.</div>
 
 <h3>Step 2 — Create the registry and set a password</h3>
 <ol>
-<li>Click <b>File → Registry Admin…</b>.  The app opens an SSH connection
-    to the registry host.</li>
-<li>If no registry file exists yet you are asked to create one and set an admin password.</li>
+<li>After a successful SSH connection, if no registry exists you will be
+    asked to create an admin password — this is stored as a hash in
+    <code>registry.json</code> and never leaves the registry host.</li>
 <li>If a registry already exists you are prompted for the existing password.</li>
 </ol>
 <div class="warn">The password is hashed with PBKDF2-SHA256 (200&thinsp;000 iterations)
