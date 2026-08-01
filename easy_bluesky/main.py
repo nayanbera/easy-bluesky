@@ -480,42 +480,121 @@ tr:nth-child(even) td { background: #252525; }
 """
 
 _QUICK_START_HTML = """
-<h2>Quick Start</h2>
+<h2>Getting Started — New User Tutorial</h2>
 
-<h3>1 — Launch and pick a profile</h3>
-<p>On first run a <b>Local Sim</b> profile is created automatically.
-Click <b>Launch</b> to start it.  A local profile starts the RE Manager
-as a subprocess — no SSH or configuration needed.</p>
+<p>EasyBluesky is a desktop GUI for controlling a Bluesky/ophyd beamline via the
+bluesky-queueserver (RE Manager).  Your client machine (Windows or Mac) talks to a
+Linux beamline computer over SSH and ZMQ.  This tutorial walks you through
+first-time setup to running your first experiment.</p>
 
-<h3>2 — Open the RE environment</h3>
-<p>Click <b>Open Env</b> in the toolbar.  Wait for the status indicator
-to turn green and show <b>idle</b>.  Devices are loaded at this step.</p>
-<div class="tip">If the status stays "closed", check the RE Console tab for
-startup errors.  Common cause: missing devices file.</div>
+<h3>Step 1 — Configure the connection</h3>
+<p>Open <b>File → Connection Settings</b>.</p>
+<table>
+<tr><th>Field</th><th>What to enter</th></tr>
+<tr><td><b>Host</b></td><td>IP address or hostname of the beamline computer
+    (e.g. <code>164.54.169.92</code>)</td></tr>
+<tr><td><b>SSH user</b></td><td>Your Linux account on the beamline computer
+    (e.g. <code>chem_epics</code>)</td></tr>
+<tr><td><b>SSH key path</b></td><td>Leave as default (<code>~/.ssh/id_ed25519</code>)
+    or click <b>Setup SSH Key…</b> to generate and install one automatically</td></tr>
+<tr><td><b>Conda environment</b></td><td>Name of the conda env that contains
+    <code>start-re-manager</code>, e.g. <code>easy-bluesky</code></td></tr>
+<tr><td><b>Conda path</b></td><td>Path to conda on the remote machine,
+    e.g. <code>~/anaconda3</code></td></tr>
+</table>
+<div class="tip"><b>SSH Key Setup (one-time):</b> Click <b>Setup SSH Key…</b>,
+enter your Linux password when prompted — it is used once and never stored.
+The key is installed on the remote machine automatically.
+Then click <b>Test SSH Connection</b> to confirm it works.</div>
 
-<h3>3 — Add a plan to the queue</h3>
-<p>Go to <b>Queue Manager</b> → choose a plan from the dropdown
-(e.g. <code>count</code> or <code>scan</code>) → fill in the parameters
-→ click <b>Add to Queue</b>.</p>
-<p>Or use the <b>Plan Builder → Visual Composer</b> tab to assemble a plan
-from blocks and click <b>→ Send to Code Editor</b>, then upload it.</p>
+<h3>Step 2 — Configure a profile</h3>
+<p>In the <b>Profiles</b> section of Connection Settings, select or create a profile
+for your beamline.  Each profile has its own ports and devices file.</p>
+<table>
+<tr><th>Field</th><th>Typical value</th></tr>
+<tr><td><b>Name</b></td><td>A short label, e.g. <code>ASWAXS</code></td></tr>
+<tr><td><b>Devices file</b></td><td>e.g. <code>devices_ASWAXS.py</code></td></tr>
+<tr><td><b>Control port</b></td><td><code>60615</code> (default)</td></tr>
+<tr><td><b>Info port</b></td><td><code>60625</code> (default)</td></tr>
+</table>
+<p>Click <b>Auto-assign Ports</b> if you are not sure which ports are free.
+Click <b>OK</b> to save.</p>
+<div class="warn"><b>Common mistake:</b> Leaving the Info port at a wrong value
+(e.g. 60616 instead of 60625) means the RE Console never receives output
+and the app keeps thinking the manager is unresponsive.</div>
 
-<h3>4 — Start the queue</h3>
-<p>Click <b>▶ Start</b> in the toolbar.  The first plan in the queue runs.
-Use <b>⏸ Pause</b>, <b>▶▶ Resume</b>, and <b>✕ Abort</b> to control it.</p>
+<h3>Step 3 — Start the RE Manager</h3>
+<p>Select your profile in the toolbar dropdown, then click the
+<b>Restart RE Manager</b> button (recycle icon).  The app will:</p>
+<ol>
+<li>SSH into the beamline computer</li>
+<li>Kill any existing RE Manager process</li>
+<li>Upload the latest startup scripts</li>
+<li>Start a fresh RE Manager instance</li>
+</ol>
+<p>Watch the <b>RE Console</b> tab — you should see the manager starting up
+and loading your devices file within 10–20 seconds.</p>
+<div class="tip">If you see <code>start-re-manager: not found</code>, the
+Conda environment or path is wrong.  Double-check Step 1.</div>
 
-<h3>5 — View live data</h3>
-<p>Open the <b>Experiments</b> tab.  The Live Viewer updates in real time
-as the scan runs.  When the plan finishes, the run appears in the history
-panel and is saved as a JSONL file in your experiment folder.</p>
+<h3>Step 4 — Connect</h3>
+<p>Once the RE Manager is running, click <b>Connect</b> in the toolbar.
+The status indicator turns green and shows <b>disconnected → idle</b>.</p>
+<p>Then click <b>Open Env</b>.  This loads your devices into the RE environment.
+Wait for the status to show <b>idle</b> — devices are now ready.</p>
+<div class="tip">Open the <b>Devices &amp; Plans</b> tab to confirm your motors
+and detectors appear with live values.  If the list is empty, check the
+RE Console for import errors in your devices file.</div>
 
-<h3>Connecting to a remote beamline</h3>
-<p>Open <b>File → Connection Settings</b>.  Fill in the host, SSH user,
-and key path.  Click <b>Setup SSH Key…</b> to generate and install an
-Ed25519 key in one step (needs your SSH password once — never stored).
-Then click <b>Test SSH Connection</b> to verify.</p>
-<div class="tip">The key path defaults to <code>~/.ssh/id_ed25519</code>.
-Check "Remote RE Manager" in the README for full details.</div>
+<h3>Step 5 — Create an experiment</h3>
+<p>Go to the <b>Experiments</b> tab and click <b>New Experiment</b>.
+Give it a name and choose a save folder.  All run data from this session
+is stored there as JSONL files.</p>
+
+<h3>Step 6 — Add plans to the queue</h3>
+<p>Go to the <b>Queue Manager</b> tab:</p>
+<ol>
+<li>Choose a plan from the dropdown (e.g. <code>count</code>, <code>scan</code>)</li>
+<li>Fill in the parameters — detectors, motors, positions, number of points</li>
+<li>Click <b>Add to Queue</b></li>
+<li>Repeat to build up a sequence of plans</li>
+</ol>
+<div class="tip">Use the <b>Plan Builder</b> tab for more complex sequences.
+The Visual Composer lets you drag blocks (Move, Scan, Sleep…) into a sequence
+and generates the Python code automatically.</div>
+
+<h3>Step 7 — Run the queue</h3>
+<p>Click <b>▶ Start</b> in the toolbar.  Plans execute one by one.
+The RE Console shows live output including the scan table from
+BestEffortCallback.</p>
+<table>
+<tr><th>Button</th><th>Action</th></tr>
+<tr><td><b>⏸ Pause</b></td><td>Pause after the current point finishes</td></tr>
+<tr><td><b>▶▶ Resume</b></td><td>Continue from where it paused</td></tr>
+<tr><td><b>■ Stop</b></td><td>Stop cleanly after the current plan</td></tr>
+<tr><td><b>✕ Abort</b></td><td>Abort immediately (devices may be left mid-move)</td></tr>
+</table>
+
+<h3>Step 8 — View your data</h3>
+<p>In the <b>Experiments</b> tab, completed runs appear in the history panel
+on the right.  Click a run to see its metadata and detector readings.
+Data files are saved to your experiment folder and can be opened with any
+JSONL-aware tool or the built-in <b>HDF5 Viewer</b> tab (for area detector data).</p>
+
+<h3>Troubleshooting</h3>
+<table>
+<tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+<tr><td>Status stuck at "closed"</td><td>Devices file has a Python error</td>
+    <td>Check RE Console, fix the error, click Restart RE Manager</td></tr>
+<tr><td>Devices list empty</td><td>Wrong devices file or import error</td>
+    <td>Check File → Edit Devices File; fix import errors</td></tr>
+<tr><td>Connection fails immediately</td><td>RE Manager not running or wrong ports</td>
+    <td>Click Restart RE Manager; verify ports in Connection Settings</td></tr>
+<tr><td>RE Console blank</td><td>Wrong Info port</td>
+    <td>Set Info port to 60625 in Connection Settings</td></tr>
+<tr><td>SSH restart fails</td><td>SSH key not installed or wrong user</td>
+    <td>Re-run Setup SSH Key… in Connection Settings</td></tr>
+</table>
 """
 
 _COMPOSER_HTML = """
