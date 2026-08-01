@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QMessageBox, QPushButton, QStatusBar, QTabWidget,
     QTextBrowser, QVBoxLayout, QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, QTimer
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from .config import APP_NAME, ACCENT
 from .connection_settings import (
     load_connection, save_connection, make_zmq_addrs,
