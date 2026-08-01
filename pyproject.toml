@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy-bluesky"
-version = "0.1.0"
+version = "0.1.1"
 description = "PyQt6 desktop app for controlling Bluesky experiments via the queue server"
 readme = "README.md"
 requires-python = ">=3.10"
