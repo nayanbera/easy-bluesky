@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
+from .widgets import NoScrollSpinBox
 
 _SETTINGS_FILE = Path.home() / ".easy_bluesky" / "connection.json"
 
@@ -546,7 +547,7 @@ class ConnectionDialog(QDialog):
         self._ssh_user.setPlaceholderText("username on the remote machine")
         ssh_form.addRow("SSH user:", self._ssh_user)
 
-        self._ssh_port = QSpinBox()
+        self._ssh_port = NoScrollSpinBox()
         self._ssh_port.setRange(1, 65535)
         self._ssh_port.setValue(self._settings.get("ssh_port", 22))
         ssh_form.addRow("SSH port:", self._ssh_port)
@@ -755,19 +756,19 @@ class ConnectionDialog(QDialog):
         self._prof_devices.setPlaceholderText("devices.py")
         self._prof_form.addRow("Devices file:", self._prof_devices)
 
-        self._prof_ctrl = QSpinBox()
+        self._prof_ctrl = NoScrollSpinBox()
         self._prof_ctrl.setRange(1, 65535)
         self._prof_form.addRow("Control port:", self._prof_ctrl)
 
-        self._prof_info = QSpinBox()
+        self._prof_info = NoScrollSpinBox()
         self._prof_info.setRange(1, 65535)
         self._prof_form.addRow("Info port:", self._prof_info)
 
-        self._prof_doc = QSpinBox()
+        self._prof_doc = NoScrollSpinBox()
         self._prof_doc.setRange(1, 65535)
         self._prof_form.addRow("Doc stream port:", self._prof_doc)
 
-        self._prof_procserv = QSpinBox()
+        self._prof_procserv = NoScrollSpinBox()
         self._prof_procserv.setRange(1, 65535)
         self._prof_form.addRow("procServ port:", self._prof_procserv)
 

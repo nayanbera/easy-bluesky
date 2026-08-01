@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QSpinBox, QStackedWidget, QVBoxLayout,
     QWidget,
 )
+from .widgets import NoScrollSpinBox
 
 from .registry import (
     INSTANCE_DEFAULTS, fetch_registry, hash_password, probe_all_instances,
@@ -353,10 +354,10 @@ class RegistryAdminWindow(QDialog):
         self._inst_desc.setPlaceholderText("Short description")
         self._inst_form.addRow("Description:", self._inst_desc)
 
-        self._inst_ctrl = QSpinBox(); self._inst_ctrl.setRange(1, 65535)
-        self._inst_info = QSpinBox(); self._inst_info.setRange(1, 65535)
-        self._inst_doc  = QSpinBox(); self._inst_doc.setRange(1, 65535)
-        self._inst_ps   = QSpinBox(); self._inst_ps.setRange(1, 65535)
+        self._inst_ctrl = NoScrollSpinBox(); self._inst_ctrl.setRange(1, 65535)
+        self._inst_info = NoScrollSpinBox(); self._inst_info.setRange(1, 65535)
+        self._inst_doc  = NoScrollSpinBox(); self._inst_doc.setRange(1, 65535)
+        self._inst_ps   = NoScrollSpinBox(); self._inst_ps.setRange(1, 65535)
         self._inst_form.addRow("Control port:",    self._inst_ctrl)
         self._inst_form.addRow("Info port:",       self._inst_info)
         self._inst_form.addRow("Doc stream port:", self._inst_doc)

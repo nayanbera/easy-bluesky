@@ -11,6 +11,16 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 
+class NoScrollSpinBox(QSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoScrollDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class MultiSelectWidget(QWidget):
     """
     Multi-select QListWidget with a live summary label below showing
@@ -86,14 +96,14 @@ class PositionListWidget(QWidget):
         gen_row = QHBoxLayout()
         gen_row.setSpacing(4)
         gen_row.addWidget(QLabel("linspace:"))
-        self._ls_start = QDoubleSpinBox()
+        self._ls_start = NoScrollDoubleSpinBox()
         self._ls_start.setRange(-1e9, 1e9)
         self._ls_start.setDecimals(4)
-        self._ls_stop = QDoubleSpinBox()
+        self._ls_stop = NoScrollDoubleSpinBox()
         self._ls_stop.setRange(-1e9, 1e9)
         self._ls_stop.setDecimals(4)
         self._ls_stop.setValue(1.0)
-        self._ls_num = QSpinBox()
+        self._ls_num = NoScrollSpinBox()
         self._ls_num.setRange(2, 100000)
         self._ls_num.setValue(11)
         btn_gen = QPushButton("Fill")
@@ -179,12 +189,12 @@ class ScanArgsWidget(QWidget):
 
         # Pre-build one hidden row per device so spinboxes are stable objects
         for d in self.devices:
-            start_spin = QDoubleSpinBox()
+            start_spin = NoScrollDoubleSpinBox()
             start_spin.setRange(-1e9, 1e9)
             start_spin.setDecimals(4)
             start_spin.setSingleStep(0.1)
 
-            stop_spin = QDoubleSpinBox()
+            stop_spin = NoScrollDoubleSpinBox()
             stop_spin.setRange(-1e9, 1e9)
             stop_spin.setDecimals(4)
             stop_spin.setSingleStep(0.1)
@@ -518,7 +528,7 @@ class ParamForm(QWidget):
         # ── Float / int — check BEFORE device fallbacks to avoid mis-routing ────
         if typ in ("float", "int") or "float" in typ or "int" in typ:
             if "int" in typ and "float" not in typ:
-                w = QSpinBox()
+                w = NoScrollSpinBox()
                 w.setRange(-999999, 999999)
                 if default not in (None, "None"):
                     try:
@@ -526,7 +536,7 @@ class ParamForm(QWidget):
                     except Exception:
                         pass
             else:
-                w = QDoubleSpinBox()
+                w = NoScrollDoubleSpinBox()
                 w.setRange(-999999.0, 999999.0)
                 w.setDecimals(4)
                 w.setSingleStep(0.1)
@@ -541,7 +551,7 @@ class ParamForm(QWidget):
         if not typ:
             if n in ("num", "num_points", "npts", "steps", "n_points", "num_steps",
                      "num_images", "nframes", "n"):
-                w = QSpinBox()
+                w = NoScrollSpinBox()
                 w.setRange(1, 999999)
                 if default not in (None, "None"):
                     try:
@@ -552,7 +562,7 @@ class ParamForm(QWidget):
             if n in ("start", "stop", "step", "delay", "exposure", "exposure_time",
                      "sleep_time", "wait_time", "count_time", "dwell", "speed",
                      "velocity", "position", "pos", "value", "val"):
-                w = QDoubleSpinBox()
+                w = NoScrollDoubleSpinBox()
                 w.setRange(-1e9, 1e9)
                 w.setDecimals(4)
                 w.setSingleStep(0.1)

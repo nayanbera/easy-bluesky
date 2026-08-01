@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
     QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit,
 )
+from .widgets import NoScrollDoubleSpinBox
 import json
 from pathlib import Path
 
@@ -575,7 +576,7 @@ class DevicesPlansTab(QWidget):
         h.setContentsMargins(2, 0, 2, 0)
         h.setSpacing(2)
 
-        step = QDoubleSpinBox()
+        step = NoScrollDoubleSpinBox()
         step.setRange(0.0001, 100000)
         step.setValue(0.1)
         step.setDecimals(4)

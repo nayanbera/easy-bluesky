@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData
+from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox
 from PyQt6.QtGui import QFont, QColor, QDrag
 
 from .highlighter import PythonHighlighter
@@ -765,7 +766,7 @@ class PropertyPanel(QWidget):
             wtype = param.get("widget", "")
 
             if ptype == "float":
-                w = QDoubleSpinBox()
+                w = NoScrollDoubleSpinBox()
                 w.setRange(-1e9, 1e9)
                 w.setDecimals(4)
                 w.setSingleStep(0.1)
@@ -777,7 +778,7 @@ class PropertyPanel(QWidget):
                 w.setValue(float(value))
 
             elif ptype == "int":
-                w = QSpinBox()
+                w = NoScrollSpinBox()
                 w.setRange(1, 1000000)
                 handler = lambda v, n=name: self._update(n, v)
                 self._handlers.append(handler)
