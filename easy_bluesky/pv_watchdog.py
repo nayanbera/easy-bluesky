@@ -696,7 +696,6 @@ class PVWatchdogTab(QWidget):
                 if not self._alert_shown:
                     self._alert_shown = True
                     # Defer the dialog so the pause ZMQ call completes first
-                    from PyQt6.QtCore import QTimer
                     QTimer.singleShot(150, lambda f=list(failing): self._show_failure_alert(f))
             # If _paused_by_us is already True and the resume timer is running,
             # leave it alone — _do_resume re-checks conditions before resuming.
