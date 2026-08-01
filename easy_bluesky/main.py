@@ -31,6 +31,7 @@ from .queue_manager import QueueManager
 from .plan_builder import PlanBuilder
 from .experiments_tab import ExperimentsTab
 from .devices_plans_tab import DevicesPlansTab
+from .pv_watchdog import PVWatchdogTab
 from .hdf5_viewer import HDF5Viewer
 from .re_console import REConsoleWidget
 
@@ -996,6 +997,7 @@ class MainWindow(QMainWindow):
         self.queue_mgr          = QueueManager(self.worker)
         self.plan_builder       = PlanBuilder(self.worker)
         self.devices_plans_tab  = DevicesPlansTab()
+        self.watchdog_tab       = PVWatchdogTab()
         self.hdf5_viewer        = HDF5Viewer()
         self.re_console         = REConsoleWidget()
 
@@ -1003,6 +1005,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.queue_mgr,         "⚙  Queue Manager")
         self.tabs.addTab(self.plan_builder,      "🔧  Plan Builder")
         self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
+        self.tabs.addTab(self.watchdog_tab,      "🔭  PV Watchdog")
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
         self.tabs.addTab(self.re_console,        "🖥  RE Console")
 
@@ -1175,6 +1178,14 @@ class MainWindow(QMainWindow):
 
         self._connect_requested.connect(self.worker.connect)
 
+        # PV Watchdog
+        self.worker.status_updated.connect(self.watchdog_tab.on_status_updated)
+        self.worker.connected.connect(self.watchdog_tab.on_connected)
+        self.worker.disconnected.connect(self.watchdog_tab.on_disconnected)
+        self.watchdog_tab.pause_requested.connect(self._on_watchdog_pause)
+        self.watchdog_tab.resume_requested.connect(self._on_watchdog_resume)
+        self.watchdog_tab.log_message.connect(self._on_console_line)
+
         self.worker_thread.start()
 
     def _connect(self):
@@ -1274,6 +1285,18 @@ class MainWindow(QMainWindow):
     def _on_resume_requested(self):
         ok, msg = self.worker.re_resume()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Resume: {msg}")
+
+    def _on_watchdog_pause(self):
+        ok, msg = self.worker.re_pause(option="immediate")
+        self._log(f"[{self._ts()}] [Watchdog] {'✓' if ok else '✗'} Pause immediate: {msg}")
+        if not ok:
+            # RE not running (between plans) — stop the queue so next plan doesn't start
+            ok2, msg2 = self.worker.queue_stop()
+            self._log(f"[{self._ts()}] [Watchdog] {'✓' if ok2 else '✗'} Queue stop: {msg2}")
+
+    def _on_watchdog_resume(self):
+        ok, msg = self.worker.re_resume()
+        self._log(f"[{self._ts()}] [Watchdog] {'✓' if ok else '✗'} Resume: {msg}")
 
     def _on_abort_requested(self):
         r = QMessageBox.question(self, "Abort", "Abort the currently running plan?")
