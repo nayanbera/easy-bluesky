@@ -2,21 +2,31 @@
 
 from datetime import datetime
 
+import numpy as np
+
+try:
+    import pyqtgraph as pg
+    PG_AVAILABLE = True
+except ImportError:
+    PG_AVAILABLE = False
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter,
+    QPushButton, QSizePolicy, QSplitter,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
+
+from .config import PLOT_COLORS
 
 
 # ── Background workers ─────────────────────────────────────────────────────────
 
 class _RunListFetcher(QThread):
     """Fetch the most recent N runs from a MongoDB database."""
-    runs_ready = pyqtSignal(list)   # list of {start, stop} dicts
+    runs_ready = pyqtSignal(list)
     error      = pyqtSignal(str)
 
     def __init__(self, host, port, db_name, limit=100, parent=None):
@@ -56,7 +66,7 @@ class _RunListFetcher(QThread):
 
 class _DataFetcher(QThread):
     """Fetch event data for one run; returns dict keyed by stream name."""
-    data_ready = pyqtSignal(dict)   # {stream: {field: ndarray, 'time': ndarray}}
+    data_ready = pyqtSignal(dict)
     error      = pyqtSignal(str)
 
     def __init__(self, host, port, db_name, run_uid, parent=None):
@@ -68,7 +78,6 @@ class _DataFetcher(QThread):
 
     def run(self):
         try:
-            import numpy as np
             import pymongo
             client = pymongo.MongoClient(
                 self._host, self._port, serverSelectionTimeoutMS=5000
@@ -84,13 +93,11 @@ class _DataFetcher(QThread):
                 if not data_keys:
                     continue
 
-                times     = []
+                times      = []
                 field_data = {k: [] for k in data_keys}
 
-                # Try event_page first (suitcase.mongo_normalized format), then event
-                pages = list(
-                    db["event_page"].find({"descriptor": desc_uid})
-                )
+                # Try event_page first, then individual event documents
+                pages = list(db["event_page"].find({"descriptor": desc_uid}))
                 if pages:
                     pages.sort(key=lambda p: (p.get("seq_num") or [0])[0])
                     for page in pages:
@@ -99,7 +106,6 @@ class _DataFetcher(QThread):
                         for field in data_keys:
                             field_data[field].extend(pdata.get(field, []))
                 else:
-                    # Fall back to individual event documents
                     for ev in db["event"].find(
                         {"descriptor": desc_uid}
                     ).sort("seq_num", 1):
@@ -129,20 +135,6 @@ class _DataFetcher(QThread):
             self.error.emit(str(exc))
 
 
-# ── Matplotlib canvas (lazy — skips gracefully if not installed) ────────────────
-
-def _make_canvas():
-    """Return (canvas, toolbar_class) or raise ImportError."""
-    from matplotlib.backends.backend_qtagg import (
-        FigureCanvasQTAgg as _Canvas,
-        NavigationToolbar2QT as _Toolbar,
-    )
-    from matplotlib.figure import Figure
-    fig    = Figure(tight_layout=True)
-    canvas = _Canvas(fig)
-    return canvas, fig, _Toolbar
-
-
 # ── Main tab ───────────────────────────────────────────────────────────────────
 
 class MongoDataBrowserTab(QWidget):
@@ -153,21 +145,18 @@ class MongoDataBrowserTab(QWidget):
     switch to any other profile that has a mongo_db configured.
     """
 
-    # ── setup ──────────────────────────────────────────────────────────────────
+    COLORS = PLOT_COLORS
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
-        self._settings    = settings   # shared reference — updates propagate
-        self._runs: list  = []         # cached run list for selected profile
-        self._stream_data = {}         # fetched stream data for selected run
-        self._run_fetcher = None
+        self._settings     = settings
+        self._runs: list   = []
+        self._stream_data  = {}
+        self._run_fetcher  = None
         self._data_fetcher = None
-        self._canvas      = None
-        self._fig         = None
-        self._toolbar_cls = None
+        self._curves: dict = {}
 
         self._build_ui()
-        self._try_make_canvas()
         self._populate_profile_combo()
 
     def _build_ui(self):
@@ -187,9 +176,6 @@ class MongoDataBrowserTab(QWidget):
         self._db_label = QLabel("")
         self._db_label.setObjectName("dim_text")
         top.addWidget(self._db_label, 1)
-
-        self._load_spin = QLabel("")
-        top.addWidget(self._load_spin)
 
         btn_refresh = QPushButton("↻  Refresh Runs")
         btn_refresh.setFixedHeight(28)
@@ -263,7 +249,7 @@ class MongoDataBrowserTab(QWidget):
         ctrl_lay = QHBoxLayout(ctrl_box)
         ctrl_lay.setSpacing(12)
 
-        # Stream selector
+        # Stream
         stream_col = QVBoxLayout()
         stream_col.addWidget(QLabel("Stream:"))
         self._stream_combo = QComboBox()
@@ -273,9 +259,7 @@ class MongoDataBrowserTab(QWidget):
         stream_col.addStretch()
         ctrl_lay.addLayout(stream_col)
 
-        sep_v = QFrame()
-        sep_v.setFrameShape(QFrame.Shape.VLine)
-        ctrl_lay.addWidget(sep_v)
+        ctrl_lay.addWidget(_vline())
 
         # X axis
         x_col = QVBoxLayout()
@@ -286,13 +270,11 @@ class MongoDataBrowserTab(QWidget):
         x_col.addStretch()
         ctrl_lay.addLayout(x_col)
 
-        sep_v2 = QFrame()
-        sep_v2.setFrameShape(QFrame.Shape.VLine)
-        ctrl_lay.addWidget(sep_v2)
+        ctrl_lay.addWidget(_vline())
 
-        # Y axis (scrollable checklist)
+        # Y axis (checkable list)
         y_col = QVBoxLayout()
-        y_col.addWidget(QLabel("Y signals (select one or more):"))
+        y_col.addWidget(QLabel("Y signals:"))
         self._y_list = QListWidget()
         self._y_list.setMinimumHeight(80)
         self._y_list.setMaximumHeight(120)
@@ -302,17 +284,25 @@ class MongoDataBrowserTab(QWidget):
         y_col.addWidget(self._y_list)
         ctrl_lay.addLayout(y_col, 1)
 
-        sep_v3 = QFrame()
-        sep_v3.setFrameShape(QFrame.Shape.VLine)
-        ctrl_lay.addWidget(sep_v3)
+        ctrl_lay.addWidget(_vline())
 
-        # Options + plot button
+        # Norm by
+        norm_col = QVBoxLayout()
+        norm_col.addWidget(QLabel("Norm by:"))
+        self._norm_combo = QComboBox()
+        self._norm_combo.setMinimumWidth(120)
+        self._norm_combo.addItem("None", userData=None)
+        norm_col.addWidget(self._norm_combo)
+        norm_col.addStretch()
+        ctrl_lay.addLayout(norm_col)
+
+        ctrl_lay.addWidget(_vline())
+
+        # Options + buttons
         opt_col = QVBoxLayout()
-        self._norm_cb = QCheckBox("Normalise to first point")
-        opt_col.addWidget(self._norm_cb)
-        self._log_y_cb = QCheckBox("Log Y scale")
+        self._log_y_cb   = QCheckBox("Log Y")
+        self._overlay_cb = QCheckBox("Overlay")
         opt_col.addWidget(self._log_y_cb)
-        self._overlay_cb = QCheckBox("Overlay (don't clear)")
         opt_col.addWidget(self._overlay_cb)
         opt_col.addStretch()
         btn_plot = QPushButton("Plot")
@@ -328,15 +318,17 @@ class MongoDataBrowserTab(QWidget):
 
         rlayout.addWidget(ctrl_box)
 
-        # Plot area placeholder — filled by _try_make_canvas()
-        self._plot_placeholder = QLabel(
-            "matplotlib not installed.\n"
-            "Run:  pip install matplotlib"
-        )
-        self._plot_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._plot_placeholder.setStyleSheet("color: #888;")
-        rlayout.addWidget(self._plot_placeholder, 1)
-        self._plot_area_layout = rlayout   # save ref to attach canvas later
+        # Plot widget
+        if PG_AVAILABLE:
+            self._plot_widget = pg.PlotWidget(background="#1e1e1e")
+            self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
+            self._plot_widget.addLegend()
+            rlayout.addWidget(self._plot_widget, 1)
+        else:
+            self._plot_widget = None
+            rlayout.addWidget(
+                QLabel("pyqtgraph not available — pip install pyqtgraph"), 1
+            )
 
         splitter.addWidget(right)
         splitter.setSizes([360, 700])
@@ -346,21 +338,10 @@ class MongoDataBrowserTab(QWidget):
         self._status_label.setWordWrap(True)
         root.addWidget(self._status_label)
 
-    def _try_make_canvas(self):
-        try:
-            self._canvas, self._fig, self._toolbar_cls = _make_canvas()
-            self._plot_placeholder.hide()
-            self._plot_area_layout.addWidget(self._canvas, 1)
-            toolbar = self._toolbar_cls(self._canvas, self)
-            self._plot_area_layout.addWidget(toolbar)
-        except ImportError:
-            pass   # placeholder stays visible
-
     # ── Profile management ─────────────────────────────────────────────────────
 
     def _populate_profile_combo(self):
-        """Fill the profile combo with profiles that have mongo_db set."""
-        active = self._settings.get("active_profile", "")
+        active   = self._settings.get("active_profile", "")
         profiles = [
             p for p in self._settings.get("profiles", [])
             if p.get("mongo_db", "").strip()
@@ -387,7 +368,6 @@ class MongoDataBrowserTab(QWidget):
         self._on_profile_changed(active_idx)
 
     def update_settings(self, settings: dict):
-        """Call when the active profile or settings change."""
         self._settings = settings
         self._populate_profile_combo()
 
@@ -436,27 +416,22 @@ class MongoDataBrowserTab(QWidget):
 
             self._run_table.insertRow(row)
 
-            scan_id   = str(start.get("scan_id", "—"))
-            plan      = start.get("plan_name", "—")
-            ts        = start.get("time", 0)
-            dt_str    = datetime.fromtimestamp(ts).strftime("%Y-%m-%d  %H:%M:%S") if ts else "—"
-            exit_st   = stop.get("exit_status", "running" if not stop else "—")
-            num_ev    = str(stop.get("num_events", {}).get("primary", "—")) if stop else "—"
-            dets      = ", ".join(start.get("detectors", [])) or "—"
+            scan_id = str(start.get("scan_id", "—"))
+            plan    = start.get("plan_name", "—")
+            ts      = start.get("time", 0)
+            dt_str  = datetime.fromtimestamp(ts).strftime("%Y-%m-%d  %H:%M:%S") if ts else "—"
+            exit_st = stop.get("exit_status", "running" if not stop else "—")
+            num_ev  = str(stop.get("num_events", {}).get("primary", "—")) if stop else "—"
+            dets    = ", ".join(start.get("detectors", [])) or "—"
 
-            # colour-code status
             if exit_st == "success":
-                status_color = "#2ca02c"
-                status_icon  = "✓ success"
+                status_color, status_icon = "#2ca02c", "✓ success"
             elif exit_st in ("fail", "error"):
-                status_color = "#d62728"
-                status_icon  = "✗ fail"
+                status_color, status_icon = "#d62728", "✗ fail"
             elif exit_st == "abort":
-                status_color = "#ff7f0e"
-                status_icon  = "⊘ abort"
+                status_color, status_icon = "#ff7f0e", "⊘ abort"
             else:
-                status_color = "#888888"
-                status_icon  = "… running"
+                status_color, status_icon = "#888888", "… running"
 
             cols = [scan_id, plan, dt_str, status_icon, num_ev, dets]
             for col, text in enumerate(cols):
@@ -479,17 +454,13 @@ class MongoDataBrowserTab(QWidget):
 
     def _on_run_selected(self):
         rows = self._run_table.selectionModel().selectedRows()
-        if not rows:
-            return
-        row   = rows[0].row()
-        if row >= len(self._runs):
+        if not rows or rows[0].row() >= len(self._runs):
             return
 
-        run   = self._runs[row]
+        run   = self._runs[rows[0].row()]
         start = run["start"]
         stop  = run["stop"]
 
-        # Update info panel
         scan_id  = start.get("scan_id", "—")
         plan     = start.get("plan_name", "—")
         ts_start = start.get("time", 0)
@@ -511,7 +482,6 @@ class MongoDataBrowserTab(QWidget):
             f"UID     : {uid}…"
         )
 
-        # Fetch data
         profile = self._current_profile()
         db   = profile.get("mongo_db",   "")
         host = profile.get("mongo_host", "") or "localhost"
@@ -533,10 +503,7 @@ class MongoDataBrowserTab(QWidget):
     def _on_data_ready(self, data: dict):
         self._stream_data = data
         self._populate_axis_controls(data)
-        n_pts = {
-            k: len(v.get("time", []))
-            for k, v in data.items()
-        }
+        n_pts = {k: len(v.get("time", [])) for k, v in data.items()}
         summary = ",  ".join(f"{k}: {v} pts" for k, v in n_pts.items())
         self._set_status(f"Data loaded — {summary}")
 
@@ -548,6 +515,10 @@ class MongoDataBrowserTab(QWidget):
         self._stream_combo.blockSignals(False)
         self._x_combo.clear()
         self._y_list.clear()
+        self._norm_combo.blockSignals(True)
+        self._norm_combo.clear()
+        self._norm_combo.addItem("None", userData=None)
+        self._norm_combo.blockSignals(False)
         self._stream_data = {}
 
     def _populate_axis_controls(self, data: dict):
@@ -555,7 +526,6 @@ class MongoDataBrowserTab(QWidget):
         self._stream_combo.clear()
         for stream in data:
             self._stream_combo.addItem(stream)
-        # default to "primary"
         idx = self._stream_combo.findText("primary")
         if idx >= 0:
             self._stream_combo.setCurrentIndex(idx)
@@ -572,28 +542,23 @@ class MongoDataBrowserTab(QWidget):
 
         # ── X axis ────────────────────────────────────────────────────────────
         self._x_combo.clear()
-        self._x_combo.addItem("time (epoch)", userData="time")
-        self._x_combo.addItem("sequence #",   userData="seq_num")
+        self._x_combo.addItem("time (s)", userData="time")
+        self._x_combo.addItem("sequence #", userData="seq_num")
 
-        # Auto-detect motor from run metadata
-        rows = self._run_table.selectionModel().selectedRows()
         auto_motor = ""
+        rows = self._run_table.selectionModel().selectedRows()
         if rows and rows[0].row() < len(self._runs):
-            start = self._runs[rows[0].row()]["start"]
+            start  = self._runs[rows[0].row()]["start"]
             motors = start.get("motors", [])
             if motors:
                 auto_motor = motors[0]
-                # Find matching key (ophyd uses device_attr naming)
                 for k in keys:
                     if k == auto_motor or k.startswith(auto_motor):
                         auto_motor = k
                         break
-
-            # Also try run_start.hints.dimensions
             dims = start.get("hints", {}).get("dimensions", [])
             if dims:
-                dim_fields = dims[0][0] if dims[0] else []
-                for f in dim_fields:
+                for f in (dims[0][0] if dims[0] else []):
                     if f in keys:
                         auto_motor = f
                         break
@@ -601,14 +566,13 @@ class MongoDataBrowserTab(QWidget):
         for k in sorted(keys):
             self._x_combo.addItem(k, userData=k)
 
-        # Select motor as default X
         if auto_motor:
             for i in range(self._x_combo.count()):
                 if self._x_combo.itemData(i) == auto_motor:
                     self._x_combo.setCurrentIndex(i)
                     break
 
-        # ── Y axis (checkboxes) ────────────────────────────────────────────────
+        # ── Y axis ────────────────────────────────────────────────────────────
         self._y_list.clear()
         motor_names = set()
         if rows and rows[0].row() < len(self._runs):
@@ -617,17 +581,30 @@ class MongoDataBrowserTab(QWidget):
         for k in sorted(keys):
             item = QListWidgetItem(k)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            # Pre-check detectors; uncheck motors
             is_motor = any(k == m or k.startswith(m) for m in motor_names)
             item.setCheckState(
                 Qt.CheckState.Unchecked if is_motor else Qt.CheckState.Checked
             )
             self._y_list.addItem(item)
 
+        # ── Norm by ───────────────────────────────────────────────────────────
+        prev_norm = self._norm_combo.currentData()
+        self._norm_combo.blockSignals(True)
+        self._norm_combo.clear()
+        self._norm_combo.addItem("None", userData=None)
+        for k in sorted(keys):
+            self._norm_combo.addItem(k, userData=k)
+        # Restore previous selection if still available
+        for i in range(self._norm_combo.count()):
+            if self._norm_combo.itemData(i) == prev_norm:
+                self._norm_combo.setCurrentIndex(i)
+                break
+        self._norm_combo.blockSignals(False)
+
     # ── Plotting ───────────────────────────────────────────────────────────────
 
     def _plot(self):
-        if self._canvas is None:
+        if not PG_AVAILABLE or self._plot_widget is None:
             return
 
         stream = self._stream_combo.currentText()
@@ -637,84 +614,117 @@ class MongoDataBrowserTab(QWidget):
             return
 
         x_field = self._x_combo.currentData() or self._x_combo.currentText()
-        y_fields = []
-        for i in range(self._y_list.count()):
-            item = self._y_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                y_fields.append(item.text())
+        y_fields = [
+            self._y_list.item(i).text()
+            for i in range(self._y_list.count())
+            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        norm_field = self._norm_combo.currentData()
 
         if not y_fields:
             self._set_status("Select at least one Y signal.", error=True)
             return
 
-        # Get X array
+        # Build X array
         if x_field == "time":
             x_raw = sdata.get("time")
-            if x_raw is not None and len(x_raw):
-                import numpy as np
-                x_arr  = x_raw - x_raw[0]   # relative seconds
-                x_label = "Time  (s)"
-            else:
+            if x_raw is None or not len(x_raw):
                 self._set_status("No time data.", error=True)
                 return
+            x_arr   = x_raw - x_raw[0]
+            x_label = "Time  (s)"
         elif x_field == "seq_num":
-            import numpy as np
             t = sdata.get("time")
-            x_arr  = np.arange(1, len(t) + 1) if t is not None else np.array([])
+            x_arr   = np.arange(1, len(t) + 1) if t is not None else np.array([])
             x_label = "Sequence #"
         else:
-            x_arr  = sdata.get(x_field)
+            x_arr = sdata.get(x_field)
             x_label = x_field
             if x_arr is None:
                 self._set_status(f"Field '{x_field}' not found.", error=True)
                 return
 
-        # Draw
+        # Normalisation denominator
+        norm_arr = None
+        if norm_field and norm_field in sdata:
+            norm_arr = sdata[norm_field].astype(float)
+
+        # Clear or overlay
         if not self._overlay_cb.isChecked():
-            self._fig.clear()
+            for curve in self._curves.values():
+                try:
+                    self._plot_widget.removeItem(curve)
+                except Exception:
+                    pass
+            pi = self._plot_widget.getPlotItem()
+            if pi.legend:
+                pi.legend.clear()
+            self._curves = {}
 
-        ax = self._fig.gca() if self._fig.axes else self._fig.add_subplot(111)
-
-        import numpy as np
-        normalise = self._norm_cb.isChecked()
         log_y     = self._log_y_cb.isChecked()
+        color_idx = len(self._curves)
 
         for field in y_fields:
             y_arr = sdata.get(field)
-            if y_arr is None or len(y_arr) == 0:
+            if y_arr is None or not len(y_arr):
                 continue
-            # Align lengths
             n = min(len(x_arr), len(y_arr))
-            x = x_arr[:n]
-            y = y_arr[:n]
-            if normalise and y[0] != 0:
-                y = y / y[0]
-            ax.plot(x, y, marker=".", markersize=3, label=field)
+            x = x_arr[:n].astype(float)
+            y = y_arr[:n].astype(float)
 
-        ax.set_xlabel(x_label)
-        y_unit = ", ".join(y_fields) if len(y_fields) <= 3 else f"{len(y_fields)} signals"
-        if normalise:
-            y_unit += "  (normalised)"
-        ax.set_ylabel(y_unit)
+            if norm_arr is not None:
+                denom = norm_arr[:n]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    y = np.where(denom != 0, y / denom, np.nan)
+
+            if log_y:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    y = np.log10(np.where(y > 0, y, np.nan))
+
+            mask = np.isfinite(x) & np.isfinite(y)
+            x, y = x[mask], y[mask]
+            if not len(x):
+                continue
+
+            color = self.COLORS[color_idx % len(self.COLORS)]
+            pen   = pg.mkPen(color=color, width=2)
+            name  = field if not norm_field else f"{field}/{norm_field}"
+            curve = self._plot_widget.plot(
+                x, y, pen=pen, name=name,
+                symbol="o", symbolSize=5,
+                symbolBrush=color, symbolPen=None,
+            )
+            self._curves[name] = curve
+            color_idx += 1
+
+        self._plot_widget.setLabel("bottom", x_label)
+        y_label = ", ".join(y_fields)
+        if norm_field:
+            y_label += f"  /  {norm_field}"
         if log_y:
-            ax.set_yscale("log")
-        ax.legend(loc="best", fontsize=8)
-        ax.grid(True, alpha=0.3)
+            y_label = f"log₁₀({y_label})"
+        self._plot_widget.setLabel("left", y_label)
 
         rows = self._run_table.selectionModel().selectedRows()
         if rows and rows[0].row() < len(self._runs):
             start   = self._runs[rows[0].row()]["start"]
             scan_id = start.get("scan_id", "")
             plan    = start.get("plan_name", "")
-            ax.set_title(f"Scan {scan_id}  —  {plan}", fontsize=10)
-
-        self._canvas.draw()
+            self._plot_widget.setTitle(f"Scan {scan_id}  —  {plan}")
 
     def _clear_plot(self):
-        if self._canvas is None:
+        if self._plot_widget is None:
             return
-        self._fig.clear()
-        self._canvas.draw()
+        for curve in self._curves.values():
+            try:
+                self._plot_widget.removeItem(curve)
+            except Exception:
+                pass
+        pi = self._plot_widget.getPlotItem()
+        if pi.legend:
+            pi.legend.clear()
+        self._curves = {}
+        self._plot_widget.setTitle("")
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -726,3 +736,9 @@ class MongoDataBrowserTab(QWidget):
             self._status_label.setStyleSheet("color: #ff7f0e;")
         else:
             self._status_label.setStyleSheet("color: #888888;")
+
+
+def _vline() -> QFrame:
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.VLine)
+    return f
