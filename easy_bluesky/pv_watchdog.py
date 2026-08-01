@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re as _re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -321,9 +322,11 @@ class PVWatchdogTab(QWidget):
         self._watchdog_on    = False
         self._paused_by_us   = False
         self._stopped_queue  = False
+        self._alert_shown    = False
         self._resume_timer   = None
         self._re_state       = ""    # from status_updated: "idle", "running", "paused"
         self._manager_state  = ""    # from status_updated: "executing_queue", etc.
+        self._profile_name   = ""
 
         self._build_ui()
         self._load_conditions()
@@ -449,10 +452,34 @@ class PVWatchdogTab(QWidget):
 
     # ── Persistence ────────────────────────────────────────────────────────────
 
+    @property
+    def _watchdog_file(self) -> Path:
+        """Per-profile file; falls back to the global file for unset / legacy profiles."""
+        if not self._profile_name:
+            return _WATCHDOG_FILE
+        safe = _re.sub(r"[^\w\-]", "_", self._profile_name)
+        return Path.home() / ".easy_bluesky" / f"watchdog_{safe}.json"
+
+    def load_for_profile(self, profile_name: str):
+        """Switch to a different profile: reload conditions from its file."""
+        if profile_name == self._profile_name:
+            return
+        self._profile_name = profile_name
+        if self._watchdog_on:
+            self._relay.clear()
+        self._load_conditions()
+        if self._watchdog_on:
+            self._restart_monitors()
+
     def _load_conditions(self):
-        if _WATCHDOG_FILE.exists():
+        wf = self._watchdog_file
+        # Migration: if a profile-specific file doesn't exist yet, fall back to
+        # the legacy global file so existing conditions are preserved.
+        if not wf.exists() and self._profile_name:
+            wf = _WATCHDOG_FILE
+        if wf.exists():
             try:
-                data = json.loads(_WATCHDOG_FILE.read_text(encoding="utf-8"))
+                data = json.loads(wf.read_text(encoding="utf-8"))
                 self._conditions = [
                     WatchdogCondition.from_dict(d)
                     for d in data.get("conditions", [])
@@ -465,18 +492,25 @@ class PVWatchdogTab(QWidget):
                 self._watchdog_on = enabled
             except Exception:
                 pass
+        else:
+            self._conditions = []
+            self._enable_cb.blockSignals(True)
+            self._enable_cb.setChecked(False)
+            self._enable_cb.blockSignals(False)
+            self._watchdog_on = False
         self._rebuild_table()
         self._update_global_status()
 
     def _save_conditions(self):
-        _WATCHDOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        wf = self._watchdog_file
+        wf.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "conditions":    [c.to_dict() for c in self._conditions],
             "resume_delay":  self._delay_spin.value(),
             "enabled":       self._enable_cb.isChecked(),
         }
         try:
-            _WATCHDOG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            wf.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
             pass
 
@@ -657,6 +691,11 @@ class PVWatchdogTab(QWidget):
                 self._paused_by_us  = True
                 self._stopped_queue = not re_running   # RE idle → we stop queue
                 self.pause_requested.emit()
+                if not self._alert_shown:
+                    self._alert_shown = True
+                    # Defer the dialog so the pause ZMQ call completes first
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(150, lambda f=list(failing): self._show_failure_alert(f))
         else:
             if self._paused_by_us and re_paused and self._resume_timer is None:
                 delay = self._delay_spin.value()
@@ -674,6 +713,20 @@ class PVWatchdogTab(QWidget):
             self._resume_timer.deleteLater()
             self._resume_timer = None
 
+    def _show_failure_alert(self, failing: list):
+        """Show a non-blocking informational dialog listing the failed conditions."""
+        lines = "\n".join(
+            f"  • {c.name}:  current {c.value_str()},  required {c.condition_label()}"
+            for c in failing
+        )
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Watchdog — Condition Failed")
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText("The RE has been paused because one or more watchdog conditions failed.")
+        msg.setInformativeText(lines)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
     def _do_resume(self):
         self._resume_timer = None
         enabled_conds = [c for c in self._conditions if c.enabled]
@@ -684,6 +737,7 @@ class PVWatchdogTab(QWidget):
             return
         self._paused_by_us  = False
         self._stopped_queue = False
+        self._alert_shown   = False
         self._append_log("All conditions OK — resuming RE")
         self.resume_requested.emit()
 
@@ -697,6 +751,7 @@ class PVWatchdogTab(QWidget):
         if self._paused_by_us and self._re_state not in ("paused", "running"):
             self._paused_by_us  = False
             self._stopped_queue = False
+            self._alert_shown   = False
             self._cancel_resume_timer()
 
     def on_connected(self):
@@ -707,6 +762,7 @@ class PVWatchdogTab(QWidget):
         self._relay.clear()
         self._paused_by_us  = False
         self._stopped_queue = False
+        self._alert_shown   = False
         self._cancel_resume_timer()
         for cond in self._conditions:
             cond.is_connected  = False

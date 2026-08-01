@@ -1216,6 +1216,8 @@ class MainWindow(QMainWindow):
         self.conn_label.setStyleSheet("color: #2ca02c;")
         ctrl_addr, _, _ = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("Connected to RE Manager at " + ctrl_addr)
+        profile = get_active_profile(self._conn_settings)
+        self.watchdog_tab.load_for_profile(profile.get("name", "Default"))
         # If this is an SSH-managed instance, tail the procServ log file so
         # that worker stdout (startup script output, plan progress) reaches the
         # RE Console regardless of whether the manager publishes to ZMQ.
@@ -1454,6 +1456,7 @@ class MainWindow(QMainWindow):
         self.experiments_tab.live_viewer.restart_zmq(doc)
         self.mongo_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
+        self.watchdog_tab.load_for_profile(name)
 
     def _on_open_hdf5(self):
         from PyQt6.QtWidgets import QFileDialog
