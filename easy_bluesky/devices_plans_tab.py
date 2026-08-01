@@ -81,10 +81,12 @@ class _EPICSMonitor(QObject):
         self._map: dict      = {}   # pvname → (dev_name, sig_name)
         self._desc_pvs: dict = {}   # record.DESC → epics.PV  (one per record base)
         self._desc_map: dict = {}   # record.DESC → [(dev_name, sig_name), ...]
+        self._alive: bool    = True  # guards callbacks after Qt C++ deletion
 
     def setup(self, pv_map: dict):
         """Open CA monitors for every PV in pv_map = {dev: {sig: pvname}}."""
         self.clear()
+        self._alive = True   # clear() arms it False; re-arm for new subscriptions
         try:
             import epics
         except ImportError:
@@ -115,6 +117,7 @@ class _EPICSMonitor(QObject):
                     )
 
     def clear(self):
+        self._alive = False   # block in-flight CA callbacks from emitting
         for pv in list(self._pvs.values()) + list(self._desc_pvs.values()):
             try:
                 pv.clear_callbacks()
@@ -127,16 +130,28 @@ class _EPICSMonitor(QObject):
         self._desc_map.clear()
 
     def _on_change(self, pvname='', value=None, units='', **kw):
+        if not self._alive:
+            return
         info = self._map.get(pvname)
         if info:
-            self.value_changed.emit(info[0], info[1], value, units or '')
+            try:
+                self.value_changed.emit(info[0], info[1], value, units or '')
+            except RuntimeError:
+                pass
 
     def _on_connect(self, pvname='', conn=True, **kw):
+        if not self._alive:
+            return
         info = self._map.get(pvname)
         if info:
-            self.connection_changed.emit(info[0], info[1], bool(conn))
+            try:
+                self.connection_changed.emit(info[0], info[1], bool(conn))
+            except RuntimeError:
+                pass
 
     def _on_desc_change(self, pvname='', value=None, **kw):
+        if not self._alive:
+            return
         infos = self._desc_map.get(pvname)
         if not infos or value is None:
             return
@@ -146,7 +161,10 @@ class _EPICSMonitor(QObject):
             desc = str(value)
         desc = desc.strip()
         for dev_name, sig_name in infos:
-            self.desc_changed.emit(dev_name, sig_name, desc)
+            try:
+                self.desc_changed.emit(dev_name, sig_name, desc)
+            except RuntimeError:
+                pass
 
     def put_value(self, pvname: str, value):
         try:
