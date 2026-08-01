@@ -231,7 +231,7 @@ class DevicesEditorDialog(QDialog):
         if not self._is_remote:
             if self._local_path.exists():
                 try:
-                    content = self._local_path.read_text()
+                    content = self._local_path.read_text(encoding="utf-8")
                     if content.strip():
                         self._set_content(content)
                         self._set_status(f"Loaded: {self._local_path}", ok=True)
@@ -276,7 +276,7 @@ class DevicesEditorDialog(QDialog):
             # Cache local copy for sim generator
             try:
                 self._local_path.parent.mkdir(parents=True, exist_ok=True)
-                self._local_path.write_text(self._editor.toPlainText())
+                self._local_path.write_text(self._editor.toPlainText(), encoding="utf-8")
             except Exception:
                 pass
         else:
@@ -302,7 +302,7 @@ class DevicesEditorDialog(QDialog):
         # Always save locally first
         try:
             self._local_path.parent.mkdir(parents=True, exist_ok=True)
-            self._local_path.write_text(content)
+            self._local_path.write_text(content, encoding="utf-8")
         except Exception as e:
             self._set_status(f"Local save failed: {e}", ok=False)
             return

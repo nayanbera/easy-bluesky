@@ -1594,7 +1594,7 @@ class PlanBuilder(QWidget):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Plan", str(Path.home()), "Python files (*.py)")
         if path:
-            Path(path).write_text(self.editor.toPlainText())
+            Path(path).write_text(self.editor.toPlainText(), encoding="utf-8")
             self.output.appendPlainText(f"Saved to {path}")
 
     def _reload_environment(self):
