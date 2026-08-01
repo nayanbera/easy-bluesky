@@ -629,6 +629,150 @@ _SHORTCUTS_HTML = """
 </table>
 """
 
+_MULTI_HOST_HTML = """
+<h2>Multi-Host Registry</h2>
+
+<p>The multi-host registry lets several RE Managers — potentially running on different
+Linux machines — be discovered and managed from any EasyBluesky client on the network.
+No server process is required: the registry is a single JSON file stored on a
+designated host, read and written over SSH.</p>
+
+<h3>How it works</h3>
+<table>
+<tr><th>Component</th><th>What it does</th></tr>
+<tr><td><b>Registry file</b></td>
+    <td>A <code>~/.easy_bluesky/registry.json</code> on one designated host
+    (the "registry host") lists every RE Manager instance — its name, host,
+    ports, and devices file.</td></tr>
+<tr><td><b>Auto-discovery</b></td>
+    <td>At startup the app SSH-reads the registry, TCP-probes each instance in
+    parallel, and auto-connects to the last-used profile if it is running.
+    The whole operation happens in the background — the UI stays responsive.</td></tr>
+<tr><td><b>Profile merge</b></td>
+    <td>Instances in the registry are merged into your local profile list.
+    Existing profiles matched by name have their host and ports updated;
+    new instances are added as new profiles.</td></tr>
+<tr><td><b>Registry Admin</b></td>
+    <td>Open <b>File → Registry Admin…</b> to add, edit, or remove instances.
+    The dialog is password-protected; the password hash is stored in the registry
+    file — never transmitted over the wire.</td></tr>
+</table>
+
+<h3>Step 1 — Configure the registry host</h3>
+<p>Open <b>File → Connection Settings</b> and fill in the <b>Registry</b> section:</p>
+<table>
+<tr><th>Field</th><th>Example</th><th>Notes</th></tr>
+<tr><td><b>Registry host</b></td><td><code>beamline-pc.example.org</code></td>
+    <td>The machine that stores <code>registry.json</code>.  Usually the same
+    machine that runs the RE Managers, but any SSH-reachable host works.</td></tr>
+<tr><td><b>Registry path</b></td><td>(leave blank)</td>
+    <td>Optional.  Defaults to <code>~/.easy_bluesky/registry.json</code>.
+    Set this only if you need the file in a non-standard location.</td></tr>
+</table>
+<div class="tip">The registry host uses the same SSH credentials (user / key path)
+as the rest of your connection settings.  No extra setup is needed.</div>
+
+<h3>Step 2 — Create the registry and set a password</h3>
+<ol>
+<li>Click <b>File → Registry Admin…</b>.  The app opens an SSH connection
+    to the registry host.</li>
+<li>If no registry file exists yet you are asked to create one and set an admin password.</li>
+<li>If a registry already exists you are prompted for the existing password.</li>
+</ol>
+<div class="warn">The password is hashed with PBKDF2-SHA256 (200&thinsp;000 iterations)
+and stored in <code>registry.json</code>.  EasyBluesky never stores or transmits the
+plaintext password.</div>
+
+<h3>Step 3 — Add RE Manager instances</h3>
+<p>Inside the Registry Admin window click <b>+ Add Instance</b> and fill in:</p>
+<table>
+<tr><th>Field</th><th>Notes</th></tr>
+<tr><td><b>Name</b></td>
+    <td>Short identifier, e.g. <code>ASWAXS</code>.  Must be unique.
+    Profiles are matched to registry instances by name.</td></tr>
+<tr><td><b>Host</b></td>
+    <td>Hostname or IP of the machine that will run this RE Manager.
+    Can be different from the registry host.</td></tr>
+<tr><td><b>Control port / Info port</b></td>
+    <td>ZMQ ports for the RE Manager.  Click <b>Auto-assign Ports</b> to pick
+    free ports via SSH automatically.</td></tr>
+<tr><td><b>Devices file</b></td>
+    <td>Bare filename (e.g. <code>devices_ASWAXS.py</code>) relative to
+    <code>~/.easy_bluesky/scripts/</code> on the remote host, or an absolute path.</td></tr>
+<tr><td><b>Conda env / path</b></td>
+    <td>The conda environment that contains <code>start-re-manager</code>.
+    Leave blank if it is on <code>$PATH</code>.</td></tr>
+</table>
+<p>Click <b>Save Registry</b> to write the updated file to the registry host over SFTP.</p>
+
+<h3>Step 4 — Connect from any client machine</h3>
+<ol>
+<li>Open EasyBluesky on any machine on the network.</li>
+<li>Set the same <b>Registry host</b>, <b>SSH user</b>, and <b>SSH key path</b>
+    in Connection Settings.</li>
+<li>Restart the app (or it auto-discovers at startup).  Available instances appear
+    in the profile dropdown with a live running/stopped indicator.</li>
+<li>Select the profile and click <b>Connect</b>.</li>
+</ol>
+<div class="tip">SSH key auth is used for all operations — no passwords are typed
+or stored.  Each client machine needs its public key installed on the registry host
+(and on any separate RE Manager hosts).<br>
+Use <b>Setup SSH Key…</b> in Connection Settings to generate and install a key
+in one step.</div>
+
+<h3>Per-profile host override</h3>
+<p>In Connection Settings, each profile has an optional <b>Host override</b> field.
+Set this when a profile's RE Manager runs on a <i>different</i> machine than the
+global SSH host.  The override is used for:</p>
+<ul>
+<li>ZMQ connection addresses</li>
+<li>SSH restart / stop commands</li>
+<li>Log tail (RE Console)</li>
+<li>Port auto-assignment via SSH</li>
+</ul>
+<p>Leave it blank to inherit the global <b>Host</b> setting.</p>
+
+<h3>Architecture diagram</h3>
+<pre>
+  Client A (Windows/Mac)             Linux beamline network
+  ──────────────────────             ──────────────────────
+  EasyBluesky                        registry-host
+    File → Registry Admin  ─── SSH ─→  ~/.easy_bluesky/registry.json
+    startup auto-discovery ─── SSH ─→  (reads registry, probes ports)
+
+  Client B (Windows/Mac)             re-host-1
+  ──────────────────────             ─────────
+  EasyBluesky                        RE Manager (profile: ASWAXS)
+    profile: ASWAXS  ──── ZMQ ────→   ctrl port 60615
+                     ──── ZMQ ────→   info port 60625
+
+                                    re-host-2
+                                    ─────────
+                                    RE Manager (profile: SAXS)
+                                      ctrl port 60715
+                                      info port 60725
+</pre>
+
+<h3>registry.json format</h3>
+<pre>{
+  "version": 1,
+  "admin_password_hash": "pbkdf2:sha256:&lt;salt&gt;:&lt;hash&gt;",
+  "instances": [
+    {
+      "name":          "ASWAXS",
+      "host":          "beamline-pc.example.org",
+      "control_port":  60615,
+      "info_port":     60625,
+      "procserv_port": 60635,
+      "devices_file":  "devices_ASWAXS.py",
+      "conda_env":     "easy-bluesky",
+      "conda_path":    "~/anaconda3",
+      "description":   "Wide-angle SAXS beamline"
+    }
+  ]
+}</pre>
+"""
+
 _ABOUT_HTML = """
 <h2>EasyBluesky</h2>
 <p>A PyQt6 desktop GUI for controlling Bluesky/ophyd beamlines via the
@@ -671,10 +815,11 @@ class _HelpDialog(QDialog):
     """Tabbed help / documentation dialog.  Non-modal so it stays open."""
 
     _TABS = [
-        ("Quick Start",       _QUICK_START_HTML),
-        ("Visual Composer",   _COMPOSER_HTML),
-        ("Keyboard Shortcuts",_SHORTCUTS_HTML),
-        ("About",             _ABOUT_HTML),
+        ("Quick Start",        _QUICK_START_HTML),
+        ("Visual Composer",    _COMPOSER_HTML),
+        ("Keyboard Shortcuts", _SHORTCUTS_HTML),
+        ("Multi-Host Registry",_MULTI_HOST_HTML),
+        ("About",              _ABOUT_HTML),
     ]
 
     def __init__(self, parent=None, start_tab: int = 0):
@@ -838,13 +983,15 @@ class MainWindow(QMainWindow):
         act_qs    = help_menu.addAction("Quick Start…")
         act_vc    = help_menu.addAction("Visual Composer Guide…")
         act_kb    = help_menu.addAction("Keyboard Shortcuts…")
+        act_mh    = help_menu.addAction("Multi-Host Registry…")
         help_menu.addSeparator()
         act_about = help_menu.addAction("About EasyBluesky")
 
         act_qs.triggered.connect(lambda: self._open_help(0))
         act_vc.triggered.connect(lambda: self._open_help(1))
         act_kb.triggered.connect(lambda: self._open_help(2))
-        act_about.triggered.connect(lambda: self._open_help(3))
+        act_mh.triggered.connect(lambda: self._open_help(3))
+        act_about.triggered.connect(lambda: self._open_help(4))
 
     def _open_help(self, tab: int = 0):
         if self._help_dialog is None:
