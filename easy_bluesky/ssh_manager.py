@@ -122,12 +122,13 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
                 return False, f"systemctl: {err}"
             return True, f"systemctl --user restart {service} OK"
 
-        scripts_path  = "$HOME/.easy_bluesky/scripts"
+        scripts_path   = "$HOME/.easy_bluesky/scripts"
         startup_script = "re_startup_mongo.py"
         devices_file   = profile.get("devices_file", "devices.py")
         ctrl_port      = profile.get("control_port", 60615)
         info_port      = profile.get("info_port", 60625)
         procserv_port  = profile.get("procserv_port", 60635)
+        _zmq_pub_port  = 60630  # ZMQ PUB port used by re_startup_mongo.py
         profile_name   = profile.get("name", "Default")
         instance_name  = f"RE-{profile_name}"
 
@@ -233,6 +234,10 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             f"pkill -f start-re-manager 2>/dev/null; "
             f"sleep 1; "
             f"pkill -9 -f start-re-manager 2>/dev/null; "
+            # Free any process still holding the ZMQ PUB port so the new
+            # startup script can bind it without "Address already in use".
+            f"fuser -k {_zmq_pub_port}/tcp 2>/dev/null || "
+            f"  kill $(lsof -t -i:{_zmq_pub_port} 2>/dev/null) 2>/dev/null; "
             f"true"
         )
         _, stdout, _ = client.exec_command(stop_cmd, timeout=15)

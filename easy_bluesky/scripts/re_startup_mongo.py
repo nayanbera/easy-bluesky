@@ -360,13 +360,7 @@ try:
     _zmq_sock = _zmq_ctx.socket(_zmq.PUB)
     _zmq_sock.setsockopt(_zmq.LINGER, 0)
     _zmq_sock.setsockopt(_zmq.SNDHWM, 100)
-    try:
-        _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
-    except _zmq.error.ZMQError:
-        # Previous RE Manager instance left the port bound; wait briefly and retry.
-        import time as _time
-        _time.sleep(1)
-        _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
+    _zmq_sock.bind(f"tcp://*:{_ZMQ_PUB_PORT}")
 
     def _zmq_publish(name, doc):
         try:
