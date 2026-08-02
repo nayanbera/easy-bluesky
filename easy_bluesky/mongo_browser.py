@@ -32,7 +32,22 @@ from .plot_tools import setup_crosshair
 from . import peak_fit as _peak_fit
 
 
-# ── Module-level helper ────────────────────────────────────────────────────────
+# ── Module-level helpers ───────────────────────────────────────────────────────
+
+def _poisson_sigma(y_raw, norm_raw=None):
+    """Poisson √N error with propagation through y/norm normalization.
+
+    Raw:        σ = √|y|
+    Normalized: σ = √(y/n² + y²/n³)  where n = norm_raw
+                  = √|y|/n · √(1 + y/n)
+    """
+    y = np.abs(y_raw)
+    if norm_raw is None:
+        return np.sqrt(y)
+    n = np.abs(norm_raw)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(n > 0, np.sqrt(y / n ** 2 + y ** 2 / n ** 3), np.nan)
+
 
 def _fetch_streams(db, uid: str) -> dict:
     """Fetch all event streams for one run UID from an open pymongo Database.
@@ -256,9 +271,10 @@ class MongoDataBrowserTab(QWidget):
         self._run_fetcher    = None
         self._data_fetcher   = None
         self._hdf5_exporter  = None
-        self._curves: dict     = {}
-        self._fit_curves: dict = {}    # fit overlay curves {label: PlotDataItem}
-        self._fit_texts: list  = []    # pg.TextItem annotations for fit results
+        self._curves: dict      = {}
+        self._error_items: dict = {}   # pg.ErrorBarItem per curve
+        self._fit_curves: dict  = {}   # fit overlay curves {label: PlotDataItem}
+        self._fit_texts: list   = []   # pg.TextItem annotations for fit results
         self._active_exp_dir = ""       # current experiment filter
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
@@ -409,6 +425,14 @@ class MongoDataBrowserTab(QWidget):
         self._log_y_cb = QCheckBox("Log Y")
         self._log_y_cb.stateChanged.connect(self._auto_plot)
         ctrl_bar.addWidget(self._log_y_cb)
+
+        self._err_cb = QCheckBox("± Errors")
+        self._err_cb.setToolTip(
+            "Overlay Poisson √N error bars (propagated through normalization;\n"
+            "converted to log₁₀ space when Log Y is active)"
+        )
+        self._err_cb.stateChanged.connect(self._auto_plot)
+        ctrl_bar.addWidget(self._err_cb)
 
         ctrl_bar.addWidget(_vline())
         ctrl_bar.addWidget(QLabel("Fit:"))
@@ -926,17 +950,19 @@ class MongoDataBrowserTab(QWidget):
             self._set_status("Select at least one Y signal.", error=True)
             return
 
-        for curve in self._curves.values():
+        for item in list(self._error_items.values()) + list(self._curves.values()):
             try:
-                self._plot_widget.removeItem(curve)
+                self._plot_widget.removeItem(item)
             except Exception:
                 pass
         pi = self._plot_widget.getPlotItem()
         if pi.legend:
             pi.legend.clear()
-        self._curves = {}
+        self._curves     = {}
+        self._error_items = {}
 
         log_y     = self._log_y_cb.isChecked()
+        show_err  = self._err_cb.isChecked()
         color_idx = 0
         multi_run = len(self._run_data_list) > 1
 
@@ -972,20 +998,35 @@ class MongoDataBrowserTab(QWidget):
                 if y_arr is None or not len(y_arr):
                     continue
                 n = min(len(x_arr), len(y_arr))
-                x = x_arr[:n].astype(float)
-                y = y_arr[:n].astype(float)
+                x     = x_arr[:n].astype(float)
+                y_raw = y_arr[:n].astype(float)
+                norm_raw = norm_arr[:n] if norm_arr is not None else None
 
-                if norm_arr is not None:
-                    denom = norm_arr[:n]
+                # Normalization
+                y = y_raw.copy()
+                if norm_raw is not None:
+                    denom = norm_raw
                     with np.errstate(divide="ignore", invalid="ignore"):
                         y = np.where(denom != 0, y / denom, np.nan)
+
+                # Poisson σ in linear space (before log transform)
+                sigma    = _poisson_sigma(y_raw, norm_raw)
+                y_linear = y.copy()   # y after norm, before log — needed for σ conversion
 
                 if log_y:
                     with np.errstate(divide="ignore", invalid="ignore"):
                         y = np.log10(np.where(y > 0, y, np.nan))
+                    # Convert σ to log₁₀ space: σ_log = σ_lin / (y_lin · ln10)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        sigma = np.where(
+                            y_linear > 0,
+                            sigma / (y_linear * np.log(10)),
+                            np.nan,
+                        )
 
                 mask = np.isfinite(x) & np.isfinite(y)
-                x, y = x[mask], y[mask]
+                x, y  = x[mask], y[mask]
+                sigma = sigma[mask]
                 if not len(x):
                     continue
 
@@ -999,6 +1040,15 @@ class MongoDataBrowserTab(QWidget):
                     symbolBrush=color, symbolPen=None,
                 )
                 self._curves[name] = curve
+
+                if show_err and np.any(np.isfinite(sigma)):
+                    err_item = pg.ErrorBarItem(
+                        x=x, y=y, height=2 * sigma,
+                        beam=0.0, pen=pg.mkPen(color=color, width=1),
+                    )
+                    self._plot_widget.addItem(err_item)
+                    self._error_items[name] = err_item
+
                 color_idx += 1
 
         self._plot_widget.setLabel("bottom", x_label)
@@ -1023,15 +1073,16 @@ class MongoDataBrowserTab(QWidget):
         if self._plot_widget is None:
             return
         self._clear_fit_overlays()
-        for curve in self._curves.values():
+        for item in list(self._error_items.values()) + list(self._curves.values()):
             try:
-                self._plot_widget.removeItem(curve)
+                self._plot_widget.removeItem(item)
             except Exception:
                 pass
         pi = self._plot_widget.getPlotItem()
         if pi.legend:
             pi.legend.clear()
-        self._curves = {}
+        self._curves      = {}
+        self._error_items = {}
         self._plot_widget.setTitle("")
 
     def _auto_plot(self, *_args):

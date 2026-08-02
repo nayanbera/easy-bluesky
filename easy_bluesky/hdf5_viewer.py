@@ -18,14 +18,29 @@ except ImportError:
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QAbstractItemView, QComboBox, QFileDialog,
-    QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox, QTextEdit,
-    QSizePolicy,
+    QListWidget, QListWidgetItem, QAbstractItemView, QComboBox, QCheckBox,
+    QFileDialog, QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox,
+    QTextEdit, QSizePolicy,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 
 from .config import SUCCESS, DANGER, PLOT_COLORS
+
+
+def _poisson_sigma(y_raw, norm_raw=None):
+    """Poisson √N error with propagation through y/norm normalization.
+
+    Raw:        σ = √|y|
+    Normalized: σ = √(y/n² + y²/n³)  where n = norm_raw
+                  = √|y|/n · √(1 + y/n)
+    """
+    y = np.abs(y_raw)
+    if norm_raw is None:
+        return np.sqrt(y)
+    n = np.abs(norm_raw)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(n > 0, np.sqrt(y / n ** 2 + y ** 2 / n ** 3), np.nan)
 from .plot_tools import setup_crosshair
 from . import peak_fit as _peak_fit
 
@@ -110,9 +125,10 @@ class HDF5Viewer(QWidget):
         super().__init__(parent)
         self._scans:  list = []   # list of {"attrs": dict, "df": DataFrame|None}
         self._dfs:    list = []   # [(df, label)] for current selection
-        self._curves: dict = {}
-        self._fit_curves: dict = {}
-        self._fit_texts:  list = []
+        self._curves: dict      = {}
+        self._error_items: dict = {}   # pg.ErrorBarItem per curve
+        self._fit_curves: dict  = {}
+        self._fit_texts:  list  = []
         self._crosshair_cleanup = None
         self._build()
 
@@ -196,6 +212,14 @@ class HDF5Viewer(QWidget):
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._replot)
         ctrl_bar.addWidget(self.norm_combo)
+
+        ctrl_bar.addSpacing(6)
+        self._err_cb = QCheckBox("± Errors")
+        self._err_cb.setToolTip(
+            "Overlay Poisson √N error bars (propagated through normalization)"
+        )
+        self._err_cb.stateChanged.connect(self._replot)
+        ctrl_bar.addWidget(self._err_cb)
 
         btn_plot = QPushButton("Plot")
         btn_plot.setObjectName("btn_primary")
@@ -456,36 +480,46 @@ class HDF5Viewer(QWidget):
             return
 
         self._clear_fit_overlays()
-        for curve in self._curves.values():
+        for item in list(self._error_items.values()) + list(self._curves.values()):
             try:
-                self.plot_widget.removeItem(curve)
+                self.plot_widget.removeItem(item)
             except Exception:
                 pass
         pi = self.plot_widget.getPlotItem()
         if pi.legend:
             pi.legend.clear()
         self._curves = {}
+        self._error_items = {}
 
         norm_col  = self.norm_combo.currentData()
+        show_err  = self._err_cb.isChecked()
         color_idx = 0
         stats     = []
         for df, df_label in self._dfs:
             if xc not in df.columns:
                 continue
-            x = df[xc].values.astype(float)
-            norm_vals = df[norm_col].values.astype(float) \
-                        if norm_col and norm_col in df.columns else None
+            x        = df[xc].values.astype(float)
+            norm_raw = df[norm_col].values.astype(float) \
+                       if norm_col and norm_col in df.columns else None
             for yc in ycs:
                 if yc not in df.columns:
                     continue
-                y = df[yc].values.astype(float)
-                if norm_vals is not None:
+                y_raw = df[yc].values.astype(float)
+
+                # Normalization
+                y = y_raw.copy()
+                if norm_raw is not None:
                     with np.errstate(divide="ignore", invalid="ignore"):
-                        y = np.where(norm_vals != 0, y / norm_vals, np.nan)
+                        y = np.where(norm_raw != 0, y / norm_raw, np.nan)
+
+                # Poisson σ (propagated through normalization)
+                sigma = _poisson_sigma(y_raw, norm_raw)
+
                 mask = np.isfinite(x) & np.isfinite(y)
-                x_, y_ = x[mask], y[mask]
+                x_, y_, s_ = x[mask], y[mask], sigma[mask]
                 if not len(x_):
                     continue
+
                 color      = self.COLORS[color_idx % len(self.COLORS)]
                 pen        = pg.mkPen(color=color, width=2)
                 label      = yc if not norm_col else f"{yc}/{norm_col}"
@@ -496,6 +530,15 @@ class HDF5Viewer(QWidget):
                     symbolBrush=color, symbolPen=None,
                 )
                 self._curves[curve_name] = curve
+
+                if show_err and np.any(np.isfinite(s_)):
+                    err_item = pg.ErrorBarItem(
+                        x=x_, y=y_, height=2 * s_,
+                        beam=0.0, pen=pg.mkPen(color=color, width=1),
+                    )
+                    self.plot_widget.addItem(err_item)
+                    self._error_items[curve_name] = err_item
+
                 color_idx += 1
                 stats.append(f"{curve_name}: min={y_.min():.4g}  max={y_.max():.4g}")
 
