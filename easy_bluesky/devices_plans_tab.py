@@ -439,9 +439,10 @@ class DevicesPlansTab(QWidget):
             item.setText(2, "○ Connecting…")
             item.setForeground(2, QColor("#aaaaaa"))
 
-            # Tweak widget for motor devices (have user_setpoint signal)
-            if "user_setpoint" in sigs:
-                sp_pvname = sigs["user_setpoint"]
+            # Tweak widget for positioner devices.
+            # EpicsMotor uses "user_setpoint"; PseudoSingle uses "setpoint".
+            sp_pvname = sigs.get("user_setpoint") or sigs.get("setpoint") or ""
+            if sp_pvname:
                 self._tweak_pvnames[dev_name] = sp_pvname
                 self.devices_tree.setItemWidget(
                     item, 5, self._make_tweak_widget(dev_name, sp_pvname)
@@ -451,9 +452,9 @@ class DevicesPlansTab(QWidget):
 
         if total == 0 and pv_map:
             # All devices are simulated — no EPICS PVs.  Add tweak widgets for
-            # SynAxis devices and start a polling timer to read back values.
+            # positioner-like sim devices and start a polling timer for values.
             self._sim_mode = True
-            _SIM_MOTOR_CLASSES = {"SynAxis"}
+            _SIM_MOTOR_CLASSES = {"SynAxis", "PseudoSingle"}
             for dev_name, item in self._device_items.items():
                 if self._device_classes.get(dev_name) in _SIM_MOTOR_CLASSES:
                     self.devices_tree.setItemWidget(

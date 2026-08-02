@@ -159,12 +159,15 @@ def get_device_pvnames():
                     except Exception:
                         pass
             out[_n] = pvs
-        elif isinstance(_obj, _oph.Signal) and hasattr(_obj, 'pvname'):
-            # Plain EpicsSignal / EpicsSignalRO — single PV, signal name = device name
+        elif isinstance(_obj, _oph.Signal):
+            # Plain Signal — either EPICS (EpicsSignal/RO with a real PV) or
+            # simulated (SynSignal/SynSignalRO with no PV).
+            # Both cases must appear in pv_map so the device table shows them
+            # and sim-mode detection works correctly even when signals are the
+            # only devices in the namespace.
             try:
-                pv = _obj.pvname
-                if pv:
-                    out[_n] = {_n: pv}
+                pv = getattr(_obj, 'pvname', '') or ''
+                out[_n] = {_n: pv}   # empty string for sim signals
             except Exception:
                 pass
     return out
@@ -197,24 +200,35 @@ def read_devices_status():
 
     out = {}
     for _n, _obj in list(globals().items()):
-        if _n.startswith('_') or not isinstance(_obj, _oph.Device):
+        if _n.startswith('_'):
             continue
-        _d = {'connected': False, 'kind': str(_obj.kind.name), 'reading': {}, 'error': None}
-        try:
-            _d['connected'] = bool(_obj.connected)
-            for _sn, _sd in _obj.read().items():
-                _units = ''
-                try:
-                    _comp = _sn[len(_n) + 1:] if _sn.startswith(_n + '_') else _sn
-                    _sig = getattr(_obj, _comp, None)
-                    if _sig is not None:
-                        _units = (getattr(_sig, 'metadata', None) or {}).get('units', '') or ''
-                except Exception:
-                    pass
-                _d['reading'][_sn] = {'value': _ser(_sd.get('value')), 'units': str(_units)}
-        except Exception as _e:
-            _d['error'] = str(_e)
-        out[_n] = _d
+        if isinstance(_obj, _oph.Device):
+            _d = {'connected': False, 'kind': str(_obj.kind.name), 'reading': {}, 'error': None}
+            try:
+                _d['connected'] = bool(_obj.connected)
+                for _sn, _sd in _obj.read().items():
+                    _units = ''
+                    try:
+                        _comp = _sn[len(_n) + 1:] if _sn.startswith(_n + '_') else _sn
+                        _sig = getattr(_obj, _comp, None)
+                        if _sig is not None:
+                            _units = (getattr(_sig, 'metadata', None) or {}).get('units', '') or ''
+                    except Exception:
+                        pass
+                    _d['reading'][_sn] = {'value': _ser(_sd.get('value')), 'units': str(_units)}
+            except Exception as _e:
+                _d['error'] = str(_e)
+            out[_n] = _d
+        elif isinstance(_obj, _oph.Signal):
+            # SynSignal, SynSignalRO, and other plain Signal instances.
+            # These are not Devices so they need their own read path.
+            _d = {'connected': True, 'kind': str(_obj.kind.name), 'reading': {}, 'error': None}
+            try:
+                for _sn, _sd in _obj.read().items():
+                    _d['reading'][_sn] = {'value': _ser(_sd.get('value')), 'units': ''}
+            except Exception as _e:
+                _d['error'] = str(_e)
+            out[_n] = _d
     return out
 
 
