@@ -1,5 +1,7 @@
 """code_editor.py — QPlainTextEdit with line numbers, auto-indentation, and auto-completion."""
 
+import threading
+
 try:
     import jedi
     JEDI_AVAILABLE = True
@@ -10,7 +12,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QCompleter, QAbstractItemView, QWidget, QTextEdit,
     QLineEdit, QLabel, QPushButton, QCheckBox, QHBoxLayout, QVBoxLayout,
 )
-from PyQt6.QtCore import Qt, QStringListModel, QRect, QSize, QEvent
+from PyQt6.QtCore import Qt, QStringListModel, QRect, QSize, QEvent, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QTextCursor, QKeyEvent, QFont, QPainter, QColor,
     QTextCharFormat, QPalette, QTextDocument,
@@ -369,17 +371,39 @@ _ALL_WORDS = sorted(set(
 ))
 
 
+# ── Jedi background worker ─────────────────────────────────────────────────────
+
+def _jedi_thread(source: str, line: int, col: int, prefix: str,
+                 cancel: threading.Event, signal):
+    """Run jedi.Script.complete() off the main thread and emit results via signal."""
+    try:
+        script = jedi.Script(source)
+        if cancel.is_set():
+            return
+        completions = script.complete(line, col)
+        if cancel.is_set():
+            return
+        words = [c.name for c in completions][:120]
+        if words and not cancel.is_set():
+            signal.emit(words, prefix)
+    except Exception:
+        pass
+
+
 # ── Editor widget ──────────────────────────────────────────────────────────────
 
 class CodeEditor(QPlainTextEdit):
     """QPlainTextEdit with line numbers, current-line highlight, auto-indentation, and auto-completion."""
 
+    _jedi_done = pyqtSignal(list, str)   # (word_list, prefix_that_triggered it)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._completer  = None
-        self._gutter     = _LineNumberArea(self)
-        self._line_sel   = None   # current-line ExtraSelection
-        self._match_sels = []     # FindBar match ExtraSelections
+        self._completer      = None
+        self._gutter         = _LineNumberArea(self)
+        self._line_sel       = None   # current-line ExtraSelection
+        self._match_sels     = []     # FindBar match ExtraSelections
+        self._jedi_cancel    = threading.Event()
 
         self.blockCountChanged.connect(self._update_gutter_width)
         self.updateRequest.connect(self._update_gutter)
@@ -389,6 +413,13 @@ class CodeEditor(QPlainTextEdit):
         self._highlight_current_line()
         self._setup_completer()
         self._find_bar = FindBar(self)
+
+        # Debounce timer: jedi runs in a thread 300 ms after the last keypress
+        self._jedi_timer = QTimer(self)
+        self._jedi_timer.setSingleShot(True)
+        self._jedi_timer.setInterval(300)
+        self._jedi_timer.timeout.connect(self._start_jedi_async)
+        self._jedi_done.connect(self._apply_jedi_completions)
 
     # ── Line number gutter ─────────────────────────────────────────────────────
 
@@ -563,19 +594,37 @@ class CodeEditor(QPlainTextEdit):
 
         if not force and len(prefix) < 2:
             c.popup().hide()
+            self._jedi_timer.stop()
             return
 
-        self._update_model(prefix)
+        # Show static words instantly, then schedule jedi for richer results
+        self._set_static_model(prefix)
+        self._show_popup(prefix)
 
+        if JEDI_AVAILABLE:
+            self._jedi_timer.start()   # restarts the 300ms debounce
+
+    def _set_static_model(self, prefix: str):
+        if '.' in prefix:
+            module = prefix.rsplit('.', 1)[0]
+            if module == 'bps':
+                words = _BPS_METHODS
+            elif module == 'bp':
+                words = _BP_METHODS
+            else:
+                words = _ALL_WORDS
+        else:
+            words = _ALL_WORDS
+        self._completer.model().setStringList(words)
+
+    def _show_popup(self, prefix: str):
+        c = self._completer
         if c.completionPrefix() != prefix:
             c.setCompletionPrefix(prefix)
             c.popup().setCurrentIndex(c.completionModel().index(0, 0))
-
         if c.completionCount() == 0:
             c.popup().hide()
             return
-
-        # Position popup just below the cursor
         cr = self.cursorRect()
         cr.setWidth(
             c.popup().sizeHintForColumn(0)
@@ -596,36 +645,33 @@ class CodeEditor(QPlainTextEdit):
             start -= 1
         return text[start:pos]
 
-    def _update_model(self, prefix: str):
-        if JEDI_AVAILABLE:
-            words = self._jedi_completions()
-            if words:
-                self._completer.model().setStringList(words)
-                return
+    def _start_jedi_async(self):
+        """Snapshot editor state and run jedi in a daemon thread."""
+        self._jedi_cancel.set()           # signal any running thread to stop
+        self._jedi_cancel = threading.Event()
+        source = self.toPlainText()
+        cursor = self.textCursor()
+        line   = cursor.blockNumber() + 1
+        col    = cursor.positionInBlock()
+        prefix = self._completion_prefix()
+        cancel = self._jedi_cancel
+        signal = self._jedi_done
+        threading.Thread(
+            target=_jedi_thread,
+            args=(source, line, col, prefix, cancel, signal),
+            daemon=True,
+        ).start()
 
-        # Context-aware static fallback
-        if '.' in prefix:
-            module = prefix.rsplit('.', 1)[0]
-            if module == 'bps':
-                words = _BPS_METHODS
-            elif module == 'bp':
-                words = _BP_METHODS
-            else:
-                words = _ALL_WORDS
-        else:
-            words = _ALL_WORDS
+    def _apply_jedi_completions(self, words: list, prefix: str):
+        """Called on main thread when jedi finishes; update popup if prefix still matches."""
+        if not words:
+            return
+        if self._completion_prefix() != prefix:
+            return   # user has typed more — stale result, discard
+        if not self._completer.popup().isVisible():
+            return   # popup was closed in the meantime
         self._completer.model().setStringList(words)
-
-    def _jedi_completions(self) -> list:
-        try:
-            source = self.toPlainText()
-            cursor = self.textCursor()
-            line = cursor.blockNumber() + 1
-            col  = cursor.positionInBlock()
-            script = jedi.Script(source)
-            return [c.name for c in script.complete(line, col)][:120]
-        except Exception:
-            return []
+        self._show_popup(prefix)
 
     def _insert_completion(self, completion: str):
         cursor = self.textCursor()
