@@ -1271,7 +1271,8 @@ class MongoDataBrowserTab(QWidget):
         for idx, (x, y, lbl) in enumerate(datasets):
             try:
                 x_fit, y_fit, info = _peak_fit.run_fit(
-                    x, y, fit_dlg.params, fit_dlg.model_name, fit_dlg.method
+                    x, y, fit_dlg.params, fit_dlg.model_name,
+                    fit_dlg.method, fit_dlg.bg_name,
                 )
                 self._add_fit_overlay(x_fit, y_fit, info, lbl, log_y, idx)
                 all_results.append((lbl, info))

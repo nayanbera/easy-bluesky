@@ -17,9 +17,10 @@ except ImportError:
 
 # ── Model catalog ──────────────────────────────────────────────────────────────
 
-PEAK_MODELS = ["Gaussian", "Lorentzian", "Voigt", "Pseudo-Voigt", "Super-Gaussian"]
-STEP_MODELS = ["Step (erf)", "Step (tanh)", "Step (arctan)", "Step (logistic)"]
-MODELS = PEAK_MODELS + STEP_MODELS
+PEAK_MODELS       = ["Gaussian", "Lorentzian", "Voigt", "Pseudo-Voigt", "Super-Gaussian"]
+STEP_MODELS       = ["Step (erf)", "Step (tanh)", "Step (arctan)", "Step (logistic)"]
+MODELS            = PEAK_MODELS + STEP_MODELS
+BACKGROUND_MODELS = ["None", "Constant", "Linear", "Quadratic", "Cubic"]
 
 MINIMIZERS = [
     ("Levenberg-Marquardt",    "leastsq"),
@@ -41,6 +42,10 @@ _PARAM_LABEL = {
     "gamma":     "Gamma (γ)",
     "fraction":  "Lorentz fraction",
     "exponent":  "Exponent (n)",
+    "bg_c0":     "Background c₀",
+    "bg_c1":     "Background c₁",
+    "bg_c2":     "Background c₂",
+    "bg_c3":     "Background c₃",
 }
 
 # ── Model functions ────────────────────────────────────────────────────────────
@@ -83,6 +88,37 @@ def _guess_step(x, y):
     sigma     = max(span / 8.0, step)
     return amplitude, center, sigma
 
+# ── Background model factory ───────────────────────────────────────────────────
+
+_BG_DEGREE = {"Constant": 0, "Linear": 1, "Quadratic": 2, "Cubic": 3}
+
+def make_background_model(bg_name: str):
+    """Return a PolynomialModel with prefix 'bg_', or None for 'None'."""
+    if bg_name == "None":
+        return None
+    if not LMFIT_AVAILABLE:
+        raise RuntimeError("lmfit not installed — pip install lmfit")
+    degree = _BG_DEGREE.get(bg_name)
+    if degree is None:
+        raise ValueError(f"Unknown background model: {bg_name!r}")
+    return lmfit.models.PolynomialModel(degree=degree, prefix="bg_")
+
+def _guess_background(x, y, bg_name: str) -> dict:
+    """Estimate background polynomial coefficients from the data edges."""
+    if bg_name == "None":
+        return {}
+    degree = _BG_DEGREE[bg_name]
+    n = len(x)
+    n_edge = max(3, n // 5)
+    x_edge = np.concatenate([x[:n_edge], x[-n_edge:]])
+    y_edge = np.concatenate([y[:n_edge], y[-n_edge:]])
+    try:
+        coeffs = np.polyfit(x_edge, y_edge, degree)
+    except Exception:
+        coeffs = np.zeros(degree + 1)
+    poly_coeffs = coeffs[::-1]  # numpy polyfit: highest-degree first → reverse to c0..cn
+    return {f"bg_c{i}": float(poly_coeffs[i]) for i in range(degree + 1)}
+
 # ── Model factory ──────────────────────────────────────────────────────────────
 
 def make_lmfit_model(model_name: str):
@@ -112,7 +148,7 @@ def make_lmfit_model(model_name: str):
 
 # ── Auto-guess parameters ──────────────────────────────────────────────────────
 
-def auto_guess(x, y, model_name: str):
+def auto_guess(x, y, model_name: str, bg_name: str = "None"):
     """Return lmfit.Parameters with auto-estimated initial values and bounds."""
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed — pip install lmfit")
@@ -212,11 +248,21 @@ def auto_guess(x, y, model_name: str):
     else:
         raise ValueError(f"Unknown model: {model_name!r}")
 
+    # Merge background polynomial parameters if requested
+    if bg_name != "None":
+        bg_model = make_background_model(bg_name)
+        bg_params = bg_model.make_params()
+        bg_guess  = _guess_background(x, y, bg_name)
+        for pname, val in bg_guess.items():
+            if pname in bg_params:
+                bg_params[pname].set(value=val, min=-np.inf, max=np.inf)
+        params.update(bg_params)
+
     return params
 
 # ── Main fitting entry point ───────────────────────────────────────────────────
 
-def run_fit(x, y, params, model_name, method="leastsq"):
+def run_fit(x, y, params, model_name, method="leastsq", bg_name="None"):
     """Fit model to data. Returns (x_fit, y_fit, info_dict)."""
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed")
@@ -227,7 +273,12 @@ def run_fit(x, y, params, model_name, method="leastsq"):
     if len(x) < 4:
         raise ValueError(f"Need ≥4 finite points, got {len(x)}")
 
-    model  = make_lmfit_model(model_name)
+    signal_model = make_lmfit_model(model_name)
+    if bg_name != "None":
+        bg_model = make_background_model(bg_name)
+        model    = signal_model + bg_model
+    else:
+        model = signal_model
     result = model.fit(y, params, x=x, method=method, nan_policy="omit")
 
     x_fit = np.linspace(float(x[0]), float(x[-1]), max(500, len(x) * 5))

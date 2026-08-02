@@ -30,6 +30,7 @@ dependencies = [
     "pyqtgraph>=0.13",
     "numpy>=1.24",
     "scipy>=1.10",
+    "lmfit>=1.2",
     "pandas>=2.0",
     "pyzmq>=25.0",
     "h5py>=3.8",

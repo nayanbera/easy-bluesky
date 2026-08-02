@@ -29,8 +29,9 @@ class FitParamsDialog(QDialog):
         self.model_name = (
             initial_model if initial_model in _pf.MODELS else _pf.PEAK_MODELS[0]
         )
-        self.method = "leastsq"
-        self.params = None
+        self.method  = "leastsq"
+        self.bg_name = "None"
+        self.params  = None
 
         self.setWindowTitle("Curve Fit")
         self.setMinimumSize(560, 580)
@@ -68,6 +69,16 @@ class FitParamsDialog(QDialog):
         row1.addWidget(self._method_combo)
 
         vlay.addLayout(row1)
+
+        # ── Row 2: Background ─────────────────────────────────────────────────
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Background:"))
+        self._bg_combo = QComboBox()
+        self._bg_combo.addItems(_pf.BACKGROUND_MODELS)
+        self._bg_combo.setCurrentText("None")
+        row2.addWidget(self._bg_combo)
+        row2.addStretch()
+        vlay.addLayout(row2)
 
         # ── Separator ─────────────────────────────────────────────────────────
         sep1 = QFrame()
@@ -135,6 +146,7 @@ class FitParamsDialog(QDialog):
 
         # ── Signals ───────────────────────────────────────────────────────────
         self._model_combo.currentTextChanged.connect(self._on_model_changed)
+        self._bg_combo.currentTextChanged.connect(self._on_bg_changed)
 
     # ── Slots ──────────────────────────────────────────────────────────────────
 
@@ -142,6 +154,11 @@ class FitParamsDialog(QDialog):
         if name not in _pf.MODELS:
             return   # separator or invalid — ignore
         self.model_name = name
+        self._update_param_table()
+        self._results_txt.clear()
+
+    def _on_bg_changed(self, name: str):
+        self.bg_name = name
         self._update_param_table()
         self._results_txt.clear()
 
@@ -157,7 +174,7 @@ class FitParamsDialog(QDialog):
             )
             return
         try:
-            params = _pf.auto_guess(self._x, self._y, self.model_name)
+            params = _pf.auto_guess(self._x, self._y, self.model_name, self.bg_name)
         except Exception as exc:
             self._results_txt.setPlainText(f"Auto-guess failed:\n{exc}")
             return
@@ -199,8 +216,13 @@ class FitParamsDialog(QDialog):
 
     def _read_params_from_table(self):
         """Read table values back into an lmfit Parameters object."""
-        model  = _pf.make_lmfit_model(self.model_name)
-        params = model.make_params()
+        signal_model = _pf.make_lmfit_model(self.model_name)
+        bg_name = self._bg_combo.currentText()
+        if bg_name != "None":
+            bg_model = _pf.make_background_model(bg_name)
+            params   = (signal_model + bg_model).make_params()
+        else:
+            params = signal_model.make_params()
 
         for row in range(self._table.rowCount()):
             pname = self._table.item(row, 0).text()
@@ -241,7 +263,7 @@ class FitParamsDialog(QDialog):
 
         # Re-add derived expression parameters (fwhm, width_1090, …)
         try:
-            ref = _pf.auto_guess(self._x, self._y, self.model_name)
+            ref = _pf.auto_guess(self._x, self._y, self.model_name, bg_name)
             for pname, par in ref.items():
                 if par.expr and pname not in params:
                     params.add(pname, expr=par.expr, vary=False)
@@ -263,12 +285,13 @@ class FitParamsDialog(QDialog):
             )
             return
         try:
-            params = self._read_params_from_table()
-            method = _pf.MINIMIZER_KEYS.get(
+            params  = self._read_params_from_table()
+            method  = _pf.MINIMIZER_KEYS.get(
                 self._method_combo.currentText(), "leastsq"
             )
+            bg_name = self._bg_combo.currentText()
             _x_fit, _y_fit, info = _pf.run_fit(
-                self._x, self._y, params, self.model_name, method
+                self._x, self._y, params, self.model_name, method, bg_name
             )
 
             lines = [
@@ -305,6 +328,7 @@ class FitParamsDialog(QDialog):
         try:
             self.params     = self._read_params_from_table()
             self.model_name = self._model_combo.currentText()
+            self.bg_name    = self._bg_combo.currentText()
             self.method     = _pf.MINIMIZER_KEYS.get(
                 self._method_combo.currentText(), "leastsq"
             )

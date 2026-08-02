@@ -676,7 +676,8 @@ class HDF5Viewer(QWidget):
             color = fit_colors[idx % len(fit_colors)]
             try:
                 x_fit, y_fit, info = _peak_fit.run_fit(
-                    x, y, fit_dlg.params, fit_dlg.model_name, fit_dlg.method
+                    x, y, fit_dlg.params, fit_dlg.model_name,
+                    fit_dlg.method, fit_dlg.bg_name,
                 )
                 self._add_fit_overlay(x_fit, y_fit, info, lbl, color)
                 info["_label"] = lbl
