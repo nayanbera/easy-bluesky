@@ -2,8 +2,16 @@
 
 import ast
 import importlib.util
+import io
 import threading
 from pathlib import Path
+
+try:
+    from pyflakes import api as _pyflakes_api
+    from pyflakes import reporter as _pyflakes_reporter
+    PYFLAKES_AVAILABLE = True
+except ImportError:
+    PYFLAKES_AVAILABLE = False
 
 from PyQt6.QtCore import pyqtSignal, QObject
 from PyQt6.QtGui import QFont
@@ -390,22 +398,62 @@ class DevicesEditorDialog(QDialog):
             self._editor.setTextCursor(cursor)
             self._editor.ensureCursorVisible()
 
+    def _pyflakes_check(self, content: str, filename: str) -> list[str]:
+        """Run pyflakes on content; return list of warning/error message strings."""
+        if not PYFLAKES_AVAILABLE:
+            return []
+        buf = io.StringIO()
+        r = _pyflakes_reporter.Reporter(buf, buf)
+        _pyflakes_api.check(content, filename, reporter=r)
+        lines = [l.strip() for l in buf.getvalue().splitlines() if l.strip()]
+        # Strip the filename prefix pyflakes prepends to each message
+        clean = []
+        for l in lines:
+            if ":" in l:
+                # "filename:line:col: message" → "line col: message"
+                parts = l.split(":", 3)
+                if len(parts) >= 4:
+                    clean.append(f"line {parts[1]}: {parts[3].strip()}")
+                    continue
+            clean.append(l)
+        return clean
+
     def _on_check(self):
         content = self._editor.toPlainText()
+        profile = (self._combo.itemData(self._current_index)
+                   if self._current_index >= 0 else None)
+        fname = profile.get("devices_file", "<devices>") if profile else "<devices>"
+
+        # 1. Syntax
         ok, msg, lineno = self._syntax_check(content)
         if not ok:
             self._jump_to_line(lineno)
             self._set_status(f"✗ {msg}", ok=False)
             return
+
+        parts = []
+
+        # 2. pyflakes — undefined names, unused imports, redefined vars
+        pf_issues = self._pyflakes_check(content, fname)
+        if pf_issues:
+            parts.append("⚠ " + "   ".join(pf_issues[:5]))
+            if len(pf_issues) > 5:
+                parts.append(f"… +{len(pf_issues) - 5} more")
+        elif not PYFLAKES_AVAILABLE:
+            parts.append("(install pyflakes for undefined-name checks)")
+
+        # 3. Local module availability
         missing = self._import_check(content)
         if missing:
-            self._set_status(
-                f"✓ Syntax OK   ⚠ Modules not found locally (may be fine on RE machine): "
-                f"{', '.join(missing)}",
-                ok=True,
+            parts.append(
+                f"⚠ Modules not found locally (may be fine on RE machine): "
+                f"{', '.join(missing)}"
             )
+
+        if parts:
+            self._set_status("✓ Syntax OK   " + "   ".join(parts), ok=True)
         else:
-            self._set_status("✓ Syntax OK — no missing imports detected", ok=True)
+            self._set_status("✓ Syntax OK — no issues detected", ok=True)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 

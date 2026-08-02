@@ -6,14 +6,27 @@ numpy>=1.24
 scipy>=1.10
 pandas>=2.0
 pyzmq>=25.0
+h5py>=3.8
+pymongo>=4.0
 bluesky-queueserver-api>=0.0.13
-confluent-kafka>=2.0
-msgpack>=1.0
-msgpack-numpy>=0.4
+suitcase-jsonl>=0.2
+
+# EPICS Channel Access (real-hardware mode)
+pyepics>=3.5
+
+# Optional editor enhancements (auto-completion and static analysis)
+jedi>=0.19
+pyflakes>=3.0
+
+# Optional data sources
 databroker>=1.2
+tiled
 intake>=0.6
 
 # Script dependencies (scripts/kafka_to_epics.py)
+confluent-kafka>=2.0
+msgpack>=1.0
+msgpack-numpy>=0.4
 caproto>=1.0
 
 # Development / testing

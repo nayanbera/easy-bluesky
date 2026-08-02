@@ -29,6 +29,7 @@ dependencies = [
     "PyQt6>=6.4",
     "pyqtgraph>=0.13",
     "numpy>=1.24",
+    "scipy>=1.10",
     "pandas>=2.0",
     "pyzmq>=25.0",
     "h5py>=3.8",
@@ -39,12 +40,32 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+epics = [
+    "pyepics>=3.5",
+]
+editor = [
+    "jedi>=0.19",
+    "pyflakes>=3.0",
+]
+data = [
+    "databroker>=1.2",
+    "tiled",
+    "intake>=0.6",
+]
 dev = [
     "pytest>=7",
     "pytest-qt>=4",
     "black",
     "ruff",
     "mypy",
+]
+all = [
+    "pyepics>=3.5",
+    "jedi>=0.19",
+    "pyflakes>=3.0",
+    "databroker>=1.2",
+    "tiled",
+    "intake>=0.6",
 ]
 
 [project.scripts]
