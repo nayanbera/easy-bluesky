@@ -276,6 +276,76 @@ except ImportError:
 except Exception as _e:
     print(f"[re_startup_mongo] WARNING: BestEffortCallback not subscribed: {_e}")
 
+# ── JSONL per-run writer ─────────────────────────────────────────────────────
+# Writes one <uid>.jsonl file per run into <exp_dir>/runs/ (from the start doc).
+# Falls back to ~/.easy_bluesky/data/runs/ when exp_dir is missing or inaccessible.
+import json as _j
+from pathlib import Path as _P
+from event_model import RunRouter as _RR
+
+_FALLBACK_RUNS_DIR = _P.home() / ".easy_bluesky" / "data" / "runs"
+
+
+class _JEnc(_j.JSONEncoder):
+    """JSON encoder that handles numpy arrays and scalars."""
+    def default(self, obj):
+        try:
+            import numpy as _np_j
+            if isinstance(obj, _np_j.ndarray):
+                return obj.tolist()
+            if isinstance(obj, _np_j.generic):
+                return obj.item()
+        except ImportError:
+            pass
+        return super().default(obj)
+
+
+class _JSONLRunWriter:
+    """Write one JSONL file per run — one [doc_type, doc_body] JSON line per document."""
+
+    def __init__(self, runs_dir, uid):
+        _P(runs_dir).mkdir(parents=True, exist_ok=True)
+        self._path = _P(runs_dir) / f"{uid}.jsonl"
+        self._fh   = open(self._path, "w")
+
+    def _write(self, name, doc):
+        self._fh.write(_j.dumps([name, dict(doc)], cls=_JEnc) + "\n")
+        self._fh.flush()
+
+    def start(self, doc):       self._write("start",      doc)
+    def descriptor(self, doc):  self._write("descriptor", doc)
+    def event(self, doc):       self._write("event",      doc)
+    def event_page(self, doc):  self._write("event_page", doc)
+
+    def stop(self, doc):
+        self._write("stop", doc)
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+
+def _jsonl_run_factory(name, doc):
+    uid     = doc.get("uid", "unknown")
+    exp_dir = doc.get("exp_dir", "")
+    if exp_dir:
+        try:
+            runs_dir = _P(exp_dir) / "runs"
+            writer   = _JSONLRunWriter(runs_dir, uid)
+        except Exception as _fe:
+            print(f"[re_startup_mongo] JSONL fallback ({_fe}): writing to {_FALLBACK_RUNS_DIR}")
+            writer = _JSONLRunWriter(_FALLBACK_RUNS_DIR, uid)
+    else:
+        writer = _JSONLRunWriter(_FALLBACK_RUNS_DIR, uid)
+    return ([writer], [])
+
+
+try:
+    RE.subscribe(_RR([_jsonl_run_factory]))
+    print("[re_startup_mongo] JSONL run writer subscribed")
+except Exception as _e:
+    print(f"[re_startup_mongo] WARNING: JSONL run writer not subscribed: {_e}")
+
 # ── MongoDB (direct pymongo write — no suitcase dependency) ───────────────────
 # Activated only when EASY_BLUESKY_MONGO_DB is set in the profile's Connection
 # Settings.  Each profile uses its own database so runs from different profiles

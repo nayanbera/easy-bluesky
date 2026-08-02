@@ -124,6 +124,133 @@ class _MongoHDF5Exporter(QThread):
             self.error.emit(str(exc))
 
 
+def _parse_jsonl_run(path) -> dict:
+    """Parse a JSONL run file and return {field: numpy_array} for event data.
+
+    Each line in the file is [doc_type, doc_body].  Collects data from
+    'event' and 'event_page' documents and returns float arrays per field.
+    Returns {} if no event data is found.
+    """
+    import numpy as _np
+
+    fields: dict = {}   # field -> list of raw values
+
+    try:
+        with open(path) as _fh:
+            for line in _fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    doc_type, doc = json.loads(line)
+                except Exception:
+                    continue
+
+                if doc_type == "event":
+                    data = doc.get("data", {})
+                    for k, v in data.items():
+                        fields.setdefault(k, []).append(v)
+
+                elif doc_type == "event_page":
+                    data     = doc.get("data", {})
+                    seq_nums = doc.get("seq_num", [])
+                    n        = len(seq_nums) if seq_nums else 0
+                    for k, v_list in data.items():
+                        if isinstance(v_list, list):
+                            fields.setdefault(k, []).extend(v_list)
+                        else:
+                            fields.setdefault(k, []).extend([v_list] * n)
+    except Exception:
+        pass
+
+    if not fields:
+        return {}
+
+    result = {}
+    for k, vals in fields.items():
+        arr = []
+        for v in vals:
+            try:
+                arr.append(float(v))
+            except (TypeError, ValueError):
+                arr.append(float("nan"))
+        result[k] = _np.array(arr)
+    return result
+
+
+class _JSONLHDFExporter(QThread):
+    """Export all runs for an experiment from JSONL run files to one HDF5 file."""
+    progress = pyqtSignal(int, int)   # (done, total)
+    done     = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, exp_path, entries, path, parent=None):
+        super().__init__(parent)
+        self._exp_path = exp_path
+        self._entries  = entries   # list of plans_log.jsonl dicts
+        self._path     = path
+
+    def run(self):
+        try:
+            with h5py.File(self._path, "w") as hf:
+                meta     = hf.create_group("metadata")
+                exp_name = Path(self._exp_path).name if self._exp_path else ""
+                if exp_name:
+                    meta.attrs["experiment_name"] = exp_name
+                if self._exp_path:
+                    meta.attrs["exp_dir"] = self._exp_path
+                meta.attrs["n_scans"] = len(self._entries)
+
+                for i, entry in enumerate(self._entries):
+                    run_uids = entry.get("run_uids", [])
+                    uid      = run_uids[0] if run_uids else ""
+                    scan_num = entry.get("scan_num", i + 1)
+                    name     = entry.get("name", "?")
+                    kwargs   = entry.get("kwargs", {}) or {}
+                    md       = kwargs.get("md", {}) or {}
+                    grp_name = f"scan_{scan_num:04d}"
+
+                    grp = hf.create_group(grp_name)
+                    grp.attrs["plan_name"]   = name
+                    grp.attrs["scan_num"]    = int(scan_num)
+                    grp.attrs["exit_status"] = entry.get("exit_status", "")
+                    grp.attrs["timestamp"]   = entry.get("timestamp", "")
+                    if entry.get("duration_s") is not None:
+                        grp.attrs["duration_s"] = float(entry["duration_s"])
+                    for attr in ("sample_name", "sample_description", "exp_dir"):
+                        v = md.get(attr, "")
+                        if v:
+                            grp.attrs[attr] = str(v)
+                    if uid:
+                        grp.attrs["uid"] = uid
+
+                    if uid and self._exp_path:
+                        jsonl_path = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
+                        if jsonl_path.exists():
+                            data     = _parse_jsonl_run(jsonl_path)
+                            n_events = 0
+                            for field, arr in data.items():
+                                try:
+                                    grp.create_dataset(
+                                        field, data=arr, compression="gzip"
+                                    )
+                                    if field == "time":
+                                        n_events = len(arr)
+                                except Exception:
+                                    pass
+                            if n_events:
+                                grp.attrs["n_events"] = n_events
+                            elif data:
+                                # 'time' may not be present; count the first field
+                                grp.attrs["n_events"] = len(next(iter(data.values())))
+
+                    self.progress.emit(i + 1, len(self._entries))
+
+            self.done.emit(self._path)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 # ── Placeholder class (kept to avoid AttributeError on legacy code paths) ─────
 
 class _HistoryWidgetStub:
@@ -707,16 +834,8 @@ class ExperimentsTab(QWidget):
         from .connection_settings import get_active_profile
         profile = get_active_profile(self._settings)
         db      = profile.get("mongo_db", "").strip()
-        if not db:
-            QMessageBox.warning(
-                self, "No MongoDB",
-                "MongoDB is not configured for the active profile.\n"
-                "Add a Database name in File → Connection Settings,\n"
-                "or use Export HDF5 in the MongoDB Browser tab."
-            )
-            return
-        host = profile.get("mongo_host", "") or "localhost"
-        port = int(profile.get("mongo_port", 27017))
+        host    = profile.get("mongo_host", "") or "localhost"
+        port    = int(profile.get("mongo_port", 27017))
 
         log_file = Path(self._active_exp_path) / "plans_log.jsonl"
         if not log_file.exists():
@@ -758,16 +877,39 @@ class ExperimentsTab(QWidget):
             return
 
         self._btn_export_h5.setEnabled(False)
-        self._log(f"Exporting {len(entries)} scans to HDF5…")
-        self._hdf5_exporter = _MongoHDF5Exporter(
-            host, port, db, self._active_exp_path, entries, path, parent=self
-        )
-        self._hdf5_exporter.progress.connect(
-            lambda done, total: self._log(f"  Exporting… {done}/{total}")
-        )
-        self._hdf5_exporter.done.connect(self._on_hdf5_done)
-        self._hdf5_exporter.error.connect(self._on_hdf5_error)
-        self._hdf5_exporter.start()
+
+        if db:
+            self._log(f"Exporting {len(entries)} scans to HDF5 via MongoDB…")
+            self._hdf5_exporter = _MongoHDF5Exporter(
+                host, port, db, self._active_exp_path, entries, path, parent=self
+            )
+            self._hdf5_exporter.progress.connect(
+                lambda done, total: self._log(f"  Exporting… {done}/{total}")
+            )
+            self._hdf5_exporter.done.connect(self._on_hdf5_done)
+            self._hdf5_exporter.error.connect(self._on_hdf5_error)
+            self._hdf5_exporter.start()
+        else:
+            runs_dir   = Path(self._active_exp_path) / "runs"
+            jsonl_files = list(runs_dir.glob("*.jsonl")) if runs_dir.exists() else []
+            if not jsonl_files:
+                self._btn_export_h5.setEnabled(True)
+                QMessageBox.information(
+                    self, "No Run Files",
+                    f"No MongoDB configured and no JSONL run files found in\n"
+                    f"{runs_dir}.\n\nRun at least one scan first."
+                )
+                return
+            self._log(f"Exporting {len(entries)} scans to HDF5 via JSONL files…")
+            self._hdf5_exporter = _JSONLHDFExporter(
+                self._active_exp_path, entries, path, parent=self
+            )
+            self._hdf5_exporter.progress.connect(
+                lambda done, total: self._log(f"  Exporting… {done}/{total}")
+            )
+            self._hdf5_exporter.done.connect(self._on_hdf5_done)
+            self._hdf5_exporter.error.connect(self._on_hdf5_error)
+            self._hdf5_exporter.start()
 
     def _on_hdf5_done(self, path: str):
         self._btn_export_h5.setEnabled(True)

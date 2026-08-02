@@ -271,6 +271,7 @@ class MongoDataBrowserTab(QWidget):
         self._run_fetcher    = None
         self._data_fetcher   = None
         self._hdf5_exporter  = None
+        self._btn_export_exp = None
         self._curves: dict      = {}
         self._error_items: dict = {}   # pg.ErrorBarItem per curve
         self._fit_curves: dict  = {}   # fit overlay curves {label: PlotDataItem}
@@ -476,6 +477,17 @@ class MongoDataBrowserTab(QWidget):
             self._btn_export_hdf5.setEnabled(False)
             self._btn_export_hdf5.setToolTip("pip install h5py to enable HDF5 export")
         ctrl_bar.addWidget(self._btn_export_hdf5)
+
+        self._btn_export_exp = QPushButton("Export Exp…")
+        self._btn_export_exp.setFixedHeight(26)
+        self._btn_export_exp.setToolTip(
+            "Export ALL currently-displayed runs to a single HDF5 file\n"
+            "(respects the experiment filter when active)"
+        )
+        self._btn_export_exp.clicked.connect(self._export_experiment_hdf5)
+        if not H5PY_AVAILABLE:
+            self._btn_export_exp.setEnabled(False)
+        ctrl_bar.addWidget(self._btn_export_exp)
 
         rlayout.addLayout(ctrl_bar)
 
@@ -1397,6 +1409,73 @@ class MongoDataBrowserTab(QWidget):
 
     def _on_export_error(self, msg: str):
         self._btn_export_hdf5.setEnabled(H5PY_AVAILABLE)
+        self._set_status(f"Export failed: {msg}", error=True)
+        QMessageBox.critical(self, "Export Failed", msg)
+
+    # ── Experiment export (all displayed runs) ─────────────────────────────────
+
+    def _export_experiment_hdf5(self):
+        if not H5PY_AVAILABLE:
+            QMessageBox.warning(
+                self, "h5py Missing", "Install h5py first:\n  pip install h5py"
+            )
+            return
+
+        if not self._runs:
+            QMessageBox.warning(self, "No Runs", "No runs to export.")
+            return
+
+        profile = self._current_profile()
+        db   = profile.get("mongo_db",   "")
+        host = profile.get("mongo_host", "") or "localhost"
+        port = profile.get("mongo_port", 27017)
+        if not db:
+            QMessageBox.warning(self, "No MongoDB", "No MongoDB database configured.")
+            return
+
+        if self._active_exp_dir and not self._show_all_cb.isChecked():
+            exp_name     = Path(self._active_exp_dir).name
+            default_path = str(Path(self._active_exp_dir) / f"{exp_name}.h5")
+        else:
+            default_path = "runs_export.h5"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export All Displayed Runs to HDF5", default_path,
+            "HDF5 Files (*.h5 *.hdf5)"
+        )
+        if not path:
+            return
+
+        if self._hdf5_exporter and self._hdf5_exporter.isRunning():
+            QMessageBox.warning(self, "Busy", "An export is already in progress.")
+            return
+
+        self._btn_export_exp.setEnabled(False)
+        self._set_status(
+            f"Exporting {len(self._runs)} run(s) to HDF5…", busy=True
+        )
+        self._hdf5_exporter = _HDF5Exporter(
+            host, int(port), db, self._runs, path, parent=self
+        )
+        self._hdf5_exporter.progress.connect(self._on_exp_export_progress)
+        self._hdf5_exporter.done.connect(self._on_exp_export_done)
+        self._hdf5_exporter.error.connect(self._on_exp_export_error)
+        self._hdf5_exporter.start()
+
+    def _on_exp_export_progress(self, done: int, total: int):
+        self._set_status(f"Exporting… {done}/{total}", busy=True)
+
+    def _on_exp_export_done(self, path: str):
+        self._btn_export_exp.setEnabled(H5PY_AVAILABLE)
+        n = len(self._runs)
+        self._set_status(f"✓ Exported {n} run(s) → {Path(path).name}")
+        QMessageBox.information(
+            self, "Export Complete",
+            f"Exported {n} run(s) to:\n{path}"
+        )
+
+    def _on_exp_export_error(self, msg: str):
+        self._btn_export_exp.setEnabled(H5PY_AVAILABLE)
         self._set_status(f"Export failed: {msg}", error=True)
         QMessageBox.critical(self, "Export Failed", msg)
 
