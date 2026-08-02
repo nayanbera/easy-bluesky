@@ -626,6 +626,9 @@ class DevicesPlansTab(QWidget):
             if setpoint_pvname is None:
                 self.set_sim_device_requested.emit(dev_name, new_val)
                 self._readback_values[dev_name] = new_val  # optimistic update
+                # Re-poll soon after set completes so linked signals (e.g.
+                # SynSignal with func reading this motor) update promptly.
+                QTimer.singleShot(400, self.poll_sim_values_requested.emit)
             else:
                 self._epics_monitor.put_value(setpoint_pvname, new_val)
 
