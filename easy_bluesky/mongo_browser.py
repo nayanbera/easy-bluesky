@@ -396,16 +396,6 @@ class MongoDataBrowserTab(QWidget):
         ctrl_bar.addWidget(self._x_combo)
 
         ctrl_bar.addWidget(_vline())
-        ctrl_bar.addWidget(QLabel("Y:"))
-        self._y_list = QListWidget()
-        self._y_list.setFixedHeight(52)
-        self._y_list.setMinimumWidth(100)
-        self._y_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._y_list.setToolTip("Y signals — check to plot")
-        self._y_list.itemChanged.connect(self._auto_plot)
-        ctrl_bar.addWidget(self._y_list, 1)
-
-        ctrl_bar.addWidget(_vline())
         ctrl_bar.addWidget(QLabel("Norm:"))
         self._norm_combo = QComboBox()
         self._norm_combo.setMinimumWidth(100)
@@ -466,21 +456,41 @@ class MongoDataBrowserTab(QWidget):
             " font-family: Menlo, Monaco, 'Courier New', monospace;"
         )
 
+        # Y list on the right of the plot
+        self._y_list = QListWidget()
+        self._y_list.setFixedWidth(140)
+        self._y_list.setToolTip("Y signals — check to plot")
+        self._y_list.itemChanged.connect(self._auto_plot)
+        y_panel = QVBoxLayout()
+        y_panel.setSpacing(2)
+        y_panel.setContentsMargins(0, 0, 0, 0)
+        y_lbl = QLabel("Y signals")
+        y_lbl.setObjectName("dim_text")
+        y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        y_panel.addWidget(y_lbl)
+        y_panel.addWidget(self._y_list, 1)
+
+        plot_row = QHBoxLayout()
+        plot_row.setSpacing(4)
+        plot_row.setContentsMargins(0, 0, 0, 0)
+
         if PG_AVAILABLE:
             self._plot_widget = pg.PlotWidget(background="#1e1e1e")
             self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self._plot_widget.addLegend()
             self._plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
-            rlayout.addWidget(self._plot_widget, 1)
+            plot_row.addWidget(self._plot_widget, 1)
             self._crosshair_cleanup = setup_crosshair(
                 self._plot_widget, self._coord_label, lambda: self._curves
             )
         else:
             self._plot_widget = None
-            rlayout.addWidget(
+            plot_row.addWidget(
                 QLabel("pyqtgraph not available — pip install pyqtgraph"), 1
             )
 
+        plot_row.addLayout(y_panel)
+        rlayout.addLayout(plot_row, 1)
         rlayout.addWidget(self._coord_label)
         splitter.addWidget(right)
         splitter.setSizes([400, 700])

@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox,
     QApplication,
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
 from .plot_tools import setup_crosshair
 
@@ -92,14 +92,6 @@ class LiveViewer(QWidget):
         self.x_combo.currentTextChanged.connect(self._on_x_changed)
         ctrl.addWidget(self.x_combo)
 
-        ctrl.addWidget(QLabel("Y:"))
-        self.y_list = QListWidget()
-        self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.y_list.setMaximumHeight(56)
-        self.y_list.setMaximumWidth(220)
-        self.y_list.itemSelectionChanged.connect(self._update_plot)
-        ctrl.addWidget(self.y_list)
-
         ctrl.addWidget(QLabel("Norm by:"))
         self.norm_combo = QComboBox()
         self.norm_combo.setMinimumWidth(110)
@@ -118,16 +110,38 @@ class LiveViewer(QWidget):
         ctrl.addWidget(self.run_label)
         main.addLayout(ctrl)
 
+        # Y list on the right of the plot
+        self.y_list = QListWidget()
+        self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.y_list.setFixedWidth(140)
+        self.y_list.setToolTip("Y signals — click to select/deselect")
+        self.y_list.itemSelectionChanged.connect(self._update_plot)
+        y_panel = QVBoxLayout()
+        y_panel.setSpacing(2)
+        y_panel.setContentsMargins(0, 0, 0, 0)
+        y_lbl = QLabel("Y signals")
+        y_lbl.setObjectName("dim_text")
+        y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        y_panel.addWidget(y_lbl)
+        y_panel.addWidget(self.y_list, 1)
+
+        plot_row = QHBoxLayout()
+        plot_row.setSpacing(4)
+        plot_row.setContentsMargins(0, 0, 0, 0)
+
         if PYQTGRAPH_AVAILABLE:
             self.plot_widget = pg.PlotWidget(background="#1e1e1e")
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.addLegend()
-            main.addWidget(self.plot_widget, 1)
-
-            # Double-click to move motor
             self.plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
+            plot_row.addWidget(self.plot_widget, 1)
         else:
-            main.addWidget(QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
+            plot_row.addWidget(
+                QLabel("pyqtgraph not available — pip install pyqtgraph"), 1
+            )
+
+        plot_row.addLayout(y_panel)
+        main.addLayout(plot_row, 1)
 
         # Bottom bar: status left, cursor coords right
         bot = QHBoxLayout()
