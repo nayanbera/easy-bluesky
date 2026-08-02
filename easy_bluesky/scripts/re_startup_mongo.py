@@ -161,13 +161,13 @@ def get_device_pvnames():
             out[_n] = pvs
         elif isinstance(_obj, _oph.Signal):
             # Plain Signal — either EPICS (EpicsSignal/RO with a real PV) or
-            # simulated (SynSignal/SynSignalRO with no PV).
-            # Both cases must appear in pv_map so the device table shows them
-            # and sim-mode detection works correctly even when signals are the
-            # only devices in the namespace.
+            # simulated (SynSignal/SynSignalRO/SynNoise/SynPeriodicSignal with
+            # no PV).  Real signals get their pvname; sim signals get an empty
+            # dict (same as SynAxis via the Device branch) so they are NOT
+            # mistaken for an EPICS device and don't show "○ Connecting…".
             try:
                 pv = getattr(_obj, 'pvname', '') or ''
-                out[_n] = {_n: pv}   # empty string for sim signals
+                out[_n] = {_n: pv} if pv else {}
             except Exception:
                 pass
     return out

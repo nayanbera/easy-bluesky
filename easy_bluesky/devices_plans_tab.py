@@ -194,6 +194,7 @@ class DevicesPlansTab(QWidget):
         self._tweak_pvnames: dict = {}    # dev_name → user_setpoint pvname (EPICS)
         self._device_classes: dict = {}   # dev_name → classname (for sim detection)
         self._sim_mode: bool = False
+        self._sim_device_names: set = set()   # devices polled via read_devices_status()
         self._sim_timer: QTimer | None = None
         # Persistent cache of units/desc from real EPICS so sim mode can show them
         self._metadata_cache: dict = {}   # dev_name → {"units": str, "desc": str}
@@ -314,6 +315,7 @@ class DevicesPlansTab(QWidget):
             self._sim_timer.stop()
             self._sim_timer = None
         self._sim_mode = False
+        self._sim_device_names = set()
 
         self.devices_tree.clear()
         self._device_items.clear()
@@ -390,7 +392,15 @@ class DevicesPlansTab(QWidget):
             group.setHidden(not any_visible)
 
     def setup_epics_monitors(self, pv_map: dict):
-        """Receive PV name map, create signal sub-rows and open CA monitors."""
+        """Receive PV name map, create signal sub-rows and open CA monitors.
+
+        Partitions devices into two groups:
+        - EPICS devices: pv_map entry has ≥1 non-empty pvname → CA subscriptions
+        - Polled devices: all pvnames empty (SynAxis, PseudoSingle, SynSignal…)
+          → 2-second read_devices_status() polling
+
+        Both groups can coexist (mixed beamline).
+        """
         try:
             import epics  # noqa: F401
         except ImportError:
@@ -406,19 +416,26 @@ class DevicesPlansTab(QWidget):
         self._signal_items.clear()
         self._primary_signal.clear()
         self._tweak_pvnames.clear()
+        self._sim_device_names = set()
+        self._sim_mode = False
 
         dim = QColor("#666666")
 
-        for dev_name, sigs in pv_map.items():
+        # Partition: EPICS devices have ≥1 real (non-empty) pvname;
+        # polled devices (SynAxis, PseudoSingle, SynSignal, …) have none.
+        epics_pv_map = {dev: sigs for dev, sigs in pv_map.items()
+                        if any(v for v in sigs.values())}
+        sim_dev_set = set(pv_map) - set(epics_pv_map)
+
+        # ── Signal sub-rows + tweak widgets for EPICS devices ────────────
+        for dev_name, sigs in epics_pv_map.items():
             item = self._device_items.get(dev_name)
-            if item is None or not sigs:
+            if item is None:
                 continue
 
-            # Remove old signal children
             while item.childCount() > 0:
                 item.removeChild(item.child(0))
 
-            # Choose which signal shows on the device row
             primary = next(
                 (s for s in ("user_readback", "readback", dev_name) if s in sigs),
                 next(iter(sigs)),
@@ -435,12 +452,9 @@ class DevicesPlansTab(QWidget):
                 item.addChild(sig_item)
                 self._signal_items[(dev_name, sig_name)] = sig_item
 
-            # Initialise device row
             item.setText(2, "○ Connecting…")
             item.setForeground(2, QColor("#aaaaaa"))
 
-            # Tweak widget for positioner devices.
-            # EpicsMotor uses "user_setpoint"; PseudoSingle uses "setpoint".
             sp_pvname = sigs.get("user_setpoint") or sigs.get("setpoint") or ""
             if sp_pvname:
                 self._tweak_pvnames[dev_name] = sp_pvname
@@ -448,33 +462,47 @@ class DevicesPlansTab(QWidget):
                     item, 5, self._make_tweak_widget(dev_name, sp_pvname)
                 )
 
-        total = sum(len(v) for v in pv_map.values())
+        total = sum(len(v) for v in epics_pv_map.values())
 
+        # ── Tweak widgets for polled positioners (SynAxis, PseudoSingle) ─
+        _SIM_MOTOR_CLASSES = {"SynAxis", "PseudoSingle"}
+        for dev_name in sim_dev_set:
+            item = self._device_items.get(dev_name)
+            if item and self._device_classes.get(dev_name) in _SIM_MOTOR_CLASSES:
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_tweak_widget(dev_name, None)
+                )
+
+        # ── Mode flags and status ────────────────────────────────────────
         if total == 0 and pv_map:
-            # All devices are simulated — no EPICS PVs.  Add tweak widgets for
-            # positioner-like sim devices and start a polling timer for values.
+            # Pure sim: every device in pv_map has no EPICS PVs
             self._sim_mode = True
-            _SIM_MOTOR_CLASSES = {"SynAxis", "PseudoSingle"}
-            for dev_name, item in self._device_items.items():
-                if self._device_classes.get(dev_name) in _SIM_MOTOR_CLASSES:
-                    self.devices_tree.setItemWidget(
-                        item, 5, self._make_tweak_widget(dev_name, None)
-                    )
+            self._sim_device_names = set(pv_map)
             self._status_lbl.setStyleSheet("font-size: 11px; color: #ff7f0e;")
             self._status_lbl.setText("● Sim — polling device values…")
-            self._refresh_btn.setEnabled(True)
-            self._refresh_btn.setText("⟳ Reconnect")
+        elif sim_dev_set:
+            # Mixed: real EPICS devices + polled sim/pseudo devices
+            self._epics_monitor.setup(epics_pv_map)
+            self._sim_device_names = sim_dev_set
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
+            self._status_lbl.setText(
+                f"● Live — {total} PV(s) + {len(sim_dev_set)} polled"
+            )
+        else:
+            # Pure EPICS: all devices have real PVs
+            self._epics_monitor.setup(epics_pv_map)
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
+            self._status_lbl.setText(f"● Live — monitoring {total} PV(s)")
+
+        # ── Start polling timer for any polled devices ───────────────────
+        if self._sim_device_names:
             self._sim_timer = QTimer(self)
             self._sim_timer.setInterval(2000)
             self._sim_timer.timeout.connect(self._on_sim_poll)
             self._sim_timer.start()
-        else:
-            self._epics_monitor.setup(pv_map)
-            self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
-            self._status_lbl.setText(f"● Live — monitoring {total} PV(s)")
-            self._refresh_btn.setEnabled(True)
-            self._refresh_btn.setText("⟳ Reconnect")
 
+        self._refresh_btn.setEnabled(True)
+        self._refresh_btn.setText("⟳ Reconnect")
         for i in range(6):
             self.devices_tree.resizeColumnToContents(i)
 
@@ -614,10 +642,12 @@ class DevicesPlansTab(QWidget):
         self.poll_sim_values_requested.emit()
 
     def update_sim_values(self, readings: dict):
-        """Update Value/Units/Description columns for simulated devices."""
-        if not self._sim_mode:
+        """Update Value/Units/Description columns for polled (sim/pseudo) devices."""
+        if not self._sim_device_names:
             return
         for dev_name, data in readings.items():
+            if dev_name not in self._sim_device_names:
+                continue  # in mixed mode, EPICS devices are updated by CA callbacks
             item = self._device_items.get(dev_name)
             if item is None:
                 continue
