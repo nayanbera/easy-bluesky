@@ -198,6 +198,23 @@ def read_devices_status():
             pass
         return v
 
+    def _trigger_if_func(obj):
+        """Call trigger() for func-based sim signals (SynSignal, SynNoise, SynGauss…).
+
+        In many ophyd versions SynSignal.get() returns a stale cached _readback;
+        only trigger() re-evaluates _func().  We detect these objects by the
+        presence of a callable _func attribute so real EPICS devices are never
+        accidentally triggered.
+        """
+        if not callable(getattr(obj, '_func', None)):
+            return
+        try:
+            _st = obj.trigger()
+            if hasattr(_st, 'wait'):
+                _st.wait(timeout=2)
+        except Exception:
+            pass
+
     out = {}
     for _n, _obj in list(globals().items()):
         if _n.startswith('_'):
@@ -206,6 +223,7 @@ def read_devices_status():
             _d = {'connected': False, 'kind': str(_obj.kind.name), 'reading': {}, 'error': None}
             try:
                 _d['connected'] = bool(_obj.connected)
+                _trigger_if_func(_obj)
                 for _sn, _sd in _obj.read().items():
                     _units = ''
                     try:
@@ -220,10 +238,11 @@ def read_devices_status():
                 _d['error'] = str(_e)
             out[_n] = _d
         elif isinstance(_obj, _oph.Signal):
-            # SynSignal, SynSignalRO, and other plain Signal instances.
-            # These are not Devices so they need their own read path.
+            # Plain Signal subclasses (EpicsSignal standalone, or SynSignal if
+            # it is NOT a Device subclass in this ophyd version).
             _d = {'connected': True, 'kind': str(_obj.kind.name), 'reading': {}, 'error': None}
             try:
+                _trigger_if_func(_obj)
                 for _sn, _sd in _obj.read().items():
                     _d['reading'][_sn] = {'value': _ser(_sd.get('value')), 'units': ''}
             except Exception as _e:
