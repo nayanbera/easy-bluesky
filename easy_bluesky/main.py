@@ -1701,18 +1701,18 @@ class MainWindow(QMainWindow):
         if active_running:
             QTimer.singleShot(100, self._do_connect)
         else:
-            # Active profile not running — show status but don't block the UI
+            # Active profile not running per probe — log and still attempt connect.
+            # The TCP probe can be wrong (firewall, transient failure) so we always
+            # try; the ZMQ worker will report the real status.
             if active not in [i["name"] for i in instances]:
-                note = f"Profile '{active}' not in registry"
+                note = f"Profile '{active}' not in registry — attempting connect anyway"
             elif running_names:
-                note = (f"Profile '{active}' not running — "
-                        f"running: {', '.join(running_names)}")
+                note = (f"Profile '{active}' not running per probe — "
+                        f"running: {', '.join(running_names)} — attempting connect anyway")
             else:
-                note = f"Profile '{active}' is not running"
+                note = f"Profile '{active}' not running per probe — attempting connect anyway"
             self._log(f"[EasyBluesky] {note}")
-            self.conn_label.setText("⬤  Not running")
-            self.conn_label.setStyleSheet("color: #ff7f0e;")
-            self.re_bar.set_disconnected()
+            QTimer.singleShot(200, self._do_connect)
 
     def _on_discovery_failed(self, msg: str):
         self._log(f"[EasyBluesky] Registry discovery failed: {msg}")
