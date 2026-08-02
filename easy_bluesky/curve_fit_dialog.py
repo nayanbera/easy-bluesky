@@ -2,9 +2,9 @@
 
 import numpy as np
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QTableWidget, QTableWidgetItem, QTextEdit, QCheckBox, QWidget,
-    QHeaderView, QAbstractItemView, QFrame, QSizePolicy,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QTableWidget, QTableWidgetItem, QTextEdit, QCheckBox, QWidget,
+    QHeaderView, QAbstractItemView, QFrame, QSizePolicy, QFileDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -167,6 +167,20 @@ class FitParamsDialog(QDialog):
         self._results_txt.setMinimumHeight(160)
         vlay.addWidget(self._results_txt, 1)
 
+        # ── Results action buttons ─────────────────────────────────────────────
+        res_btns = QHBoxLayout()
+        btn_copy = QPushButton("Copy Results")
+        btn_copy.setToolTip("Copy fit summary to clipboard")
+        btn_copy.clicked.connect(self._copy_results)
+        res_btns.addWidget(btn_copy)
+        self._btn_export = QPushButton("Export Fit…")
+        self._btn_export.setToolTip("Save fit parameters and curves to a CSV file")
+        self._btn_export.setEnabled(False)
+        self._btn_export.clicked.connect(self._export_fit)
+        res_btns.addWidget(self._btn_export)
+        res_btns.addStretch()
+        vlay.addLayout(res_btns)
+
         # ── Bottom buttons ────────────────────────────────────────────────────
         bottom = QHBoxLayout()
         bottom.addStretch()
@@ -198,12 +212,14 @@ class FitParamsDialog(QDialog):
             return  # separator or invalid — ignore
         self.model_name = name
         self._last_fit  = None
+        self._btn_export.setEnabled(False)
         self._update_param_table()
         self._results_txt.clear()
 
     def _on_bg_changed(self, name: str):
         self.bg_name   = name
         self._last_fit = None
+        self._btn_export.setEnabled(False)
         self._update_param_table()
         self._results_txt.clear()
 
@@ -386,6 +402,7 @@ class FitParamsDialog(QDialog):
                 self._x, self._y, params, self.model_name, method, bg_name
             )
             self._last_fit = (x_fit, y_fit, info)
+            self._btn_export.setEnabled(True)
 
             # Update table rows with fitted values (blockSignals to avoid preview loop)
             self._table.blockSignals(True)
@@ -429,6 +446,77 @@ class FitParamsDialog(QDialog):
 
         except Exception as exc:
             self._results_txt.setPlainText(f"Fit failed:\n{exc}")
+
+    def _copy_results(self):
+        """Copy the fit results text to the system clipboard."""
+        text = self._results_txt.toPlainText().strip()
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def _export_fit(self):
+        """Save fit parameters and curves to a CSV file."""
+        if self._last_fit is None:
+            QMessageBox.warning(self, "No fit", "Run a fit first.")
+            return
+
+        x_fit, y_fit, info = self._last_fit
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Fit Results", "fit_results.csv",
+            "CSV files (*.csv);;All files (*)"
+        )
+        if not path:
+            return
+
+        try:
+            # Evaluate model at the original data x for residuals
+            params       = self._read_params_from_table()
+            bg_name      = self._bg_combo.currentText()
+            signal_model = _pf.make_lmfit_model(self.model_name)
+            if bg_name != "None":
+                bg_model = _pf.make_background_model(bg_name)
+                model    = signal_model + bg_model
+            else:
+                model = signal_model
+            y_at_data = model.eval(params, x=self._x)
+
+            lines = ["# EasyBluesky Curve Fit Export"]
+            lines.append(f"# Model     : {info['model']}")
+            if bg_name != "None":
+                lines.append(f"# Background: {bg_name}")
+            lines.append(f"# R²        : {info['r2']:.6f}")
+            lines.append(f"# N points  : {info['n_points']}")
+            lines.append("#")
+            lines.append("# Parameters:")
+            for name, val, err in zip(
+                info["param_names"], info["params"], info["perr"]
+            ):
+                lines.append(f"#   {name:<26} {val:.6g}  ±  {err:.4g}")
+            fwhm    = info["fwhm"]
+            is_step = self.model_name.startswith("Step")
+            if not (isinstance(fwhm, float) and np.isnan(fwhm)):
+                width_label = "10-90% width" if is_step else "FWHM"
+                lines.append(f"#   {width_label:<26} {fwhm:.6g}")
+            lines.append("#")
+
+            # Section 1 – data points with fit and residual at each measured x
+            lines.append("# Section 1: data points and fit at each measurement x")
+            lines.append("# Columns: x_data, y_data, y_fit, residual")
+            for xi, yi, yfi in zip(self._x, self._y, y_at_data):
+                lines.append(f"{xi:.10g},{yi:.10g},{yfi:.10g},{yi - yfi:.10g}")
+            lines.append("#")
+
+            # Section 2 – smooth fit curve (500+ points for replotting)
+            lines.append("# Section 2: smooth fit curve")
+            lines.append("# Columns: x_fit, y_fit_smooth")
+            for xi, yi in zip(x_fit, y_fit):
+                lines.append(f"{xi:.10g},{yi:.10g}")
+
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n")
+
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
 
     def _apply(self):
         """Commit current params, emit fit_applied, and close the dialog."""
