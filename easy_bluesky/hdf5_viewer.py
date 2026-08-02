@@ -128,8 +128,12 @@ class HDF5Viewer(QWidget):
         self._dfs:    list = []   # [(df, label)] for current selection
         self._curves: dict      = {}
         self._error_items: dict = {}   # pg.ErrorBarItem per curve
-        self._fit_curves: dict  = {}
-        self._fit_texts:  list  = []
+        self._fit_curves: dict       = {}
+        self._fit_texts:  list       = []
+        self._fit_preview_curve      = None   # live preview PlotDataItem (dotted)
+        self._fit_dlg                = None   # open FitParamsDialog (non-modal ref)
+        self._fit_datasets: list     = []     # datasets passed to the open dialog
+        self._saved_fit_state: dict  = None   # {model_name, bg_name, params} — persists
         self._crosshair_cleanup = None
         self._build()
 
@@ -583,8 +587,17 @@ class HDF5Viewer(QWidget):
                 self.plot_widget.removeItem(curve)
             except Exception:
                 pass
-        self._fit_texts = []
+        self._fit_texts  = []
         self._fit_curves = {}
+
+    def _clear_fit_preview(self):
+        """Remove the live preview curve from the plot."""
+        if self._fit_preview_curve is not None:
+            try:
+                self.plot_widget.removeItem(self._fit_preview_curve)
+            except Exception:
+                pass
+            self._fit_preview_curve = None
 
     def _get_xy_for_fit(self):
         """Return list of (x, y, label) for all plotted curves."""
@@ -661,34 +674,77 @@ class HDF5Viewer(QWidget):
                 order = np.argsort(x_all)
                 datasets = [(x_all[order], y_all[order], "combined")]
 
-        # Open fit dialog with first dataset for parameter estimation
-        x0, y0, _ = datasets[0]
-        initial_model = self._fit_model_combo.currentText()
-        fit_dlg = FitParamsDialog(x0, y0, initial_model, parent=self)
-        if fit_dlg.exec() != QDialog.DialogCode.Accepted:
-            return
+        self._fit_datasets = datasets   # stored for _on_fit_applied
 
+        # Close any existing dialog first
+        if self._fit_dlg is not None:
+            try:
+                self._fit_dlg.close()
+            except Exception:
+                pass
+
+        x0, y0, _ = datasets[0]
+        initial_model   = self._fit_model_combo.currentText()
+        initial_bg_name = "None"
+        initial_params  = None
+        if self._saved_fit_state:
+            initial_model   = self._saved_fit_state.get("model_name", initial_model)
+            initial_bg_name = self._saved_fit_state.get("bg_name", "None")
+            initial_params  = self._saved_fit_state.get("params")
+
+        self._fit_dlg = FitParamsDialog(
+            x0, y0, initial_model, initial_bg_name, initial_params, parent=self
+        )
+        self._fit_dlg.preview_changed.connect(self._on_fit_preview)
+        self._fit_dlg.fit_applied.connect(self._on_fit_applied)
+        self._fit_dlg.rejected.connect(self._on_fit_cancelled)
+        self._fit_dlg.show()
+        self._fit_dlg.raise_()
+        self._fit_dlg.activateWindow()
+
+    def _on_fit_preview(self, x_fit, y_fit):
+        """Draw or update the dotted preview curve on the main plot."""
+        if not PG_AVAILABLE:
+            return
+        try:
+            if self._fit_preview_curve is None:
+                pen = pg.mkPen("#ffcc44", width=2, style=Qt.PenStyle.DotLine)
+                self._fit_preview_curve = self.plot_widget.plot(x_fit, y_fit, pen=pen)
+            else:
+                self._fit_preview_curve.setData(x_fit, y_fit)
+        except Exception:
+            pass
+
+    def _on_fit_applied(self, params, model_name, method, bg_name):
+        """Remove preview, draw permanent overlays for all datasets, save state."""
+        self._clear_fit_preview()
         self._clear_fit_overlays()
         fit_colors = ["#ff6688", "#66ffaa", "#ffaa33", "#33aaff", "#cc88ff"]
         fit_infos  = []
         errors     = []
-        for idx, (x, y, lbl) in enumerate(datasets):
+        for idx, (x, y, lbl) in enumerate(self._fit_datasets):
             color = fit_colors[idx % len(fit_colors)]
             try:
                 x_fit, y_fit, info = _peak_fit.run_fit(
-                    x, y, fit_dlg.params, fit_dlg.model_name,
-                    fit_dlg.method, fit_dlg.bg_name,
+                    x, y, params, model_name, method, bg_name
                 )
                 self._add_fit_overlay(x_fit, y_fit, info, lbl, color)
                 info["_label"] = lbl
                 fit_infos.append(info)
             except Exception as exc:
                 errors.append(f"{lbl}: {exc}")
-
         if errors:
             QMessageBox.warning(self, "Fit errors", "\n".join(errors))
         if fit_infos:
-            _HDF5FitReportDialog(fit_infos, parent=self).show()
+            self._saved_fit_state = {
+                "model_name": model_name,
+                "bg_name":    bg_name,
+                "params":     params,
+            }
+
+    def _on_fit_cancelled(self):
+        """Remove the preview curve when the fit dialog is cancelled."""
+        self._clear_fit_preview()
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 

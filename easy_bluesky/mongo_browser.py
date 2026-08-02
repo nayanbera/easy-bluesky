@@ -275,8 +275,12 @@ class MongoDataBrowserTab(QWidget):
         self._btn_export_exp = None
         self._curves: dict      = {}
         self._error_items: dict = {}   # pg.ErrorBarItem per curve
-        self._fit_curves: dict  = {}   # fit overlay curves {label: PlotDataItem}
-        self._fit_texts: list   = []   # pg.TextItem annotations for fit results
+        self._fit_curves: dict       = {}   # fit overlay curves {label: PlotDataItem}
+        self._fit_texts: list        = []   # pg.TextItem annotations for fit results
+        self._fit_preview_curve      = None   # live preview PlotDataItem (dotted)
+        self._fit_dlg                = None   # open FitParamsDialog (non-modal ref)
+        self._fit_datasets: list     = []     # datasets passed to the open dialog
+        self._saved_fit_state: dict  = None   # {model_name, bg_name, params} — persists
         self._active_exp_dir = ""       # current experiment filter
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
@@ -1134,6 +1138,15 @@ class MongoDataBrowserTab(QWidget):
         if hasattr(self, "_btn_clear_fit"):
             self._btn_clear_fit.setEnabled(False)
 
+    def _clear_fit_preview(self):
+        """Remove the live preview curve from the plot."""
+        if self._fit_preview_curve is not None and self._plot_widget is not None:
+            try:
+                self._plot_widget.removeItem(self._fit_preview_curve)
+            except Exception:
+                pass
+            self._fit_preview_curve = None
+
     def _get_xy_for_fit(self, sdata, x_field, y_field, norm_field):
         """Return (x, y) arrays ready for fitting, or (None, None) on failure."""
         y_raw = sdata.get(y_field)
@@ -1259,32 +1272,82 @@ class MongoDataBrowserTab(QWidget):
             QMessageBox.warning(self, "No data", "No plottable data found.")
             return
 
-        # Open fit dialog with first dataset for parameter estimation
-        x0, y0, _ = datasets[0]
-        fit_dlg = _FitParamsDialog(x0, y0, model_name, parent=self)
-        if fit_dlg.exec() != QDialog.DialogCode.Accepted:
-            return
+        self._fit_datasets = datasets   # stored for _on_fit_applied
+        self._fit_log_y    = log_y       # stored for _on_fit_applied
 
+        # Close any existing fit dialog before opening a new one
+        if self._fit_dlg is not None:
+            try:
+                self._fit_dlg.close()
+            except Exception:
+                pass
+
+        x0, y0, _ = datasets[0]
+        initial_bg_name = "None"
+        initial_params  = None
+        if self._saved_fit_state:
+            model_name      = self._saved_fit_state.get("model_name", model_name)
+            initial_bg_name = self._saved_fit_state.get("bg_name", "None")
+            initial_params  = self._saved_fit_state.get("params")
+
+        self._fit_dlg = _FitParamsDialog(
+            x0, y0, model_name, initial_bg_name, initial_params, parent=self
+        )
+        self._fit_dlg.preview_changed.connect(self._on_fit_preview)
+        self._fit_dlg.fit_applied.connect(self._on_fit_applied)
+        self._fit_dlg.rejected.connect(self._on_fit_cancelled)
+        self._fit_dlg.show()
+        self._fit_dlg.raise_()
+        self._fit_dlg.activateWindow()
+
+    def _on_fit_preview(self, x_fit, y_fit):
+        """Draw or update the dotted preview curve on the main plot."""
+        if not PG_AVAILABLE or self._plot_widget is None:
+            return
+        try:
+            log_y = getattr(self, "_fit_log_y", False)
+            y_plot = y_fit.copy()
+            if log_y:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    y_plot = np.log10(np.where(y_fit > 0, y_fit, np.nan))
+            if self._fit_preview_curve is None:
+                pen = pg.mkPen("#ffcc44", width=2, style=Qt.PenStyle.DotLine)
+                self._fit_preview_curve = self._plot_widget.plot(x_fit, y_plot, pen=pen)
+            else:
+                self._fit_preview_curve.setData(x_fit, y_plot)
+        except Exception:
+            pass
+
+    def _on_fit_applied(self, params, model_name, method, bg_name):
+        """Remove preview, draw permanent overlays for all datasets, save state."""
+        self._clear_fit_preview()
         self._clear_fit_overlays()
+        log_y      = getattr(self, "_fit_log_y", False)
         all_results = []
         errors      = []
-        for idx, (x, y, lbl) in enumerate(datasets):
+        for idx, (x, y, lbl) in enumerate(self._fit_datasets):
             try:
                 x_fit, y_fit, info = _peak_fit.run_fit(
-                    x, y, fit_dlg.params, fit_dlg.model_name,
-                    fit_dlg.method, fit_dlg.bg_name,
+                    x, y, params, model_name, method, bg_name
                 )
                 self._add_fit_overlay(x_fit, y_fit, info, lbl, log_y, idx)
                 all_results.append((lbl, info))
             except Exception as exc:
                 errors.append(f"{lbl}: {exc}")
                 self._set_status(f"Fit failed ({lbl}): {exc}", error=True)
-
         if errors:
             QMessageBox.warning(self, "Fit errors", "\n".join(errors))
         if all_results:
             self._btn_clear_fit.setEnabled(True)
-            _PeakFitReportDialog(all_results, parent=self).show()
+            self._saved_fit_state = {
+                "model_name": model_name,
+                "bg_name":    bg_name,
+                "params":     params,
+            }
+
+    def _on_fit_cancelled(self):
+        """Remove the preview curve when the fit dialog is cancelled."""
+        self._clear_fit_preview()
 
     # ── Double-click: move motor ───────────────────────────────────────────────
 

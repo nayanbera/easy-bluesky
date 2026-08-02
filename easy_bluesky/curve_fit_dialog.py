@@ -6,16 +6,38 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTextEdit, QCheckBox, QWidget,
     QHeaderView, QAbstractItemView, QFrame, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from . import peak_fit as _pf
 
 
 class FitParamsDialog(QDialog):
-    """Interactive dialog for adjusting lmfit parameters before fitting."""
+    """Non-modal dialog for interactive lmfit curve fitting.
 
-    def __init__(self, x, y, initial_model="Gaussian", parent=None):
+    The dialog communicates with the parent viewer through two signals:
+
+    preview_changed(x_fit, y_fit)
+        Emitted whenever the parameter table changes (debounced 400 ms) or
+        a fit completes — viewer should update its live preview curve.
+
+    fit_applied(params, model_name, method, bg_name)
+        Emitted when Apply & Close is clicked — viewer draws permanent overlays
+        and saves fit state for the next invocation.
+    """
+
+    preview_changed = pyqtSignal(object, object)        # x_fit, y_fit (numpy arrays)
+    fit_applied     = pyqtSignal(object, str, str, str) # params, model_name, method, bg_name
+
+    def __init__(
+        self,
+        x,
+        y,
+        initial_model: str = "Gaussian",
+        initial_bg_name: str = "None",
+        initial_params=None,   # lmfit.Parameters from previous fit, or None → auto_guess
+        parent=None,
+    ):
         super().__init__(parent)
 
         # Mask and store data
@@ -29,12 +51,25 @@ class FitParamsDialog(QDialog):
         self.model_name = (
             initial_model if initial_model in _pf.MODELS else _pf.PEAK_MODELS[0]
         )
+        self.bg_name = (
+            initial_bg_name if initial_bg_name in _pf.BACKGROUND_MODELS else "None"
+        )
         self.method  = "leastsq"
-        self.bg_name = "None"
         self.params  = None
 
+        # Internal state
+        self._pending_params = initial_params   # used once on first _update_param_table
+        self._last_fit       = None             # (x_fit, y_fit, info) from last Run Fit
+
+        # Debounce timer: preview fires 400 ms after last table edit
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(400)
+        self._preview_timer.timeout.connect(self._emit_preview)
+
         self.setWindowTitle("Curve Fit")
-        self.setMinimumSize(560, 580)
+        self.setMinimumSize(560, 600)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self._build()
         self._update_param_table()
@@ -75,7 +110,7 @@ class FitParamsDialog(QDialog):
         row2.addWidget(QLabel("Background:"))
         self._bg_combo = QComboBox()
         self._bg_combo.addItems(_pf.BACKGROUND_MODELS)
-        self._bg_combo.setCurrentText("None")
+        self._bg_combo.setCurrentText(self.bg_name)
         row2.addWidget(self._bg_combo)
         row2.addStretch()
         vlay.addLayout(row2)
@@ -87,7 +122,7 @@ class FitParamsDialog(QDialog):
 
         # ── Parameter table ───────────────────────────────────────────────────
         vlay.addWidget(
-            QLabel("Parameters  —  edit initial value, bounds and fixed flag:")
+            QLabel("Parameters  —  edit initial value, bounds, and fixed flag:")
         )
 
         self._table = QTableWidget(0, 5)
@@ -113,7 +148,7 @@ class FitParamsDialog(QDialog):
         btn_row.addWidget(btn_run)
         btn_row.addStretch()
         btn_reset = QPushButton("Reset to Auto-Guess")
-        btn_reset.clicked.connect(self._update_param_table)
+        btn_reset.clicked.connect(self._reset_to_guess)
         btn_row.addWidget(btn_reset)
         vlay.addLayout(btn_row)
 
@@ -147,18 +182,41 @@ class FitParamsDialog(QDialog):
         # ── Signals ───────────────────────────────────────────────────────────
         self._model_combo.currentTextChanged.connect(self._on_model_changed)
         self._bg_combo.currentTextChanged.connect(self._on_bg_changed)
+        self._table.itemChanged.connect(self._on_param_edited)
+
+    # ── Qt events ─────────────────────────────────────────────────────────────
+
+    def showEvent(self, event):
+        """Emit the initial preview curve once the dialog becomes visible."""
+        super().showEvent(event)
+        self._emit_preview()
 
     # ── Slots ──────────────────────────────────────────────────────────────────
 
     def _on_model_changed(self, name: str):
         if name not in _pf.MODELS:
-            return   # separator or invalid — ignore
+            return  # separator or invalid — ignore
         self.model_name = name
+        self._last_fit  = None
         self._update_param_table()
         self._results_txt.clear()
 
     def _on_bg_changed(self, name: str):
-        self.bg_name = name
+        self.bg_name   = name
+        self._last_fit = None
+        self._update_param_table()
+        self._results_txt.clear()
+
+    def _on_param_edited(self, item):
+        """Restart debounce timer when value/min/max cells are edited."""
+        if item is not None and item.column() in (1, 2, 3):
+            self._last_fit = None  # table changed → last fit result is stale
+            self._preview_timer.start()
+
+    def _reset_to_guess(self):
+        """Discard pending / saved params and repopulate from auto_guess."""
+        self._pending_params = None
+        self._last_fit       = None
         self._update_param_table()
         self._results_txt.clear()
 
@@ -173,12 +231,19 @@ class FitParamsDialog(QDialog):
                 f"Not enough data points ({len(self._x)} — need ≥4)."
             )
             return
-        try:
-            params = _pf.auto_guess(self._x, self._y, self.model_name, self.bg_name)
-        except Exception as exc:
-            self._results_txt.setPlainText(f"Auto-guess failed:\n{exc}")
-            return
 
+        # Use saved/supplied params on first open; fall back to auto_guess
+        if self._pending_params is not None:
+            params = self._pending_params
+            self._pending_params = None
+        else:
+            try:
+                params = _pf.auto_guess(self._x, self._y, self.model_name, self.bg_name)
+            except Exception as exc:
+                self._results_txt.setPlainText(f"Auto-guess failed:\n{exc}")
+                return
+
+        self._table.blockSignals(True)
         self._table.setRowCount(0)
         for pname, par in params.items():
             if par.expr:   # skip derived params (fwhm, width_1090, …)
@@ -209,10 +274,15 @@ class FitParamsDialog(QDialog):
             layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chk = QCheckBox()
             chk.setChecked(not par.vary)
+            chk.toggled.connect(lambda _checked: self._on_param_edited(None))
             layout.addWidget(chk)
             self._table.setCellWidget(row, 4, container)
 
         self._table.resizeColumnsToContents()
+        self._table.blockSignals(False)
+
+        # Emit preview immediately after populating (e.g. after model change)
+        self._emit_preview()
 
     def _read_params_from_table(self):
         """Read table values back into an lmfit Parameters object."""
@@ -272,8 +342,30 @@ class FitParamsDialog(QDialog):
 
         return params
 
+    def _emit_preview(self):
+        """Evaluate model with current table params and emit preview_changed."""
+        if not _pf.LMFIT_AVAILABLE or len(self._x) < 2:
+            return
+        try:
+            params       = self._read_params_from_table()
+            bg_name      = self._bg_combo.currentText()
+            signal_model = _pf.make_lmfit_model(self.model_name)
+            if bg_name != "None":
+                bg_model = _pf.make_background_model(bg_name)
+                model    = signal_model + bg_model
+            else:
+                model = signal_model
+            x_fit = np.linspace(
+                float(self._x[0]), float(self._x[-1]),
+                max(500, len(self._x) * 5),
+            )
+            y_fit = model.eval(params, x=x_fit)
+            self.preview_changed.emit(x_fit, y_fit)
+        except Exception:
+            pass
+
     def _run_fit(self):
-        """Fit with current table values and show results in text area."""
+        """Fit with current table values, update table with results, emit preview."""
         if not _pf.LMFIT_AVAILABLE:
             self._results_txt.setPlainText(
                 "lmfit is not installed.\n\n  pip install lmfit"
@@ -290,10 +382,25 @@ class FitParamsDialog(QDialog):
                 self._method_combo.currentText(), "leastsq"
             )
             bg_name = self._bg_combo.currentText()
-            _x_fit, _y_fit, info = _pf.run_fit(
+            x_fit, y_fit, info = _pf.run_fit(
                 self._x, self._y, params, self.model_name, method, bg_name
             )
+            self._last_fit = (x_fit, y_fit, info)
 
+            # Update table rows with fitted values (blockSignals to avoid preview loop)
+            self._table.blockSignals(True)
+            result_params = info["result"].params
+            for row in range(self._table.rowCount()):
+                pname = self._table.item(row, 0).text()
+                if pname in result_params and not result_params[pname].expr:
+                    fitted_val = result_params[pname].value
+                    self._table.item(row, 1).setText(f"{fitted_val:.6g}")
+            self._table.blockSignals(False)
+
+            # Push fitted curve to the parent plot as preview
+            self.preview_changed.emit(x_fit, y_fit)
+
+            # Display results in the text area
             lines = [
                 f"Model    : {info['model']}",
                 f"R²       : {info['r2']:.6f}",
@@ -324,13 +431,16 @@ class FitParamsDialog(QDialog):
             self._results_txt.setPlainText(f"Fit failed:\n{exc}")
 
     def _apply(self):
-        """Read params from table, store public attrs, and accept the dialog."""
+        """Commit current params, emit fit_applied, and close the dialog."""
         try:
             self.params     = self._read_params_from_table()
             self.model_name = self._model_combo.currentText()
             self.bg_name    = self._bg_combo.currentText()
             self.method     = _pf.MINIMIZER_KEYS.get(
                 self._method_combo.currentText(), "leastsq"
+            )
+            self.fit_applied.emit(
+                self.params, self.model_name, self.method, self.bg_name
             )
         except Exception:
             pass
