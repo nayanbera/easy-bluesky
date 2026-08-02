@@ -1,5 +1,7 @@
 """devices_editor.py — Edit a profile's devices file (local or remote via SFTP)."""
 
+import ast
+import importlib.util
 import threading
 from pathlib import Path
 
@@ -90,6 +92,11 @@ class DevicesEditorDialog(QDialog):
         self._btn_pull = QPushButton("Reload")
         self._btn_pull.clicked.connect(self._on_pull)
         btn_row.addWidget(self._btn_pull)
+
+        self._btn_check = QPushButton("Check")
+        self._btn_check.setToolTip("Check for syntax errors and unresolvable imports")
+        self._btn_check.clicked.connect(self._on_check)
+        btn_row.addWidget(self._btn_check)
 
         self._btn_save = QPushButton("Save")
         self._btn_save.setDefault(True)
@@ -299,6 +306,13 @@ class DevicesEditorDialog(QDialog):
         content = self._editor.toPlainText()
         devices_file = profile.get("devices_file", "devices.py")
 
+        # Block save on syntax errors
+        ok, msg, lineno = self._syntax_check(content)
+        if not ok:
+            self._jump_to_line(lineno)
+            self._set_status(f"✗ Save blocked — {msg}", ok=False)
+            return
+
         # Always save locally first
         try:
             self._local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +343,69 @@ class DevicesEditorDialog(QDialog):
             return
         self._btn_save.setEnabled(True)
         self._set_status(message, ok=success)
+
+    # ── Syntax / import checking ───────────────────────────────────────────────
+
+    def _syntax_check(self, content: str) -> tuple[bool, str, int]:
+        """Compile content to catch SyntaxError. Returns (ok, message, line)."""
+        profile = (self._combo.itemData(self._current_index)
+                   if self._current_index >= 0 else None)
+        fname = profile.get("devices_file", "<devices>") if profile else "<devices>"
+        try:
+            compile(content, fname, "exec")
+        except SyntaxError as e:
+            return False, f"Syntax error on line {e.lineno}: {e.msg}", e.lineno or 0
+        return True, "Syntax OK", 0
+
+    def _import_check(self, content: str) -> list[str]:
+        """Walk AST imports; return module names not resolvable in this environment."""
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return []
+        missing = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                mods = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                mods = [node.module.split(".")[0]] if node.module else []
+            else:
+                continue
+            for mod in mods:
+                try:
+                    if importlib.util.find_spec(mod) is None:
+                        missing.add(mod)
+                except (ValueError, ModuleNotFoundError):
+                    missing.add(mod)
+        return sorted(missing)
+
+    def _jump_to_line(self, lineno: int):
+        if lineno < 1:
+            return
+        doc = self._editor.document()
+        block = doc.findBlockByLineNumber(lineno - 1)
+        if block.isValid():
+            cursor = self._editor.textCursor()
+            cursor.setPosition(block.position())
+            self._editor.setTextCursor(cursor)
+            self._editor.ensureCursorVisible()
+
+    def _on_check(self):
+        content = self._editor.toPlainText()
+        ok, msg, lineno = self._syntax_check(content)
+        if not ok:
+            self._jump_to_line(lineno)
+            self._set_status(f"✗ {msg}", ok=False)
+            return
+        missing = self._import_check(content)
+        if missing:
+            self._set_status(
+                f"✓ Syntax OK   ⚠ Modules not found locally (may be fine on RE machine): "
+                f"{', '.join(missing)}",
+                ok=True,
+            )
+        else:
+            self._set_status("✓ Syntax OK — no missing imports detected", ok=True)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
