@@ -20,15 +20,16 @@ except ImportError:
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
-    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QSizePolicy, QSplitter,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
+    QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSplitter,
+    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 
 from .config import PLOT_COLORS
 from .plot_tools import setup_crosshair
+from . import peak_fit as _peak_fit
 
 
 # ── Module-level helper ────────────────────────────────────────────────────────
@@ -255,7 +256,9 @@ class MongoDataBrowserTab(QWidget):
         self._run_fetcher    = None
         self._data_fetcher   = None
         self._hdf5_exporter  = None
-        self._curves: dict   = {}
+        self._curves: dict     = {}
+        self._fit_curves: dict = {}    # fit overlay curves {label: PlotDataItem}
+        self._fit_texts: list  = []    # pg.TextItem annotations for fit results
         self._active_exp_dir = ""       # current experiment filter
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
@@ -426,6 +429,26 @@ class MongoDataBrowserTab(QWidget):
         self._log_y_cb = QCheckBox("Log Y")
         self._log_y_cb.stateChanged.connect(self._auto_plot)
         opt_col.addWidget(self._log_y_cb)
+
+        # ── Peak fitting ───────────────────────────────────────────────────────
+        fit_lbl = QLabel("Fit:")
+        fit_lbl.setObjectName("dim_text")
+        opt_col.addWidget(fit_lbl)
+        self._fit_model_combo = QComboBox()
+        self._fit_model_combo.addItems(_peak_fit.MODELS)
+        self._fit_model_combo.setToolTip("Peak model for curve fitting")
+        opt_col.addWidget(self._fit_model_combo)
+        self._btn_fit = QPushButton("Fit Peak")
+        self._btn_fit.setFixedHeight(28)
+        self._btn_fit.setToolTip("Fit a peak to the plotted data")
+        self._btn_fit.clicked.connect(self._fit_peak)
+        opt_col.addWidget(self._btn_fit)
+        self._btn_clear_fit = QPushButton("Clear Fit")
+        self._btn_clear_fit.setFixedHeight(28)
+        self._btn_clear_fit.setEnabled(False)
+        self._btn_clear_fit.clicked.connect(self._clear_fit_overlays)
+        opt_col.addWidget(self._btn_clear_fit)
+
         opt_col.addStretch()
 
         btn_screenshot = QPushButton("Screenshot")
@@ -1001,6 +1024,7 @@ class MongoDataBrowserTab(QWidget):
     def _clear_plot(self):
         if self._plot_widget is None:
             return
+        self._clear_fit_overlays()
         for curve in self._curves.values():
             try:
                 self._plot_widget.removeItem(curve)
@@ -1016,6 +1040,177 @@ class MongoDataBrowserTab(QWidget):
         """Re-plot whenever axis controls change — guard against no data."""
         if self._run_data_list:
             self._plot()
+
+    # ── Peak fitting ───────────────────────────────────────────────────────────
+
+    def _clear_fit_overlays(self):
+        """Remove all fit curves and text annotations from the plot."""
+        if self._plot_widget is None:
+            return
+        for curve in self._fit_curves.values():
+            try:
+                self._plot_widget.removeItem(curve)
+            except Exception:
+                pass
+        for ti in self._fit_texts:
+            try:
+                self._plot_widget.removeItem(ti)
+            except Exception:
+                pass
+        self._fit_curves = {}
+        self._fit_texts  = []
+        if hasattr(self, "_btn_clear_fit"):
+            self._btn_clear_fit.setEnabled(False)
+
+    def _get_xy_for_fit(self, sdata, x_field, y_field, norm_field):
+        """Return (x, y) arrays ready for fitting, or (None, None) on failure."""
+        y_raw = sdata.get(y_field)
+        if y_raw is None or not len(y_raw):
+            return None, None
+
+        if x_field == "time":
+            t = sdata.get("time")
+            if t is None:
+                return None, None
+            x_raw = t - t[0]
+        elif x_field == "seq_num":
+            t = sdata.get("time")
+            if t is None:
+                return None, None
+            x_raw = np.arange(1, len(t) + 1, dtype=float)
+        else:
+            x_raw = sdata.get(x_field)
+            if x_raw is None:
+                return None, None
+
+        n = min(len(x_raw), len(y_raw))
+        x = x_raw[:n].astype(float)
+        y = y_raw[:n].astype(float)
+
+        if norm_field and norm_field in sdata:
+            denom = sdata[norm_field][:n].astype(float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                y = np.where(denom != 0, y / denom, np.nan)
+
+        mask = np.isfinite(x) & np.isfinite(y)
+        return x[mask], y[mask]
+
+    def _add_fit_overlay(self, x_fit, y_fit, info, label, log_y, color_idx):
+        """Draw one fit curve + brief text annotation on the plot."""
+        if not PG_AVAILABLE or self._plot_widget is None:
+            return
+        color = self.COLORS[color_idx % len(self.COLORS)]
+        pen   = pg.mkPen(color=color, width=2, style=Qt.PenStyle.DashLine)
+
+        y_plot = y_fit.copy()
+        if log_y:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                y_plot = np.log10(np.where(y_fit > 0, y_fit, np.nan))
+
+        curve = self._plot_widget.plot(x_fit, y_plot, pen=pen, name=f"fit: {label}")
+        self._fit_curves[label] = curve
+
+        # Brief annotation at the peak position
+        x0  = info["x0"]
+        A   = info["A"]
+        y0  = float(np.log10(A)) if (log_y and A > 0) else A
+        txt = (f"{info['model']}\n"
+               f"x₀  = {x0:.5g}\n"
+               f"FWHM = {info['fwhm']:.4g}\n"
+               f"R²  = {info['r2']:.4f}")
+        ti = pg.TextItem(text=txt, color=color, anchor=(0, 1))
+        ti.setPos(x0, y0)
+        self._plot_widget.addItem(ti)
+        self._fit_texts.append(ti)
+
+    def _fit_peak(self):
+        """Fit a peak to the currently plotted data."""
+        if not _peak_fit.SCIPY_AVAILABLE:
+            QMessageBox.warning(
+                self, "Missing dependency",
+                "scipy is required for peak fitting.\n\n  pip install scipy"
+            )
+            return
+        if not self._run_data_list:
+            QMessageBox.warning(self, "No data", "Load run data first.")
+            return
+
+        stream     = self._stream_combo.currentText()
+        x_field    = self._x_combo.currentData() or self._x_combo.currentText()
+        y_fields   = [
+            self._y_list.item(i).text()
+            for i in range(self._y_list.count())
+            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        norm_field = self._norm_combo.currentData()
+        log_y      = self._log_y_cb.isChecked()
+        model      = self._fit_model_combo.currentText()
+
+        if not y_fields:
+            QMessageBox.warning(self, "No Y signal", "Check at least one Y signal.")
+            return
+
+        # Prompt for multi-run strategy
+        combine = False
+        if len(self._run_data_list) > 1:
+            dlg = _MultiRunFitDialog(parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            combine = dlg.combine
+
+        self._clear_fit_overlays()
+        all_results = []   # [(label, info), ...]
+
+        if combine:
+            for y_field in y_fields:
+                xs, ys = [], []
+                for rd in self._run_data_list:
+                    sdata = rd["streams"].get(stream, {})
+                    x_arr, y_arr = self._get_xy_for_fit(sdata, x_field, y_field, norm_field)
+                    if x_arr is not None and len(x_arr):
+                        xs.append(x_arr)
+                        ys.append(y_arr)
+                if not xs:
+                    continue
+                x_all = np.concatenate(xs)
+                y_all = np.concatenate(ys)
+                order = np.argsort(x_all)
+                x_all, y_all = x_all[order], y_all[order]
+                try:
+                    x_fit, y_fit, info = _peak_fit.fit_peak(x_all, y_all, model)
+                    label = f"Combined / {y_field}"
+                    self._add_fit_overlay(x_fit, y_fit, info, label, log_y, len(all_results))
+                    all_results.append((label, info))
+                except Exception as exc:
+                    self._set_status(f"Fit failed ({y_field}): {exc}", error=True)
+        else:
+            for rd in self._run_data_list:
+                sdata     = rd["streams"].get(stream, {})
+                run_label = rd.get("label", "Run")
+                for y_field in y_fields:
+                    x_arr, y_arr = self._get_xy_for_fit(
+                        sdata, x_field, y_field, norm_field
+                    )
+                    if x_arr is None or not len(x_arr):
+                        continue
+                    try:
+                        x_fit, y_fit, info = _peak_fit.fit_peak(x_arr, y_arr, model)
+                        label = (f"{run_label} / {y_field}"
+                                 if len(self._run_data_list) > 1 else y_field)
+                        self._add_fit_overlay(
+                            x_fit, y_fit, info, label, log_y, len(all_results)
+                        )
+                        all_results.append((label, info))
+                    except Exception as exc:
+                        self._set_status(
+                            f"Fit failed ({run_label} / {y_field}): {exc}", error=True
+                        )
+
+        if not all_results:
+            return
+
+        self._btn_clear_fit.setEnabled(True)
+        _PeakFitReportDialog(all_results, parent=self).show()
 
     # ── Double-click: move motor ───────────────────────────────────────────────
 
@@ -1165,6 +1360,93 @@ class MongoDataBrowserTab(QWidget):
         if self._crosshair_cleanup:
             self._crosshair_cleanup()
         super().closeEvent(event)
+
+
+class _MultiRunFitDialog(QDialog):
+    """Ask whether to fit each run individually or combine all into one dataset."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Fit — Multiple Runs")
+        self.combine = False
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(
+            "Multiple runs are selected.\n"
+            "How would you like to fit the data?"
+        ))
+        btn_row = QHBoxLayout()
+        btn_indiv = QPushButton("Fit Individually")
+        btn_comb  = QPushButton("Combine All Runs")
+        btn_cancel = QPushButton("Cancel")
+        btn_indiv.clicked.connect(self._individual)
+        btn_comb.clicked.connect(self._combine)
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_indiv)
+        btn_row.addWidget(btn_comb)
+        btn_row.addWidget(btn_cancel)
+        lay.addLayout(btn_row)
+
+    def _individual(self):
+        self.combine = False
+        self.accept()
+
+    def _combine(self):
+        self.combine = True
+        self.accept()
+
+
+class _PeakFitReportDialog(QDialog):
+    """Non-blocking dialog showing detailed peak-fit results."""
+
+    def __init__(self, results: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Peak Fit Report")
+        self.setMinimumSize(520, 380)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        lay = QVBoxLayout(self)
+
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        from PyQt6.QtGui import QFont
+        mono = QFont("Menlo")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        mono.setPointSize(11)
+        txt.setFont(mono)
+
+        lines = []
+        sep = "─" * 52
+        for i, (label, info) in enumerate(results):
+            if i:
+                lines.append(sep)
+            lines.append(f"Dataset  :  {label}")
+            lines.append(f"Model    :  {info['model']}")
+            lines.append(f"Points   :  {info['n_points']}")
+            lines.append("")
+            for name, val, err in zip(
+                info["param_names"], info["params"], info["perr"]
+            ):
+                lines.append(f"  {name:<26} {val:>14.6g}  ±  {err:.4g}")
+            lines.append(f"  {'FWHM':<26} {info['fwhm']:>14.6g}")
+            if "n_exp" in info:
+                lines.append(f"  {'Exponent (n)':<26} {info['n_exp']:>14.6g}"
+                             f"  ±  {info['perr'][3]:.4g}")
+            lines.append(f"  {'R²':<26} {info['r2']:>14.6f}")
+            lines.append("")
+
+        txt.setPlainText("\n".join(lines))
+        lay.addWidget(txt)
+
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton("Copy to Clipboard")
+        btn_copy.clicked.connect(
+            lambda: QApplication.clipboard().setText(txt.toPlainText())
+        )
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        btn_row.addWidget(btn_copy)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
 
 
 def _vline() -> QFrame:
