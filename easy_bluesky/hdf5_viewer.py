@@ -43,6 +43,7 @@ def _poisson_sigma(y_raw, norm_raw=None):
         return np.where(n > 0, np.sqrt(y / n ** 2 + y ** 2 / n ** 3), np.nan)
 from .plot_tools import setup_crosshair
 from . import peak_fit as _peak_fit
+from .curve_fit_dialog import FitParamsDialog
 
 _MOTION_PLANS = frozenset({
     "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
@@ -237,7 +238,10 @@ class HDF5Viewer(QWidget):
         self._fit_model_combo = QComboBox()
         self._fit_model_combo.setFixedHeight(26)
         self._fit_model_combo.setMinimumWidth(110)
-        for m in _peak_fit.MODELS:
+        for m in _peak_fit.PEAK_MODELS:
+            self._fit_model_combo.addItem(m)
+        self._fit_model_combo.insertSeparator(self._fit_model_combo.count())
+        for m in _peak_fit.STEP_MODELS:
             self._fit_model_combo.addItem(m)
         ctrl_bar.addWidget(self._fit_model_combo)
 
@@ -621,9 +625,11 @@ class HDF5Viewer(QWidget):
         curve = self.plot_widget.plot(x_fit, y_fit, pen=pen, name=key)
         self._fit_curves[key] = curve
 
+        is_step    = info["model"].startswith("Step")
+        width_label = "10–90% w" if is_step else "FWHM"
         ann = (f"  {info['model']}\n"
                f"  x₀={info['x0']:.4g}\n"
-               f"  FWHM={info['fwhm']:.4g}\n"
+               f"  {width_label}={info['fwhm']:.4g}\n"
                f"  R²={info['r2']:.4f}")
         txt = pg.TextItem(ann, color=color, anchor=(0, 1))
         txt.setPos(float(info["x0"]), float(info["A"]))
@@ -632,38 +638,46 @@ class HDF5Viewer(QWidget):
         return info
 
     def _fit_peak(self):
-        if not PG_AVAILABLE:
+        if not _peak_fit.LMFIT_AVAILABLE:
+            QMessageBox.warning(
+                self, "Missing dependency",
+                "lmfit is required for curve fitting.\n\n  pip install lmfit"
+            )
             return
-        model = self._fit_model_combo.currentText()
+
         datasets = self._get_xy_for_fit()
         if not datasets:
             QMessageBox.warning(self, "Fit", "No data to fit. Select scans and Y signals first.")
             return
 
+        # Multi-dataset: ask individual vs combine
         if len(datasets) > 1:
             dlg = _HDF5FitModeDialog(len(datasets), parent=self)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
-            combine = dlg.combine
-
-            if combine:
+            if dlg.combine:
                 x_all = np.concatenate([d[0] for d in datasets])
                 y_all = np.concatenate([d[1] for d in datasets])
                 order = np.argsort(x_all)
-                datasets_to_fit = [(x_all[order], y_all[order], "combined")]
-            else:
-                datasets_to_fit = datasets
-        else:
-            datasets_to_fit = datasets
+                datasets = [(x_all[order], y_all[order], "combined")]
+
+        # Open fit dialog with first dataset for parameter estimation
+        x0, y0, _ = datasets[0]
+        initial_model = self._fit_model_combo.currentText()
+        fit_dlg = FitParamsDialog(x0, y0, initial_model, parent=self)
+        if fit_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
 
         self._clear_fit_overlays()
-        colors = ["#ff6688", "#66ffaa", "#ffaa33", "#33aaff", "#cc88ff"]
-        fit_infos = []
-        errors = []
-        for idx, (x, y, lbl) in enumerate(datasets_to_fit):
-            color = colors[idx % len(colors)]
+        fit_colors = ["#ff6688", "#66ffaa", "#ffaa33", "#33aaff", "#cc88ff"]
+        fit_infos  = []
+        errors     = []
+        for idx, (x, y, lbl) in enumerate(datasets):
+            color = fit_colors[idx % len(fit_colors)]
             try:
-                x_fit, y_fit, info = _peak_fit.fit_peak(x, y, model)
+                x_fit, y_fit, info = _peak_fit.run_fit(
+                    x, y, fit_dlg.params, fit_dlg.model_name, fit_dlg.method
+                )
                 self._add_fit_overlay(x_fit, y_fit, info, lbl, color)
                 info["_label"] = lbl
                 fit_infos.append(info)
@@ -672,10 +686,8 @@ class HDF5Viewer(QWidget):
 
         if errors:
             QMessageBox.warning(self, "Fit errors", "\n".join(errors))
-
         if fit_infos:
-            rpt = _HDF5FitReportDialog(fit_infos, parent=self)
-            rpt.show()
+            _HDF5FitReportDialog(fit_infos, parent=self).show()
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
@@ -730,15 +742,17 @@ class _HDF5FitReportDialog(QDialog):
                 lines.append(f"Dataset : {label}")
             lines.append(f"Model   : {info['model']}")
             lines.append(f"Center  : {info['x0']:.6g}")
-            lines.append(f"FWHM    : {info['fwhm']:.6g}")
+            fwhm_val = info.get("fwhm", float("nan"))
+            if not (isinstance(fwhm_val, float) and np.isnan(fwhm_val)):
+                is_step  = info.get("model", "").startswith("Step")
+                width_lbl = "10–90% width" if is_step else "FWHM"
+                lines.append(f"  {width_lbl:<26} {fwhm_val:>14.6g}")
             lines.append(f"R²      : {info['r2']:.6f}")
             lines.append(f"N pts   : {info['n_points']}")
             lines.append("")
             lines.append("Parameters:")
             for name, val, err in zip(info["param_names"], info["params"], info["perr"]):
                 lines.append(f"  {name:<22} {val:.6g}  ± {err:.3g}")
-            if info["model"] == "Super-Gaussian":
-                lines.append(f"  Exponent n             {info.get('n_exp', '?'):.4g}")
             lines.append("")
         txt.setPlainText("\n".join(lines))
 

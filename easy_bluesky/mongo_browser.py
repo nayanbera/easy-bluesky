@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 from .config import PLOT_COLORS
 from .plot_tools import setup_crosshair
 from . import peak_fit as _peak_fit
+from .curve_fit_dialog import FitParamsDialog as _FitParamsDialog
 
 
 # ── Module-level helpers ───────────────────────────────────────────────────────
@@ -444,7 +445,11 @@ class MongoDataBrowserTab(QWidget):
         ctrl_bar.addWidget(_vline())
         ctrl_bar.addWidget(QLabel("Fit:"))
         self._fit_model_combo = QComboBox()
-        self._fit_model_combo.addItems(_peak_fit.MODELS)
+        for m in _peak_fit.PEAK_MODELS:
+            self._fit_model_combo.addItem(m)
+        self._fit_model_combo.insertSeparator(self._fit_model_combo.count())
+        for m in _peak_fit.STEP_MODELS:
+            self._fit_model_combo.addItem(m)
         self._fit_model_combo.setFixedHeight(26)
         self._fit_model_combo.setToolTip("Peak model for curve fitting")
         ctrl_bar.addWidget(self._fit_model_combo)
@@ -1181,9 +1186,11 @@ class MongoDataBrowserTab(QWidget):
         x0  = info["x0"]
         A   = info["A"]
         y0  = float(np.log10(A)) if (log_y and A > 0) else A
+        _is_step   = info["model"].startswith("Step")
+        _width_lbl = "10–90% w" if _is_step else "FWHM"
         txt = (f"{info['model']}\n"
                f"x₀  = {x0:.5g}\n"
-               f"FWHM = {info['fwhm']:.4g}\n"
+               f"{_width_lbl} = {info['fwhm']:.4g}\n"
                f"R²  = {info['r2']:.4f}")
         ti = pg.TextItem(text=txt, color=color, anchor=(0, 1))
         ti.setPos(x0, y0)
@@ -1191,11 +1198,11 @@ class MongoDataBrowserTab(QWidget):
         self._fit_texts.append(ti)
 
     def _fit_peak(self):
-        """Fit a peak to the currently plotted data."""
-        if not _peak_fit.SCIPY_AVAILABLE:
+        """Fit a peak or step to the currently plotted data."""
+        if not _peak_fit.LMFIT_AVAILABLE:
             QMessageBox.warning(
                 self, "Missing dependency",
-                "scipy is required for peak fitting.\n\n  pip install scipy"
+                "lmfit is required for curve fitting.\n\n  pip install lmfit"
             )
             return
         if not self._run_data_list:
@@ -1211,13 +1218,13 @@ class MongoDataBrowserTab(QWidget):
         ]
         norm_field = self._norm_combo.currentData()
         log_y      = self._log_y_cb.isChecked()
-        model      = self._fit_model_combo.currentText()
+        model_name = self._fit_model_combo.currentText()
 
         if not y_fields:
             QMessageBox.warning(self, "No Y signal", "Check at least one Y signal.")
             return
 
-        # Prompt for multi-run strategy
+        # Build datasets list
         combine = False
         if len(self._run_data_list) > 1:
             dlg = _MultiRunFitDialog(parent=self)
@@ -1225,9 +1232,7 @@ class MongoDataBrowserTab(QWidget):
                 return
             combine = dlg.combine
 
-        self._clear_fit_overlays()
-        all_results = []   # [(label, info), ...]
-
+        datasets = []   # (x, y, label)
         if combine:
             for y_field in y_fields:
                 xs, ys = [], []
@@ -1235,49 +1240,50 @@ class MongoDataBrowserTab(QWidget):
                     sdata = rd["streams"].get(stream, {})
                     x_arr, y_arr = self._get_xy_for_fit(sdata, x_field, y_field, norm_field)
                     if x_arr is not None and len(x_arr):
-                        xs.append(x_arr)
-                        ys.append(y_arr)
-                if not xs:
-                    continue
-                x_all = np.concatenate(xs)
-                y_all = np.concatenate(ys)
-                order = np.argsort(x_all)
-                x_all, y_all = x_all[order], y_all[order]
-                try:
-                    x_fit, y_fit, info = _peak_fit.fit_peak(x_all, y_all, model)
-                    label = f"Combined / {y_field}"
-                    self._add_fit_overlay(x_fit, y_fit, info, label, log_y, len(all_results))
-                    all_results.append((label, info))
-                except Exception as exc:
-                    self._set_status(f"Fit failed ({y_field}): {exc}", error=True)
+                        xs.append(x_arr); ys.append(y_arr)
+                if xs:
+                    x_all = np.concatenate(xs); y_all = np.concatenate(ys)
+                    order = np.argsort(x_all)
+                    datasets.append((x_all[order], y_all[order], f"Combined / {y_field}"))
         else:
             for rd in self._run_data_list:
                 sdata     = rd["streams"].get(stream, {})
                 run_label = rd.get("label", "Run")
                 for y_field in y_fields:
-                    x_arr, y_arr = self._get_xy_for_fit(
-                        sdata, x_field, y_field, norm_field
-                    )
-                    if x_arr is None or not len(x_arr):
-                        continue
-                    try:
-                        x_fit, y_fit, info = _peak_fit.fit_peak(x_arr, y_arr, model)
-                        label = (f"{run_label} / {y_field}"
-                                 if len(self._run_data_list) > 1 else y_field)
-                        self._add_fit_overlay(
-                            x_fit, y_fit, info, label, log_y, len(all_results)
-                        )
-                        all_results.append((label, info))
-                    except Exception as exc:
-                        self._set_status(
-                            f"Fit failed ({run_label} / {y_field}): {exc}", error=True
-                        )
+                    x_arr, y_arr = self._get_xy_for_fit(sdata, x_field, y_field, norm_field)
+                    if x_arr is not None and len(x_arr):
+                        lbl = f"{run_label} / {y_field}" if len(self._run_data_list) > 1 else y_field
+                        datasets.append((x_arr, y_arr, lbl))
 
-        if not all_results:
+        if not datasets:
+            QMessageBox.warning(self, "No data", "No plottable data found.")
             return
 
-        self._btn_clear_fit.setEnabled(True)
-        _PeakFitReportDialog(all_results, parent=self).show()
+        # Open fit dialog with first dataset for parameter estimation
+        x0, y0, _ = datasets[0]
+        fit_dlg = _FitParamsDialog(x0, y0, model_name, parent=self)
+        if fit_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self._clear_fit_overlays()
+        all_results = []
+        errors      = []
+        for idx, (x, y, lbl) in enumerate(datasets):
+            try:
+                x_fit, y_fit, info = _peak_fit.run_fit(
+                    x, y, fit_dlg.params, fit_dlg.model_name, fit_dlg.method
+                )
+                self._add_fit_overlay(x_fit, y_fit, info, lbl, log_y, idx)
+                all_results.append((lbl, info))
+            except Exception as exc:
+                errors.append(f"{lbl}: {exc}")
+                self._set_status(f"Fit failed ({lbl}): {exc}", error=True)
+
+        if errors:
+            QMessageBox.warning(self, "Fit errors", "\n".join(errors))
+        if all_results:
+            self._btn_clear_fit.setEnabled(True)
+            _PeakFitReportDialog(all_results, parent=self).show()
 
     # ── Double-click: move motor ───────────────────────────────────────────────
 
@@ -1560,10 +1566,12 @@ class _PeakFitReportDialog(QDialog):
                 info["param_names"], info["params"], info["perr"]
             ):
                 lines.append(f"  {name:<26} {val:>14.6g}  ±  {err:.4g}")
-            lines.append(f"  {'FWHM':<26} {info['fwhm']:>14.6g}")
-            if "n_exp" in info:
-                lines.append(f"  {'Exponent (n)':<26} {info['n_exp']:>14.6g}"
-                             f"  ±  {info['perr'][3]:.4g}")
+            fwhm_val = info.get("fwhm", float("nan"))
+            _nan = isinstance(fwhm_val, float) and (fwhm_val != fwhm_val)
+            if not _nan:
+                _is_step = info.get("model", "").startswith("Step")
+                _wlbl    = "10–90% width" if _is_step else "FWHM"
+                lines.append(f"  {_wlbl:<26} {fwhm_val:>14.6g}")
             lines.append(f"  {'R²':<26} {info['r2']:>14.6f}")
             lines.append("")
 
