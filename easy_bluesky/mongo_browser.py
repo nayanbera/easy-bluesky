@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 
 
 from .config import PLOT_COLORS
+from .plot_tools import setup_crosshair
 
 
 # ── Module-level helper ────────────────────────────────────────────────────────
@@ -256,6 +257,9 @@ class MongoDataBrowserTab(QWidget):
         self._hdf5_exporter  = None
         self._curves: dict   = {}
         self._active_exp_dir = ""       # current experiment filter
+        self._saved_x: str   = ""       # last X field key — restored on run switch
+        self._saved_y: set   = set()    # last checked Y field names — restored on run switch
+        self._crosshair_cleanup = None
         self._fetch_timer    = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._schedule_data_fetch)
@@ -444,18 +448,29 @@ class MongoDataBrowserTab(QWidget):
         ctrl_lay.addLayout(opt_col)
         rlayout.addWidget(ctrl_box)
 
+        self._coord_label = QLabel("")
+        self._coord_label.setObjectName("dim_text")
+        self._coord_label.setStyleSheet(
+            "font-size: 11px; padding: 2px 4px;"
+            " font-family: Menlo, Monaco, 'Courier New', monospace;"
+        )
+
         if PG_AVAILABLE:
             self._plot_widget = pg.PlotWidget(background="#1e1e1e")
             self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self._plot_widget.addLegend()
             self._plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
             rlayout.addWidget(self._plot_widget, 1)
+            self._crosshair_cleanup = setup_crosshair(
+                self._plot_widget, self._coord_label, lambda: self._curves
+            )
         else:
             self._plot_widget = None
             rlayout.addWidget(
                 QLabel("pyqtgraph not available — pip install pyqtgraph"), 1
             )
 
+        rlayout.addWidget(self._coord_label)
         splitter.addWidget(right)
         splitter.setSizes([400, 700])
         root.addWidget(splitter, 1)
@@ -776,6 +791,18 @@ class MongoDataBrowserTab(QWidget):
         keys = [k for k in first_sdata
                 if k not in ("time", "data_keys") and k in common]
 
+        # Save current selections before repopulating so they survive run switches
+        cur_x = self._x_combo.currentData()
+        if cur_x:
+            self._saved_x = cur_x
+        cur_y = {
+            self._y_list.item(i).text()
+            for i in range(self._y_list.count())
+            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+        }
+        if cur_y:
+            self._saved_y = cur_y
+
         # ── X ─────────────────────────────────────────────────────────────────
         self._x_combo.clear()
         self._x_combo.addItem("time (s)", userData="time")
@@ -802,7 +829,15 @@ class MongoDataBrowserTab(QWidget):
         for k in sorted(keys):
             self._x_combo.addItem(k, userData=k)
 
-        if auto_motor:
+        # Restore saved X if available; fall back to auto-detected motor
+        restored_x = False
+        if self._saved_x:
+            for i in range(self._x_combo.count()):
+                if self._x_combo.itemData(i) == self._saved_x:
+                    self._x_combo.setCurrentIndex(i)
+                    restored_x = True
+                    break
+        if not restored_x and auto_motor:
             for i in range(self._x_combo.count()):
                 if self._x_combo.itemData(i) == auto_motor:
                     self._x_combo.setCurrentIndex(i)
@@ -813,6 +848,7 @@ class MongoDataBrowserTab(QWidget):
         if rows and rows[0].row() < len(self._runs):
             motor_names = set(self._runs[rows[0].row()]["start"].get("motors", []))
 
+        key_set = set(keys)
         self._y_list.blockSignals(True)
         self._y_list.clear()
         for k in sorted(keys):
@@ -823,6 +859,15 @@ class MongoDataBrowserTab(QWidget):
                 Qt.CheckState.Unchecked if is_motor else Qt.CheckState.Checked
             )
             self._y_list.addItem(item)
+
+        # Restore saved Y if any saved field is present in the new run
+        if self._saved_y & key_set:
+            for i in range(self._y_list.count()):
+                item = self._y_list.item(i)
+                item.setCheckState(
+                    Qt.CheckState.Checked if item.text() in self._saved_y
+                    else Qt.CheckState.Unchecked
+                )
         self._y_list.blockSignals(False)
 
         # ── Norm by ───────────────────────────────────────────────────────────
@@ -1115,6 +1160,11 @@ class MongoDataBrowserTab(QWidget):
             self._status_label.setStyleSheet("color: #ff7f0e;")
         else:
             self._status_label.setStyleSheet("color: #888888;")
+
+    def closeEvent(self, event):
+        if self._crosshair_cleanup:
+            self._crosshair_cleanup()
+        super().closeEvent(event)
 
 
 def _vline() -> QFrame:
