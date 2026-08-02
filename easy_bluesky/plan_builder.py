@@ -1411,14 +1411,18 @@ class PlanBuilder(QWidget):
         e_btns = QHBoxLayout()
         btn_open   = QPushButton("📂  Open file")
         btn_save   = QPushButton("💾  Save to file")
+        btn_check  = QPushButton("✔  Check")
+        btn_check.setToolTip("Check for syntax errors, undefined names, and missing imports")
         btn_upload = QPushButton("⬆  Upload to RE Manager")
         btn_reload = QPushButton("↺  Reload RE env")
         btn_open.clicked.connect(self._open_script)
         btn_save.clicked.connect(self._save_script)
+        btn_check.clicked.connect(self._check_plan)
         btn_upload.clicked.connect(self._upload_script)
         btn_reload.clicked.connect(self._reload_environment)
         e_btns.addWidget(btn_open)
         e_btns.addWidget(btn_save)
+        e_btns.addWidget(btn_check)
         e_btns.addWidget(btn_upload)
         e_btns.addWidget(btn_reload)
         lay.addLayout(e_btns)
@@ -1434,6 +1438,101 @@ class PlanBuilder(QWidget):
         lay.addWidget(self.output)
 
         return w
+
+    # ── Code checking ──────────────────────────────────────────────────────────
+
+    def _syntax_check(self, content: str) -> tuple:
+        try:
+            compile(content, "<plan>", "exec")
+        except SyntaxError as e:
+            return False, f"Syntax error on line {e.lineno}: {e.msg}", e.lineno or 0
+        return True, "Syntax OK", 0
+
+    def _import_check(self, content: str) -> list:
+        import ast
+        import importlib.util
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return []
+        missing = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                mods = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                mods = [node.module.split(".")[0]] if node.module else []
+            else:
+                continue
+            for mod in mods:
+                try:
+                    if importlib.util.find_spec(mod) is None:
+                        missing.add(mod)
+                except (ValueError, ModuleNotFoundError):
+                    missing.add(mod)
+        return sorted(missing)
+
+    def _pyflakes_check(self, content: str) -> list:
+        try:
+            import io
+            from pyflakes import api as _pf_api
+            from pyflakes import reporter as _pf_reporter
+        except ImportError:
+            return []
+        buf = io.StringIO()
+        r = _pf_reporter.Reporter(buf, buf)
+        _pf_api.check(content, "<plan>", reporter=r)
+        lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]
+        clean = []
+        for ln in lines:
+            if ":" in ln:
+                parts = ln.split(":", 3)
+                if len(parts) >= 4:
+                    clean.append(f"line {parts[1]}: {parts[3].strip()}")
+                    continue
+            clean.append(ln)
+        return clean
+
+    def _jump_to_line(self, lineno: int):
+        if lineno < 1:
+            return
+        block = self.editor.document().findBlockByLineNumber(lineno - 1)
+        if block.isValid():
+            cursor = self.editor.textCursor()
+            cursor.setPosition(block.position())
+            self.editor.setTextCursor(cursor)
+            self.editor.ensureCursorVisible()
+
+    def _check_plan(self) -> bool:
+        """Run all checks; log results to output. Returns True if syntax is valid."""
+        content = self.editor.toPlainText()
+        ts = datetime.now().strftime("%H:%M:%S")
+
+        ok, msg, lineno = self._syntax_check(content)
+        if not ok:
+            self._jump_to_line(lineno)
+            self.output.appendPlainText(f"[{ts}] ✗ {msg}")
+            return False
+
+        lines = ["✓ Syntax OK"]
+
+        pf_issues = self._pyflakes_check(content)
+        if pf_issues:
+            for issue in pf_issues[:5]:
+                lines.append(f"       ⚠ {issue}")
+            if len(pf_issues) > 5:
+                lines.append(f"       … +{len(pf_issues) - 5} more issue(s)")
+        else:
+            lines.append("       (no undefined names or unused imports)")
+
+        missing = self._import_check(content)
+        if missing:
+            lines.append(
+                f"       ⚠ Modules not found locally (may be fine on RE machine): "
+                f"{', '.join(missing)}"
+            )
+
+        self.output.appendPlainText(f"[{ts}] " + "\n".join(lines))
+        return True
 
     def _insert_template(self, name):
         _ANN = (
@@ -1575,6 +1674,12 @@ class PlanBuilder(QWidget):
         script = self.editor.toPlainText().strip()
         if not script:
             QMessageBox.warning(self, "Empty", "Write a plan before uploading.")
+            return
+        ok_syntax, err_msg, lineno = self._syntax_check(self.editor.toPlainText())
+        if not ok_syntax:
+            self._jump_to_line(lineno)
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.output.appendPlainText(f"[{ts}] ✗ Upload blocked — {err_msg}")
             return
         ok, msg = self.worker.upload_script(script)
         ts = datetime.now().strftime("%H:%M:%S")
