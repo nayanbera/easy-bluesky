@@ -16,7 +16,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Edit Devices File** — Full code editor for any profile's devices file: line numbers, current-line highlight, auto-indent, Tab→spaces, and ophyd-aware autocomplete. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP.
 - **Live Device Monitor** — Real-time EPICS Channel Access (CA) monitoring in the Devices & Plans tab. Each device shows its connected/disconnected status and live PV readings that update instantly as values change — no polling during scans. pyepics is auto-installed if missing.
 - **Sim Device Monitor** — In simulation mode, device values are polled from the RE environment every 2 seconds via `read_devices_status()`. Tweak widgets on motor rows allow nudging simulated motors without running a full plan.
-- **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. Choose from peak models (Gaussian, Lorentzian, Voigt, Pseudo-Voigt, Super-Gaussian) and step/interface models (erf, tanh, arctan, logistic). Add polynomial background terms (Constant through Cubic) that are fit simultaneously with the signal model. A dialog lets you inspect and adjust every parameter's initial value, bounds, and fixed/free status before running, with six minimisation algorithms to choose from.
+- **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. The non-modal Curve Fit dialog displays a live preview curve on the plot the moment it opens, and the preview updates in real time as you edit parameters. Run Fit refines the model and updates the table with fitted values. Choose from 5 peak models, 4 step/interface models, 4 polynomial background terms, and 6 minimisation algorithms. Fit parameters are saved automatically so re-opening the dialog pre-populates it with the previous result. Export fitted parameters and curves to CSV, or copy the results text to the clipboard.
 - **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
@@ -857,21 +857,63 @@ Background initial values are estimated automatically from the data edges (first
 
 ### Workflow
 
-1. Click **Fit** in the HDF5 Viewer or MongoDB Browser.
-2. The **Curve Fit** dialog opens with auto-guessed initial parameters.
-3. Choose a **Model**, **Background**, and **Algorithm** from the dropdowns.
-4. Review the **Parameters** table — adjust initial values, set Min/Max bounds (type `-inf` / `+inf` for no bound), or tick **Fixed** to hold a parameter constant.
-5. Click **Run Fit** to fit without closing the dialog — results appear in the text area:
-   - R² goodness of fit
-   - Fitted parameter values and uncertainties (±)
-   - FWHM (peaks) or 10–90% width (steps)
-6. Adjust parameters and re-fit as needed.
-7. Click **Apply & Close** to overlay the fit curve on the main plot with an annotation showing the fit result.
+The Curve Fit dialog is **non-modal** — it stays open alongside the main plot so you can see the model update in real time without the dialog blocking the view.
 
-The fit overlay includes:
-- A smooth curve evaluated at 5× the data density
-- A vertical marker at the peak/step centre (x₀)
-- An annotation box: model name, x₀, FWHM or 10–90% width, and R²
+1. Click **Fit** in the HDF5 Viewer or MongoDB Browser.
+2. The **Curve Fit** dialog opens. A dotted gold **preview curve** immediately appears on the plot, drawn with the auto-guessed initial parameters.
+3. Choose a **Model**, **Background**, and **Algorithm** from the dropdowns. The preview updates automatically whenever the selection changes.
+4. Review and edit the **Parameters** table — adjust initial values, set Min/Max bounds (type `-inf` / `+inf` for no bound), or tick **Fixed** to hold a parameter constant. The preview curve on the plot updates 400 ms after each edit, so you can see the effect of your changes before committing to a fit.
+5. Click **Run Fit** to execute the fit:
+   - The table updates in place with the fitted parameter values.
+   - The preview curve updates to the fitted result.
+   - The **Fit Results** text area shows R², N points, all parameter values with ± uncertainties, and FWHM (peaks) or 10–90% width (steps).
+6. Adjust parameters and re-fit as many times as needed.
+7. Click **Apply & Close** to commit:
+   - The dotted preview is replaced by a solid dashed fit overlay for every selected dataset.
+   - An annotation box shows: model, x₀, FWHM/width, and R².
+   - The fit state (model, background, and all parameter values) is **saved automatically**.
+8. Click **Cancel** (or close the dialog) to discard changes and remove the preview.
+
+> **Saved fit state:** the next time you click Fit on the same viewer, the dialog opens pre-populated with the saved model, background, and parameter values from step 7 — you can re-run or fine-tune without starting from scratch.
+
+### Exporting fit results
+
+Two export options appear below the **Fit Results** text area and are available after **Run Fit**:
+
+| Button | Action |
+|--------|--------|
+| **Copy Results** | Copies the fit summary text (model, R², parameters ± uncertainties, FWHM/width) to the system clipboard. Paste directly into a lab notebook, spreadsheet, or paper. |
+| **Export Fit…** | Opens a save dialog and writes a CSV file. |
+
+The exported CSV contains:
+
+```
+# EasyBluesky Curve Fit Export
+# Model     : Gaussian
+# R²        : 0.999200
+# N points  : 80
+# Parameters:
+#   Amplitude                    1000.0    ±  2.3
+#   Center (x₀)                 5.0001    ±  0.0012
+#   Sigma (σ)                   0.7981    ±  0.0014
+#   FWHM                        1.8795
+#
+# Section 1: data points and fit at each measurement x
+# Columns: x_data, y_data, y_fit, residual
+0.000,...
+#
+# Section 2: smooth fit curve
+# Columns: x_fit, y_fit_smooth
+0.000,...
+```
+
+**Section 1** (data + fit + residual at each measured point) is most useful for residual analysis and checking goodness of fit. **Section 2** (500-point smooth curve) is most useful for replotting in Origin, Igor Pro, or matplotlib alongside raw data. Both sections can be imported with `pd.read_csv(file, comment='#')` — each section is read independently since the column counts differ.
+
+The **Export Fit…** button is disabled until a fit is run and re-disables if the model or background selection changes (because the saved fit would no longer match the current model).
+
+The fit overlay on the main plot includes:
+- A smooth dashed curve evaluated at 5× the data density
+- A text annotation at the peak/step centre: model name, x₀, FWHM or 10–90% width, and R²
 
 ---
 

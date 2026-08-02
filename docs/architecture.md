@@ -125,25 +125,59 @@ RE environment opens, pv_map is empty (all ophyd.sim devices)
 
 ### Curve fitting (HDF5 Viewer and MongoDB Browser)
 
+The fit dialog is **non-modal** and communicates with the viewer exclusively through Qt signals.
+
 ```
 User clicks Fit button
-→ viewer collects (x, y) arrays from current plot selection
-→ FitParamsDialog(x, y, initial_model) opens
-    → auto_guess(x, y, model_name, bg_name) produces lmfit.Parameters
-    → parameter table populated (initial value, min, max, fixed checkbox)
-User adjusts parameters, clicks Run Fit (in dialog)
-    → _read_params_from_table() → run_fit(x, y, params, model_name, method, bg_name)
-    → lmfit Model.fit() → result displayed in dialog text area
+→ viewer builds datasets list, stores in self._fit_datasets
+→ viewer checks self._saved_fit_state for previous model/params
+→ FitParamsDialog(x0, y0, model, bg_name, saved_params) created and shown
+    → on showEvent: auto_guess() or saved_params → _update_param_table()
+                    → _emit_preview() → preview_changed signal
+    → viewer._on_fit_preview(x_fit, y_fit): draws dotted gold preview on plot
+
+User edits a table cell
+→ itemChanged → 400 ms debounce timer
+→ timer fires → _emit_preview() → preview_changed
+→ viewer._on_fit_preview: updates preview curve in place (setData)
+
+User clicks Run Fit
+→ _read_params_from_table() → run_fit(x, y, params, model, method, bg)
+→ lmfit Model.fit()
+→ table rows updated with fitted values (blockSignals)
+→ preview_changed emitted with fitted x_fit, y_fit
+→ results written to _results_txt (R², params ± errors, FWHM/width)
+→ _btn_export enabled
+
+User clicks Copy Results
+→ _results_txt.toPlainText() → QApplication.clipboard()
+
+User clicks Export Fit…
+→ QFileDialog.getSaveFileName()
+→ model evaluated at data x for residuals
+→ CSV written: header comments (model, R², params) +
+               Section 1 (x_data, y_data, y_fit, residual) +
+               Section 2 (x_fit_smooth, y_fit_smooth)
+
 User clicks Apply & Close
-    → fit_dlg.params, .model_name, .method, .bg_name exposed as public attrs
-    → viewer calls run_fit() with dialog attrs
-    → x_fit, y_fit, info returned
-    → _add_fit_overlay() draws curve + annotation on plot
+→ _read_params_from_table() → fit_applied(params, model, method, bg) emitted
+→ dialog closes (accept)
+→ viewer._on_fit_applied:
+      _clear_fit_preview()
+      _clear_fit_overlays()
+      for each dataset: run_fit() → _add_fit_overlay() (dashed curve + annotation)
+      _saved_fit_state = {model_name, bg_name, params}
+
+User clicks Cancel / closes dialog
+→ rejected signal → viewer._on_fit_cancelled → _clear_fit_preview()
 ```
 
 `peak_fit.py` is a pure computation module (no Qt). `curve_fit_dialog.py` owns all Qt.
-Composite models (`signal_model + background_model`) are constructed inside `run_fit()` 
+Composite models (`signal_model + background_model`) are constructed inside `run_fit()`
 when `bg_name != "None"` — the caller passes a single flat `params` object for both.
+
+`_saved_fit_state` persists on the viewer instance (not on disk). The next Fit click
+restores the previous model, background, and all parameter values via `initial_params`.
 
 ### Motor move from plot (MongoDB Browser or Live Viewer)
 
