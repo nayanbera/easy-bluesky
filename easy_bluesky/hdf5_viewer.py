@@ -141,7 +141,7 @@ class HDF5Viewer(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_left())
         splitter.addWidget(self._build_right())
-        splitter.setSizes([280, 920])
+        splitter.setSizes([300, 1100])
         lay.addWidget(splitter)
 
     def _build_left(self) -> QWidget:
@@ -200,7 +200,9 @@ class HDF5Viewer(QWidget):
         ctrl_bar.addWidget(QLabel("X:"))
         self.x_combo = QComboBox()
         self.x_combo.setMinimumWidth(120)
+        self.x_combo.setMaximumWidth(240)
         self.x_combo.setFixedHeight(26)
+        self.x_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.x_combo.currentTextChanged.connect(self._replot)
         ctrl_bar.addWidget(self.x_combo)
 
@@ -208,7 +210,9 @@ class HDF5Viewer(QWidget):
         ctrl_bar.addWidget(QLabel("Norm:"))
         self.norm_combo = QComboBox()
         self.norm_combo.setMinimumWidth(100)
+        self.norm_combo.setMaximumWidth(220)
         self.norm_combo.setFixedHeight(26)
+        self.norm_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._replot)
         ctrl_bar.addWidget(self.norm_combo)
@@ -257,33 +261,37 @@ class HDF5Viewer(QWidget):
         ctrl_bar.addStretch()
         vlay.addLayout(ctrl_bar)
 
-        # Y signal list on right of plot
+        # Y signal list on right of plot (in a resizable splitter)
         self.y_list = QListWidget()
         self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.y_list.setFixedWidth(140)
+        self.y_list.setMinimumWidth(100)
         self.y_list.itemSelectionChanged.connect(self._replot)
 
-        y_panel = QVBoxLayout()
-        y_panel.setSpacing(2)
-        y_panel.setContentsMargins(0, 0, 0, 0)
         y_lbl = QLabel("Y signals")
         y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         y_lbl.setObjectName("dim_text")
-        y_panel.addWidget(y_lbl)
-        y_panel.addWidget(self.y_list, 1)
+        y_container = QWidget()
+        y_layout = QVBoxLayout(y_container)
+        y_layout.setSpacing(2)
+        y_layout.setContentsMargins(4, 0, 0, 0)
+        y_layout.addWidget(y_lbl)
+        y_layout.addWidget(self.y_list, 1)
 
-        plot_row = QHBoxLayout()
-        plot_row.setSpacing(4)
         if PG_AVAILABLE:
             self.plot_widget = pg.PlotWidget(background="#1e1e1e")
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.addLegend()
-            plot_row.addWidget(self.plot_widget, 1)
+            plot_area = self.plot_widget
         else:
-            plot_row.addWidget(
-                QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
-        plot_row.addLayout(y_panel)
-        vlay.addLayout(plot_row, 1)
+            plot_area = QLabel("pyqtgraph not available — pip install pyqtgraph")
+
+        plot_splitter = QSplitter(Qt.Orientation.Horizontal)
+        plot_splitter.addWidget(plot_area)
+        plot_splitter.addWidget(y_container)
+        plot_splitter.setSizes([880, 180])
+        plot_splitter.setStretchFactor(0, 1)
+        plot_splitter.setStretchFactor(1, 0)
+        vlay.addWidget(plot_splitter, 1)
 
         bot = QHBoxLayout()
         bot.setContentsMargins(0, 0, 0, 0)

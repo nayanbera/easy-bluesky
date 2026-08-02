@@ -979,6 +979,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("EasyBluesky")
         self.setMinimumSize(1200, 800)
+        screen = QApplication.primaryScreen()
+        if screen:
+            ag = screen.availableGeometry()
+            self.resize(min(ag.width() - 80, 1600), min(ag.height() - 60, 1000))
+        else:
+            self.resize(1440, 900)
         self._current_theme = load_saved_theme()
         self._conn_settings = load_connection()
         self._guard = guard

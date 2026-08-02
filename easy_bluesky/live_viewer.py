@@ -18,7 +18,7 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QAbstractItemView,
-    QMessageBox, QApplication,
+    QMessageBox, QApplication, QSplitter, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
@@ -100,12 +100,16 @@ class LiveViewer(QWidget):
         ctrl.addWidget(QLabel("X:"))
         self.x_combo = QComboBox()
         self.x_combo.setMinimumWidth(130)
+        self.x_combo.setMaximumWidth(240)
+        self.x_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.x_combo.currentTextChanged.connect(self._on_x_changed)
         ctrl.addWidget(self.x_combo)
 
         ctrl.addWidget(QLabel("Norm by:"))
         self.norm_combo = QComboBox()
         self.norm_combo.setMinimumWidth(110)
+        self.norm_combo.setMaximumWidth(220)
+        self.norm_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._update_plot)
         ctrl.addWidget(self.norm_combo)
@@ -128,38 +132,39 @@ class LiveViewer(QWidget):
         ctrl.addWidget(self.run_label)
         main.addLayout(ctrl)
 
-        # Y list on the right of the plot
+        # Y list on the right of the plot (in a resizable splitter)
         self.y_list = QListWidget()
         self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.y_list.setFixedWidth(140)
+        self.y_list.setMinimumWidth(100)
         self.y_list.setToolTip("Y signals — click to select/deselect")
         self.y_list.itemSelectionChanged.connect(self._update_plot)
         y_panel = QVBoxLayout()
         y_panel.setSpacing(2)
-        y_panel.setContentsMargins(0, 0, 0, 0)
+        y_panel.setContentsMargins(4, 0, 0, 0)
         y_lbl = QLabel("Y signals")
         y_lbl.setObjectName("dim_text")
         y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         y_panel.addWidget(y_lbl)
         y_panel.addWidget(self.y_list, 1)
-
-        plot_row = QHBoxLayout()
-        plot_row.setSpacing(4)
-        plot_row.setContentsMargins(0, 0, 0, 0)
+        y_container = QWidget()
+        y_container.setLayout(y_panel)
 
         if PYQTGRAPH_AVAILABLE:
             self.plot_widget = pg.PlotWidget(background="#1e1e1e")
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.addLegend()
             self.plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
-            plot_row.addWidget(self.plot_widget, 1)
+            plot_area = self.plot_widget
         else:
-            plot_row.addWidget(
-                QLabel("pyqtgraph not available — pip install pyqtgraph"), 1
-            )
+            plot_area = QLabel("pyqtgraph not available — pip install pyqtgraph")
 
-        plot_row.addLayout(y_panel)
-        main.addLayout(plot_row, 1)
+        plot_splitter = QSplitter(Qt.Orientation.Horizontal)
+        plot_splitter.addWidget(plot_area)
+        plot_splitter.addWidget(y_container)
+        plot_splitter.setSizes([900, 180])
+        plot_splitter.setStretchFactor(0, 1)
+        plot_splitter.setStretchFactor(1, 0)
+        main.addWidget(plot_splitter, 1)
 
         # Bottom bar: status left, cursor coords right
         bot = QHBoxLayout()

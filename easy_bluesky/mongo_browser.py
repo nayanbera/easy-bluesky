@@ -397,7 +397,9 @@ class MongoDataBrowserTab(QWidget):
         ctrl_bar.addWidget(QLabel("Stream:"))
         self._stream_combo = QComboBox()
         self._stream_combo.setMinimumWidth(90)
+        self._stream_combo.setMaximumWidth(180)
         self._stream_combo.setFixedHeight(26)
+        self._stream_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._stream_combo.setToolTip("Event stream")
         self._stream_combo.currentIndexChanged.connect(self._on_stream_changed)
         ctrl_bar.addWidget(self._stream_combo)
@@ -406,7 +408,9 @@ class MongoDataBrowserTab(QWidget):
         ctrl_bar.addWidget(QLabel("X:"))
         self._x_combo = QComboBox()
         self._x_combo.setMinimumWidth(120)
+        self._x_combo.setMaximumWidth(240)
         self._x_combo.setFixedHeight(26)
+        self._x_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._x_combo.setToolTip("X axis signal")
         self._x_combo.currentIndexChanged.connect(self._auto_plot)
         ctrl_bar.addWidget(self._x_combo)
@@ -415,7 +419,9 @@ class MongoDataBrowserTab(QWidget):
         ctrl_bar.addWidget(QLabel("Norm:"))
         self._norm_combo = QComboBox()
         self._norm_combo.setMinimumWidth(100)
+        self._norm_combo.setMaximumWidth(220)
         self._norm_combo.setFixedHeight(26)
+        self._norm_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._norm_combo.setToolTip("Divide Y by this signal")
         self._norm_combo.addItem("None", userData=None)
         self._norm_combo.currentIndexChanged.connect(self._auto_plot)
@@ -480,44 +486,44 @@ class MongoDataBrowserTab(QWidget):
             " font-family: Menlo, Monaco, 'Courier New', monospace;"
         )
 
-        # Y list on the right of the plot
+        # Y list on the right of the plot (in a resizable splitter)
         self._y_list = QListWidget()
-        self._y_list.setFixedWidth(140)
+        self._y_list.setMinimumWidth(100)
         self._y_list.setToolTip("Y signals — check to plot")
         self._y_list.itemChanged.connect(self._auto_plot)
-        y_panel = QVBoxLayout()
-        y_panel.setSpacing(2)
-        y_panel.setContentsMargins(0, 0, 0, 0)
         y_lbl = QLabel("Y signals")
         y_lbl.setObjectName("dim_text")
         y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        y_panel.addWidget(y_lbl)
-        y_panel.addWidget(self._y_list, 1)
-
-        plot_row = QHBoxLayout()
-        plot_row.setSpacing(4)
-        plot_row.setContentsMargins(0, 0, 0, 0)
+        y_container = QWidget()
+        y_layout = QVBoxLayout(y_container)
+        y_layout.setSpacing(2)
+        y_layout.setContentsMargins(4, 0, 0, 0)
+        y_layout.addWidget(y_lbl)
+        y_layout.addWidget(self._y_list, 1)
 
         if PG_AVAILABLE:
             self._plot_widget = pg.PlotWidget(background="#1e1e1e")
             self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self._plot_widget.addLegend()
             self._plot_widget.scene().sigMouseClicked.connect(self._on_plot_clicked)
-            plot_row.addWidget(self._plot_widget, 1)
             self._crosshair_cleanup = setup_crosshair(
                 self._plot_widget, self._coord_label, lambda: self._curves
             )
+            plot_area = self._plot_widget
         else:
             self._plot_widget = None
-            plot_row.addWidget(
-                QLabel("pyqtgraph not available — pip install pyqtgraph"), 1
-            )
+            plot_area = QLabel("pyqtgraph not available — pip install pyqtgraph")
 
-        plot_row.addLayout(y_panel)
-        rlayout.addLayout(plot_row, 1)
+        plot_splitter = QSplitter(Qt.Orientation.Horizontal)
+        plot_splitter.addWidget(plot_area)
+        plot_splitter.addWidget(y_container)
+        plot_splitter.setSizes([720, 180])
+        plot_splitter.setStretchFactor(0, 1)
+        plot_splitter.setStretchFactor(1, 0)
+        rlayout.addWidget(plot_splitter, 1)
         rlayout.addWidget(self._coord_label)
         splitter.addWidget(right)
-        splitter.setSizes([400, 700])
+        splitter.setSizes([400, 900])
         root.addWidget(splitter, 1)
 
         self._status_label = QLabel("")
