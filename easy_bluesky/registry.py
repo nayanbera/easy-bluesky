@@ -61,28 +61,28 @@ def _registry_ssh_settings(settings: dict) -> dict:
 def fetch_registry(settings: dict) -> dict:
     """SSH to the registry host and return the parsed registry dict.
 
-    Returns REGISTRY_DEFAULTS on any error so callers can fall back gracefully.
+    Raises on SSH or parse failure so _DiscoveryWorker can emit failed().
+    Returns REGISTRY_DEFAULTS when the registry file simply doesn't exist yet.
     """
     from .ssh_manager import _get_client
     reg = _registry_ssh_settings(settings)
     if not reg.get("host"):
         return dict(REGISTRY_DEFAULTS)
+    client = _get_client(reg)   # raises on SSH failure
     try:
-        client = _get_client(reg)
         _, stdout, _ = client.exec_command(
             "cat ~/.easy_bluesky/registry.json 2>/dev/null", timeout=8
         )
         raw = stdout.read().decode().strip()
+    finally:
         client.close()
-        if not raw:
-            return dict(REGISTRY_DEFAULTS)
-        data = json.loads(raw)
-        data.setdefault("version", 1)
-        data.setdefault("admin_password_hash", "")
-        data.setdefault("instances", [])
-        return data
-    except Exception:
+    if not raw:
         return dict(REGISTRY_DEFAULTS)
+    data = json.loads(raw)   # raises on malformed JSON
+    data.setdefault("version", 1)
+    data.setdefault("admin_password_hash", "")
+    data.setdefault("instances", [])
+    return data
 
 
 def save_registry(settings: dict, registry: dict):
@@ -149,14 +149,19 @@ def merge_into_profiles(profiles: list, instances: list) -> tuple:
     from .connection_settings import _PROFILE_DEFAULTS
     by_name = {p["name"]: p for p in profiles}
     added = updated = 0
+
+    # Only networking fields are synced from the registry — user customisations
+    # (devices_file, conda_env, conda_path) are left untouched on existing profiles
+    # so that local overrides (e.g. devices_sim.py) survive restarts.
+    _NETWORK_FIELDS = ("host", "control_port", "info_port", "doc_port", "procserv_port")
+
     for inst in instances:
         name = inst.get("name", "").strip()
         if not name:
             continue
         if name in by_name:
             p = by_name[name]
-            for field in ("host", "control_port", "info_port", "doc_port",
-                          "procserv_port", "devices_file", "conda_env", "conda_path"):
+            for field in _NETWORK_FIELDS:
                 if inst.get(field) not in (None, ""):
                     p[field] = inst[field]
             updated += 1
