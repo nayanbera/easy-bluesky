@@ -19,13 +19,15 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QAbstractItemView, QComboBox, QFileDialog,
-    QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox,
+    QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox, QTextEdit,
+    QSizePolicy,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 
 from .config import SUCCESS, DANGER, PLOT_COLORS
 from .plot_tools import setup_crosshair
+from . import peak_fit as _peak_fit
 
 _MOTION_PLANS = frozenset({
     "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
@@ -109,6 +111,8 @@ class HDF5Viewer(QWidget):
         self._scans:  list = []   # list of {"attrs": dict, "df": DataFrame|None}
         self._dfs:    list = []   # [(df, label)] for current selection
         self._curves: dict = {}
+        self._fit_curves: dict = {}
+        self._fit_texts:  list = []
         self._crosshair_cleanup = None
         self._build()
 
@@ -173,48 +177,89 @@ class HDF5Viewer(QWidget):
         vlay.setContentsMargins(4, 8, 8, 8)
         vlay.setSpacing(6)
 
-        # Axis controls
-        axis_row = QHBoxLayout()
-        axis_row.addWidget(QLabel("X:"))
+        # Compact control bar
+        ctrl_bar = QHBoxLayout()
+        ctrl_bar.setSpacing(4)
+
+        ctrl_bar.addWidget(QLabel("X:"))
         self.x_combo = QComboBox()
-        self.x_combo.setMinimumWidth(130)
+        self.x_combo.setMinimumWidth(120)
+        self.x_combo.setFixedHeight(26)
         self.x_combo.currentTextChanged.connect(self._replot)
-        axis_row.addWidget(self.x_combo)
+        ctrl_bar.addWidget(self.x_combo)
 
-        axis_row.addWidget(QLabel("Y:"))
-        self.y_list = QListWidget()
-        self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.y_list.setMaximumHeight(56)
-        self.y_list.setMaximumWidth(220)
-        self.y_list.itemSelectionChanged.connect(self._replot)
-        axis_row.addWidget(self.y_list)
-
-        axis_row.addWidget(QLabel("Norm by:"))
+        ctrl_bar.addSpacing(6)
+        ctrl_bar.addWidget(QLabel("Norm:"))
         self.norm_combo = QComboBox()
-        self.norm_combo.setMinimumWidth(110)
+        self.norm_combo.setMinimumWidth(100)
+        self.norm_combo.setFixedHeight(26)
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._replot)
-        axis_row.addWidget(self.norm_combo)
+        ctrl_bar.addWidget(self.norm_combo)
 
         btn_plot = QPushButton("Plot")
         btn_plot.setObjectName("btn_primary")
+        btn_plot.setFixedHeight(26)
         btn_plot.clicked.connect(self._replot)
-        axis_row.addWidget(btn_plot)
+        ctrl_bar.addWidget(btn_plot)
 
+        ctrl_bar.addSpacing(10)
+
+        ctrl_bar.addWidget(QLabel("Fit:"))
+        self._fit_model_combo = QComboBox()
+        self._fit_model_combo.setFixedHeight(26)
+        self._fit_model_combo.setMinimumWidth(110)
+        for m in _peak_fit.MODELS:
+            self._fit_model_combo.addItem(m)
+        ctrl_bar.addWidget(self._fit_model_combo)
+
+        btn_fit = QPushButton("Fit")
+        btn_fit.setFixedHeight(26)
+        btn_fit.clicked.connect(self._fit_peak)
+        ctrl_bar.addWidget(btn_fit)
+
+        btn_clear_fit = QPushButton("✕")
+        btn_clear_fit.setFixedHeight(26)
+        btn_clear_fit.setFixedWidth(28)
+        btn_clear_fit.setToolTip("Clear fit overlays")
+        btn_clear_fit.clicked.connect(self._clear_fit_overlays)
+        ctrl_bar.addWidget(btn_clear_fit)
+
+        ctrl_bar.addSpacing(8)
         self.run_label = QLabel("")
         self.run_label.setObjectName("dim_text")
-        self.run_label.setStyleSheet("font-size: 12px; padding: 0 8px;")
-        axis_row.addWidget(self.run_label)
-        axis_row.addStretch()
-        vlay.addLayout(axis_row)
+        self.run_label.setStyleSheet("font-size: 12px; padding: 0 4px;")
+        ctrl_bar.addWidget(self.run_label)
+        ctrl_bar.addStretch()
+        vlay.addLayout(ctrl_bar)
 
+        # Y signal list on right of plot
+        self.y_list = QListWidget()
+        self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.y_list.setFixedWidth(140)
+        self.y_list.itemSelectionChanged.connect(self._replot)
+
+        y_panel = QVBoxLayout()
+        y_panel.setSpacing(2)
+        y_panel.setContentsMargins(0, 0, 0, 0)
+        y_lbl = QLabel("Y signals")
+        y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        y_lbl.setObjectName("dim_text")
+        y_panel.addWidget(y_lbl)
+        y_panel.addWidget(self.y_list, 1)
+
+        plot_row = QHBoxLayout()
+        plot_row.setSpacing(4)
         if PG_AVAILABLE:
             self.plot_widget = pg.PlotWidget(background="#1e1e1e")
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.addLegend()
-            vlay.addWidget(self.plot_widget, 1)
+            plot_row.addWidget(self.plot_widget, 1)
         else:
-            vlay.addWidget(QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
+            plot_row.addWidget(
+                QLabel("pyqtgraph not available — pip install pyqtgraph"), 1)
+        plot_row.addLayout(y_panel)
+        vlay.addLayout(plot_row, 1)
 
         bot = QHBoxLayout()
         bot.setContentsMargins(0, 0, 0, 0)
@@ -410,6 +455,7 @@ class HDF5Viewer(QWidget):
         if not xc or not ycs:
             return
 
+        self._clear_fit_overlays()
         for curve in self._curves.values():
             try:
                 self.plot_widget.removeItem(curve)
@@ -467,9 +513,181 @@ class HDF5Viewer(QWidget):
         if scan:
             ScanDetailDialog(scan["attrs"], parent=self).exec()
 
+    # ── Peak fitting ───────────────────────────────────────────────────────────
+
+    def _clear_fit_overlays(self):
+        if not PG_AVAILABLE:
+            return
+        for item in self._fit_texts:
+            try:
+                self.plot_widget.removeItem(item)
+            except Exception:
+                pass
+        for curve in self._fit_curves.values():
+            try:
+                self.plot_widget.removeItem(curve)
+            except Exception:
+                pass
+        self._fit_texts = []
+        self._fit_curves = {}
+
+    def _get_xy_for_fit(self):
+        """Return list of (x, y, label) for all plotted curves."""
+        if not self._dfs:
+            return []
+        xc  = self.x_combo.currentText()
+        ycs = [self.y_list.item(i).text()
+               for i in range(self.y_list.count())
+               if self.y_list.item(i).isSelected()]
+        if not xc or not ycs:
+            return []
+        norm_col = self.norm_combo.currentData()
+        result = []
+        for df, df_label in self._dfs:
+            if xc not in df.columns:
+                continue
+            x = df[xc].values.astype(float)
+            norm_vals = df[norm_col].values.astype(float) \
+                        if norm_col and norm_col in df.columns else None
+            for yc in ycs:
+                if yc not in df.columns:
+                    continue
+                y = df[yc].values.astype(float)
+                if norm_vals is not None:
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        y = np.where(norm_vals != 0, y / norm_vals, np.nan)
+                mask = np.isfinite(x) & np.isfinite(y)
+                x_, y_ = x[mask], y[mask]
+                if len(x_) < 4:
+                    continue
+                lbl = yc if len(self._dfs) == 1 else f"{yc} [{df_label}]"
+                result.append((x_, y_, lbl))
+        return result
+
+    def _add_fit_overlay(self, x_fit, y_fit, info, label, color):
+        pen = pg.mkPen(color=color, width=2, style=Qt.PenStyle.DashLine)
+        key = f"fit:{label}"
+        curve = self.plot_widget.plot(x_fit, y_fit, pen=pen, name=key)
+        self._fit_curves[key] = curve
+
+        ann = (f"  {info['model']}\n"
+               f"  x₀={info['x0']:.4g}\n"
+               f"  FWHM={info['fwhm']:.4g}\n"
+               f"  R²={info['r2']:.4f}")
+        txt = pg.TextItem(ann, color=color, anchor=(0, 1))
+        txt.setPos(float(info["x0"]), float(info["A"]))
+        self.plot_widget.addItem(txt)
+        self._fit_texts.append(txt)
+        return info
+
+    def _fit_peak(self):
+        if not PG_AVAILABLE:
+            return
+        model = self._fit_model_combo.currentText()
+        datasets = self._get_xy_for_fit()
+        if not datasets:
+            QMessageBox.warning(self, "Fit", "No data to fit. Select scans and Y signals first.")
+            return
+
+        if len(datasets) > 1:
+            dlg = _HDF5FitModeDialog(len(datasets), parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            combine = dlg.combine
+
+            if combine:
+                x_all = np.concatenate([d[0] for d in datasets])
+                y_all = np.concatenate([d[1] for d in datasets])
+                order = np.argsort(x_all)
+                datasets_to_fit = [(x_all[order], y_all[order], "combined")]
+            else:
+                datasets_to_fit = datasets
+        else:
+            datasets_to_fit = datasets
+
+        self._clear_fit_overlays()
+        colors = ["#ff6688", "#66ffaa", "#ffaa33", "#33aaff", "#cc88ff"]
+        fit_infos = []
+        errors = []
+        for idx, (x, y, lbl) in enumerate(datasets_to_fit):
+            color = colors[idx % len(colors)]
+            try:
+                x_fit, y_fit, info = _peak_fit.fit_peak(x, y, model)
+                self._add_fit_overlay(x_fit, y_fit, info, lbl, color)
+                info["_label"] = lbl
+                fit_infos.append(info)
+            except Exception as exc:
+                errors.append(f"{lbl}: {exc}")
+
+        if errors:
+            QMessageBox.warning(self, "Fit errors", "\n".join(errors))
+
+        if fit_infos:
+            rpt = _HDF5FitReportDialog(fit_infos, parent=self)
+            rpt.show()
+
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
         if self._crosshair_cleanup:
             self._crosshair_cleanup()
         super().closeEvent(event)
+
+
+# ── Helper dialogs for HDF5 peak fitting ──────────────────────────────────────
+
+class _HDF5FitModeDialog(QDialog):
+    def __init__(self, n_datasets: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Fit mode")
+        self.combine = False
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"{n_datasets} datasets selected. Fit each individually or combine all?"))
+        bb = QDialogButtonBox()
+        btn_each    = bb.addButton("Fit each individually", QDialogButtonBox.ButtonRole.AcceptRole)
+        btn_combine = bb.addButton("Combine all",           QDialogButtonBox.ButtonRole.AcceptRole)
+        btn_cancel  = bb.addButton(QDialogButtonBox.StandardButton.Cancel)
+        btn_each.clicked.connect(lambda: self._choose(False))
+        btn_combine.clicked.connect(lambda: self._choose(True))
+        btn_cancel.clicked.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _choose(self, combine: bool):
+        self.combine = combine
+        self.accept()
+
+
+class _HDF5FitReportDialog(QDialog):
+    def __init__(self, fit_infos: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Peak Fit Report")
+        self.setMinimumSize(480, 320)
+        lay = QVBoxLayout(self)
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        txt.setFont(QFont("Courier New", 11))
+        lay.addWidget(txt)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(self.accept)
+        lay.addWidget(bb)
+
+        lines = []
+        for info in fit_infos:
+            label = info.get("_label", "")
+            lines.append(f"{'─'*52}")
+            if label:
+                lines.append(f"Dataset : {label}")
+            lines.append(f"Model   : {info['model']}")
+            lines.append(f"Center  : {info['x0']:.6g}")
+            lines.append(f"FWHM    : {info['fwhm']:.6g}")
+            lines.append(f"R²      : {info['r2']:.6f}")
+            lines.append(f"N pts   : {info['n_points']}")
+            lines.append("")
+            lines.append("Parameters:")
+            for name, val, err in zip(info["param_names"], info["params"], info["perr"]):
+                lines.append(f"  {name:<22} {val:.6g}  ± {err:.3g}")
+            if info["model"] == "Super-Gaussian":
+                lines.append(f"  Exponent n             {info.get('n_exp', '?'):.4g}")
+            lines.append("")
+        txt.setPlainText("\n".join(lines))
+
