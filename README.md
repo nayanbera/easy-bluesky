@@ -16,6 +16,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Edit Devices File** — Full code editor for any profile's devices file: line numbers, current-line highlight, auto-indent, Tab→spaces, and ophyd-aware autocomplete. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP.
 - **Live Device Monitor** — Real-time EPICS Channel Access (CA) monitoring in the Devices & Plans tab. Each device shows its connected/disconnected status and live PV readings that update instantly as values change — no polling during scans. pyepics is auto-installed if missing.
 - **Sim Device Monitor** — In simulation mode, device values are polled from the RE environment every 2 seconds via `read_devices_status()`. Tweak widgets on motor rows allow nudging simulated motors without running a full plan.
+- **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. Choose from peak models (Gaussian, Lorentzian, Voigt, Pseudo-Voigt, Super-Gaussian) and step/interface models (erf, tanh, arctan, logistic). Add polynomial background terms (Constant through Cubic) that are fit simultaneously with the signal model. A dialog lets you inspect and adjust every parameter's initial value, bounds, and fixed/free status before running, with six minimisation algorithms to choose from.
 - **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
@@ -66,6 +67,8 @@ Or from PyPI (once released):
 ```bash
 pip install easy-bluesky
 ```
+
+Core dependencies installed automatically: `PyQt6`, `pyqtgraph`, `numpy`, `scipy`, `lmfit`, `pandas`, `pyzmq`, `h5py`, `paramiko`, `pymongo`. EPICS support (`pyepics`) is auto-installed on first use of the Live Device Monitor.
 
 ### RE Manager host
 
@@ -712,6 +715,12 @@ my_export.h5
     └── ...
 ```
 
+Click **Export Exp…** (next to the run-count label) to export **all runs belonging to the active experiment** in one step — useful for handing off a complete dataset to a user. The output file is compatible with the HDF5 Viewer.
+
+### Curve fitting
+
+Select one or more runs, choose signals and axes, then click **Fit**. The **Curve Fit** dialog opens (see [Curve Fitting](#curve-fitting) for full details).
+
 ### Run table columns
 
 | Column | Content |
@@ -736,8 +745,13 @@ The **Live Viewer** tab shows real-time plots as a scan runs. Documents are rece
 | X combo | Choose the X-axis signal |
 | Y list | Select one or more Y signals (multi-select) |
 | Norm by | Divide Y by this signal (e.g. beam monitor) |
+| ± Errors | Toggle Poisson error bars (σ = √\|y\| for raw counts; propagated through normalisation) |
 | Clear | Reset the plot and data buffer |
 | Screenshot | Save the current plot as a PNG |
+
+### Error bars
+
+Check **± Errors** to display Poisson error bars on every curve. For raw counts the uncertainty is σ = √|y|. When a normalisation signal is selected, the uncertainty is propagated as σ_f = √(y/n² + y²/n³), where n is the normalisation value. Error bars update in real time as new scan events arrive.
 
 ### Double-click motor move
 
@@ -746,6 +760,118 @@ Double-click any point on the live plot to move the X-axis motor to that positio
 ### Crosshair cursor
 
 A crosshair follows the mouse and a tooltip shows the nearest curve's value at the cursor position.
+
+---
+
+## HDF5 Viewer
+
+The **HDF5 Viewer** tab opens exported HDF5 archives and allows offline analysis — no beamline connection required. This makes it the primary tool for users who take data home after a beamline session.
+
+### Opening a file
+
+Click **Open HDF5…** and select a `.h5` file produced by the MongoDB Browser's Export HDF5 function or the Experiments tab's Export HDF5 fallback. The scan list on the left is populated automatically.
+
+### Browsing scans
+
+Select one or more scans in the list. The app finds the common set of fields across all selected scans and populates the X, Y, and Norm dropdowns accordingly. Overlay up to 10 scans on the same plot.
+
+### Controls
+
+| Control | Purpose |
+|---------|---------|
+| X combo | X-axis field |
+| Y list | One or more Y fields (multi-select) |
+| Norm by | Divide Y by this field |
+| Log Y | Logarithmic Y axis |
+| Fit | Open the Curve Fit dialog for the current plot |
+| Screenshot | Save plot as PNG |
+
+### Metadata
+
+Select a single scan to view its metadata (plan name, UID, exit status, timestamp, motor, detectors) in the panel below the scan list.
+
+### Offline use
+
+The HDF5 Viewer works with no network connection and no RE Manager running. Install the package on any computer:
+
+```bash
+pip install easy-bluesky
+easy-bluesky
+```
+
+Open the **HDF5 Viewer** tab — everything else can be ignored. Users at the beamline export their data once (`Export HDF5…` in the MongoDB Browser or Experiments tab), copy the `.h5` file to a USB drive or network share, and open it at home.
+
+---
+
+## Curve Fitting
+
+The **Curve Fit** dialog is available in both the **HDF5 Viewer** and the **MongoDB Browser**. Click **Fit** after choosing X/Y signals. The dialog uses [lmfit](https://lmfit.github.io/lmfit-py/) for robust non-linear least-squares fitting.
+
+### Signal models
+
+#### Peak models
+
+| Model | Shape | Derived quantity |
+|-------|-------|-----------------|
+| Gaussian | exp(−½((x−x₀)/σ)²) | FWHM = 2.355 σ |
+| Lorentzian | 1 / (1 + ((x−x₀)/σ)²) | FWHM = 2 σ |
+| Voigt | Voigt profile | Pseudo-FWHM (Thompson formula) |
+| Pseudo-Voigt | η·Lorentzian + (1−η)·Gaussian | FWHM = 2 σ |
+| Super-Gaussian | exp(−((x−x₀)²/(2σ²))ⁿ) | FWHM = 2σ·(2ln2)^(1/2n) |
+
+#### Step / interface models
+
+Used when an interface is scanned (e.g. a knife-edge, a slit, or a material boundary). The derived quantity reported is the **10–90% width** rather than FWHM.
+
+| Model | Shape | 10–90% width |
+|-------|-------|-------------|
+| Step (erf) | erf-based sigmoid | 2.197 σ |
+| Step (tanh) | tanh-based sigmoid | 2.197 σ |
+| Step (arctan) | arctan-based sigmoid | ≈ π σ × 0.8 |
+| Step (logistic) | logistic function | 2.197 σ |
+
+### Background models
+
+A polynomial background is fit simultaneously with the signal model so that the signal parameters reflect only the peak/step shape, not the baseline.
+
+| Background | Polynomial order |
+|-----------|-----------------|
+| None | — (no background) |
+| Constant | c₀ |
+| Linear | c₀ + c₁x |
+| Quadratic | c₀ + c₁x + c₂x² |
+| Cubic | c₀ + c₁x + c₂x² + c₃x³ |
+
+Background initial values are estimated automatically from the data edges (first and last 20% of data points). Background parameters appear in the table alongside signal parameters and can be adjusted manually.
+
+### Minimisation algorithms
+
+| Algorithm | Use when |
+|-----------|---------|
+| Levenberg-Marquardt (default) | Well-conditioned peaks; fastest |
+| Least Squares (Trust Region) | Better for problems with tight bounds |
+| Nelder-Mead | Noisy data; no gradient needed |
+| L-BFGS-B | Fast for smooth well-behaved problems |
+| Powell | Derivative-free; good general fallback |
+| Differential Evolution | Global search; avoids local minima for multi-peak data |
+
+### Workflow
+
+1. Click **Fit** in the HDF5 Viewer or MongoDB Browser.
+2. The **Curve Fit** dialog opens with auto-guessed initial parameters.
+3. Choose a **Model**, **Background**, and **Algorithm** from the dropdowns.
+4. Review the **Parameters** table — adjust initial values, set Min/Max bounds (type `-inf` / `+inf` for no bound), or tick **Fixed** to hold a parameter constant.
+5. Click **Run Fit** to fit without closing the dialog — results appear in the text area:
+   - R² goodness of fit
+   - Fitted parameter values and uncertainties (±)
+   - FWHM (peaks) or 10–90% width (steps)
+6. Adjust parameters and re-fit as needed.
+7. Click **Apply & Close** to overlay the fit curve on the main plot with an annotation showing the fit result.
+
+The fit overlay includes:
+- A smooth curve evaluated at 5× the data density
+- A vertical marker at the peak/step centre (x₀)
+- An annotation box: model name, x₀, FWHM or 10–90% width, and R²
 
 ---
 
@@ -977,9 +1103,9 @@ Auto-generated by **File → Generate Sim Devices…**. Contains simulated equiv
 
 ## Data Storage
 
-Bluesky run data is stored in **MongoDB** — the primary data store for all runs. No JSONL run files are written.
+### MongoDB (primary)
 
-### MongoDB document schema
+When MongoDB is configured, run data is written to MongoDB by `re_startup_mongo.py`. The MongoDB Browser reads from the same database.
 
 Documents are stored in collections that match bluesky document names:
 
@@ -993,15 +1119,33 @@ Documents are stored in collections that match bluesky document names:
 
 The `exp_dir` field in `run_start` links each run to an experiment and is used by the MongoDB Browser's experiment filter.
 
+### JSONL run files (always-on fallback)
+
+Every run is **also** written to a per-run JSONL file by `re_startup_mongo.py`, regardless of whether MongoDB is configured. Each file is named `<uid>.jsonl` and written to `<exp_dir>/runs/` (over NFS/shared filesystem) or `~/.easy_bluesky/data/runs/` on the RE machine when the experiment path is not accessible.
+
+Each line is a JSON array `[doc_type, doc_body]`:
+
+```jsonl
+["start",      {"uid": "abc123", "plan_name": "scan", ...}]
+["descriptor", {"uid": "def456", "data_keys": {...}, ...}]
+["event",      {"uid": "ghi789", "data": {...}, ...}]
+["stop",       {"uid": "jkl012", "exit_status": "success", ...}]
+```
+
+The **Experiments tab** uses these JSONL files directly when MongoDB is not configured. Click **Export HDF5…** in the Experiments tab to bundle all JSONL runs from the active experiment into a portable `.h5` file — no MongoDB required.
+
 ### Experiment folder layout
 
 ```
 experiments/<timestamp>_<name>/
-├── experiment.json       # experiment metadata (sample, description)
-└── plans_log.jsonl       # lightweight plan execution log (scan IDs, status, timestamps)
+├── experiment.json         # experiment metadata (sample, description)
+├── plans_log.jsonl         # lightweight plan execution log (scan IDs, status, timestamps)
+└── runs/
+    ├── <uid1>.jsonl        # per-run JSONL data files (NFS-accessible)
+    └── <uid2>.jsonl
 ```
 
-`plans_log.jsonl` is a fast local index — full data lives in MongoDB. Use **Export HDF5…** in the MongoDB Browser to bundle run data into a portable `.h5` file.
+`plans_log.jsonl` is a fast local index. Full data lives in MongoDB (when configured) and is also mirrored to JSONL run files. Use **Export HDF5…** in the MongoDB Browser (requires MongoDB) or the Experiments tab (JSONL fallback) to produce a portable `.h5` file.
 
 ---
 
@@ -1084,6 +1228,8 @@ easy-bluesky/
 │   ├── mongo_browser.py      # MongoDB Browser (multi-run, auto-plot, motor move, screenshot)
 │   ├── hdf5_viewer.py        # HDF5 Viewer tab
 │   ├── devices_plans_tab.py  # Devices & Plans tab (CA monitor, sim monitor, tweak, search)
+│   ├── peak_fit.py           # lmfit models (peaks, steps, background polynomials) + auto-guess
+│   ├── curve_fit_dialog.py   # Interactive parameter dialog (initial values, bounds, algorithm)
 │   ├── plot_tools.py         # Shared plot utilities (crosshair, norm combo)
 │   ├── pv_watchdog.py        # PV Watchdog tab
 │   ├── themes.py             # Theme definitions + stylesheet builder

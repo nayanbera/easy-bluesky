@@ -24,6 +24,7 @@ easy-bluesky
 │
 ├── Data Layer
 │   ├── MongoDB             — primary run store (via pymongo, written by RE Manager)
+│   ├── <uid>.jsonl files   — per-run JSONL fallback, always written by RE Manager
 │   ├── plans_log.jsonl     — lightweight experiment plan index (local)
 │   └── device_metadata.json— cached PV units/descriptions for sim mode
 │
@@ -78,13 +79,16 @@ RE Manager
   → pyqtgraph plot update (events arrive individually or as event_page)
 ```
 
-### Scan data storage (MongoDB)
+### Scan data storage
 
 ```
 RE Manager
-  → _mongo_write() (re_startup_mongo.py)
-  → MongoDB collections: run_start, run_stop, event_descriptor, event/event_page
-  → MongoDataBrowserTab reads via pymongo on background QThreads
+  ├── _mongo_write() (re_startup_mongo.py)
+  │     → MongoDB collections: run_start, run_stop, event_descriptor, event/event_page
+  │     → MongoDataBrowserTab reads via pymongo on background QThreads
+  └── _JSONLRunWriter (re_startup_mongo.py) — always-on, regardless of MongoDB
+        → <exp_dir>/runs/<uid>.jsonl  (or ~/.easy_bluesky/data/runs/ fallback)
+        → ExperimentsTab reads for HDF5 export when MongoDB is not configured
 ```
 
 ### Queue control
@@ -118,6 +122,28 @@ RE environment opens, pv_map is empty (all ophyd.sim devices)
 → _DeviceStatusReader calls read_devices_status() via function_execute
 → update_sim_values(readings) → tree cell update
 ```
+
+### Curve fitting (HDF5 Viewer and MongoDB Browser)
+
+```
+User clicks Fit button
+→ viewer collects (x, y) arrays from current plot selection
+→ FitParamsDialog(x, y, initial_model) opens
+    → auto_guess(x, y, model_name, bg_name) produces lmfit.Parameters
+    → parameter table populated (initial value, min, max, fixed checkbox)
+User adjusts parameters, clicks Run Fit (in dialog)
+    → _read_params_from_table() → run_fit(x, y, params, model_name, method, bg_name)
+    → lmfit Model.fit() → result displayed in dialog text area
+User clicks Apply & Close
+    → fit_dlg.params, .model_name, .method, .bg_name exposed as public attrs
+    → viewer calls run_fit() with dialog attrs
+    → x_fit, y_fit, info returned
+    → _add_fit_overlay() draws curve + annotation on plot
+```
+
+`peak_fit.py` is a pure computation module (no Qt). `curve_fit_dialog.py` owns all Qt.
+Composite models (`signal_model + background_model`) are constructed inside `run_fit()` 
+when `bg_name != "None"` — the caller passes a single flat `params` object for both.
 
 ### Motor move from plot (MongoDB Browser or Live Viewer)
 
@@ -154,6 +180,14 @@ bluesky-queueserver 0.0.25 does not forward worker stdout over ZMQ console. `SSH
 ### CA callbacks are thread-safe via queued signals
 
 pyepics calls CA callbacks on a background CA thread. All callbacks immediately put data into a Python `queue.Queue` or emit a `pyqtSignal` with `Qt.ConnectionType.QueuedConnection`. Widget updates only happen on the Qt main thread — no mutex needed.
+
+### Curve fitting uses lmfit, not scipy.optimize
+
+`peak_fit.py` uses `lmfit` rather than `scipy.optimize.curve_fit` directly. lmfit wraps scipy minimisers but adds parameter bounds, fixed/free flags, derived expressions (e.g. `fwhm = 2.355 * sigma`), multiple minimisation methods, and composite model arithmetic (`Model + Model`). The auto-guess logic (`auto_guess()`) returns a fully configured `lmfit.Parameters` object that `FitParamsDialog` displays and the user can override before fitting. Background polynomials use `lmfit.models.PolynomialModel(prefix="bg_")` so their parameter names (`bg_c0`, `bg_c1`, …) never collide with signal parameters.
+
+### JSONL always-on fallback
+
+`re_startup_mongo.py` subscribes a `RunRouter`-based JSONL writer (`_jsonl_run_factory`) unconditionally — before the MongoDB section. Even when MongoDB is fully operational, every run produces a `<uid>.jsonl` file. This means the Experiments tab's **Export HDF5** always works without a database connection, and users can take JSONL files home on a USB drive. The JSONL writer tries `<exp_dir>/runs/` first (accessible over NFS on shared filesystems) and falls back to `~/.easy_bluesky/data/runs/` on the RE machine.
 
 ### Sim mode auto-detection
 
