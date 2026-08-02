@@ -17,12 +17,22 @@ except ImportError:
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox,
-    QApplication,
+    QComboBox, QCheckBox, QListWidget, QListWidgetItem, QAbstractItemView,
+    QMessageBox, QApplication,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
 from .plot_tools import setup_crosshair
+
+
+def _poisson_sigma(y_raw, norm_raw=None):
+    """Poisson √N error with propagation through y/norm normalization."""
+    y = np.abs(y_raw)
+    if norm_raw is None:
+        return np.sqrt(y)
+    n = np.abs(norm_raw)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(n > 0, np.sqrt(y / n ** 2 + y ** 2 / n ** 3), np.nan)
 
 
 
@@ -68,8 +78,9 @@ class LiveViewer(QWidget):
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
         self.worker    = worker
-        self._data     = {}   # key → list of float values
-        self._curves   = {}   # y_signal → PlotDataItem
+        self._data        = {}   # key → list of float values
+        self._curves      = {}   # curve_name → PlotDataItem
+        self._error_items = {}   # curve_name → pg.ErrorBarItem
         self._run_uid  = None
         self._x_signal = None
         self._saved_x: str  = ""    # X signal from the previous run (for restore)
@@ -98,6 +109,13 @@ class LiveViewer(QWidget):
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._update_plot)
         ctrl.addWidget(self.norm_combo)
+
+        self._err_cb = QCheckBox("± Errors")
+        self._err_cb.setToolTip(
+            "Overlay Poisson √N error bars (propagated through normalization)"
+        )
+        self._err_cb.stateChanged.connect(self._on_err_toggled)
+        ctrl.addWidget(self._err_cb)
 
         btn_screenshot = QPushButton("Screenshot")
         btn_screenshot.setToolTip("Save the current plot as a PNG image")
@@ -339,6 +357,18 @@ class LiveViewer(QWidget):
         self._x_signal = text
         self._update_plot()
 
+    def _on_err_toggled(self):
+        """Remove error items immediately when the checkbox is unchecked."""
+        if not self._err_cb.isChecked():
+            for item in self._error_items.values():
+                try:
+                    self.plot_widget.removeItem(item)
+                except Exception:
+                    pass
+            self._error_items = {}
+        else:
+            self._update_plot()
+
     def _update_plot(self):
         if not PYQTGRAPH_AVAILABLE or not self._data:
             return
@@ -356,8 +386,9 @@ class LiveViewer(QWidget):
         norm_key = self.norm_combo.currentData()
         norm_arr = np.array(self._data.get(norm_key, []), dtype=float) \
                    if norm_key and norm_key in self._data else None
+        show_err = self._err_cb.isChecked()
 
-        # Curve names change when norm_key changes — clear and rebuild
+        # Curve names change when norm_key changes — remove stale curves and error items
         expected = {
             (sig if not norm_key else f"{sig}/{norm_key}")
             for sig in y_signals
@@ -365,6 +396,12 @@ class LiveViewer(QWidget):
         for name in list(self._curves):
             if name not in expected:
                 self.plot_widget.removeItem(self._curves.pop(name))
+        for name in list(self._error_items):
+            if name not in expected:
+                try:
+                    self.plot_widget.removeItem(self._error_items.pop(name))
+                except Exception:
+                    self._error_items.pop(name, None)
 
         for i, sig in enumerate(y_signals):
             y_vals = self._data.get(sig, [])
@@ -373,12 +410,18 @@ class LiveViewer(QWidget):
                 n = min(n, len(norm_arr))
             if n == 0:
                 continue
-            x = x_arr[:n]
-            y = np.array(y_vals[:n], dtype=float)
-            if norm_arr is not None:
-                denom = norm_arr[:n]
+            x     = x_arr[:n]
+            y_raw = np.array(y_vals[:n], dtype=float)
+            norm_raw = norm_arr[:n] if norm_arr is not None else None
+
+            y = y_raw.copy()
+            if norm_raw is not None:
+                denom = norm_raw
                 with np.errstate(divide="ignore", invalid="ignore"):
                     y = np.where(denom != 0, y / denom, np.nan)
+
+            sigma = _poisson_sigma(y_raw, norm_raw)
+
             curve_name = sig if not norm_key else f"{sig}/{norm_key}"
             color = self.COLORS[i % len(self.COLORS)]
             if curve_name not in self._curves:
@@ -390,6 +433,18 @@ class LiveViewer(QWidget):
                 )
             else:
                 self._curves[curve_name].setData(x, y)
+
+            if show_err and np.any(np.isfinite(sigma)):
+                height = 2 * sigma
+                if curve_name in self._error_items:
+                    self._error_items[curve_name].setData(x=x, y=y, height=height)
+                else:
+                    err_item = pg.ErrorBarItem(
+                        x=x, y=y, height=height,
+                        beam=0.0, pen=pg.mkPen(color=color, width=1),
+                    )
+                    self.plot_widget.addItem(err_item)
+                    self._error_items[curve_name] = err_item
 
         self.plot_widget.setLabel("bottom", x_key)
         y_label = ", ".join(y_signals) if y_signals else "Y"
@@ -406,10 +461,16 @@ class LiveViewer(QWidget):
                     self.plot_widget.removeItem(curve)
                 except Exception:
                     pass
+            for item in self._error_items.values():
+                try:
+                    self.plot_widget.removeItem(item)
+                except Exception:
+                    pass
             pi = self.plot_widget.getPlotItem()
             if pi.legend:
                 pi.legend.clear()
         self._curves = {}
+        self._error_items = {}
         self.x_combo.blockSignals(True)
         self.x_combo.clear()
         self.x_combo.blockSignals(False)
