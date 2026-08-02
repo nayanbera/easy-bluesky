@@ -638,17 +638,13 @@ class HDF5Viewer(QWidget):
         curve = self.plot_widget.plot(x_fit, y_fit, pen=pen, name=key)
         self._fit_curves[key] = curve
 
-        is_step    = info["model"].startswith("Step")
-        width_label = "10–90% w" if is_step else "FWHM"
-        ann = (f"  {info['model']}\n"
-               f"  x₀={info['x0']:.4g}\n"
-               f"  {width_label}={info['fwhm']:.4g}\n"
-               f"  R²={info['r2']:.4f}")
-        txt = pg.TextItem(ann, color=color, anchor=(0, 1))
-        txt.setPos(float(info["x0"]), float(info["A"]))
-        self.plot_widget.addItem(txt)
-        self._fit_texts.append(txt)
-        return info
+        # Thin vertical line at x₀ — avoids text overlap when multiple datasets
+        vline = pg.InfiniteLine(
+            pos=float(info["x0"]), angle=90,
+            pen=pg.mkPen(color=color, width=1, style=Qt.PenStyle.DashLine),
+        )
+        self.plot_widget.addItem(vline)
+        self._fit_texts.append(vline)
 
     def _fit_peak(self):
         if not _peak_fit.LMFIT_AVAILABLE:
@@ -683,7 +679,6 @@ class HDF5Viewer(QWidget):
             except Exception:
                 pass
 
-        x0, y0, _ = datasets[0]
         initial_model   = self._fit_model_combo.currentText()
         initial_bg_name = "None"
         initial_params  = None
@@ -693,7 +688,7 @@ class HDF5Viewer(QWidget):
             initial_params  = self._saved_fit_state.get("params")
 
         self._fit_dlg = FitParamsDialog(
-            x0, y0, initial_model, initial_bg_name, initial_params, parent=self
+            datasets, initial_model, initial_bg_name, initial_params, parent=self
         )
         self._fit_dlg.preview_changed.connect(self._on_fit_preview)
         self._fit_dlg.fit_applied.connect(self._on_fit_applied)
@@ -715,31 +710,22 @@ class HDF5Viewer(QWidget):
         except Exception:
             pass
 
-    def _on_fit_applied(self, params, model_name, method, bg_name):
+    def _on_fit_applied(self, fit_items):
         """Remove preview, draw permanent overlays for all datasets, save state."""
         self._clear_fit_preview()
         self._clear_fit_overlays()
         fit_colors = ["#ff6688", "#66ffaa", "#ffaa33", "#33aaff", "#cc88ff"]
-        fit_infos  = []
-        errors     = []
-        for idx, (x, y, lbl) in enumerate(self._fit_datasets):
+        for idx, item in enumerate(fit_items):
             color = fit_colors[idx % len(fit_colors)]
-            try:
-                x_fit, y_fit, info = _peak_fit.run_fit(
-                    x, y, params, model_name, method, bg_name
-                )
-                self._add_fit_overlay(x_fit, y_fit, info, lbl, color)
-                info["_label"] = lbl
-                fit_infos.append(info)
-            except Exception as exc:
-                errors.append(f"{lbl}: {exc}")
-        if errors:
-            QMessageBox.warning(self, "Fit errors", "\n".join(errors))
-        if fit_infos:
+            self._add_fit_overlay(
+                item["x_fit"], item["y_fit"], item["info"], item["label"], color
+            )
+        if fit_items:
+            info0 = fit_items[0]["info"]
             self._saved_fit_state = {
-                "model_name": model_name,
-                "bg_name":    bg_name,
-                "params":     params,
+                "model_name": fit_items[0]["model_name"],
+                "bg_name":    fit_items[0]["bg_name"],
+                "params":     info0["result"].params,
             }
 
     def _on_fit_cancelled(self):
