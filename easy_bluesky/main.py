@@ -1249,6 +1249,7 @@ class MainWindow(QMainWindow):
         ctrl_addr, _, doc_addr = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("Connected to RE Manager at " + ctrl_addr)
         profile = get_active_profile(self._conn_settings)
+        self._log(f"[{self._ts()}] ✓ Connected to '{profile.get('name', 'Default')}' RE Manager")
         _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
         self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(profile.get("name", "Default"))
@@ -1363,6 +1364,8 @@ class MainWindow(QMainWindow):
         self.conn_label.setStyleSheet("color: #d62728;")
         self.re_bar.set_disconnected()
         self.worker.stop_log_tail()
+        profile = get_active_profile(self._conn_settings)
+        self._log(f"[{self._ts()}] ✗ Disconnected from '{profile.get('name', 'Default')}' RE Manager")
 
     def _log(self, msg: str):
         self.queue_mgr.append_console(msg)
