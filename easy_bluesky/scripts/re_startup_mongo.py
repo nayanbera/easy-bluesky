@@ -684,7 +684,7 @@ def _peak_stats_factory(name, doc):
         return [], []
     cb = _RunPeakStats(
         x_field  = motors[0],
-        y_fields = detectors[:4],
+        y_fields = detectors,
         uid      = doc.get("uid", ""),
         update_fn= _mongo_peak_stats_update,
     )
