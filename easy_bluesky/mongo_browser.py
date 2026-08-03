@@ -126,7 +126,7 @@ class _RunListFetcher(QThread):
                 db["run_start"].find(query, {
                     "uid": 1, "scan_id": 1, "plan_name": 1,
                     "time": 1, "motors": 1, "detectors": 1, "hints": 1,
-                    "exp_dir": 1, "sample_name": 1,
+                    "exp_dir": 1, "sample_name": 1, "peak_stats": 1,
                 }).sort("time", -1).limit(self._limit)
             )
             uids  = [s["uid"] for s in starts]
@@ -256,10 +256,33 @@ class _HDF5Exporter(QThread):
 
 # ── Run detail dialog (double-click) ──────────────────────────────────────────
 
+class _FullStartFetcher(QThread):
+    """Fetches the complete run_start document (no field projection) for one UID."""
+    ready = pyqtSignal(dict)
+
+    def __init__(self, host, port, db_name, uid, parent=None):
+        super().__init__(parent)
+        self._host = host; self._port = port
+        self._db   = db_name; self._uid = uid
+
+    def run(self):
+        try:
+            import pymongo
+            client = pymongo.MongoClient(self._host, self._port,
+                                         serverSelectionTimeoutMS=4000)
+            doc = client[self._db]["run_start"].find_one({"uid": self._uid},
+                                                          {"_id": 0}) or {}
+            client.close()
+            self.ready.emit(doc)
+        except Exception:
+            self.ready.emit({})
+
+
 class _RunDetailDialog(QDialog):
     """Non-modal dialog showing all metadata and data for one run."""
 
-    def __init__(self, run: dict, run_data: dict | None, seq_num: int, parent=None):
+    def __init__(self, run: dict, run_data: dict | None, seq_num: int,
+                 mongo_profile: dict | None = None, parent=None):
         super().__init__(parent)
         start = run.get("start", {})
         stop  = run.get("stop",  {})
@@ -271,33 +294,35 @@ class _RunDetailDialog(QDialog):
             self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint
         )
 
+        import json as _json
+        self._stop     = stop
+        self._seq_num  = seq_num
+
         root = QVBoxLayout(self)
         root.setSpacing(6)
 
-        tabs = self._tabs = QTabWidget()
-        root.addWidget(tabs, 1)
+        self._tabs = QTabWidget()
+        root.addWidget(self._tabs, 1)
 
         # ── Tab 1: Metadata ───────────────────────────────────────────────────
-        meta_widget = QWidget()
-        meta_lay    = QVBoxLayout(meta_widget)
-        meta_txt    = QTextEdit()
-        meta_txt.setReadOnly(True)
-        meta_txt.setFont(QFont("Courier", 10))
-        meta_txt.setPlainText(self._format_metadata(start, stop, seq_num))
-        meta_lay.addWidget(meta_txt)
-        tabs.addTab(meta_widget, "Metadata")
+        meta_widget   = QWidget()
+        meta_lay      = QVBoxLayout(meta_widget)
+        self._meta_txt = QTextEdit()
+        self._meta_txt.setReadOnly(True)
+        self._meta_txt.setFont(QFont("Courier", 10))
+        self._meta_txt.setPlainText(self._format_metadata(start, stop, seq_num))
+        meta_lay.addWidget(self._meta_txt)
+        self._tabs.addTab(meta_widget, "Metadata")
 
         # ── Tab 2: Data table ─────────────────────────────────────────────────
         data_widget = QWidget()
         data_lay    = QVBoxLayout(data_widget)
-
         if run_data:
             stream_combo = QComboBox()
             streams = run_data.get("streams", {})
             for s in sorted(streams.keys()):
                 stream_combo.addItem(s)
             data_lay.addWidget(stream_combo)
-
             self._data_table = QTableWidget()
             self._data_table.setEditTriggers(
                 QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -306,65 +331,95 @@ class _RunDetailDialog(QDialog):
                 QAbstractItemView.SelectionBehavior.SelectRows)
             self._data_table.verticalHeader().setVisible(False)
             data_lay.addWidget(self._data_table, 1)
-
             self._streams = streams
             self._populate_data_table(stream_combo.currentText())
             stream_combo.currentTextChanged.connect(self._populate_data_table)
         else:
-            data_lay.addWidget(QLabel("Data not yet loaded — select the run first, then double-click."))
+            data_lay.addWidget(QLabel(
+                "Data not yet loaded — select the run first, then double-click."))
+        self._tabs.addTab(data_widget, "Data")
 
-        tabs.addTab(data_widget, "Data")
-
-        # ── Tab 3: Peak stats (if present) ────────────────────────────────────
-        peak_stats = start.get("peak_stats")
-        if peak_stats:
-            ps_widget = QWidget()
-            ps_lay    = QVBoxLayout(ps_widget)
-            ps_table  = QTableWidget(0, 7)
-            ps_table.setHorizontalHeaderLabels(
-                ["Signal", "Center", "FWHM", "COM", "Max pos", "Max val", "Min val"])
-            ps_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-            ps_table.setAlternatingRowColors(True)
-            ps_table.verticalHeader().setVisible(False)
-            hh = ps_table.horizontalHeader()
-            for i in range(7):
-                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
-            for signal, st in peak_stats.items():
-                r = ps_table.rowCount()
-                ps_table.insertRow(r)
-                def _cell(v, fmt=".5g"):
-                    return QTableWidgetItem("—" if v is None else format(float(v), fmt))
-                ps_table.setItem(r, 0, QTableWidgetItem(signal))
-                ps_table.setItem(r, 1, _cell(st.get("cen")))
-                ps_table.setItem(r, 2, _cell(st.get("fwhm")))
-                ps_table.setItem(r, 3, _cell(st.get("com")))
-                ps_table.setItem(r, 4, _cell(st.get("max_pos")))
-                ps_table.setItem(r, 5, _cell(st.get("max_val")))
-                ps_table.setItem(r, 6, _cell(st.get("min_val")))
-            ps_lay.addWidget(ps_table, 1)
-            tabs.addTab(ps_widget, "Peak Stats")
+        # ── Tab 3: Peak Stats (populated now if already in start, or after fetch) ──
+        self._ps_tab_idx = -1
+        self._build_peak_stats_tab(start.get("peak_stats"))
 
         # ── Tab 4: Raw start doc ──────────────────────────────────────────────
-        raw_widget = QWidget()
-        raw_lay    = QVBoxLayout(raw_widget)
-        raw_txt    = QTextEdit()
-        raw_txt.setReadOnly(True)
-        raw_txt.setFont(QFont("Courier", 9))
-        import json as _json
-        raw_txt.setPlainText(_json.dumps(start, indent=2, default=str))
-        raw_lay.addWidget(raw_txt)
-        tabs.addTab(raw_widget, "Start Doc (raw)")
+        raw_widget   = QWidget()
+        raw_lay      = QVBoxLayout(raw_widget)
+        self._raw_txt = QTextEdit()
+        self._raw_txt.setReadOnly(True)
+        self._raw_txt.setFont(QFont("Courier", 9))
+        self._raw_txt.setPlainText(_json.dumps(start, indent=2, default=str))
+        raw_lay.addWidget(self._raw_txt)
+        self._tabs.addTab(raw_widget, "Start Doc (raw)")
 
         # ── Buttons ───────────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
+        btn_row  = QHBoxLayout()
         btn_copy = QPushButton("Copy metadata")
-        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(meta_txt.toPlainText()))
+        btn_copy.clicked.connect(
+            lambda: QApplication.clipboard().setText(self._meta_txt.toPlainText()))
         btn_row.addWidget(btn_copy)
         btn_row.addStretch()
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
         btn_row.addWidget(btn_close)
         root.addLayout(btn_row)
+
+        # ── Fetch complete start doc in background ────────────────────────────
+        if mongo_profile:
+            self._fetcher = _FullStartFetcher(
+                host    = mongo_profile.get("mongo_host", "localhost"),
+                port    = int(mongo_profile.get("mongo_port", 27017)),
+                db_name = mongo_profile.get("mongo_db", ""),
+                uid     = uid,
+                parent  = self,
+            )
+            self._fetcher.ready.connect(self._on_full_start)
+            self._fetcher.start()
+
+    def _build_peak_stats_tab(self, peak_stats: dict | None):
+        """Build (or replace) the Peak Stats tab."""
+        if not peak_stats:
+            return
+        if self._ps_tab_idx >= 0:
+            self._tabs.removeTab(self._ps_tab_idx)
+        insert_at = self._tabs.count() - 1   # before "Start Doc (raw)"
+        ps_widget = QWidget()
+        ps_lay    = QVBoxLayout(ps_widget)
+        ps_table  = QTableWidget(0, 7)
+        ps_table.setHorizontalHeaderLabels(
+            ["Signal", "Center", "FWHM", "COM", "Max pos", "Max val", "Min val"])
+        ps_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        ps_table.setAlternatingRowColors(True)
+        ps_table.verticalHeader().setVisible(False)
+        hh = ps_table.horizontalHeader()
+        for i in range(7):
+            hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        for signal, st in peak_stats.items():
+            r = ps_table.rowCount()
+            ps_table.insertRow(r)
+            ps_table.setItem(r, 0, QTableWidgetItem(signal))
+            ps_table.setItem(r, 1, QTableWidgetItem(_fmt(st.get("cen"))))
+            ps_table.setItem(r, 2, QTableWidgetItem(_fmt(st.get("fwhm"))))
+            ps_table.setItem(r, 3, QTableWidgetItem(_fmt(st.get("com"))))
+            ps_table.setItem(r, 4, QTableWidgetItem(_fmt(st.get("max_pos"))))
+            ps_table.setItem(r, 5, QTableWidgetItem(_fmt(st.get("max_val"))))
+            ps_table.setItem(r, 6, QTableWidgetItem(_fmt(st.get("min_val"))))
+        ps_lay.addWidget(ps_table, 1)
+        self._ps_tab_idx = self._tabs.insertTab(insert_at, ps_widget, "Peak Stats")
+
+    def _on_full_start(self, full_doc: dict):
+        """Called by _FullStartFetcher when the complete start doc is ready."""
+        import json as _json
+        if not full_doc:
+            return
+        self._meta_txt.setPlainText(
+            self._format_metadata(full_doc, self._stop, self._seq_num)
+        )
+        self._raw_txt.setPlainText(_json.dumps(full_doc, indent=2, default=str))
+        ps = full_doc.get("peak_stats")
+        if ps:
+            self._build_peak_stats_tab(ps)
 
     def _format_metadata(self, start: dict, stop: dict, seq_num: int) -> str:
         ts_start = start.get("time", 0)
@@ -919,7 +974,8 @@ class MongoDataBrowserTab(QWidget):
         run_data = next(
             (rd for rd in self._run_data_list if rd.get("uid") == uid), None
         )
-        dlg = _RunDetailDialog(run, run_data, seq_num, parent=self)
+        dlg = _RunDetailDialog(run, run_data, seq_num,
+                              mongo_profile=self._current_profile(), parent=self)
         dlg.show()
 
     def _update_info_single(self, row: int):
