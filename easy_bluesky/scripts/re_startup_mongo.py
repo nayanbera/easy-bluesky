@@ -281,6 +281,9 @@ try:
         def __init__(self):
             self._table = None
 
+        def __call__(self, name, doc):
+            return getattr(self, name)(doc)
+
         def start(self, doc):
             pass
 
