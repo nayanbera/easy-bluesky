@@ -973,7 +973,10 @@ class _DiscoveryWorker(QThread):
 
 class MainWindow(QMainWindow):
     # Emitted on the main thread; queued delivery runs connect() on worker_thread.
-    _connect_requested = pyqtSignal(str, str)  # ctrl_addr, info_addr
+    _connect_requested  = pyqtSignal(str, str)  # ctrl_addr, info_addr
+    # Safe cross-thread → main thread delivery for background SSH threads.
+    _thread_log         = pyqtSignal(str)
+    _thread_reconnect   = pyqtSignal()          # triggers auto-reconnect from SSH thread
 
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
@@ -1140,6 +1143,8 @@ class MainWindow(QMainWindow):
         self.worker.disconnected.connect(self._on_disconnected)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.re_manager_started.connect(self._on_re_manager_started)
+        self._thread_log.connect(self._log)
+        self._thread_reconnect.connect(self._auto_reconnect_mode)
 
         self.worker.status_updated.connect(self.re_bar.update_status)
         self.worker.queue_updated.connect(
@@ -1380,7 +1385,7 @@ class MainWindow(QMainWindow):
     def _ssh_stop_remote(self, settings: dict, profile: dict):
         from .ssh_manager import stop_re_manager
         ok, msg = stop_re_manager(settings, profile)
-        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
+        self._thread_log.emit(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
         if ok:
             self.worker.disconnect()
 
@@ -1390,17 +1395,19 @@ class MainWindow(QMainWindow):
         ok, msg = restart_re_manager(settings, profile)
         ts = self._ts()
         if not ok:
-            self._log(f"[{ts}] ✗ SSH restart failed: {msg}")
+            self._thread_log.emit(f"[{ts}] ✗ SSH restart failed: {msg}")
             return
-        self._log(f"[{ts}] ✓ {msg} — waiting for port to open…")
+        self._thread_log.emit(f"[{ts}] ✓ {msg} — waiting for port to open…")
         ctrl, _, _ = make_zmq_addrs(settings)
         port = int(ctrl.rsplit(":", 1)[-1])
         ready = wait_for_port(settings["host"], port, timeout=30)
         if ready:
-            self._log(f"[{self._ts()}] Port {port} open — reconnecting…")
-            QTimer.singleShot(500, self._auto_reconnect_mode)
+            self._thread_log.emit(f"[{self._ts()}] Port {port} open — reconnecting…")
+            self._thread_reconnect.emit()
         else:
-            self._log(f"[{self._ts()}] ✗ RE Manager did not open port {port} within 30 s")
+            self._thread_log.emit(
+                f"[{self._ts()}] ✗ RE Manager did not open port {port} within 30 s"
+            )
 
     def _auto_reconnect(self):
         self._log(f"[{self._ts()}] Auto-reconnecting…")
