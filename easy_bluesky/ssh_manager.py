@@ -363,6 +363,68 @@ def wait_for_port(host: str, port: int, timeout: int = 30) -> bool:
     return False
 
 
+# ── Operator lock ─────────────────────────────────────────────────────────────
+
+def _operator_lock_file(profile_name: str) -> str:
+    """Remote path of the operator lock file for the given profile."""
+    slug = profile_slug(profile_name)
+    return f"/tmp/.easy_bluesky_{slug}.operator"
+
+
+def read_operator_lock(settings: dict, profile: dict) -> dict | None:
+    """
+    Read the operator lock file from the remote machine.
+    Returns the holder dict or None if the lock is free or unreadable.
+    """
+    import json as _json
+    lock_path = _operator_lock_file(profile.get("name", "Default"))
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        _, stdout, _ = client.exec_command(f"cat {lock_path} 2>/dev/null", timeout=5)
+        data = stdout.read().decode().strip()
+        client.close()
+        if not data:
+            return None
+        return _json.loads(data)
+    except Exception:
+        return None
+
+
+def claim_operator_lock(settings: dict, profile: dict) -> tuple:
+    """Write the operator lock file on the remote, claiming this session."""
+    import json as _json, socket as _socket
+    from datetime import datetime as _dt
+    lock_path = _operator_lock_file(profile.get("name", "Default"))
+    payload = _json.dumps({
+        "host":  _socket.gethostname(),
+        "user":  settings.get("ssh_user", ""),
+        "since": _dt.utcnow().isoformat(),
+    })
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        sftp = client.open_sftp()
+        with sftp.open(lock_path, "w") as f:
+            f.write(payload)
+        sftp.close()
+        client.close()
+        return True, "Operator lock claimed"
+    except Exception as e:
+        return False, str(e)
+
+
+def release_operator_lock(settings: dict, profile: dict) -> tuple:
+    """Delete the operator lock file on the remote machine."""
+    lock_path = _operator_lock_file(profile.get("name", "Default"))
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        _, stdout, _ = client.exec_command(f"rm -f {lock_path}", timeout=5)
+        stdout.channel.recv_exit_status()
+        client.close()
+        return True, "Operator lock released"
+    except Exception as e:
+        return False, str(e)
+
+
 def test_ssh_connection(settings: dict) -> tuple:
     """
     Verify SSH connectivity and optionally check that the conda env exists.

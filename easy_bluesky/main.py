@@ -969,6 +969,23 @@ class _DiscoveryWorker(QThread):
             self.failed.emit(str(e))
 
 
+# ── Operator lock checker ─────────────────────────────────────────────────────
+
+class _OperatorLockChecker(QThread):
+    """Background thread: read the operator lock file from the remote machine."""
+    result = pyqtSignal(dict)   # holder dict; empty dict means lock is free
+
+    def __init__(self, settings: dict, profile: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self._profile  = profile
+
+    def run(self):
+        from .ssh_manager import read_operator_lock
+        holder = read_operator_lock(self._settings, self._profile) or {}
+        self.result.emit(holder)
+
+
 # ── Main window ────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -977,6 +994,7 @@ class MainWindow(QMainWindow):
     # Safe cross-thread → main thread delivery for background SSH threads.
     _thread_log         = pyqtSignal(str)
     _thread_reconnect   = pyqtSignal()          # triggers auto-reconnect from SSH thread
+    _thread_lock_claimed = pyqtSignal(bool)     # operator lock claim result from background thread
 
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
@@ -991,6 +1009,8 @@ class MainWindow(QMainWindow):
         self._current_theme = load_saved_theme()
         self._conn_settings = load_connection()
         self._guard = guard
+        self._operator_lock_claimed = False   # True when we hold the remote lock
+        self._operator_lock_holder: dict = {} # holder info when another computer holds it
         self.worker = ZMQWorker()
         self._setup_ui()
         self._setup_worker()
@@ -1145,6 +1165,7 @@ class MainWindow(QMainWindow):
         self.worker.re_manager_started.connect(self._on_re_manager_started)
         self._thread_log.connect(self._log)
         self._thread_reconnect.connect(self._auto_reconnect_mode)
+        self._thread_lock_claimed.connect(self._on_lock_claimed)
 
         self.worker.status_updated.connect(self.re_bar.update_status)
         self.worker.queue_updated.connect(
@@ -1241,6 +1262,7 @@ class MainWindow(QMainWindow):
             from .ssh_manager import _instance_files
             _, log_file, _ = _instance_files(profile.get("name", "Default"))
             self.worker.start_log_tail(self._conn_settings, log_file)
+            self._check_operator_lock_async()
 
     def _on_re_manager_started(self, pid):
         self.conn_label.setText("⬤  RE Manager starting…")
@@ -1249,6 +1271,92 @@ class MainWindow(QMainWindow):
             f"RE Manager started (PID {pid}) — click Reconnect when ready"
         )
         self.re_bar.set_disconnected()
+
+    # ── Operator lock helpers ──────────────────────────────────────────────────
+
+    def _check_operator_lock_async(self):
+        """Launch a background thread to read the remote operator lock file."""
+        profile = get_active_profile(self._conn_settings)
+        checker = _OperatorLockChecker(self._conn_settings, profile, self)
+        checker.result.connect(self._on_lock_checked)
+        checker.start()
+
+    def _on_lock_checked(self, holder: dict):
+        """Called on the main thread with the operator lock file contents."""
+        import socket
+        from datetime import datetime, timezone
+
+        # Treat locks older than 4 hours as stale (abandoned session).
+        if holder:
+            try:
+                since = datetime.fromisoformat(holder.get("since", ""))
+                if since.tzinfo is None:
+                    since = since.replace(tzinfo=timezone.utc)
+                age_h = (datetime.now(timezone.utc) - since).total_seconds() / 3600
+                if age_h > 4:
+                    holder = {}
+            except Exception:
+                pass
+
+        my_host = socket.gethostname()
+        if not holder:
+            # Lock is free — claim it silently
+            self._claim_lock_async()
+        elif holder.get("host") == my_host:
+            # We already hold it (reconnect / profile switch)
+            self._operator_lock_claimed = True
+            self._operator_lock_holder = {}
+        else:
+            # Another computer holds the lock
+            self._operator_lock_claimed = False
+            self._operator_lock_holder = holder
+            self._show_lock_conflict_dialog(holder)
+
+    def _show_lock_conflict_dialog(self, holder: dict):
+        host  = holder.get("host", "unknown")
+        since = holder.get("since", "")[:16].replace("T", " ")
+        msg = (
+            f"<b>{host}</b> has been operating this profile "
+            f"since <b>{since} UTC</b>.<br><br>"
+            f"<b>Restart RE Manager</b> and <b>Stop RE Manager</b> are blocked "
+            f"until you take control.<br><br>"
+            f"<b>Warning:</b> {host} will <u>not</u> be notified if you take control. "
+            f"Make sure the operator at {host} has stopped before proceeding."
+        )
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Profile in Use by Another Computer")
+        dlg.setText(msg)
+        dlg.setIcon(QMessageBox.Icon.Warning)
+        btn_take = dlg.addButton("Take Control", QMessageBox.ButtonRole.AcceptRole)
+        dlg.addButton("Continue (Restart/Stop blocked)", QMessageBox.ButtonRole.RejectRole)
+        dlg.exec()
+        if dlg.clickedButton() is btn_take:
+            self._claim_lock_async()
+        else:
+            self._log(
+                f"[{self._ts()}] ⚠ Restart/Stop RE Manager blocked "
+                f"({host} is active operator) — use 'Take Control' to unlock"
+            )
+
+    def _claim_lock_async(self):
+        """Claim the operator lock in a background thread."""
+        settings = self._conn_settings
+        profile  = get_active_profile(settings)
+
+        def _claim():
+            from .ssh_manager import claim_operator_lock
+            ok, msg = claim_operator_lock(settings, profile)
+            self._thread_lock_claimed.emit(ok)
+            if not ok:
+                self._thread_log.emit(f"[{self._ts()}] ⚠ Could not claim operator lock: {msg}")
+
+        threading.Thread(target=_claim, daemon=True).start()
+
+    def _on_lock_claimed(self, ok: bool):
+        self._operator_lock_claimed = ok
+        if ok:
+            self._operator_lock_holder = {}
+            self._log(f"[{self._ts()}] ✓ Operator lock claimed for this session")
 
     def _on_disconnected(self):
         self.conn_label.setText("⬤  Disconnected")
@@ -1354,6 +1462,15 @@ class MainWindow(QMainWindow):
             else:
                 self._log(f"[{self._ts()}] ✗ Start RE Manager failed")
         else:
+            if not self._operator_lock_claimed:
+                other = self._operator_lock_holder.get("host", "another computer")
+                QMessageBox.warning(
+                    self, "Restart Blocked",
+                    f"Restart RE Manager is blocked.\n\n"
+                    f"{other} is currently the active operator.\n\n"
+                    f"Reconnect and choose 'Take Control' to enable this operation.",
+                )
+                return
             host = settings["host"]
             self._log(
                 f"[{self._ts()}] SSH → restarting RE Manager "
@@ -1374,6 +1491,15 @@ class MainWindow(QMainWindow):
             self.worker.disconnect()
             self._log(f"[{self._ts()}] RE Manager stopped")
         else:
+            if not self._operator_lock_claimed:
+                other = self._operator_lock_holder.get("host", "another computer")
+                QMessageBox.warning(
+                    self, "Stop Blocked",
+                    f"Stop RE Manager is blocked.\n\n"
+                    f"{other} is currently the active operator.\n\n"
+                    f"Reconnect and choose 'Take Control' to enable this operation.",
+                )
+                return
             host = settings["host"]
             self._log(f"[{self._ts()}] SSH → stopping RE Manager on {host}…")
             threading.Thread(
@@ -1455,6 +1581,10 @@ class MainWindow(QMainWindow):
             names = [p.get("name", "") for p in profiles]
             self.re_bar.update_profiles(names, current)
             return
+
+        # Reset operator lock state — will be re-checked after connect
+        self._operator_lock_claimed = False
+        self._operator_lock_holder  = {}
 
         self._conn_settings["active_profile"] = name
         save_connection(self._conn_settings)
@@ -1781,11 +1911,20 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.worker.stop()
+        profile   = get_active_profile(self._conn_settings)
+        use_local = profile.get("is_local", False) or is_local_host(self._conn_settings)
         # Stop RE Manager only if the active profile is local
-        profile = get_active_profile(self._conn_settings)
-        if profile.get("is_local", False):
+        if use_local:
             self.worker.stop_re_manager()
-        # Release profile lock
+        # Release the remote operator lock if we hold it
+        if self._operator_lock_claimed and not use_local:
+            try:
+                from .ssh_manager import release_operator_lock
+                release_operator_lock(self._conn_settings, profile)
+            except Exception:
+                pass
+            self._operator_lock_claimed = False
+        # Release local profile lock
         if self._guard:
             self._guard.release()
         self.worker_thread.quit()
