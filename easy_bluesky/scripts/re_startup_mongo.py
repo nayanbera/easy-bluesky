@@ -318,15 +318,10 @@ try:
             print(header)
             print(sep)
 
-        def event(self, doc):
-            if not self._fields:
-                return
+        def _print_row(self, seq, t, data):
             w    = self._W
-            data = doc.get("data", {})
-            t    = _time_mod.strftime(
-                       "%H:%M:%S", _time_mod.localtime(doc.get("time", 0)))
-            seq  = doc.get("seq_num", "")
-            vals = [f"{seq:>{w}}", f"{t:>{w}}"]
+            t_str = _time_mod.strftime("%H:%M:%S", _time_mod.localtime(t))
+            vals = [f"{seq:>{w}}", f"{t_str:>{w}}"]
             for f in self._fields:
                 v = data.get(f, "")
                 try:
@@ -334,6 +329,25 @@ try:
                 except (TypeError, ValueError):
                     vals.append(f"{str(v):>{w}}")
             print(" | ".join(vals))
+
+        def event(self, doc):
+            if not self._fields:
+                return
+            self._print_row(doc.get("seq_num", ""),
+                            doc.get("time", 0),
+                            doc.get("data", {}))
+
+        def event_page(self, doc):
+            if not self._fields:
+                return
+            data    = doc.get("data", {})
+            seq_arr = doc.get("seq_num", [])
+            t_arr   = doc.get("time", [])
+            for i, seq in enumerate(seq_arr):
+                t    = t_arr[i] if i < len(t_arr) else 0
+                row  = {f: data[f][i] for f in self._fields
+                        if f in data and i < len(data[f])}
+                self._print_row(seq, t, row)
 
         def stop(self, doc):
             if self._fields:
