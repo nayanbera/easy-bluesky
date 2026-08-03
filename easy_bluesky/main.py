@@ -1045,6 +1045,8 @@ class MainWindow(QMainWindow):
 
         self.tabs.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._on_tab_context_menu)
+        # Snapshot of original widget order — used when reinserting detached tabs
+        self._tab_order = [self.tabs.widget(i) for i in range(self.tabs.count())]
 
         self.re_bar = REControlBar()
 
@@ -1460,11 +1462,22 @@ class MainWindow(QMainWindow):
     def _reattach_tab(self, widget):
         if widget not in self._detached_tabs:
             return
-        win, orig_index, title = self._detached_tabs.pop(widget)
-        win.setCentralWidget(QWidget())   # release widget ownership before close
+        win, _orig_index, title = self._detached_tabs.pop(widget)
+        win.takeCentralWidget()  # removes without deleting the widget
         win.hide()
         win.deleteLater()
-        insert_at = min(orig_index, self.tabs.count())
+
+        # Insert at the position dictated by the original tab order:
+        # find the first still-attached widget that originally came after this one.
+        insert_at = self.tabs.count()
+        if widget in self._tab_order:
+            pos = self._tab_order.index(widget)
+            for w in self._tab_order[pos + 1:]:
+                idx = self.tabs.indexOf(w)
+                if idx >= 0:
+                    insert_at = idx
+                    break
+
         self.tabs.insertTab(insert_at, widget, title)
         self.tabs.setCurrentIndex(insert_at)
 
