@@ -254,11 +254,18 @@ def read_devices_status():
 print("[re_startup_mongo] RE created, devices and plans loaded")
 
 # ── BestEffortCallback / LiveTable (live scan table in console) ────────────────
+# Subscribe BEC for live plots (if matplotlib is available) but disable its
+# built-in table — we use our own RunRouter-based LiveTable that always shows
+# all data_keys regardless of whether devices expose .hints.
 try:
     from bluesky.callbacks.best_effort import BestEffortCallback as _BEC
     bec = _BEC()
+    try:
+        bec.disable_table()
+    except AttributeError:
+        bec.table_enabled = False
     RE.subscribe(bec)
-    print("[re_startup_mongo] BestEffortCallback subscribed")
+    print("[re_startup_mongo] BestEffortCallback subscribed (table disabled; using custom LiveTable)")
 except ImportError:
     bec = None
     print("[re_startup_mongo] BestEffortCallback unavailable (no matplotlib)")
@@ -266,17 +273,15 @@ except Exception as _e:
     bec = None
     print(f"[re_startup_mongo] WARNING: BestEffortCallback not subscribed: {_e}")
 
-# Fallback LiveTable: fires only when the descriptor's hints are empty
-# (e.g. older ophyd where SynGauss/SynAxis don't expose .hints).
-# When BEC gets proper hints it already prints a full table; this avoids duplication.
-# The RunRouter factory receives the START document; we must defer table creation
-# until the DESCRIPTOR document arrives (where data_keys and hints actually live).
+# Custom LiveTable: always prints all data_keys (motor + detectors) per run.
+# The RunRouter factory receives the START document; table creation is deferred
+# to the DESCRIPTOR document where data_keys actually live.
 try:
     from bluesky.callbacks import LiveTable as _LiveTable
     from event_model import RunRouter as _RRtbl
 
     class _DeferredLiveTable(_CallableCB):
-        """Creates a LiveTable on the descriptor if BEC has no hinted columns."""
+        """Creates a LiveTable from all data_keys when the descriptor arrives."""
 
         def __init__(self):
             self._table = None
@@ -285,12 +290,6 @@ try:
             pass
 
         def descriptor(self, doc):
-            hinted = []
-            for obj_h in doc.get("hints", {}).values():
-                if isinstance(obj_h, dict):
-                    hinted.extend(obj_h.get("fields", []))
-            if hinted:
-                return  # BEC will show proper columns
             keys = [k for k in doc.get("data_keys", {})
                     if not k.endswith("_setpoint")]
             if keys:
@@ -316,9 +315,9 @@ try:
         return [_DeferredLiveTable()], []
 
     RE.subscribe(_RRtbl([_fallback_table_factory]))
-    print("[re_startup_mongo] fallback LiveTable subscribed")
+    print("[re_startup_mongo] LiveTable subscribed")
 except Exception as _e2:
-    print(f"[re_startup_mongo] WARNING: fallback LiveTable not subscribed: {_e2}")
+    print(f"[re_startup_mongo] WARNING: LiveTable not subscribed: {_e2}")
 
 # ── JSONL per-run writer ─────────────────────────────────────────────────────
 # Writes one <uid>.jsonl file per run into <exp_dir>/runs/ (from the start doc).
