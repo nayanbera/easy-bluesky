@@ -98,17 +98,19 @@ def _fetch_streams(db, uid: str) -> dict:
 # ── Background workers ─────────────────────────────────────────────────────────
 
 class _RunListFetcher(QThread):
-    """Fetch the most recent N runs from MongoDB, optionally filtered by exp_dir."""
+    """Fetch the most recent N runs from MongoDB, optionally filtered by experiment."""
     runs_ready = pyqtSignal(list)
     error      = pyqtSignal(str)
 
-    def __init__(self, host, port, db_name, limit=300, exp_dir_filter="", parent=None):
+    def __init__(self, host, port, db_name, limit=300,
+                 exp_dir_filter="", run_uids=None, parent=None):
         super().__init__(parent)
-        self._host    = host
-        self._port    = port
-        self._db      = db_name
-        self._limit   = limit
-        self._exp_dir = exp_dir_filter
+        self._host      = host
+        self._port      = port
+        self._db        = db_name
+        self._limit     = limit
+        self._exp_dir   = exp_dir_filter
+        self._run_uids  = run_uids or []   # known UIDs from plans_log.jsonl
 
     def run(self):
         try:
@@ -119,10 +121,18 @@ class _RunListFetcher(QThread):
             db = client[self._db]
 
             query = {}
-            if self._exp_dir:
-                # Match by folder name rather than full path so that runs
-                # submitted from a different computer (different local path
-                # but same experiment folder name) still appear.
+            if self._run_uids:
+                # Primary: query by UID — works even when exp_dir was never stored.
+                # Use OR so that any runs logged in plans_log.jsonl are found,
+                # AND any newer runs whose exp_dir matches are also included.
+                import re as _re
+                conditions = [{"uid": {"$in": self._run_uids}}]
+                if self._exp_dir:
+                    folder = _re.escape(Path(self._exp_dir).name)
+                    conditions.append({"exp_dir": {"$regex": folder + r"/?$"}})
+                query = {"$or": conditions}
+            elif self._exp_dir:
+                # Fallback when plan log is empty: match by folder name.
                 import re as _re
                 folder = _re.escape(Path(self._exp_dir).name)
                 query["exp_dir"] = {"$regex": folder + r"/?$"}
@@ -880,6 +890,30 @@ class MongoDataBrowserTab(QWidget):
 
     # ── Run list ───────────────────────────────────────────────────────────────
 
+    def _read_exp_run_uids(self) -> list:
+        """Read run UIDs from the active experiment's plans_log.jsonl."""
+        if not self._active_exp_dir:
+            return []
+        log_file = Path(self._active_exp_dir) / "plans_log.jsonl"
+        if not log_file.exists():
+            return []
+        uids = []
+        try:
+            import json as _json
+            with open(log_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = _json.loads(line)
+                        uids.extend(entry.get("run_uids", []))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return uids
+
     def _fetch_runs(self):
         profile = self._current_profile()
         db   = profile.get("mongo_db",   "")
@@ -890,11 +924,13 @@ class MongoDataBrowserTab(QWidget):
         if self._run_fetcher and self._run_fetcher.isRunning():
             return
 
-        exp_filter = "" if self._show_all_cb.isChecked() else self._active_exp_dir
+        show_all   = self._show_all_cb.isChecked()
+        exp_filter = "" if show_all else self._active_exp_dir
+        run_uids   = [] if show_all else self._read_exp_run_uids()
         self._set_status("Fetching runs…", busy=True)
         self._run_fetcher = _RunListFetcher(
             host, int(port), db, limit=300,
-            exp_dir_filter=exp_filter, parent=self,
+            exp_dir_filter=exp_filter, run_uids=run_uids, parent=self,
         )
         self._run_fetcher.runs_ready.connect(self._on_runs_ready)
         self._run_fetcher.error.connect(self._on_fetch_error)
