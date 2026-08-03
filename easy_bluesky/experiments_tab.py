@@ -442,11 +442,19 @@ class ExperimentsTab(QWidget):
         btn_add.clicked.connect(self._add_plan)
         btn_rem = QPushButton("Remove")
         btn_rem.clicked.connect(self._remove_plan)
+        btn_save = QPushButton("💾 Save…")
+        btn_save.setToolTip("Save the current queue to a .queue file")
+        btn_save.clicked.connect(self._save_queue)
+        btn_load = QPushButton("📂 Load…")
+        btn_load.setToolTip("Load a .queue file and append its plans to the current queue")
+        btn_load.clicked.connect(self._load_queue)
         btn_clr = QPushButton("Clear")
         btn_clr.setObjectName("btn_danger")
         btn_clr.clicked.connect(self._clear_queue)
         q_btns.addWidget(btn_add)
         q_btns.addWidget(btn_rem)
+        q_btns.addWidget(btn_save)
+        q_btns.addWidget(btn_load)
         q_btns.addStretch()
         q_btns.addWidget(btn_clr)
         vlay.addLayout(q_btns)
@@ -623,6 +631,58 @@ class ExperimentsTab(QWidget):
         if r == QMessageBox.StandardButton.Yes:
             ok, msg = self.worker.clear_queue()
             self._log(f"{'✓' if ok else '✗'} Clear queue: {msg}")
+
+    def _save_queue(self):
+        items = []
+        for i in range(self.queue_compact.count()):
+            raw = self.queue_compact.item(i).data(Qt.ItemDataRole.UserRole + 1)
+            if raw:
+                clean = {k: v for k, v in raw.items()
+                         if k not in ("item_uid", "status", "result", "msg")}
+                items.append(clean)
+        if not items:
+            QMessageBox.information(self, "Empty Queue", "Queue is empty — nothing to save.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Queue", "", "Queue Files (*.queue);;All Files (*)"
+        )
+        if not path:
+            return
+        if not path.endswith(".queue"):
+            path += ".queue"
+        try:
+            Path(path).write_text(json.dumps(items, indent=2), encoding="utf-8")
+            self._log(f"✓ Saved {len(items)} plan(s) → {Path(path).name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Failed", str(e))
+
+    def _load_queue(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Queue", "", "Queue Files (*.queue);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            items = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as e:
+            QMessageBox.critical(self, "Load Failed", f"Could not read queue file:\n{e}")
+            return
+        if not isinstance(items, list):
+            QMessageBox.critical(self, "Invalid Format", "Queue file must contain a JSON array.")
+            return
+        added = failed = 0
+        for item in items:
+            if not isinstance(item, dict) or "name" not in item:
+                failed += 1
+                continue
+            item.setdefault("item_type", "plan")
+            ok, _ = self.worker.add_item(item)
+            if ok:
+                added += 1
+            else:
+                failed += 1
+        self._log(f"{'✓' if not failed else '⚠'} Loaded queue: {added} added"
+                  + (f", {failed} failed" if failed else ""))
 
     def _on_queue_item_clicked(self, li: QListWidgetItem):
         if not self.worker:

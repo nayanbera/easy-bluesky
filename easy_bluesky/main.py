@@ -1223,6 +1223,8 @@ class MainWindow(QMainWindow):
         ctrl_addr, _, doc_addr = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("Connected to RE Manager at " + ctrl_addr)
         profile = get_active_profile(self._conn_settings)
+        _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
+        self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(profile.get("name", "Default"))
         self.experiments_tab.live_viewer.restart_zmq(doc_addr)
         # If this is an SSH-managed instance, tail the procServ log file so
@@ -1746,6 +1748,8 @@ class MainWindow(QMainWindow):
         self.re_bar.update_profiles(names, active)
         self.mongo_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
+        _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
+        self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(active)
 
     def _on_experiment_changed(self, runs_dir: str):

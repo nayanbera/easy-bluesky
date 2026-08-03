@@ -22,6 +22,14 @@ from .widgets import NoScrollDoubleSpinBox, NoScrollSpinBox
 
 _WATCHDOG_FILE = Path.home() / ".easy_bluesky" / "watchdog_conditions.json"
 
+
+def _profile_watchdog_file(profile_name: str) -> Path:
+    """Return the watchdog JSON path for *profile_name* (module-level helper)."""
+    if not profile_name:
+        return _WATCHDOG_FILE
+    safe = _re.sub(r"[^\w\-]", "_", profile_name)
+    return Path.home() / ".easy_bluesky" / f"watchdog_{safe}.json"
+
 _CONDITION_TYPES = [
     (">  (greater than)",           "greater_than"),
     ("≥  (greater or equal)",       "greater_equal"),
@@ -290,6 +298,118 @@ class _ConditionDialog(QDialog):
         return self._cond
 
 
+# ── Profile viewer dialog ──────────────────────────────────────────────────────
+
+class _WatchdogProfileViewerDialog(QDialog):
+    """Read-only dialog showing watchdog conditions for any profile."""
+
+    _COL_EN     = 0
+    _COL_NAME   = 1
+    _COL_PV     = 2
+    _COL_COND   = 3
+    _COL_THRESH = 4
+
+    def __init__(self, profile_names: list, current: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Watchdog Settings — Profile Viewer")
+        self.setMinimumSize(720, 420)
+
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+
+        # Profile selector
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Profile:"))
+        self._combo = QComboBox()
+        for n in profile_names:
+            self._combo.addItem(n)
+        idx = self._combo.findText(current)
+        if idx >= 0:
+            self._combo.setCurrentIndex(idx)
+        top.addWidget(self._combo, 1)
+        root.addLayout(top)
+
+        # Summary line
+        self._summary = QLabel("")
+        self._summary.setObjectName("dim_text")
+        root.addWidget(self._summary)
+
+        # Conditions table
+        self._table = QTableWidget(0, 5)
+        self._table.setHorizontalHeaderLabels(
+            ["", "Description", "PV Name", "Condition", "Threshold"])
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setAlternatingRowColors(True)
+        self._table.verticalHeader().setVisible(False)
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(self._COL_EN,     QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(self._COL_NAME,   QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(self._COL_PV,     QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(self._COL_COND,   QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(self._COL_THRESH, QHeaderView.ResizeMode.ResizeToContents)
+        root.addWidget(self._table, 1)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn_close)
+        root.addLayout(btn_row)
+
+        self._combo.currentTextChanged.connect(self._load)
+        self._load(self._combo.currentText())
+
+    def _load(self, profile_name: str):
+        self._table.setRowCount(0)
+        wf = _profile_watchdog_file(profile_name)
+        # fall back to legacy global file if profile-specific one doesn't exist yet
+        if not wf.exists() and profile_name:
+            wf = _WATCHDOG_FILE
+        if not wf.exists():
+            self._summary.setText("No watchdog file for this profile.")
+            return
+        try:
+            data = json.loads(wf.read_text(encoding="utf-8"))
+        except Exception as e:
+            self._summary.setText(f"Error reading file: {e}")
+            return
+
+        enabled  = data.get("enabled", False)
+        delay    = data.get("resume_delay", 5)
+        conds    = data.get("conditions", [])
+        n_active = sum(1 for c in conds if c.get("enabled", True))
+        status   = "ENABLED" if enabled else "disabled"
+        self._summary.setText(
+            f"Watchdog: {status}   |   {len(conds)} condition(s) "
+            f"({n_active} active)   |   Resume delay: {delay} s"
+        )
+
+        for c in conds:
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+            is_on = c.get("enabled", True)
+            en_item = QTableWidgetItem("✓" if is_on else "✗")
+            en_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            en_item.setForeground(QColor("#2ca02c" if is_on else "#888888"))
+            self._table.setItem(r, self._COL_EN,     en_item)
+            self._table.setItem(r, self._COL_NAME,
+                                QTableWidgetItem(c.get("name") or c.get("pv", "")))
+            self._table.setItem(r, self._COL_PV,
+                                QTableWidgetItem(c.get("pv", "")))
+            op      = c.get("op", "")
+            op_lbl  = _CODE_TO_LABEL.get(op, op)
+            self._table.setItem(r, self._COL_COND,
+                                QTableWidgetItem(op_lbl))
+            if op == "range":
+                thresh = f"{c.get('lo', '')} – {c.get('hi', '')}"
+            elif op == "connected":
+                thresh = "—"
+            else:
+                thresh = str(c.get("threshold", ""))
+            self._table.setItem(r, self._COL_THRESH, QTableWidgetItem(thresh))
+
+
 # ── Main tab widget ────────────────────────────────────────────────────────────
 
 class PVWatchdogTab(QWidget):
@@ -327,6 +447,7 @@ class PVWatchdogTab(QWidget):
         self._re_state       = ""    # from status_updated: "idle", "running", "paused"
         self._manager_state  = ""    # from status_updated: "executing_queue", etc.
         self._profile_name   = ""
+        self._profile_names: list = []
 
         self._build_ui()
         self._load_conditions()
@@ -353,6 +474,12 @@ class PVWatchdogTab(QWidget):
         )
         self._enable_cb.toggled.connect(self._on_enable_toggled)
         hdr.addWidget(self._enable_cb)
+
+        btn_view = QPushButton("View profiles…")
+        btn_view.setToolTip("Inspect watchdog conditions for any profile without switching")
+        btn_view.setFixedHeight(26)
+        btn_view.clicked.connect(self._on_view_profiles)
+        hdr.addWidget(btn_view)
 
         self._global_status = QLabel("Watchdog disabled")
         self._global_status.setAlignment(
@@ -455,10 +582,21 @@ class PVWatchdogTab(QWidget):
     @property
     def _watchdog_file(self) -> Path:
         """Per-profile file; falls back to the global file for unset / legacy profiles."""
-        if not self._profile_name:
-            return _WATCHDOG_FILE
-        safe = _re.sub(r"[^\w\-]", "_", self._profile_name)
-        return Path.home() / ".easy_bluesky" / f"watchdog_{safe}.json"
+        return _profile_watchdog_file(self._profile_name)
+
+    def update_profiles(self, names: list):
+        """Store the list of all known profile names (used by the viewer dialog)."""
+        self._profile_names = list(names)
+
+    def _on_view_profiles(self):
+        names = self._profile_names or [self._profile_name] if self._profile_name else []
+        if not names:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "No profiles",
+                                    "No profiles available yet — connect first.")
+            return
+        dlg = _WatchdogProfileViewerDialog(names, self._profile_name, parent=self)
+        dlg.exec()
 
     def load_for_profile(self, profile_name: str):
         """Switch to a different profile: reload conditions from its file."""
