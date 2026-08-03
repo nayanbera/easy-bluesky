@@ -252,11 +252,14 @@ def generate_sim_script(real_script_path: str | Path,
     # Always add generic sim detectors (motor1/motor2 already defined above)
     lines += [
         '',
-        '# ── Generic sim detectors (always available in sim mode) ───────────────────',
-        "det    = SynGauss('det',  motor1, 'motor1', center=0, Imax=1000, sigma=0.5)",
-        "det1   = SynGauss('det1', motor1, 'motor1', center=0, Imax=500,  sigma=1.0)",
-        "det2   = SynGauss('det2', motor2, 'motor2', center=0, Imax=800,  sigma=0.5)",
-        "sim_ad = SimAreaDetector(name='sim_ad')",
+        '# ── Generic sim devices (always available in sim mode) ────────────────────',
+        "sim_x   = SynAxis(name='sim_x')",
+        "sim_det = SynGauss('sim_det', sim_x, 'sim_x', center=0, Imax=1000, sigma=1.0)",
+        "sim_mon = SynGauss('sim_mon', sim_x, 'sim_x', center=0, Imax=500,  sigma=2.0)",
+        "det     = SynGauss('det',    motor1, 'motor1', center=0, Imax=1000, sigma=0.5)",
+        "det1    = SynGauss('det1',   motor1, 'motor1', center=0, Imax=500,  sigma=1.0)",
+        "det2    = SynGauss('det2',   motor2, 'motor2', center=0, Imax=800,  sigma=0.5)",
+        "sim_ad  = SimAreaDetector(name='sim_ad')",
     ]
 
     output_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
