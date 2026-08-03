@@ -1746,6 +1746,7 @@ class MainWindow(QMainWindow):
         self.re_bar.update_profiles(names, active)
         self.mongo_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
+        self.watchdog_tab.load_for_profile(active)
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
