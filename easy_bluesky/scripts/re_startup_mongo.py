@@ -253,6 +253,21 @@ def read_devices_status():
 
 print("[re_startup_mongo] RE created, devices and plans loaded")
 
+
+class _CallableCB:
+    """Mixin that makes a callback class callable as cb(name, doc).
+    Required by event-model >= 1.14.0 when a RunRouter factory returns
+    callback instances (the RunRouter calls them as callables, not via
+    named methods).  Uses getattr with a default so callbacks that only
+    implement a subset of document types (e.g. no 'start' method) are
+    silently ignored for the missing types.
+    """
+    def __call__(self, name, doc):
+        handler = getattr(self, name, None)
+        if handler is not None:
+            return handler(doc)
+
+
 # ── BestEffortCallback / LiveTable (live scan table in console) ────────────────
 # Subscribe BEC for live plots (if matplotlib is available) but disable its
 # built-in table — we use our own RunRouter-based LiveTable that always shows
@@ -341,20 +356,6 @@ from pathlib import Path as _P
 from event_model import RunRouter as _RR
 
 _FALLBACK_RUNS_DIR = _P.home() / ".easy_bluesky" / "data" / "runs"
-
-
-class _CallableCB:
-    """Mixin that makes a callback class callable as cb(name, doc).
-    Required by event-model >= 1.14.0 when a RunRouter factory returns
-    callback instances (the RunRouter calls them as callables, not via
-    named methods).  Uses getattr with a default so callbacks that only
-    implement a subset of document types (e.g. no 'start' method) are
-    silently ignored for the missing types.
-    """
-    def __call__(self, name, doc):
-        handler = getattr(self, name, None)
-        if handler is not None:
-            return handler(doc)
 
 
 class _JEnc(_j.JSONEncoder):
