@@ -273,18 +273,19 @@ except Exception as _e:
     bec = None
     print(f"[re_startup_mongo] WARNING: BestEffortCallback not subscribed: {_e}")
 
-# Custom LiveTable: always prints all data_keys (motor + detectors) per run.
-# The RunRouter factory receives the START document; table creation is deferred
-# to the DESCRIPTOR document where data_keys actually live.
+# Custom scan table: prints motor + detector values per event using print()
+# directly (bluesky's LiveTable does not reliably reach stdout in this env).
 try:
-    from bluesky.callbacks import LiveTable as _LiveTable
+    import time as _time_mod
     from event_model import RunRouter as _RRtbl
 
-    class _DeferredLiveTable(_CallableCB):
-        """Creates a LiveTable from all data_keys when the descriptor arrives."""
+    class _ConsoleScanTable(_CallableCB):
+        """Prints a plain-text scan table to stdout using print()."""
+
+        _W = 14   # column width
 
         def __init__(self):
-            self._table = None
+            self._fields = []
 
         def start(self, doc):
             pass
@@ -292,32 +293,45 @@ try:
         def descriptor(self, doc):
             keys = [k for k in doc.get("data_keys", {})
                     if not k.endswith("_setpoint")]
-            if keys:
-                self._table = _LiveTable(keys)
-                self._table.descriptor(doc)
+            self._fields = keys
+            if not keys:
+                return
+            w = self._W
+            cols = ["seq_num", "time"] + keys
+            header = " | ".join(f"{c:>{w}}" for c in cols)
+            sep    = "-+-".join("-" * w for _ in cols)
+            print(header)
+            print(sep)
 
         def event(self, doc):
-            if self._table is not None:
-                self._table.event(doc)
-
-        def event_page(self, doc):
-            if self._table is not None:
+            if not self._fields:
+                return
+            w    = self._W
+            data = doc.get("data", {})
+            t    = _time_mod.strftime(
+                       "%H:%M:%S", _time_mod.localtime(doc.get("time", 0)))
+            seq  = doc.get("seq_num", "")
+            vals = [f"{seq:>{w}}", f"{t:>{w}}"]
+            for f in self._fields:
+                v = data.get(f, "")
                 try:
-                    self._table.event_page(doc)
-                except AttributeError:
-                    pass
+                    vals.append(f"{float(v):>{w}.5g}")
+                except (TypeError, ValueError):
+                    vals.append(f"{str(v):>{w}}")
+            print(" | ".join(vals))
 
         def stop(self, doc):
-            if self._table is not None:
-                self._table.stop(doc)
+            if self._fields:
+                cols = 2 + len(self._fields)
+                print("-+-".join("-" * self._W for _ in range(cols)))
 
-    def _fallback_table_factory(name, doc):
-        return [_DeferredLiveTable()], []
+    def _scan_table_factory(name, doc):
+        return [_ConsoleScanTable()], []
 
-    RE.subscribe(_RRtbl([_fallback_table_factory]))
-    print("[re_startup_mongo] LiveTable subscribed")
+    RE.subscribe(_RRtbl([_scan_table_factory]))
+    print("[re_startup_mongo] ConsoleScanTable subscribed")
 except Exception as _e2:
-    print(f"[re_startup_mongo] WARNING: LiveTable not subscribed: {_e2}")
+    print(f"[re_startup_mongo] WARNING: ConsoleScanTable not subscribed: {_e2}")
 
 # ── JSONL per-run writer ─────────────────────────────────────────────────────
 # Writes one <uid>.jsonl file per run into <exp_dir>/runs/ (from the start doc).
