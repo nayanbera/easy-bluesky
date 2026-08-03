@@ -260,21 +260,34 @@ try:
     RE.subscribe(bec)
     print("[re_startup_mongo] BestEffortCallback subscribed")
 except ImportError:
-    # matplotlib not available — subscribe a LiveTable per run instead
-    try:
-        from bluesky.callbacks import LiveTable as _LiveTable
-        from event_model import RunRouter as _RunRouter
-
-        def _live_table_factory(name, doc):
-            keys = list(doc.get("data_keys", {}).keys())
-            return [_LiveTable(keys)], []
-
-        RE.subscribe(_RunRouter([_live_table_factory]))
-        print("[re_startup_mongo] LiveTable subscribed (matplotlib not available)")
-    except Exception as _e2:
-        print(f"[re_startup_mongo] WARNING: no live table callback: {_e2}")
+    bec = None
+    print("[re_startup_mongo] BestEffortCallback unavailable (no matplotlib)")
 except Exception as _e:
+    bec = None
     print(f"[re_startup_mongo] WARNING: BestEffortCallback not subscribed: {_e}")
+
+# Fallback LiveTable: fires only when the descriptor's hints are empty
+# (e.g. older ophyd where SynGauss/SynAxis don't expose .hints).
+# When BEC gets proper hints it already prints a full table; this avoids duplication.
+try:
+    from bluesky.callbacks import LiveTable as _LiveTable
+    from event_model import RunRouter as _RRtbl
+
+    def _fallback_table_factory(name, doc):
+        hinted = [f
+                  for obj_h in doc.get("hints", {}).values()
+                  for f in obj_h.get("fields", [])]
+        if hinted:
+            return [], []   # BEC has good hints — let it handle the table
+        # No hints: build a table from all data_keys, skipping setpoints
+        keys = [k for k in doc.get("data_keys", {})
+                if not k.endswith("_setpoint")]
+        return ([_LiveTable(keys)], []) if keys else ([], [])
+
+    RE.subscribe(_RRtbl([_fallback_table_factory]))
+    print("[re_startup_mongo] fallback LiveTable subscribed")
+except Exception as _e2:
+    print(f"[re_startup_mongo] WARNING: fallback LiveTable not subscribed: {_e2}")
 
 # ── JSONL per-run writer ─────────────────────────────────────────────────────
 # Writes one <uid>.jsonl file per run into <exp_dir>/runs/ (from the start doc).
