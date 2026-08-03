@@ -86,6 +86,8 @@ class LiveViewer(QWidget):
         self._x_signal = None
         self._saved_x: str  = ""    # X signal from the previous run (for restore)
         self._saved_y: list = []    # selected Y signals from the previous run
+        self._start_motors:    list = []   # from start doc — used for X default
+        self._start_detectors: list = []   # from start doc — used for Y default
         self._live_fit_curve = None          # dashed fit overlay (PlotDataItem)
         self._live_fit_n_fitted = 0          # point count at last live-fit call
         self._crosshair_cleanup = None
@@ -245,6 +247,8 @@ class LiveViewer(QWidget):
                 if self.y_list.item(i).isSelected()
             ]
             self._run_uid = doc.get("uid", "")
+            self._start_motors    = [str(m) for m in (doc.get("motors",    []) or [])]
+            self._start_detectors = [str(d) for d in (doc.get("detectors", []) or [])]
             self._reset_run()
             self.run_label.setText(
                 f"Run: {doc.get('plan_name','?')}  [{self._run_uid[:8]}]")
@@ -276,30 +280,54 @@ class LiveViewer(QWidget):
                     break
             self.norm_combo.blockSignals(False)
 
-            motor_keys = [k for k in keys if any(w in k.lower() for w in ("motor", "pos", "stage", "enc"))]
-            det_keys   = [k for k in keys if k not in motor_keys]
-            x_default  = motor_keys[0] if motor_keys else (keys[0] if keys else "time")
-            avail      = set(all_cols)
+            avail = set(all_cols)
 
-            # Restore previous X if the signal exists in the new run
-            if self._saved_x and self._saved_x in avail:
-                self.x_combo.setCurrentText(self._saved_x)
-                self._x_signal = self._saved_x
+            def _match_device(key, dev_name):
+                return key == dev_name or key.startswith(dev_name + "_")
+
+            def _fields_for(device_names):
+                """Return data_keys that match any of the given device names."""
+                matched = []
+                for dev in device_names:
+                    for k in keys:
+                        if _match_device(k, dev) and k not in matched:
+                            matched.append(k)
+                return matched
+
+            # ── X selection ──────────────────────────────────────────────────
+            restored_x = self._saved_x if self._saved_x in avail else None
+            if restored_x:
+                x_chosen = restored_x
             else:
-                self.x_combo.setCurrentText(x_default)
-                self._x_signal = x_default
+                # Use start-doc motors → name heuristic → first key
+                motor_fields = _fields_for(self._start_motors)
+                if motor_fields:
+                    x_chosen = motor_fields[0]
+                else:
+                    heuristic = [k for k in keys
+                                 if any(w in k.lower()
+                                        for w in ("motor", "pos", "stage", "enc"))]
+                    x_chosen = heuristic[0] if heuristic else (keys[0] if keys else "time")
 
-            # Restore previous Y selection if any saved signals exist; else default
+            self.x_combo.setCurrentText(x_chosen)
+            self._x_signal = x_chosen
+
+            # ── Y selection ──────────────────────────────────────────────────
             restored_y = [s for s in self._saved_y if s in avail]
             if restored_y:
-                for i in range(self.y_list.count()):
-                    self.y_list.item(i).setSelected(
-                        self.y_list.item(i).text() in restored_y)
+                y_chosen = set(restored_y)
             else:
-                for i in range(self.y_list.count()):
-                    sig = self.y_list.item(i).text()
-                    self.y_list.item(i).setSelected(
-                        sig in det_keys or (not det_keys and sig != x_default and sig != "time"))
+                # Use start-doc detectors → everything-except-X fallback
+                det_fields = _fields_for(self._start_detectors)
+                if det_fields:
+                    y_chosen = set(det_fields)
+                else:
+                    y_chosen = {k for k in keys
+                                if k != x_chosen and k not in ("time", "seq_num")}
+
+            for i in range(self.y_list.count()):
+                self.y_list.item(i).setSelected(
+                    self.y_list.item(i).text() in y_chosen)
 
             self.status_bar.setText(f"Signals: {', '.join(all_cols)}")
 
@@ -366,27 +394,49 @@ class LiveViewer(QWidget):
             self.y_list.addItem(QListWidgetItem(k))
         self.y_list.blockSignals(False)
 
-        motor_keys = [k for k in keys
-                      if any(w in k.lower() for w in ("motor", "pos", "stage", "enc"))]
-        x_default  = motor_keys[0] if motor_keys else keys[0]
-        det_keys   = [k for k in keys if k != x_default]
+        def _match_device(key, dev_name):
+            return key == dev_name or key.startswith(dev_name + "_")
 
-        if self._saved_x and self._saved_x in avail:
-            self.x_combo.setCurrentText(self._saved_x)
-            self._x_signal = self._saved_x
+        def _fields_for(device_names):
+            matched = []
+            for dev in device_names:
+                for k in keys:
+                    if _match_device(k, dev) and k not in matched:
+                        matched.append(k)
+            return matched
+
+        # ── X ──
+        restored_x = self._saved_x if self._saved_x in avail else None
+        if restored_x:
+            x_chosen = restored_x
         else:
-            self.x_combo.setCurrentText(x_default)
-            self._x_signal = x_default
+            motor_fields = _fields_for(self._start_motors)
+            if motor_fields:
+                x_chosen = motor_fields[0]
+            else:
+                heuristic = [k for k in keys
+                             if any(w in k.lower()
+                                    for w in ("motor", "pos", "stage", "enc"))]
+                x_chosen = heuristic[0] if heuristic else keys[0]
 
+        self.x_combo.setCurrentText(x_chosen)
+        self._x_signal = x_chosen
+
+        # ── Y ──
         restored_y = [s for s in self._saved_y if s in avail]
         if restored_y:
-            for i in range(self.y_list.count()):
-                self.y_list.item(i).setSelected(
-                    self.y_list.item(i).text() in restored_y)
+            y_chosen = set(restored_y)
         else:
-            for i in range(self.y_list.count()):
-                sig = self.y_list.item(i).text()
-                self.y_list.item(i).setSelected(sig in det_keys)
+            det_fields = _fields_for(self._start_detectors)
+            if det_fields:
+                y_chosen = set(det_fields)
+            else:
+                y_chosen = {k for k in keys
+                            if k != x_chosen and k not in ("time", "seq_num")}
+
+        for i in range(self.y_list.count()):
+            self.y_list.item(i).setSelected(
+                self.y_list.item(i).text() in y_chosen)
 
     # ── Plot ───────────────────────────────────────────────────────────────────
 
