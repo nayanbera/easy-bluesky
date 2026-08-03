@@ -275,14 +275,11 @@ try:
     from bluesky.callbacks import LiveTable as _LiveTable
     from event_model import RunRouter as _RRtbl
 
-    class _DeferredLiveTable:
+    class _DeferredLiveTable(_CallableCB):
         """Creates a LiveTable on the descriptor if BEC has no hinted columns."""
 
         def __init__(self):
             self._table = None
-
-        def __call__(self, name, doc):
-            return getattr(self, name)(doc)
 
         def start(self, doc):
             pass
@@ -333,6 +330,16 @@ from event_model import RunRouter as _RR
 _FALLBACK_RUNS_DIR = _P.home() / ".easy_bluesky" / "data" / "runs"
 
 
+class _CallableCB:
+    """Mixin that makes a callback class callable as cb(name, doc).
+    Required by event-model >= 1.14.0 when a RunRouter factory returns
+    callback instances (the RunRouter calls them as callables, not via
+    named methods).
+    """
+    def __call__(self, name, doc):
+        return getattr(self, name)(doc)
+
+
 class _JEnc(_j.JSONEncoder):
     """JSON encoder that handles numpy arrays and scalars."""
     def default(self, obj):
@@ -347,7 +354,7 @@ class _JEnc(_j.JSONEncoder):
         return super().default(obj)
 
 
-class _JSONLRunWriter:
+class _JSONLRunWriter(_CallableCB):
     """Write one JSONL file per run — one [doc_type, doc_body] JSON line per document."""
 
     def __init__(self, runs_dir, uid):
@@ -568,7 +575,7 @@ def _compute_peak_stats(x, y):
     }
 
 
-class _RunPeakStats:
+class _RunPeakStats(_CallableCB):
     """Per-run callback that computes peak/step statistics on the stop document."""
 
     def __init__(self, x_field, y_fields, uid, update_fn=None):
