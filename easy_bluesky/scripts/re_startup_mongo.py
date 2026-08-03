@@ -334,10 +334,14 @@ class _CallableCB:
     """Mixin that makes a callback class callable as cb(name, doc).
     Required by event-model >= 1.14.0 when a RunRouter factory returns
     callback instances (the RunRouter calls them as callables, not via
-    named methods).
+    named methods).  Uses getattr with a default so callbacks that only
+    implement a subset of document types (e.g. no 'start' method) are
+    silently ignored for the missing types.
     """
     def __call__(self, name, doc):
-        return getattr(self, name)(doc)
+        handler = getattr(self, name, None)
+        if handler is not None:
+            return handler(doc)
 
 
 class _JEnc(_j.JSONEncoder):
