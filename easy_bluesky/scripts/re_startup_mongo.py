@@ -269,20 +269,51 @@ except Exception as _e:
 # Fallback LiveTable: fires only when the descriptor's hints are empty
 # (e.g. older ophyd where SynGauss/SynAxis don't expose .hints).
 # When BEC gets proper hints it already prints a full table; this avoids duplication.
+# The RunRouter factory receives the START document; we must defer table creation
+# until the DESCRIPTOR document arrives (where data_keys and hints actually live).
 try:
     from bluesky.callbacks import LiveTable as _LiveTable
     from event_model import RunRouter as _RRtbl
 
+    class _DeferredLiveTable:
+        """Creates a LiveTable on the descriptor if BEC has no hinted columns."""
+
+        def __init__(self):
+            self._table = None
+
+        def start(self, doc):
+            pass
+
+        def descriptor(self, doc):
+            hinted = []
+            for obj_h in doc.get("hints", {}).values():
+                if isinstance(obj_h, dict):
+                    hinted.extend(obj_h.get("fields", []))
+            if hinted:
+                return  # BEC will show proper columns
+            keys = [k for k in doc.get("data_keys", {})
+                    if not k.endswith("_setpoint")]
+            if keys:
+                self._table = _LiveTable(keys)
+                self._table.descriptor(doc)
+
+        def event(self, doc):
+            if self._table is not None:
+                self._table.event(doc)
+
+        def event_page(self, doc):
+            if self._table is not None:
+                try:
+                    self._table.event_page(doc)
+                except AttributeError:
+                    pass
+
+        def stop(self, doc):
+            if self._table is not None:
+                self._table.stop(doc)
+
     def _fallback_table_factory(name, doc):
-        hinted = [f
-                  for obj_h in doc.get("hints", {}).values()
-                  for f in obj_h.get("fields", [])]
-        if hinted:
-            return [], []   # BEC has good hints — let it handle the table
-        # No hints: build a table from all data_keys, skipping setpoints
-        keys = [k for k in doc.get("data_keys", {})
-                if not k.endswith("_setpoint")]
-        return ([_LiveTable(keys)], []) if keys else ([], [])
+        return [_DeferredLiveTable()], []
 
     RE.subscribe(_RRtbl([_fallback_table_factory]))
     print("[re_startup_mongo] fallback LiveTable subscribed")
