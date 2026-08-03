@@ -120,7 +120,12 @@ class _RunListFetcher(QThread):
 
             query = {}
             if self._exp_dir:
-                query["exp_dir"] = self._exp_dir
+                # Match by folder name rather than full path so that runs
+                # submitted from a different computer (different local path
+                # but same experiment folder name) still appear.
+                import re as _re
+                folder = _re.escape(Path(self._exp_dir).name)
+                query["exp_dir"] = {"$regex": folder + r"/?$"}
 
             starts = list(
                 db["run_start"].find(query, {
