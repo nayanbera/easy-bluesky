@@ -28,6 +28,38 @@ from .live_viewer import LiveViewer
 from .widgets import PlanDialog
 from .queue_manager import RunDetailDialog
 
+# ── Recent-experiments tracking file ──────────────────────────────────────────
+# Stores experiments created or opened from ANY location (not just EXPERIMENTS_DIR).
+# Per-computer — lives in ~/.easy_bluesky/ alongside connection.json.
+
+_RECENT_FILE = Path.home() / ".easy_bluesky" / "recent_experiments.json"
+
+
+def _load_recent_list() -> list:
+    """Return list of {path, name, created, ...} dicts, newest first."""
+    try:
+        if _RECENT_FILE.exists():
+            return json.loads(_RECENT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _save_recent_list(entries: list):
+    try:
+        _RECENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _RECENT_FILE.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _add_to_recent_list(path: str, info: dict):
+    """Upsert an experiment into the recent list, keeping newest first."""
+    entries = _load_recent_list()
+    entries = [e for e in entries if e.get("path") != path]
+    entries.insert(0, {"path": path, **info})
+    _save_recent_list(entries[:30])
+
 # Plans that never produce detector data — shown in neutral color in logs
 _MOTION_PLANS = frozenset({
     "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
@@ -964,25 +996,43 @@ class ExperimentsTab(QWidget):
         runs_dir.mkdir(parents=True, exist_ok=True)
         self.experiment_changed.emit(str(runs_dir))
 
-    def get_recent_experiments(self, limit: int = 10) -> list:
-        """Return list of (path, info) tuples, most-recent first."""
+    def get_recent_experiments(self, limit: int = 12) -> list:
+        """Return list of (path, info) tuples, most-recent first.
+
+        Merges the explicit tracking file (all created/opened experiments,
+        any location) with a scan of EXPERIMENTS_DIR (backward compat for
+        experiments that existed before tracking was introduced).
+        """
+        seen: set  = set()
+        merged: list = []   # (sort_key, path, info)
+
+        # Tracked list — experiments created/opened from anywhere on this computer
+        for entry in _load_recent_list():
+            path = entry.get("path", "")
+            if not path or not Path(path).exists():
+                continue
+            info = {k: v for k, v in entry.items() if k != "path"}
+            seen.add(path)
+            merged.append((entry.get("created", ""), path, info))
+
+        # Scan EXPERIMENTS_DIR — picks up experiments created before tracking
         exps_dir = Path(EXPERIMENTS_DIR)
-        if not exps_dir.exists():
-            return []
-        entries = []
-        for d in exps_dir.iterdir():
-            if not d.is_dir():
-                continue
-            exp_json = d / "experiment.json"
-            if not exp_json.exists():
-                continue
-            try:
-                info = json.loads(exp_json.read_text())
-                entries.append((d.stat().st_mtime, str(d), info))
-            except Exception:
-                pass
-        entries.sort(key=lambda x: x[0], reverse=True)
-        return [(path, info) for _, path, info in entries[:limit]]
+        if exps_dir.exists():
+            for d in exps_dir.iterdir():
+                if not d.is_dir() or str(d) in seen:
+                    continue
+                exp_json = d / "experiment.json"
+                if not exp_json.exists():
+                    continue
+                try:
+                    info = json.loads(exp_json.read_text())
+                    merged.append((info.get("created", ""), str(d), info))
+                    seen.add(str(d))
+                except Exception:
+                    pass
+
+        merged.sort(key=lambda x: x[0], reverse=True)
+        return [(path, info) for _, path, info in merged[:limit]]
 
     # ── HDF5 export ────────────────────────────────────────────────────────────
 
@@ -1115,6 +1165,7 @@ class ExperimentsTab(QWidget):
         return next_t if next_t != float("inf") else 0.0
 
     def _set_active_experiment(self, path: str, info: dict):
+        _add_to_recent_list(path, info)
         self._active_exp_path = path
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
