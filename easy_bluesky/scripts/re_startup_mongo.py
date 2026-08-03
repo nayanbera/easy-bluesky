@@ -358,6 +358,7 @@ except Exception as _e:
 _MONGO_DB   = os.getenv("EASY_BLUESKY_MONGO_DB",   "")
 _MONGO_HOST = os.getenv("EASY_BLUESKY_MONGO_HOST",  "localhost")
 _MONGO_PORT = int(os.getenv("EASY_BLUESKY_MONGO_PORT", "27017"))
+_mongo_peak_stats_update = None   # set below when MongoDB is available
 
 if _MONGO_DB:
     try:
@@ -393,7 +394,19 @@ if _MONGO_DB:
                         print(f"[re_startup_mongo] MongoDB write error ({name}): {_we}")
             return _write
 
+        def _make_peak_stats_updater(_client, _db_name):
+            _db = _client[_db_name]
+            def _do_update(uid, stats):
+                try:
+                    _db["run_start"].update_one(
+                        {"uid": uid}, {"$set": {"peak_stats": stats}}
+                    )
+                except Exception as _ue:
+                    print(f"[PeakStats] MongoDB update error: {_ue}")
+            return _do_update
+
         _mongo_write = _make_mongo_write(_mongo_client, _MONGO_DB)
+        _mongo_peak_stats_update = _make_peak_stats_updater(_mongo_client, _MONGO_DB)
         del _mongo_client  # remove MongoClient from namespace for the same reason
         RE.subscribe(_mongo_write)
         print(
@@ -453,3 +466,147 @@ try:
     print(f"[re_startup_mongo] ZMQ PUB → tcp://*:{_ZMQ_PUB_PORT}")
 except Exception as e:
     print(f"[re_startup_mongo] WARNING: ZMQ PUB not started: {e}")
+
+# ── PeakStats per-run ─────────────────────────────────────────────────────────
+# Computes center, FWHM, COM, max/min for each scan's primary signals.
+# Results are printed to the RE console and (if MongoDB is active) stored as
+# peak_stats on the run_start document for use as fitting initial guesses.
+
+import numpy as _psn
+
+
+def _compute_peak_stats(x, y):
+    """Compute scan statistics for a peak or step profile.
+
+    Returns a dict with: max_pos, max_val, min_pos, min_val, com, cen, fwhm.
+    cen / fwhm use the half-max crossing (works for both peaks and step edges).
+    """
+    i_max = int(_psn.argmax(y))
+    i_min = int(_psn.argmin(y))
+
+    # Center of mass (shift y to be non-negative first)
+    y_pos = y - y.min()
+    denom = float(_psn.sum(y_pos))
+    com = float(_psn.sum(x * y_pos) / denom) if denom > 0 else float(x[i_max])
+
+    # Half-max crossings (interpolated)
+    half = (float(y.max()) + float(y.min())) / 2.0
+    above = y >= half
+    edges = _psn.where(_psn.diff(above.astype(int)))[0]
+
+    def _interp(i):
+        x0, x1 = float(x[i]), float(x[i + 1])
+        y0, y1 = float(y[i]), float(y[i + 1])
+        if y1 == y0:
+            return (x0 + x1) / 2.0
+        return x0 + (half - y0) / (y1 - y0) * (x1 - x0)
+
+    if len(edges) >= 2:
+        xl    = _interp(edges[0])
+        xr    = _interp(edges[-1])
+        cen   = (xl + xr) / 2.0
+        fwhm  = abs(xr - xl)
+    else:
+        cen  = None
+        fwhm = None
+
+    return {
+        "max_pos": float(x[i_max]),
+        "max_val": float(y[i_max]),
+        "min_pos": float(x[i_min]),
+        "min_val": float(y[i_min]),
+        "com":     com,
+        "cen":     cen,
+        "fwhm":    fwhm,
+    }
+
+
+class _RunPeakStats:
+    """Per-run callback that computes peak/step statistics on the stop document."""
+
+    def __init__(self, x_field, y_fields, uid, update_fn=None):
+        self._x_field  = x_field
+        self._y_fields = list(y_fields)
+        self._uid      = uid
+        self._update   = update_fn   # callable(uid, stats_dict) or None
+        self._x        = []
+        self._y        = {f: [] for f in y_fields}
+
+    def event(self, doc):
+        d  = doc.get("data", {})
+        xv = d.get(self._x_field)
+        if xv is None:
+            return
+        try:
+            self._x.append(float(xv))
+        except (TypeError, ValueError):
+            return
+        for f in self._y_fields:
+            yv = d.get(f)
+            if yv is not None:
+                try:
+                    self._y[f].append(float(yv))
+                except (TypeError, ValueError):
+                    pass
+
+    def event_page(self, doc):
+        data = doc.get("data", {})
+        xs   = data.get(self._x_field, [])
+        for i, xv in enumerate(xs):
+            try:
+                self._x.append(float(xv))
+            except (TypeError, ValueError):
+                pass
+            for f in self._y_fields:
+                col = data.get(f, [])
+                if i < len(col):
+                    try:
+                        self._y[f].append(float(col[i]))
+                    except (TypeError, ValueError):
+                        pass
+
+    def stop(self, doc):
+        x = _psn.asarray(self._x)
+        all_stats = {}
+        for f in self._y_fields:
+            y = _psn.asarray(self._y.get(f, []))
+            n = min(len(x), len(y))
+            if n < 3:
+                continue
+            try:
+                st = _compute_peak_stats(x[:n], y[:n])
+                all_stats[f] = st
+                parts = [f"[PeakStats/{f}]"]
+                if st["cen"] is not None:
+                    parts.append(f"cen={st['cen']:.5g}")
+                if st["fwhm"] is not None:
+                    parts.append(f"FWHM={st['fwhm']:.4g}")
+                parts.append(f"COM={st['com']:.5g}")
+                parts.append(f"max={st['max_val']:.4g}@{st['max_pos']:.5g}")
+                print("  " + "  ".join(parts))
+            except Exception as _se:
+                print(f"[PeakStats] Error ({f}): {_se}")
+
+        if all_stats and self._update is not None:
+            self._update(self._uid, all_stats)
+
+
+def _peak_stats_factory(name, doc):
+    motors    = [str(m) for m in (doc.get("motors",    []) or [])]
+    detectors = [str(d) for d in (doc.get("detectors", []) or [])]
+    if not motors or not detectors:
+        return [], []
+    cb = _RunPeakStats(
+        x_field  = motors[0],
+        y_fields = detectors[:4],
+        uid      = doc.get("uid", ""),
+        update_fn= _mongo_peak_stats_update,
+    )
+    return [cb], []
+
+
+try:
+    RE.subscribe(_RR([_peak_stats_factory]))
+    print("[re_startup_mongo] PeakStats subscribed")
+except Exception as _e:
+    print(f"[re_startup_mongo] WARNING: PeakStats not subscribed: {_e}")

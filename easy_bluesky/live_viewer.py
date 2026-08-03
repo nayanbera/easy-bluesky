@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
 from .plot_tools import setup_crosshair
+from . import peak_fit as _peak_fit
 
 
 def _poisson_sigma(y_raw, norm_raw=None):
@@ -85,6 +86,8 @@ class LiveViewer(QWidget):
         self._x_signal = None
         self._saved_x: str  = ""    # X signal from the previous run (for restore)
         self._saved_y: list = []    # selected Y signals from the previous run
+        self._live_fit_curve = None          # dashed fit overlay (PlotDataItem)
+        self._live_fit_n_fitted = 0          # point count at last live-fit call
         self._crosshair_cleanup = None
         self._build()
         self._start_zmq()
@@ -125,6 +128,32 @@ class LiveViewer(QWidget):
         btn_screenshot.setToolTip("Save the current plot as a PNG image")
         btn_screenshot.clicked.connect(self._save_screenshot)
         ctrl.addWidget(btn_screenshot)
+
+        ctrl.addSpacing(12)
+        self._live_fit_cb = QCheckBox("Live Fit:")
+        self._live_fit_cb.setToolTip(
+            "Fit a model to data as the scan runs (first selected Y signal).\n"
+            "Final parameters appear in the plot title on run stop."
+        )
+        self._live_fit_cb.setEnabled(_peak_fit.LMFIT_AVAILABLE)
+        if not _peak_fit.LMFIT_AVAILABLE:
+            self._live_fit_cb.setToolTip("pip install lmfit to enable Live Fit")
+        self._live_fit_cb.stateChanged.connect(self._on_live_fit_toggled)
+        ctrl.addWidget(self._live_fit_cb)
+
+        self._live_fit_model_combo = QComboBox()
+        self._live_fit_model_combo.setFixedHeight(26)
+        self._live_fit_model_combo.setMinimumWidth(110)
+        self._live_fit_model_combo.setMaximumWidth(180)
+        for m in _peak_fit.PEAK_MODELS:
+            self._live_fit_model_combo.addItem(m)
+        self._live_fit_model_combo.insertSeparator(
+            self._live_fit_model_combo.count()
+        )
+        for m in _peak_fit.STEP_MODELS:
+            self._live_fit_model_combo.addItem(m)
+        ctrl.addWidget(self._live_fit_model_combo)
+
         ctrl.addStretch()
 
         self.run_label = QLabel("No active run")
@@ -297,6 +326,8 @@ class LiveViewer(QWidget):
             n      = doc.get("num_events", "?")
             self.run_label.setText(f"Run complete — {status}  ({n} events)")
             self.status_bar.setText("Run finished — waiting for next run…")
+            self._show_peak_stats()
+            self._run_live_fit(force=True)
 
     def _ingest_event(self, seq, t, data):
         self._data.setdefault("seq_num", []).append(float(seq))
@@ -313,6 +344,7 @@ class LiveViewer(QWidget):
             self._auto_setup_from_event(data)
 
         self._update_plot()
+        self._run_live_fit()
         self.status_bar.setText(f"Event #{seq}")
 
     def _auto_setup_from_event(self, data):
@@ -460,6 +492,15 @@ class LiveViewer(QWidget):
     def _reset_run(self):
         self._data    = {}
         self._x_signal = None
+        self._live_fit_n_fitted = 0
+        if PYQTGRAPH_AVAILABLE and self._live_fit_curve is not None:
+            try:
+                self.plot_widget.removeItem(self._live_fit_curve)
+            except Exception:
+                pass
+            self._live_fit_curve = None
+        if PYQTGRAPH_AVAILABLE:
+            self.plot_widget.setTitle("")
         if PYQTGRAPH_AVAILABLE:
             for curve in self._curves.values():
                 try:
@@ -482,6 +523,127 @@ class LiveViewer(QWidget):
         self.y_list.blockSignals(True)
         self.y_list.clear()
         self.y_list.blockSignals(False)
+
+    # ── Peak stats + Live Fit ──────────────────────────────────────────────────
+
+    def _on_live_fit_toggled(self):
+        if not self._live_fit_cb.isChecked():
+            if self._live_fit_curve is not None and PYQTGRAPH_AVAILABLE:
+                try:
+                    self.plot_widget.removeItem(self._live_fit_curve)
+                except Exception:
+                    pass
+                self._live_fit_curve = None
+            self._live_fit_n_fitted = 0
+
+    def _get_fit_xy(self):
+        """Return (x, y, model_name) arrays for the first selected Y signal, or None."""
+        if not self._data:
+            return None
+        x_key = self._x_signal or "seq_num"
+        x = np.array(self._data.get(x_key, []), dtype=float)
+        y_signals = [
+            self.y_list.item(i).text()
+            for i in range(self.y_list.count())
+            if self.y_list.item(i).isSelected()
+        ]
+        if not y_signals:
+            return None
+        y_key = y_signals[0]
+        y = np.array(self._data.get(y_key, []), dtype=float)
+        n = min(len(x), len(y))
+        if n < 5:
+            return None
+        x_, y_ = x[:n], y[:n]
+        mask = np.isfinite(x_) & np.isfinite(y_)
+        x_, y_ = x_[mask], y_[mask]
+        if len(x_) < 5:
+            return None
+        model_name = self._live_fit_model_combo.currentText()
+        if model_name not in _peak_fit.MODELS:
+            return None
+        return x_, y_, model_name
+
+    def _show_peak_stats(self):
+        """Compute peak statistics from accumulated data and show in plot title."""
+        if not PYQTGRAPH_AVAILABLE or not self._data:
+            return
+        result = self._get_fit_xy()
+        if result is None:
+            return
+        x, y, _ = result
+        try:
+            i_max  = int(np.argmax(y))
+            y_pos  = y - y.min()
+            denom  = float(np.sum(y_pos))
+            com    = float(np.sum(x * y_pos) / denom) if denom > 0 else float(x[i_max])
+
+            half   = (float(y.max()) + float(y.min())) / 2.0
+            above  = y >= half
+            edges  = np.where(np.diff(above.astype(int)))[0]
+
+            if len(edges) >= 2:
+                def _ic(i):
+                    x0, x1 = float(x[i]), float(x[i+1])
+                    y0, y1 = float(y[i]), float(y[i+1])
+                    return x0 + (half - y0) / (y1 - y0) * (x1 - x0) if y1 != y0 else (x0+x1)/2
+                xl   = _ic(edges[0])
+                xr   = _ic(edges[-1])
+                cen  = (xl + xr) / 2.0
+                fwhm = abs(xr - xl)
+                title = (f"cen = {cen:.5g}    FWHM = {fwhm:.4g}"
+                         f"    max = {y[i_max]:.4g} @ {x[i_max]:.5g}"
+                         f"    COM = {com:.5g}")
+            else:
+                title = (f"max = {y[i_max]:.4g} @ {x[i_max]:.5g}"
+                         f"    COM = {com:.5g}")
+
+            self.plot_widget.setTitle(title, color="#aaaaaa", size="11pt")
+        except Exception:
+            pass
+
+    def _run_live_fit(self, force=False):
+        """Fit the first selected Y signal with lmfit if Live Fit is enabled.
+
+        Throttled to every 5 new points during a run; always runs when force=True
+        (called on the stop document for a clean final fit).
+        """
+        if not self._live_fit_cb.isChecked():
+            return
+        if not _peak_fit.LMFIT_AVAILABLE or not PYQTGRAPH_AVAILABLE:
+            return
+        result = self._get_fit_xy()
+        if result is None:
+            return
+        x, y, model_name = result
+        n = len(x)
+        if not force and (n - self._live_fit_n_fitted) < 5:
+            return
+        try:
+            params = _peak_fit.auto_guess(x, y, model_name)
+            x_fit, y_fit, info = _peak_fit.run_fit(x, y, params, model_name)
+            self._live_fit_n_fitted = n
+
+            fit_pen = pg.mkPen("#ffcc44", width=2, style=Qt.PenStyle.DashLine)
+            if self._live_fit_curve is None:
+                self._live_fit_curve = self.plot_widget.plot(
+                    x_fit, y_fit, pen=fit_pen, name="live fit"
+                )
+            else:
+                self._live_fit_curve.setData(x_fit, y_fit)
+
+            is_step = model_name.startswith("Step")
+            w_lbl   = "10–90% w" if is_step else "FWHM"
+            cen  = info.get("x0", float("nan"))
+            fwhm = info.get("fwhm", float("nan"))
+            r2   = info.get("r2", 0.0)
+            title = (f"Live Fit: {model_name}"
+                     f"    cen = {cen:.5g}"
+                     f"    {w_lbl} = {fwhm:.4g}"
+                     f"    R² = {r2:.4f}")
+            self.plot_widget.setTitle(title, color="#ffcc44", size="11pt")
+        except Exception:
+            pass
 
     # ── Double-click: move motor ───────────────────────────────────────────────
 
