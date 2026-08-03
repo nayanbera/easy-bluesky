@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSplitter,
-    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 
@@ -254,6 +254,207 @@ class _HDF5Exporter(QThread):
             self.error.emit(str(exc))
 
 
+# ── Run detail dialog (double-click) ──────────────────────────────────────────
+
+class _RunDetailDialog(QDialog):
+    """Non-modal dialog showing all metadata and data for one run."""
+
+    def __init__(self, run: dict, run_data: dict | None, seq_num: int, parent=None):
+        super().__init__(parent)
+        start = run.get("start", {})
+        stop  = run.get("stop",  {})
+        uid   = start.get("uid", "")
+        self.setWindowTitle(f"Run #{seq_num}  —  {start.get('plan_name','?')}  [{uid[:8]}…]")
+        self.setMinimumSize(860, 620)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setWindowFlags(
+            self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint
+        )
+
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+
+        tabs = self._tabs = QTabWidget()
+        root.addWidget(tabs, 1)
+
+        # ── Tab 1: Metadata ───────────────────────────────────────────────────
+        meta_widget = QWidget()
+        meta_lay    = QVBoxLayout(meta_widget)
+        meta_txt    = QTextEdit()
+        meta_txt.setReadOnly(True)
+        meta_txt.setFont(QFont("Courier", 10))
+        meta_txt.setPlainText(self._format_metadata(start, stop, seq_num))
+        meta_lay.addWidget(meta_txt)
+        tabs.addTab(meta_widget, "Metadata")
+
+        # ── Tab 2: Data table ─────────────────────────────────────────────────
+        data_widget = QWidget()
+        data_lay    = QVBoxLayout(data_widget)
+
+        if run_data:
+            stream_combo = QComboBox()
+            streams = run_data.get("streams", {})
+            for s in sorted(streams.keys()):
+                stream_combo.addItem(s)
+            data_lay.addWidget(stream_combo)
+
+            self._data_table = QTableWidget()
+            self._data_table.setEditTriggers(
+                QAbstractItemView.EditTrigger.NoEditTriggers)
+            self._data_table.setAlternatingRowColors(True)
+            self._data_table.setSelectionBehavior(
+                QAbstractItemView.SelectionBehavior.SelectRows)
+            self._data_table.verticalHeader().setVisible(False)
+            data_lay.addWidget(self._data_table, 1)
+
+            self._streams = streams
+            self._populate_data_table(stream_combo.currentText())
+            stream_combo.currentTextChanged.connect(self._populate_data_table)
+        else:
+            data_lay.addWidget(QLabel("Data not yet loaded — select the run first, then double-click."))
+
+        tabs.addTab(data_widget, "Data")
+
+        # ── Tab 3: Peak stats (if present) ────────────────────────────────────
+        peak_stats = start.get("peak_stats")
+        if peak_stats:
+            ps_widget = QWidget()
+            ps_lay    = QVBoxLayout(ps_widget)
+            ps_table  = QTableWidget(0, 7)
+            ps_table.setHorizontalHeaderLabels(
+                ["Signal", "Center", "FWHM", "COM", "Max pos", "Max val", "Min val"])
+            ps_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            ps_table.setAlternatingRowColors(True)
+            ps_table.verticalHeader().setVisible(False)
+            hh = ps_table.horizontalHeader()
+            for i in range(7):
+                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+            for signal, st in peak_stats.items():
+                r = ps_table.rowCount()
+                ps_table.insertRow(r)
+                def _cell(v, fmt=".5g"):
+                    return QTableWidgetItem("—" if v is None else format(float(v), fmt))
+                ps_table.setItem(r, 0, QTableWidgetItem(signal))
+                ps_table.setItem(r, 1, _cell(st.get("cen")))
+                ps_table.setItem(r, 2, _cell(st.get("fwhm")))
+                ps_table.setItem(r, 3, _cell(st.get("com")))
+                ps_table.setItem(r, 4, _cell(st.get("max_pos")))
+                ps_table.setItem(r, 5, _cell(st.get("max_val")))
+                ps_table.setItem(r, 6, _cell(st.get("min_val")))
+            ps_lay.addWidget(ps_table, 1)
+            tabs.addTab(ps_widget, "Peak Stats")
+
+        # ── Tab 4: Raw start doc ──────────────────────────────────────────────
+        raw_widget = QWidget()
+        raw_lay    = QVBoxLayout(raw_widget)
+        raw_txt    = QTextEdit()
+        raw_txt.setReadOnly(True)
+        raw_txt.setFont(QFont("Courier", 9))
+        import json as _json
+        raw_txt.setPlainText(_json.dumps(start, indent=2, default=str))
+        raw_lay.addWidget(raw_txt)
+        tabs.addTab(raw_widget, "Start Doc (raw)")
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton("Copy metadata")
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(meta_txt.toPlainText()))
+        btn_row.addWidget(btn_copy)
+        btn_row.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        btn_row.addWidget(btn_close)
+        root.addLayout(btn_row)
+
+    def _format_metadata(self, start: dict, stop: dict, seq_num: int) -> str:
+        ts_start = start.get("time", 0)
+        ts_stop  = stop.get("time", 0) if stop else 0
+        dur = f"{ts_stop - ts_start:.2f} s" if ts_start and ts_stop else "—"
+        lines = [
+            f"Scan #        : {seq_num}",
+            f"Plan          : {start.get('plan_name', '—')}",
+            f"UID           : {start.get('uid', '—')}",
+            f"Scan ID       : {start.get('scan_id', '—')}",
+            f"Status        : {(stop or {}).get('exit_status', 'running')}",
+            f"Start         : {datetime.fromtimestamp(ts_start).strftime('%Y-%m-%d %H:%M:%S') if ts_start else '—'}",
+            f"Stop          : {datetime.fromtimestamp(ts_stop).strftime('%Y-%m-%d %H:%M:%S') if ts_stop else '—'}",
+            f"Duration      : {dur}",
+            f"Num events    : {(stop or {}).get('num_events', {}).get('primary', '—')}",
+            f"Motors        : {', '.join(start.get('motors', [])) or '—'}",
+            f"Detectors     : {', '.join(start.get('detectors', [])) or '—'}",
+        ]
+        sample = start.get("sample_name", "")
+        if sample:
+            lines.append(f"Sample        : {sample}")
+        exp = start.get("exp_dir", "")
+        if exp:
+            lines.append(f"Exp dir       : {exp}")
+        # extra md keys
+        skip = {"uid", "time", "plan_name", "scan_id", "motors", "detectors",
+                "sample_name", "exp_dir", "hints", "plan_args", "plan_pattern",
+                "plan_type", "peak_stats"}
+        extras = {k: v for k, v in start.items() if k not in skip}
+        if extras:
+            lines.append("")
+            lines.append("─── Extra metadata ───")
+            for k, v in extras.items():
+                lines.append(f"{k:<14}: {v}")
+        ps = start.get("peak_stats")
+        if ps:
+            lines.append("")
+            lines.append("─── Peak stats ───")
+            for sig, st in ps.items():
+                cen  = st.get("cen")
+                fwhm = st.get("fwhm")
+                com  = st.get("com")
+                mxv  = st.get("max_val")
+                mxp  = st.get("max_pos")
+                lines.append(
+                    f"{sig:<14}: cen={_fmt(cen)}  FWHM={_fmt(fwhm)}"
+                    f"  COM={_fmt(com)}  max={_fmt(mxv)}@{_fmt(mxp)}"
+                )
+        return "\n".join(lines)
+
+    def _populate_data_table(self, stream_name: str):
+        sdata = self._streams.get(stream_name, {})
+        data_keys = sdata.get("data_keys", {})
+        fields = [k for k in data_keys if k in sdata]
+        time_arr = sdata.get("time", np.array([]))
+        n = len(time_arr)
+        if not n:
+            self._data_table.setRowCount(0)
+            self._data_table.setColumnCount(0)
+            return
+
+        cols = ["seq_num", "time"] + fields
+        self._data_table.setColumnCount(len(cols))
+        self._data_table.setHorizontalHeaderLabels(cols)
+        self._data_table.setRowCount(n)
+
+        hh = self._data_table.horizontalHeader()
+        for i in range(len(cols)):
+            hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+
+        for i in range(n):
+            self._data_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+            t_str = datetime.fromtimestamp(float(time_arr[i])).strftime("%H:%M:%S.%f")[:-3]
+            self._data_table.setItem(i, 1, QTableWidgetItem(t_str))
+            for j, f in enumerate(fields):
+                arr = sdata.get(f, [])
+                v = arr[i] if i < len(arr) else ""
+                try:
+                    txt = f"{float(v):.6g}"
+                except (TypeError, ValueError):
+                    txt = str(v)
+                item = QTableWidgetItem(txt)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._data_table.setItem(i, j + 2, item)
+
+
+def _fmt(v, spec=".5g"):
+    return "—" if v is None else format(float(v), spec)
+
+
 # ── Main tab ───────────────────────────────────────────────────────────────────
 
 class MongoDataBrowserTab(QWidget):
@@ -371,6 +572,7 @@ class MongoDataBrowserTab(QWidget):
         self._run_table.verticalHeader().setVisible(False)
         self._run_table.setAlternatingRowColors(True)
         self._run_table.itemSelectionChanged.connect(self._on_run_selected)
+        self._run_table.cellDoubleClicked.connect(self._on_run_double_clicked)
         llayout.addWidget(self._run_table, 1)
 
         info_frame = QFrame()
@@ -706,6 +908,19 @@ class MongoDataBrowserTab(QWidget):
 
         self._fetch_timer.stop()
         self._fetch_timer.start(180)
+
+    def _on_run_double_clicked(self, row: int, _col: int):
+        if row >= len(self._runs):
+            return
+        run     = self._runs[row]
+        seq_num = len(self._runs) - row
+        # Find matching run_data if already fetched
+        uid = run["start"].get("uid", "")
+        run_data = next(
+            (rd for rd in self._run_data_list if rd.get("uid") == uid), None
+        )
+        dlg = _RunDetailDialog(run, run_data, seq_num, parent=self)
+        dlg.show()
 
     def _update_info_single(self, row: int):
         if row >= len(self._runs):
