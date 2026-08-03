@@ -1846,17 +1846,14 @@ class MainWindow(QMainWindow):
         if active_running:
             QTimer.singleShot(100, self._do_connect)
         else:
-            # Active profile not running per probe — log and still attempt connect.
-            # The TCP probe can be wrong (firewall, transient failure) so we always
-            # try; the ZMQ worker will report the real status.
+            # TCP probe can return false negatives (firewall, transient) so we
+            # always attempt to connect; only log if the profile isn't in the
+            # registry at all (a genuine misconfiguration worth flagging).
             if active not in [i["name"] for i in instances]:
-                note = f"Profile '{active}' not in registry — attempting connect anyway"
-            elif running_names:
-                note = (f"Profile '{active}' not running per probe — "
-                        f"running: {', '.join(running_names)} — attempting connect anyway")
-            else:
-                note = f"Profile '{active}' not running per probe — attempting connect anyway"
-            self._log(f"[EasyBluesky] {note}")
+                self._log(
+                    f"[EasyBluesky] Profile '{active}' not found in registry — "
+                    f"attempting connect anyway"
+                )
             QTimer.singleShot(200, self._do_connect)
 
     def _on_discovery_failed(self, msg: str):
