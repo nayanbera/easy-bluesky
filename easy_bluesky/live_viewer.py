@@ -141,6 +141,7 @@ class LiveViewer(QWidget):
         if not _peak_fit.LMFIT_AVAILABLE:
             self._live_fit_cb.setToolTip("pip install lmfit to enable Live Fit")
         self._live_fit_cb.stateChanged.connect(self._on_live_fit_toggled)
+        self._live_fit_cb.stateChanged.connect(lambda: self._run_live_fit(force=True))
         ctrl.addWidget(self._live_fit_cb)
 
         self._live_fit_model_combo = QComboBox()
@@ -154,6 +155,9 @@ class LiveViewer(QWidget):
         )
         for m in _peak_fit.STEP_MODELS:
             self._live_fit_model_combo.addItem(m)
+        self._live_fit_model_combo.currentTextChanged.connect(
+            lambda: self._run_live_fit(force=True)
+        )
         ctrl.addWidget(self._live_fit_model_combo)
 
         ctrl.addStretch()
@@ -169,6 +173,7 @@ class LiveViewer(QWidget):
         self.y_list.setMinimumWidth(100)
         self.y_list.setToolTip("Y signals — click to select/deselect")
         self.y_list.itemSelectionChanged.connect(self._update_plot)
+        self.y_list.itemSelectionChanged.connect(lambda: self._run_live_fit(force=True))
         y_panel = QVBoxLayout()
         y_panel.setSpacing(2)
         y_panel.setContentsMargins(4, 0, 0, 0)
@@ -443,6 +448,7 @@ class LiveViewer(QWidget):
     def _on_x_changed(self, text):
         self._x_signal = text
         self._update_plot()
+        self._run_live_fit(force=True)
 
     def _on_err_toggled(self):
         """Remove error items immediately when the checkbox is unchecked."""
