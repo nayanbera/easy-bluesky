@@ -1972,6 +1972,9 @@ def main():
     if selected.get("is_local", False):
         QTimer.singleShot(800, win._on_start_manager_requested)
 
+    # Always prompt for experiment selection — don't auto-restore last session
+    QTimer.singleShot(600, win.experiments_tab.prompt_experiment_on_startup)
+
     sys.exit(app.exec())
 
 

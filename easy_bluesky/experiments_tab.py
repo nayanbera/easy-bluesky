@@ -262,6 +262,94 @@ class _HistoryWidgetStub:
 
 
 
+# ── Startup experiment picker ──────────────────────────────────────────────────
+
+class _StartupExperimentDialog(QDialog):
+    """
+    Shown once at app launch so the user explicitly picks an experiment
+    rather than silently restoring the last session's folder.
+    """
+
+    def __init__(self, recent_experiments: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Experiment")
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(340)
+        self.action = None   # 'new' | 'open' | (path, info) tuple
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        lay.addWidget(QLabel("Select an experiment to work with, or create a new one:"))
+
+        self._list = QListWidget()
+        self._list.setAlternatingRowColors(True)
+        for path, info in recent_experiments:
+            name    = info.get("name", Path(path).name)
+            created = info.get("created", "")[:10]
+            short   = path if len(path) <= 60 else "…" + path[-59:]
+            label   = f"{name}  ({created})" if created else name
+            li = QListWidgetItem(label)
+            li.setToolTip(path)
+            li.setData(Qt.ItemDataRole.UserRole,     path)
+            li.setData(Qt.ItemDataRole.UserRole + 1, info)
+            dim = QLabel(short)   # we store as tooltip, display via text
+            li.setData(Qt.ItemDataRole.UserRole + 2, short)
+            self._list.addItem(li)
+        self._list.itemDoubleClicked.connect(self._on_double_click)
+        lay.addWidget(self._list, 1)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(sep)
+
+        btn_row = QHBoxLayout()
+        btn_new  = QPushButton("New Experiment…")
+        btn_new.setObjectName("btn_primary")
+        btn_new.clicked.connect(self._on_new)
+        btn_open = QPushButton("Open Folder…")
+        btn_open.clicked.connect(self._on_open)
+        btn_skip = QPushButton("Skip")
+        btn_skip.setToolTip("Continue without selecting an experiment")
+        btn_skip.clicked.connect(self.reject)
+        self._btn_load = QPushButton("Load Selected")
+        self._btn_load.setEnabled(False)
+        self._btn_load.clicked.connect(self._on_load)
+
+        btn_row.addWidget(btn_new)
+        btn_row.addWidget(btn_open)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_skip)
+        btn_row.addWidget(self._btn_load)
+        lay.addLayout(btn_row)
+
+        self._list.currentItemChanged.connect(
+            lambda cur, _: self._btn_load.setEnabled(cur is not None)
+        )
+        if self._list.count():
+            self._list.setCurrentRow(0)
+
+    def _on_new(self):
+        self.action = "new"
+        self.accept()
+
+    def _on_open(self):
+        self.action = "open"
+        self.accept()
+
+    def _on_load(self):
+        li = self._list.currentItem()
+        if li:
+            self.action = (li.data(Qt.ItemDataRole.UserRole),
+                           li.data(Qt.ItemDataRole.UserRole + 1))
+            self.accept()
+
+    def _on_double_click(self, li: QListWidgetItem):
+        self.action = (li.data(Qt.ItemDataRole.UserRole),
+                       li.data(Qt.ItemDataRole.UserRole + 1))
+        self.accept()
+
+
 # ── Main experiments tab ───────────────────────────────────────────────────────
 
 class ExperimentsTab(QWidget):
@@ -293,7 +381,6 @@ class ExperimentsTab(QWidget):
         self._hdf5_exporter    = None
         self.history_widget    = _HistoryWidgetStub()
         self._build()
-        self._load_active_experiment()
 
     # ── Layout ─────────────────────────────────────────────────────────────────
 
@@ -784,10 +871,14 @@ class ExperimentsTab(QWidget):
         if not parent_dir:
             return
 
-        ts          = datetime.now()
-        sanitized   = re.sub(r"[^\w\-]", "_", name)
-        folder_name = ts.strftime("%Y%m%d_%H%M%S_") + sanitized
-        exp_dir     = Path(parent_dir) / folder_name
+        ts        = datetime.now()
+        sanitized = re.sub(r"[^\w\-]", "_", name)
+        exp_dir   = Path(parent_dir) / sanitized
+        if exp_dir.exists():
+            suffix = 2
+            while (Path(parent_dir) / f"{sanitized}_{suffix}").exists():
+                suffix += 1
+            exp_dir = Path(parent_dir) / f"{sanitized}_{suffix}"
         runs_dir    = exp_dir / "runs"
         try:
             runs_dir.mkdir(parents=True, exist_ok=True)
@@ -833,6 +924,20 @@ class ExperimentsTab(QWidget):
         runs_dir = Path(path) / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         self.experiment_changed.emit(str(runs_dir))
+
+    def prompt_experiment_on_startup(self):
+        """Show the startup experiment picker.  Called once after the main window shows."""
+        recent = self.get_recent_experiments(12)
+        dlg = _StartupExperimentDialog(recent, parent=self.window())
+        if dlg.exec() != QDialog.DialogCode.Accepted or dlg.action is None:
+            return
+        if dlg.action == "new":
+            self.new_experiment()
+        elif dlg.action == "open":
+            self.open_experiment()
+        elif isinstance(dlg.action, tuple):
+            path, info = dlg.action
+            self.load_experiment(path, info)
 
     def load_experiment(self, path: str, info: dict = None):
         """Public entry point called from File → Recent Experiments menu."""
