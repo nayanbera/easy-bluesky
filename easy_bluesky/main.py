@@ -7,8 +7,8 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPushButton, QStatusBar, QTabWidget,
-    QTextBrowser, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget,
+    QTextBrowser, QToolBar, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from .config import APP_NAME, ACCENT
@@ -1011,6 +1011,7 @@ class MainWindow(QMainWindow):
         self._guard = guard
         self._operator_lock_claimed = False   # True when we hold the remote lock
         self._operator_lock_holder: dict = {} # holder info when another computer holds it
+        self._detached_tabs: dict = {}        # widget → (QMainWindow, orig_index, title)
         self.worker = ZMQWorker()
         self._setup_ui()
         self._setup_worker()
@@ -1041,6 +1042,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.mongo_browser,     "📊  MongoDB Browser")
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
         self.tabs.addTab(self.re_console,        "🖥  RE Console")
+
+        self.tabs.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._on_tab_context_menu)
 
         self.re_bar = REControlBar()
 
@@ -1402,6 +1406,67 @@ class MainWindow(QMainWindow):
 
     def _ts(self) -> str:
         return datetime.now().strftime("%H:%M:%S")
+
+    # ── Tab detach / reattach ───────────────────────────────────────────────
+
+    def _on_tab_context_menu(self, pos):
+        idx = self.tabs.tabBar().tabAt(pos)
+        if idx < 0:
+            return
+        widget = self.tabs.widget(idx)
+        menu = QMenu(self)
+        if widget in self._detached_tabs:
+            act = menu.addAction("Bring to front")
+            act.triggered.connect(lambda: self._detached_tabs[widget][0].raise_())
+        else:
+            act = menu.addAction("Detach to window")
+            act.triggered.connect(lambda: self._detach_tab(self.tabs.indexOf(widget)))
+        menu.exec(self.tabs.tabBar().mapToGlobal(pos))
+
+    def _detach_tab(self, index: int):
+        if index < 0 or index >= self.tabs.count():
+            return
+        widget = self.tabs.widget(index)
+        title  = self.tabs.tabText(index)
+        self.tabs.removeTab(index)
+
+        win = QMainWindow(flags=Qt.WindowType.Window)
+        # Strip leading emoji/spaces for the window title bar
+        clean = title.lstrip("🧪⚙🔧🔬🔭📊🗄🖥  ").strip()
+        win.setWindowTitle(clean)
+        win.resize(900, 650)
+
+        tb = QToolBar("Controls", win)
+        tb.setMovable(False)
+        tb.setFloatable(False)
+        from PyQt6.QtGui import QAction
+        act = QAction("↩  Re-attach to main window", win)
+        act.triggered.connect(lambda: self._reattach_tab(widget))
+        tb.addAction(act)
+        win.addToolBar(tb)
+
+        win.setCentralWidget(widget)
+        widget.show()
+
+        self._detached_tabs[widget] = (win, index, title)
+
+        def _on_win_close(event):
+            self._reattach_tab(widget)
+            event.accept()
+        win.closeEvent = _on_win_close
+
+        win.show()
+
+    def _reattach_tab(self, widget):
+        if widget not in self._detached_tabs:
+            return
+        win, orig_index, title = self._detached_tabs.pop(widget)
+        win.setCentralWidget(QWidget())   # release widget ownership before close
+        win.hide()
+        win.deleteLater()
+        insert_at = min(orig_index, self.tabs.count())
+        self.tabs.insertTab(insert_at, widget, title)
+        self.tabs.setCurrentIndex(insert_at)
 
     def _on_start_requested(self):
         ready, reason = self.experiments_tab.is_ready_to_run()
@@ -1910,6 +1975,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Move Failed", msg)
 
     def closeEvent(self, event):
+        # Hide any detached tab windows before teardown
+        for widget, (win, _idx, _title) in list(self._detached_tabs.items()):
+            win.hide()
+            win.setCentralWidget(QWidget())
+            win.deleteLater()
+        self._detached_tabs.clear()
         self.worker.stop()
         profile   = get_active_profile(self._conn_settings)
         use_local = profile.get("is_local", False) or is_local_host(self._conn_settings)
