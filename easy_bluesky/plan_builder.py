@@ -2286,8 +2286,9 @@ class PlanBuilder(QWidget):
                     catalog.register_code(code, path, PLAN_TYPE_SESSION)
             elif msg != "skipped":
                 self.output.appendPlainText(f"  ✗ {fname}: {msg}")
-        if n_ok:
-            QTimer.singleShot(500, self.worker.reload_plans_devices)
+        # Plan list refresh is handled by the poll loop: when script_upload
+        # completes, the RE Manager transitions executing_task → idle, which
+        # triggers _load_plans_devices() automatically.
 
     def _on_local_plans_removed(self, dir_path: str) -> None:
         """Remove catalog entries for session plans from the removed folder,

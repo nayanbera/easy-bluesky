@@ -644,9 +644,9 @@ class ZMQWorker(QObject):
             self.plans_updated.emit(plans.get("plans_allowed", {}))
             self.devices_updated.emit(devices.get("devices_allowed", {}))
         except Exception as e:
-            # "environment is not open" is a transient state during RE Manager
-            # startup — not a user-visible error; the poll loop will retry.
-            if "environment is not open" not in str(e).lower():
+            msg = str(e).lower()
+            # Suppress transient states that resolve on the next poll cycle.
+            if "environment is not open" not in msg and "must be in idle state" not in msg:
                 self.error_occurred.emit(f"Failed to load plans/devices: {e}")
 
     def reload_plans_devices(self):
@@ -761,20 +761,31 @@ class ZMQWorker(QObject):
                     self.queue_updated.emit(queue.get("items", []))
                     self.history_updated.emit(history.get("items", []))
 
-                    # Reload plans/devices when the environment transitions to
-                    # open (closed → idle).  Also fires on the first poll after
-                    # connect when env is already open, ensuring the list is
-                    # populated even if connect() ran while the env was closed.
                     env_state = status.get("worker_environment_state", "")
                     if not env_state:
                         env_state = "idle" if status.get("worker_environment_exists") else "closed"
-                    _env_open = env_state in ("idle", "executing_plan", "paused")
-                    _was_open = _prev_env_state in ("idle", "executing_plan", "paused")
-                    if _env_open and not _was_open:
+
+                    # "executing_task" = RE Manager running an admin task
+                    # (env_open, script_upload, …).  It is NOT the same as the
+                    # environment being open or closed, so we never use it to
+                    # drive env_opened / env_closed.
+                    _OPEN_STATES = ("idle", "executing_plan", "paused")
+                    _env_open  = env_state in _OPEN_STATES
+                    _was_open  = _prev_env_state in _OPEN_STATES
+                    _was_task  = _prev_env_state == "executing_task"
+                    _was_none  = _prev_env_state is None
+
+                    if _env_open and (not _was_open or _was_none):
+                        # closed → idle (first poll after connect or genuine open)
                         self._load_plans_devices()
                         self.fetch_device_pvnames()
                         self.env_opened.emit()
-                    elif not _env_open and _was_open:
+                    elif _was_task and env_state == "idle":
+                        # executing_task → idle: admin task (e.g. script_upload)
+                        # finished — refresh plan list without re-emitting env_opened.
+                        self._load_plans_devices()
+                    elif env_state == "closed" and _was_open:
+                        # genuine env close
                         self.env_closed.emit()
                     _prev_env_state = env_state
 
