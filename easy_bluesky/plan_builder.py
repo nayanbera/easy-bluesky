@@ -1346,6 +1346,7 @@ class PlanBuilder(QWidget):
         self.worker  = worker
         self.plans   = {}
         self.devices = {}
+        self._env_reload_attempts = 0
         self._build()
 
     def _build(self):
@@ -1681,12 +1682,27 @@ class PlanBuilder(QWidget):
             ts = datetime.now().strftime("%H:%M:%S")
             self.output.appendPlainText(f"[{ts}] ✗ Upload blocked — {err_msg}")
             return
-        ok, msg = self.worker.upload_script(script)
+
         ts = datetime.now().strftime("%H:%M:%S")
-        self.output.appendPlainText(f"[{ts}] {'✓ Uploaded' if ok else '✗ Failed'}: {msg}")
-        if ok:
-            self.worker.reload_plans_devices()
-            self.output.appendPlainText(f"[{ts}] ↻ Plan list refreshed")
+
+        # Save to disk so the plan persists across RE Manager restarts.
+        # re_startup_mongo.py imports user_plans.py automatically on startup;
+        # ssh_manager syncs it to the remote on every restart.
+        _local_path = Path.home() / ".easy_bluesky" / "scripts" / "user_plans.py"
+        try:
+            _local_path.parent.mkdir(parents=True, exist_ok=True)
+            _local_path.write_text(script, encoding="utf-8")
+            self.output.appendPlainText(f"[{ts}] ✓ Saved to {_local_path}")
+        except Exception as _e:
+            self.output.appendPlainText(f"[{ts}] ⚠ Could not save locally: {_e}")
+
+        # Reload the RE environment so the plan is visible immediately and
+        # loaded via the startup-script path (not just script_upload injection).
+        self.worker.close_environment()
+        self.output.appendPlainText(f"[{ts}] ↻ Reloading RE environment — plan will be available shortly…")
+        self._env_reload_attempts = 0
+        QTimer.singleShot(2000, self.worker.open_environment)
+        QTimer.singleShot(4000, self._poll_for_env_ready)
 
     def _open_script(self):
         path, _ = QFileDialog.getOpenFileName(

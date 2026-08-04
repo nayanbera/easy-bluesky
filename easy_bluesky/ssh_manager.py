@@ -215,6 +215,15 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             except Exception:
                 pass  # non-fatal
 
+        # Sync user_plans.py (written by Plan Builder) so custom plans persist
+        # across RE Manager restarts — re_startup_mongo.py imports it automatically.
+        _plans_local = _user_scripts / "user_plans.py"
+        if _remote_scripts_dir and _plans_local.exists():
+            try:
+                sftp.put(str(_plans_local), f"{_remote_scripts_dir}/user_plans.py")
+            except Exception:
+                pass  # non-fatal
+
         sftp.close()
 
         # ── Stop ──────────────────────────────────────────────────────────────

@@ -61,6 +61,19 @@ else:
 if _mod is not None:
     globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
 
+# ── User plans (persisted from Plan Builder code editor) ──────────────────────
+_user_plans_file = str(Path(__file__).parent / "user_plans.py")
+if os.path.exists(_user_plans_file):
+    try:
+        import importlib.util as _ilu_up
+        _spec_up = _ilu_up.spec_from_file_location("_easy_bluesky_user_plans", _user_plans_file)
+        _mod_up  = _ilu_up.module_from_spec(_spec_up)
+        _spec_up.loader.exec_module(_mod_up)
+        globals().update({k: v for k, v in vars(_mod_up).items() if not k.startswith('_')})
+        print("[re_startup_mongo] user_plans.py loaded")
+    except Exception as _e_up:
+        print(f"[re_startup_mongo] WARNING: user_plans.py failed to load: {_e_up}")
+
 # ── Standard bluesky plans ─────────────────────────────────────────────────────
 from bluesky.plans import (
     count, scan, rel_scan, grid_scan, rel_grid_scan,
