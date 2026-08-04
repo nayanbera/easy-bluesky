@@ -1680,6 +1680,8 @@ class PlanFileTreePanel(QWidget):
 # ── PlanBuilder ────────────────────────────────────────────────────────────────
 
 class PlanBuilder(QWidget):
+    plans_uploading = pyqtSignal(str)   # emitted when local plan upload starts (msg)
+
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
         self.worker  = worker
@@ -2275,8 +2277,10 @@ class PlanBuilder(QWidget):
             return
         if _attempt == 0:
             ts = datetime.now().strftime("%H:%M:%S")
-            self.output.appendPlainText(
-                f"[{ts}] ↻ Uploading {len(scripts)} local plan file(s)…")
+            n = len(scripts)
+            self.output.appendPlainText(f"[{ts}] ↻ Uploading {n} local plan file(s)…")
+            self.plans_uploading.emit(
+                f"uploading {n} plan file{'s' if n > 1 else ''}")
         results = self.worker.upload_scripts(scripts)
         catalog = get_catalog()
         n_ok    = 0

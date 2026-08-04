@@ -296,9 +296,21 @@ class DevicesPlansTab(QWidget):
         vlay.setContentsMargins(8, 8, 8, 8)
         vlay.setSpacing(6)
 
+        hdr_row = QHBoxLayout()
         lbl = QLabel("AVAILABLE PLANS")
         lbl.setObjectName("section_title")
-        vlay.addWidget(lbl)
+        self._plan_loading_lbl = QLabel()
+        self._plan_loading_lbl.setStyleSheet(
+            "font-size: 11px; color: #e8a44a; font-style: italic;")
+        self._plan_loading_lbl.setVisible(False)
+        self._plan_loading_timer = QTimer(self)
+        self._plan_loading_timer.setInterval(400)
+        self._plan_loading_timer.timeout.connect(self._tick_plan_loading)
+        self._plan_loading_dots = 0
+        hdr_row.addWidget(lbl)
+        hdr_row.addStretch()
+        hdr_row.addWidget(self._plan_loading_lbl)
+        vlay.addLayout(hdr_row)
 
         # ── Legend ────────────────────────────────────────────────────────────
         legend = QLabel(
@@ -565,7 +577,27 @@ class DevicesPlansTab(QWidget):
         self._refresh_btn.setEnabled(True)
         self._refresh_btn.setText("⟳ Reconnect")
 
+    # ── Plan loading indicator ─────────────────────────────────────────────────
+
+    def show_plan_loading(self, msg: str = "uploading") -> None:
+        self._plan_loading_dots = 0
+        self._plan_loading_lbl.setText(f"⟳ {msg}.")
+        self._plan_loading_lbl.setVisible(True)
+        self._plan_loading_timer.start()
+
+    def hide_plan_loading(self) -> None:
+        self._plan_loading_timer.stop()
+        self._plan_loading_lbl.setVisible(False)
+
+    def _tick_plan_loading(self) -> None:
+        self._plan_loading_dots = (self._plan_loading_dots + 1) % 4
+        text = self._plan_loading_lbl.text().split(".")[0]
+        self._plan_loading_lbl.setText(text + "." * (self._plan_loading_dots + 1))
+
+    # ── Plans update ───────────────────────────────────────────────────────────
+
     def update_plans(self, plans: dict):
+        self.hide_plan_loading()
         self._plans = plans
 
         # Seed the catalog with module-field data from the RE Manager response

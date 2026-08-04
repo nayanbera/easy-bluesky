@@ -1225,6 +1225,10 @@ class MainWindow(QMainWindow):
         _pb_panel.local_plans_added.connect(_dp_panel._refresh)
         _pb_panel.local_plans_removed.connect(lambda _: _dp_panel._refresh())
 
+        # Loading indicator: show spinner in Available Plans header while uploading
+        self.plan_builder.plans_uploading.connect(
+            self.devices_plans_tab.show_plan_loading)
+
         self.devices_plans_tab.plan_file_open_requested.connect(
             self._on_plan_file_open)
 
