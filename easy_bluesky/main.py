@@ -1208,6 +1208,23 @@ class MainWindow(QMainWindow):
 
         self.worker.env_opened.connect(self.plan_builder.reupload_local_plans)
 
+        # Cross-panel sync: both PlanFileTreePanel instances share the same
+        # plans_config.json, so a change in either must refresh the other and
+        # route upload/remove actions through PlanBuilder (which owns the logic).
+        _dp_panel = self.devices_plans_tab._plan_file_panel
+        _pb_panel = self.plan_builder._file_panel
+
+        # Adding a folder in Devices_Plans → upload + refresh PlanBuilder tree
+        _dp_panel.local_plans_added.connect(self.plan_builder.reupload_local_plans)
+        _dp_panel.local_plans_added.connect(_pb_panel._refresh)
+        # Removing a folder in Devices_Plans → env restart + refresh PlanBuilder tree
+        _dp_panel.local_plans_removed.connect(self.plan_builder._on_local_plans_removed)
+        _dp_panel.local_plans_removed.connect(lambda _: _pb_panel._refresh())
+
+        # Adding/removing a folder in PlanBuilder → refresh Devices_Plans tree
+        _pb_panel.local_plans_added.connect(_dp_panel._refresh)
+        _pb_panel.local_plans_removed.connect(lambda _: _dp_panel._refresh())
+
         self.devices_plans_tab.plan_file_open_requested.connect(
             self._on_plan_file_open)
 
