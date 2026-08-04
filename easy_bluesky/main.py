@@ -1389,6 +1389,7 @@ class MainWindow(QMainWindow):
     def _on_error(self, msg):
         self.conn_label.setText("⬤  Error")
         self.conn_label.setStyleSheet("color: #ff7f0e;")
+        self.conn_label.setToolTip(msg)
         self._log(f"[ERROR] {msg}")
 
     def _on_console_line(self, text: str):
