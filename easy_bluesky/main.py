@@ -1206,7 +1206,16 @@ class MainWindow(QMainWindow):
         self.worker.plans_updated.connect(self.experiments_tab.set_plans)
         self.worker.devices_updated.connect(self.experiments_tab.set_devices)
 
-        self.worker.env_opened.connect(self.plan_builder.reupload_local_plans)
+        # Upload local plans after pv_names_ready (not on env_opened directly).
+        # env_opened fires at the same moment fetch_device_pvnames() submits a
+        # function_execute task; the RE Manager is busy until that task finishes.
+        # pv_names_ready fires only after function_execute returns, so the manager
+        # is guaranteed idle — safe to script_upload without races or retries.
+        self._reupload_after_open = False
+        self.worker.env_opened.connect(self._on_env_opened_schedule_reupload)
+        self.worker.pv_names_ready.connect(self._on_pv_names_ready_reupload)
+        # Also trigger if pv_names errors out (RE Manager still idle after error)
+        self.worker.pv_names_error.connect(self._on_pv_names_error_reupload)
 
         # Cross-panel sync: both PlanFileTreePanel instances share the same
         # plans_config.json, so a change in either must refresh the other and
@@ -1443,6 +1452,19 @@ class MainWindow(QMainWindow):
     def _on_devices_updated(self, devices):
         self.queue_mgr.devices = devices
         self.plan_builder.update_devices(devices)
+
+    def _on_env_opened_schedule_reupload(self):
+        self._reupload_after_open = True
+
+    def _on_pv_names_ready_reupload(self, _pv_map: dict):
+        if self._reupload_after_open:
+            self._reupload_after_open = False
+            self.plan_builder.reupload_local_plans()
+
+    def _on_pv_names_error_reupload(self, _: str):
+        if self._reupload_after_open:
+            self._reupload_after_open = False
+            self.plan_builder.reupload_local_plans()
 
     # ── RE control action handlers ─────────────────────────────────────────────
 
