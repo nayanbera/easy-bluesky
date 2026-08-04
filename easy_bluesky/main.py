@@ -1605,7 +1605,10 @@ class MainWindow(QMainWindow):
             else:
                 self._log(f"[{self._ts()}] ✗ Start RE Manager failed")
         else:
-            if not self._operator_lock_claimed:
+            # Only enforce operator lock when connected to a live RE Manager.
+            # If disconnected the RE Manager is not running — no active operator
+            # exists, so SSH-starting it should never be blocked.
+            if self.worker.rm is not None and not self._operator_lock_claimed:
                 other = self._operator_lock_holder.get("host", "another computer")
                 QMessageBox.warning(
                     self, "Restart Blocked",
@@ -1634,7 +1637,7 @@ class MainWindow(QMainWindow):
             self.worker.disconnect()
             self._log(f"[{self._ts()}] RE Manager stopped")
         else:
-            if not self._operator_lock_claimed:
+            if self.worker.rm is not None and not self._operator_lock_claimed:
                 other = self._operator_lock_holder.get("host", "another computer")
                 QMessageBox.warning(
                     self, "Stop Blocked",
