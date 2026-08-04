@@ -751,7 +751,8 @@ class ZMQWorker(QObject):
 
     def poll(self):
         _prev_env_state = None
-        _opening_env    = False   # True after we see closed→executing_task
+        _opening_env    = False  # True after closed→executing_task
+
         while self._active:
             if self.rm and not self._is_connecting:
                 try:
@@ -766,38 +767,35 @@ class ZMQWorker(QObject):
                     if not env_state:
                         env_state = "idle" if status.get("worker_environment_exists") else "closed"
 
-                    # Track whether executing_task is part of an env-open sequence.
                     # environment_open() goes: closed → executing_task → idle.
-                    # script_upload goes: idle → executing_task → idle.
-                    # We only want env_opened to fire for the first case.
+                    # script_upload goes:      idle   → executing_task → idle.
+                    # Only fire env_opened for the first case.
                     _OPEN_STATES = ("idle", "executing_plan", "paused")
-                    _env_open  = env_state in _OPEN_STATES
-                    _was_open  = _prev_env_state in _OPEN_STATES
-                    _was_task  = _prev_env_state == "executing_task"
+                    _env_open = env_state in _OPEN_STATES
+                    _was_open = _prev_env_state in _OPEN_STATES
+                    _was_task = _prev_env_state == "executing_task"
 
                     if env_state == "executing_task" and _prev_env_state in (None, "closed"):
                         _opening_env = True
                     elif env_state == "closed":
                         _opening_env = False
 
-                    if _env_open and (not _was_open or _prev_env_state is None):
-                        # closed → idle directly (poll missed executing_task)
+                    just_opened = (
+                        (_env_open and (not _was_open or _prev_env_state is None)) or
+                        (_was_task and env_state == "idle" and _opening_env)
+                    )
+
+                    if just_opened:
+                        _opening_env = False
                         self._load_plans_devices()
                         self.fetch_device_pvnames()
                         self.env_opened.emit()
                     elif _was_task and env_state == "idle":
-                        if _opening_env:
-                            # executing_task → idle as part of environment_open()
-                            _opening_env = False
-                            self._load_plans_devices()
-                            self.fetch_device_pvnames()
-                            self.env_opened.emit()
-                        else:
-                            # executing_task → idle for script_upload or other task
-                            self._load_plans_devices()
+                        # script_upload or other admin task finished
+                        self._load_plans_devices()
                     elif env_state == "closed" and _was_open:
-                        # genuine env close
                         self.env_closed.emit()
+
                     _prev_env_state = env_state
 
                     # Drain both ZMQ subscriber and SSH log tailer
@@ -970,6 +968,11 @@ class ZMQWorker(QObject):
         results.extend([(False, "skipped")] * skipped)
         return results
 
+    def _on_device_read_error(self, msg: str) -> None:
+        _m = msg.lower()
+        if "environment is not open" not in _m and "must be in idle" not in _m:
+            self.error_occurred.emit(msg)
+
     def read_devices_status(self):
         """Submit read_devices_status() to the RE environment and emit device_readings_updated when done."""
         if self.rm is None:
@@ -980,7 +983,7 @@ class ZMQWorker(QObject):
         self._device_reader = _DeviceStatusReader(self.rm)
         self._device_reader.readings_ready.connect(self.device_readings_updated)
         self._device_reader.read_error.connect(self.device_read_error)
-        self._device_reader.read_error.connect(self.error_occurred)
+        self._device_reader.read_error.connect(self._on_device_read_error)
         self._device_reader.start()
 
     def set_sim_device(self, name: str, value: float):

@@ -2249,10 +2249,12 @@ class PlanBuilder(QWidget):
             self.output.appendPlainText(
                 f"[{ts}] {'✓ Uploaded' if ok else '✗ Upload failed'}: {msg}")
 
-    def reupload_local_plans(self) -> None:
+    def reupload_local_plans(self, _attempt: int = 0) -> None:
         """Re-upload all local user-dir plan files after an env restart.
 
-        Connected to worker.env_opened and local_plans_added.
+        Connected to worker.env_opened and local_plans_added.  Retries up to
+        3 times (2 s apart) when the RE Manager is temporarily busy (e.g.
+        fetch_device_pvnames running function_execute in parallel).
         """
         if not self.worker or not self.worker.rm:
             return
@@ -2271,12 +2273,16 @@ class PlanBuilder(QWidget):
                         pass
         if not scripts:
             return
-        ts = datetime.now().strftime("%H:%M:%S")
-        self.output.appendPlainText(
-            f"[{ts}] ↻ Uploading {len(scripts)} local plan file(s)…")
+        if _attempt == 0:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.output.appendPlainText(
+                f"[{ts}] ↻ Uploading {len(scripts)} local plan file(s)…")
         results = self.worker.upload_scripts(scripts)
         catalog = get_catalog()
-        n_ok = 0
+        n_ok    = 0
+        busy    = False
+        _TRANSIENT = ("not idle", "environment is not open", "executing_task",
+                      "must be in idle")
         for (path, code), (ok, msg) in zip(paths, results):
             fname = Path(path).name
             if ok:
@@ -2284,11 +2290,18 @@ class PlanBuilder(QWidget):
                 self.output.appendPlainText(f"  ✓ {fname}")
                 if catalog:
                     catalog.register_code(code, path, PLAN_TYPE_SESSION)
+            elif any(t in msg.lower() for t in _TRANSIENT):
+                busy = True   # transient — manager was mid-task; retry shortly
             elif msg != "skipped":
                 self.output.appendPlainText(f"  ✗ {fname}: {msg}")
-        # Plan list refresh is handled by the poll loop: when script_upload
-        # completes, the RE Manager transitions executing_task → idle, which
-        # triggers _load_plans_devices() automatically.
+
+        if busy and _attempt < 3:
+            delay = (1 + _attempt) * 2000   # 2 s, 4 s, 6 s
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.output.appendPlainText(
+                f"  [busy] RE Manager not idle — retry #{_attempt + 1} in {delay // 1000} s")
+            QTimer.singleShot(delay, lambda: self.reupload_local_plans(_attempt + 1))
+        # Plan list refresh handled by executing_task → idle in the poll loop.
 
     def _on_local_plans_removed(self, dir_path: str) -> None:
         """Remove catalog entries for session plans from the removed folder,
