@@ -164,6 +164,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
             + conda_block +
             f"export EASY_BLUESKY_DEVICES_FILE={devices_file}\n"
+            f"export EASY_BLUESKY_PLANS_DIR={scripts_path}/{profile_slug(profile_name)}_plans\n"
             f"export BLUESKY_ZMQ_PUB_PORT={_zmq_pub_port}\n"
             "export PYTHONUNBUFFERED=1\n"
             + mongo_exports
@@ -223,6 +224,15 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
                 sftp.put(str(_plans_local), f"{_remote_scripts_dir}/user_plans.py")
             except Exception:
                 pass  # non-fatal
+
+        # Ensure the profile plans directory exists on the remote
+        if _remote_scripts_dir:
+            _slug = profile_slug(profile_name)
+            _remote_plans_dir = f"{_remote_scripts_dir}/{_slug}_plans"
+            try:
+                sftp.mkdir(_remote_plans_dir)
+            except OSError:
+                pass  # already exists
 
         sftp.close()
 
@@ -430,6 +440,105 @@ def release_operator_lock(settings: dict, profile: dict) -> tuple:
         stdout.channel.recv_exit_status()
         client.close()
         return True, "Operator lock released"
+    except Exception as e:
+        return False, str(e)
+
+
+# ── Remote profile-plans directory operations ────────────────────────────────
+
+
+def _plans_dir_name(profile_name: str) -> str:
+    """Return the remote sub-directory name for a profile's plans."""
+    return f"{profile_slug(profile_name)}_plans"
+
+
+def list_remote_plan_files(settings: dict, profile: dict) -> list:
+    """Return a sorted list of .py filenames in the profile's plans dir.
+
+    Creates the plans directory on the remote if it does not yet exist.
+    Returns an empty list on any error.
+    """
+    pname = profile.get("name", "Default")
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        sftp   = client.open_sftp()
+        _, stdout, _ = client.exec_command(
+            "echo $HOME", timeout=5
+        )
+        remote_home = stdout.read().decode().strip() or "~"
+        plans_dir = f"{remote_home}/.easy_bluesky/scripts/{_plans_dir_name(pname)}"
+        try:
+            sftp.mkdir(plans_dir)
+        except OSError:
+            pass  # already exists
+        files = sorted(
+            f for f in sftp.listdir(plans_dir) if f.endswith(".py")
+        )
+        sftp.close()
+        client.close()
+        return files
+    except Exception:
+        return []
+
+
+def read_remote_plan_file(settings: dict, profile: dict, filename: str) -> str:
+    """Read and return the text content of a .py file in the profile's plans dir."""
+    pname = profile.get("name", "Default")
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        sftp   = client.open_sftp()
+        _, stdout, _ = client.exec_command("echo $HOME", timeout=5)
+        remote_home = stdout.read().decode().strip() or "~"
+        path = f"{remote_home}/.easy_bluesky/scripts/{_plans_dir_name(pname)}/{filename}"
+        with sftp.open(path, "r") as fh:
+            content = fh.read().decode("utf-8")
+        sftp.close()
+        client.close()
+        return content
+    except Exception as e:
+        raise IOError(f"Cannot read {filename}: {e}") from e
+
+
+def write_remote_plan_file(settings: dict, profile: dict,
+                           filename: str, content: str) -> tuple:
+    """Write *content* to a .py file in the profile's plans dir.
+
+    Returns (success, message).
+    """
+    pname = profile.get("name", "Default")
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        sftp   = client.open_sftp()
+        _, stdout, _ = client.exec_command("echo $HOME", timeout=5)
+        remote_home = stdout.read().decode().strip() or "~"
+        plans_dir = f"{remote_home}/.easy_bluesky/scripts/{_plans_dir_name(pname)}"
+        try:
+            sftp.mkdir(plans_dir)
+        except OSError:
+            pass
+        path = f"{plans_dir}/{filename}"
+        with sftp.open(path, "w") as fh:
+            fh.write(content.encode("utf-8"))
+        sftp.close()
+        client.close()
+        return True, f"Saved to remote:{path}"
+    except Exception as e:
+        return False, str(e)
+
+
+def delete_remote_plan_file(settings: dict, profile: dict, filename: str) -> tuple:
+    """Delete a .py file from the profile's plans dir.  Returns (success, message)."""
+    pname = profile.get("name", "Default")
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        sftp   = client.open_sftp()
+        _, stdout, _ = client.exec_command("echo $HOME", timeout=5)
+        remote_home = stdout.read().decode().strip() or "~"
+        path = f"{remote_home}/.easy_bluesky/scripts/{_plans_dir_name(pname)}/{filename}"
+        sftp.remove(path)
+        sftp.close()
+        client.close()
+        return True, f"Deleted {filename}"
     except Exception as e:
         return False, str(e)
 

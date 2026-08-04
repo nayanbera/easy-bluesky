@@ -61,18 +61,36 @@ else:
 if _mod is not None:
     globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
 
-# ── User plans (persisted from Plan Builder code editor) ──────────────────────
-_user_plans_file = str(Path(__file__).parent / "user_plans.py")
-if os.path.exists(_user_plans_file):
-    try:
-        import importlib.util as _ilu_up
-        _spec_up = _ilu_up.spec_from_file_location("_easy_bluesky_user_plans", _user_plans_file)
-        _mod_up  = _ilu_up.module_from_spec(_spec_up)
-        _spec_up.loader.exec_module(_mod_up)
-        globals().update({k: v for k, v in vars(_mod_up).items() if not k.startswith('_')})
-        print("[re_startup_mongo] user_plans.py loaded")
-    except Exception as _e_up:
-        print(f"[re_startup_mongo] WARNING: user_plans.py failed to load: {_e_up}")
+# ── Profile plans (from EASY_BLUESKY_PLANS_DIR or legacy user_plans.py) ──────
+_plans_dir = os.getenv("EASY_BLUESKY_PLANS_DIR", "").strip()
+if _plans_dir and os.path.isdir(_plans_dir):
+    # New: load every .py file in the plans directory
+    import importlib.util as _ilu_pd
+    for _pf in sorted(Path(_plans_dir).glob("*.py")):
+        try:
+            _spec_pd = _ilu_pd.spec_from_file_location(_pf.stem, str(_pf))
+            _mod_pd  = _ilu_pd.module_from_spec(_spec_pd)
+            _spec_pd.loader.exec_module(_mod_pd)
+            globals().update({k: v for k, v in vars(_mod_pd).items()
+                              if not k.startswith('_')})
+            print(f"[re_startup_mongo] {_pf.name} loaded")
+        except Exception as _e_pd:
+            print(f"[re_startup_mongo] WARNING: {_pf.name} failed to load: {_e_pd}")
+else:
+    # Backward compat: load user_plans.py from the scripts directory if present
+    _user_plans_file = str(Path(__file__).parent / "user_plans.py")
+    if os.path.exists(_user_plans_file):
+        try:
+            import importlib.util as _ilu_up
+            _spec_up = _ilu_up.spec_from_file_location("_easy_bluesky_user_plans",
+                                                        _user_plans_file)
+            _mod_up  = _ilu_up.module_from_spec(_spec_up)
+            _spec_up.loader.exec_module(_mod_up)
+            globals().update({k: v for k, v in vars(_mod_up).items()
+                              if not k.startswith('_')})
+            print("[re_startup_mongo] user_plans.py loaded (legacy)")
+        except Exception as _e_up:
+            print(f"[re_startup_mongo] WARNING: user_plans.py failed to load: {_e_up}")
 
 # ── Standard bluesky plans ─────────────────────────────────────────────────────
 from bluesky.plans import (

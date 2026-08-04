@@ -2,17 +2,21 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
-    QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit,
+    QTreeWidget, QTreeWidgetItem,
+    QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit, QComboBox,
 )
 from .widgets import NoScrollDoubleSpinBox
 import json
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, QTimer
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QBrush, QColor, QFont
 
 from .config import ACCENT
+from .plans_manager import (
+    PlanCatalog, PLAN_COLORS, PLAN_TYPE_LABELS,
+    plan_type_from_module,
+)
 
 _METADATA_PATH = Path.home() / ".easy_bluesky" / "device_metadata.json"
 
@@ -213,6 +217,7 @@ class DevicesPlansTab(QWidget):
         self._epics_monitor.desc_changed.connect(self._on_desc_changed)
         self._pending_pv_map: dict = {}
         self._installer: _EpicsInstaller | None = None
+        self._plan_catalog: PlanCatalog | None = None
         self._build()
 
     def _build(self):
@@ -293,10 +298,44 @@ class DevicesPlansTab(QWidget):
         lbl.setObjectName("section_title")
         vlay.addWidget(lbl)
 
-        self.plans_list = QListWidget()
-        self.plans_list.setMaximumHeight(200)
-        self.plans_list.currentItemChanged.connect(self._on_plan_selected)
-        vlay.addWidget(self.plans_list)
+        # ── Legend ────────────────────────────────────────────────────────────
+        legend = QLabel(
+            f'<span style="color:{PLAN_COLORS["builtin"]}">■ Bluesky</span>&nbsp;&nbsp;'
+            f'<span style="color:{PLAN_COLORS["profile"]}">■ Profile</span>&nbsp;&nbsp;'
+            f'<span style="color:{PLAN_COLORS["session"]}">■ Session</span>'
+        )
+        legend.setTextFormat(Qt.TextFormat.RichText)
+        legend.setStyleSheet("font-size: 11px; padding: 2px 0;")
+        vlay.addWidget(legend)
+
+        # ── Search + type filter ──────────────────────────────────────────────
+        filter_row = QHBoxLayout()
+        self._plan_search = QLineEdit()
+        self._plan_search.setPlaceholderText("Search plans…")
+        self._plan_search.setClearButtonEnabled(True)
+        self._plan_search.textChanged.connect(self._apply_plan_filter)
+
+        self._plan_type_filter = QComboBox()
+        self._plan_type_filter.addItems(["All Types", "Bluesky", "Profile", "Session"])
+        self._plan_type_filter.setFixedWidth(100)
+        self._plan_type_filter.currentTextChanged.connect(self._apply_plan_filter)
+
+        filter_row.addWidget(self._plan_search, 1)
+        filter_row.addWidget(self._plan_type_filter)
+        vlay.addLayout(filter_row)
+
+        # ── Plans tree ────────────────────────────────────────────────────────
+        self.plans_tree = QTreeWidget()
+        self.plans_tree.setColumnCount(3)
+        self.plans_tree.setHeaderLabels(["Plan", "Type", "Description"])
+        self.plans_tree.header().setStretchLastSection(True)
+        self.plans_tree.header().resizeSection(0, 180)
+        self.plans_tree.header().resizeSection(1, 72)
+        self.plans_tree.setMaximumHeight(230)
+        self.plans_tree.setRootIsDecorated(False)
+        self.plans_tree.setSortingEnabled(False)
+        self.plans_tree.currentItemChanged.connect(self._on_plan_selected)
+        vlay.addWidget(self.plans_tree)
 
         lbl2 = QLabel("PARAMETERS")
         lbl2.setObjectName("section_title")
@@ -514,18 +553,41 @@ class DevicesPlansTab(QWidget):
 
     def update_plans(self, plans: dict):
         self._plans = plans
-        current = self.plans_list.currentItem()
-        current_name = current.text() if current else None
 
-        self.plans_list.clear()
+        # Seed the catalog with module-field data from the RE Manager response
+        if self._plan_catalog is not None:
+            self._plan_catalog.classify_from_plans_dict(plans)
+
+        cur = self.plans_tree.currentItem()
+        current_name = cur.text(0) if cur else None
+
+        self.plans_tree.clear()
         for name in sorted(plans.keys()):
-            self.plans_list.addItem(name)
+            info = plans[name]
 
+            # Determine type and color
+            if self._plan_catalog is not None:
+                ptype = self._plan_catalog.get_type(name)
+            else:
+                ptype = plan_type_from_module(info.get("module", "") or "")
+
+            type_label = PLAN_TYPE_LABELS.get(ptype, ptype)
+            color      = QBrush(QColor(PLAN_COLORS.get(ptype, "#cccccc")))
+            desc       = (info.get("description") or "").split("\n")[0].strip()
+
+            item = QTreeWidgetItem([name, type_label, desc])
+            for col in range(3):
+                item.setForeground(col, color)
+            self.plans_tree.addTopLevelItem(item)
+
+        # Restore previous selection
         if current_name:
-            for i in range(self.plans_list.count()):
-                if self.plans_list.item(i).text() == current_name:
-                    self.plans_list.setCurrentRow(i)
+            for i in range(self.plans_tree.topLevelItemCount()):
+                if self.plans_tree.topLevelItem(i).text(0) == current_name:
+                    self.plans_tree.setCurrentItem(self.plans_tree.topLevelItem(i))
                     break
+
+        self._apply_plan_filter()
 
     # ── Internal ────────────────────────────────────────────────────────────────
 
@@ -689,14 +751,22 @@ class DevicesPlansTab(QWidget):
         self._status_lbl.setText("Fetching PV names from RE environment…")
         self.fetch_pvnames_requested.emit()
 
-    def _on_plan_selected(self, current: QListWidgetItem, _previous):
+    def _on_plan_selected(self, current, _previous):
         if not current:
             self.plan_detail.clear()
             return
-        name   = current.text()
+        name   = current.text(0)
         info   = self._plans.get(name, {})
         params = info.get("parameters", [])
         lines  = [f"Plan: {name}", ""]
+
+        # Source info when catalog is available
+        if self._plan_catalog is not None:
+            src = self._plan_catalog.get_source(name)
+            if src:
+                lines.append(f"Source: {src}")
+                lines.append("")
+
         if params:
             lines.append("Parameters:")
             for p in params:
@@ -708,3 +778,23 @@ class DevicesPlansTab(QWidget):
         else:
             lines.append("No parameters.")
         self.plan_detail.setPlainText("\n".join(lines))
+
+    def set_plan_catalog(self, catalog: PlanCatalog) -> None:
+        """Set the PlanCatalog used for type classification and source lookup."""
+        self._plan_catalog = catalog
+
+    def _apply_plan_filter(self) -> None:
+        """Show/hide plan rows based on text search and type-filter combo."""
+        text        = self._plan_search.text().lower()
+        type_filter = self._plan_type_filter.currentText()   # "All Types" | "Bluesky" | "Profile" | "Session"
+
+        for i in range(self.plans_tree.topLevelItemCount()):
+            item      = self.plans_tree.topLevelItem(i)
+            name      = item.text(0).lower()
+            type_lbl  = item.text(1)
+            desc      = item.text(2).lower()
+
+            text_match = not text or (text in name or text in desc)
+            type_match = type_filter == "All Types" or type_lbl == type_filter
+
+            item.setHidden(not (text_match and type_match))

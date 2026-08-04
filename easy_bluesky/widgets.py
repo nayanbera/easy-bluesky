@@ -756,6 +756,17 @@ class PlanDialog(QDialog):
         self.desc_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
         layout.addWidget(self.desc_label)
 
+        # Source file (populated from PlanCatalog when available)
+        self._source_label = QLabel("")
+        self._source_label.setWordWrap(True)
+        self._source_label.setStyleSheet(
+            "color: #666; font-size: 11px; padding: 2px 4px;"
+            "border-top: 1px solid #333;"
+        )
+        self._source_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self._source_label)
+
         # Scrollable param form
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -787,6 +798,26 @@ class PlanDialog(QDialog):
             return
         info = self.plans[name]
         self.desc_label.setText(info.get("description", ""))
+        # Show source file from catalog if available
+        try:
+            from .plans_manager import get_catalog, PLAN_TYPE_LABELS, PLAN_COLORS
+            cat = get_catalog()
+            if cat:
+                src   = cat.get_source(name)
+                ptype = cat.get_type(name)
+                color = PLAN_COLORS.get(ptype, "#888")
+                label = PLAN_TYPE_LABELS.get(ptype, ptype)
+                if src:
+                    self._source_label.setText(
+                        f'<span style="color:{color}">■ {label}</span>'
+                        f' &nbsp; Source: <tt>{src}</tt>')
+                else:
+                    self._source_label.setText(
+                        f'<span style="color:{color}">■ {label}</span>')
+            else:
+                self._source_label.setText("")
+        except Exception:
+            self._source_label.setText("")
         params = info.get("parameters", [])
         self.param_form = ParamForm(params, self.devices)
         self.form_widget.deleteLater()

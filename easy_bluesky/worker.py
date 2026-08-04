@@ -490,6 +490,7 @@ class ZMQWorker(QObject):
     error_occurred          = pyqtSignal(str)
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
+    env_opened      = pyqtSignal()
     re_manager_started = pyqtSignal(int)   # pid
     console_updated = pyqtSignal(str)      # new console text since last poll
 
@@ -768,6 +769,7 @@ class ZMQWorker(QObject):
                     if _env_open and not _was_open:
                         self._load_plans_devices()
                         self.fetch_device_pvnames()
+                        self.env_opened.emit()
                     _prev_env_state = env_state
 
                     # Drain both ZMQ subscriber and SSH log tailer
@@ -917,6 +919,28 @@ class ZMQWorker(QObject):
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
+
+    def upload_scripts(self, scripts: list) -> list:
+        """Upload multiple Python script strings via script_upload.
+
+        Returns a list of (ok, msg) tuples, one per script.
+        Stops on the first failure and fills remaining entries with (False, "skipped").
+        """
+        results = []
+        for script in scripts:
+            try:
+                r = self.rm.script_upload(script=script)
+                ok  = r.get("success", False)
+                msg = r.get("msg", "")
+                results.append((ok, msg))
+                if not ok:
+                    break
+            except Exception as e:
+                results.append((False, str(e)))
+                break
+        skipped = len(scripts) - len(results)
+        results.extend([(False, "skipped")] * skipped)
+        return results
 
     def read_devices_status(self):
         """Submit read_devices_status() to the RE environment and emit device_readings_updated when done."""

@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
     QAbstractItemView, QPlainTextEdit, QComboBox, QLineEdit, QMessageBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
-    QFileDialog, QCheckBox,
+    QFileDialog, QCheckBox, QInputDialog, QMenu,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QThread
 from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox
 from PyQt6.QtGui import QFont, QColor, QDrag
 
@@ -1340,6 +1340,89 @@ class ComposerWidget(QWidget):
 
 # ── Main PlanBuilder widget (two tabs) ─────────────────────────────────────────
 
+# ── Plan file tree (drag-and-drop aware) ──────────────────────────────────────
+
+class _PlanFileTree(QTreeWidget):
+    """QTreeWidget that accepts folder drops from the OS file manager."""
+    folder_dropped = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if Path(url.toLocalFile()).is_dir():
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            p = url.toLocalFile()
+            if p and Path(p).is_dir():
+                self.folder_dropped.emit(p)
+        event.acceptProposedAction()
+
+
+# ── SFTP background threads ────────────────────────────────────────────────────
+
+class _RemoteFileLister(QThread):
+    result = pyqtSignal(list)
+    error  = pyqtSignal(str)
+
+    def __init__(self, conn_settings, profile, parent=None):
+        super().__init__(parent)
+        self._cs, self._pr = conn_settings, profile
+
+    def run(self):
+        from .ssh_manager import list_remote_plan_files
+        try:
+            self.result.emit(list_remote_plan_files(self._cs, self._pr))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class _RemoteFileReader(QThread):
+    result = pyqtSignal(str, str)   # (filename, content)
+    error  = pyqtSignal(str, str)   # (filename, msg)
+
+    def __init__(self, conn_settings, profile, filename, parent=None):
+        super().__init__(parent)
+        self._cs, self._pr, self._fn = conn_settings, profile, filename
+
+    def run(self):
+        from .ssh_manager import read_remote_plan_file
+        try:
+            self.result.emit(self._fn, read_remote_plan_file(self._cs, self._pr, self._fn))
+        except Exception as e:
+            self.error.emit(self._fn, str(e))
+
+
+class _RemoteFileSaver(QThread):
+    done = pyqtSignal(bool, str)   # (success, message)
+
+    def __init__(self, conn_settings, profile, filename, content, parent=None):
+        super().__init__(parent)
+        self._cs, self._pr = conn_settings, profile
+        self._fn, self._content = filename, content
+
+    def run(self):
+        from .ssh_manager import write_remote_plan_file
+        ok, msg = write_remote_plan_file(self._cs, self._pr, self._fn, self._content)
+        self.done.emit(ok, msg)
+
+
+# ── PlanBuilder ────────────────────────────────────────────────────────────────
+
 class PlanBuilder(QWidget):
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -1347,6 +1430,12 @@ class PlanBuilder(QWidget):
         self.plans   = {}
         self.devices = {}
         self._env_reload_attempts = 0
+        self._conn_settings: dict = {}
+        self._profile_name:  str  = ""
+        self._file_tier:     str  = ""
+        self._file_name:     str  = ""
+        self._dirty:         bool = False
+        self._active_threads: list = []
         self._build()
 
     def _build(self):
@@ -1372,13 +1461,27 @@ class PlanBuilder(QWidget):
     # ── Code editor tab (unchanged from original) ──────────────────────────────
 
     def _build_code_editor(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
+        outer = QWidget()
+        outer_lay = QVBoxLayout(outer)
+        outer_lay.setContentsMargins(8, 8, 8, 8)
+        outer_lay.setSpacing(4)
 
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # ── Left: editor pane ──────────────────────────────────────────────
+        editor_pane = QWidget()
+        lay = QVBoxLayout(editor_pane)
+        lay.setContentsMargins(0, 0, 4, 0)
+
+        title_row = QHBoxLayout()
         lbl = QLabel("CODE EDITOR")
         lbl.setObjectName("section_title")
-        lay.addWidget(lbl)
+        title_row.addWidget(lbl)
+        title_row.addStretch()
+        self._editor_file_lbl = QLabel("")
+        self._editor_file_lbl.setStyleSheet("font-size: 11px; color: #888;")
+        title_row.addWidget(self._editor_file_lbl)
+        lay.addLayout(title_row)
 
         self.editor = CodeEditor()
         self.editor.setFont(QFont("Courier New", 13))
@@ -1388,9 +1491,9 @@ class PlanBuilder(QWidget):
             "    yield from bp.scan([detector], motor, start, stop, num)\n"
         )
         self.highlighter = PythonHighlighter(self.editor.document())
+        self.editor.document().contentsChanged.connect(self._on_editor_changed)
         lay.addWidget(self.editor, 1)
 
-        # Template selector
         tmpl_row = QHBoxLayout()
         tmpl_row.addWidget(QLabel("Template:"))
         self.tmpl_combo = QComboBox()
@@ -1411,7 +1514,7 @@ class PlanBuilder(QWidget):
 
         e_btns = QHBoxLayout()
         btn_open   = QPushButton("📂  Open file")
-        btn_save   = QPushButton("💾  Save to file")
+        btn_save   = QPushButton("💾  Save")
         btn_check  = QPushButton("✔  Check")
         btn_check.setToolTip("Check for syntax errors, undefined names, and missing imports")
         btn_upload = QPushButton("⬆  Upload to RE Manager")
@@ -1438,7 +1541,40 @@ class PlanBuilder(QWidget):
         self.output.setFont(QFont("Courier New", 11))
         lay.addWidget(self.output)
 
-        return w
+        splitter.addWidget(editor_pane)
+
+        # ── Right: file tree pane ──────────────────────────────────────────
+        tree_pane = QWidget()
+        tree_lay = QVBoxLayout(tree_pane)
+        tree_lay.setContentsMargins(4, 0, 0, 0)
+
+        tree_lbl = QLabel("PLAN FILES")
+        tree_lbl.setObjectName("section_title")
+        tree_lay.addWidget(tree_lbl)
+
+        self._file_tree = _PlanFileTree()
+        self._file_tree.setHeaderHidden(True)
+        self._file_tree.setRootIsDecorated(True)
+        self._file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._file_tree.itemClicked.connect(self._on_file_tree_click)
+        self._file_tree.customContextMenuRequested.connect(self._on_file_tree_context)
+        self._file_tree.folder_dropped.connect(self._on_folder_dropped)
+        tree_lay.addWidget(self._file_tree, 1)
+
+        tree_btns = QHBoxLayout()
+        btn_add_folder = QPushButton("＋ Add Folder")
+        btn_add_folder.clicked.connect(self._on_add_folder_clicked)
+        btn_new_file = QPushButton("＋ Remote File")
+        btn_new_file.clicked.connect(self._on_new_remote_file)
+        tree_btns.addWidget(btn_add_folder)
+        tree_btns.addWidget(btn_new_file)
+        tree_lay.addLayout(tree_btns)
+
+        splitter.addWidget(tree_pane)
+        splitter.setSizes([620, 260])
+
+        outer_lay.addWidget(splitter, 1)
+        return outer
 
     # ── Code checking ──────────────────────────────────────────────────────────
 
@@ -1708,15 +1844,27 @@ class PlanBuilder(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Plan", str(Path.home()), "Python files (*.py);;All files (*)")
         if path:
-            self.editor.setPlainText(Path(path).read_text())
-            self.output.appendPlainText(f"Opened {path}")
+            self._open_local_file(path)
 
     def _save_script(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Plan", str(Path.home()), "Python files (*.py)")
-        if path:
-            Path(path).write_text(self.editor.toPlainText(), encoding="utf-8")
-            self.output.appendPlainText(f"Saved to {path}")
+        ts = datetime.now().strftime("%H:%M:%S")
+        if self._file_tier == "remote" and self._file_name:
+            self._save_remote(self.editor.toPlainText())
+        elif self._file_tier == "local" and self._file_name:
+            self._save_local(self.editor.toPlainText())
+        else:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save Plan", str(Path.home()), "Python files (*.py)")
+            if path:
+                try:
+                    Path(path).write_text(self.editor.toPlainText(), encoding="utf-8")
+                    self._file_tier = "local"
+                    self._file_name = path
+                    self._dirty = False
+                    self._editor_file_lbl.setText(Path(path).name)
+                    self.output.appendPlainText(f"[{ts}] ✓ Saved to {path}")
+                except Exception as e:
+                    self.output.appendPlainText(f"[{ts}] ✗ Save failed: {e}")
 
     def _reload_environment(self):
         r = QMessageBox.question(
@@ -1753,6 +1901,297 @@ class PlanBuilder(QWidget):
     def _on_send_to_editor(self, code: str):
         self.editor.setPlainText(code)
         self._tabs.setCurrentIndex(self._editor_tab_index)
+
+    # ── File tree ──────────────────────────────────────────────────────────────
+
+    def set_profile(self, conn_settings: dict) -> None:
+        """Called by MainWindow on connect to populate the file tree."""
+        from .connection_settings import get_active_profile
+        self._conn_settings = conn_settings
+        self._profile_name  = get_active_profile(conn_settings).get("name", "")
+        self._refresh_file_tree()
+
+    def clear_profile(self) -> None:
+        self._conn_settings = {}
+        self._profile_name  = ""
+        self._file_tree.clear()
+
+    def _refresh_file_tree(self) -> None:
+        from .plans_manager import get_user_dirs
+        self._file_tree.clear()
+        bold = QFont()
+        bold.setBold(True)
+
+        self._remote_header = QTreeWidgetItem(
+            [f"📁 {self._profile_name} Plans  (remote)"])
+        self._remote_header.setFont(0, bold)
+        self._remote_header.setData(
+            0, Qt.ItemDataRole.UserRole, {"tier": "header_remote"})
+        self._file_tree.addTopLevelItem(self._remote_header)
+        self._remote_header.setExpanded(True)
+
+        placeholder = QTreeWidgetItem(["  ⏳ Loading…"])
+        placeholder.setFlags(placeholder.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._remote_header.addChild(placeholder)
+
+        if self._conn_settings:
+            self._start_remote_list()
+
+        for d in get_user_dirs(self._profile_name):
+            self._add_local_dir_item(d)
+
+    def _start_remote_list(self) -> None:
+        from .connection_settings import get_active_profile
+        profile = get_active_profile(self._conn_settings)
+        t = _RemoteFileLister(self._conn_settings, profile, self)
+        t.result.connect(self._on_remote_files_listed)
+        t.error.connect(self._on_remote_list_error)
+        t.start()
+        self._active_threads.append(t)
+
+    def _on_remote_files_listed(self, files: list) -> None:
+        self._remote_header.takeChildren()
+        self._remote_header.setText(
+            0, f"📁 {self._profile_name} Plans  (remote, {len(files)} files)")
+        if not files:
+            empty = QTreeWidgetItem(["  (empty — use Upload or ＋ Remote File)"])
+            empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self._remote_header.addChild(empty)
+            return
+        for fn in files:
+            item = QTreeWidgetItem([f"  {fn}"])
+            item.setData(0, Qt.ItemDataRole.UserRole, {"tier": "remote", "name": fn})
+            self._remote_header.addChild(item)
+
+    def _on_remote_list_error(self, msg: str) -> None:
+        self._remote_header.takeChildren()
+        err = QTreeWidgetItem([f"  ⚠ {msg}"])
+        err.setFlags(err.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._remote_header.addChild(err)
+
+    def _add_local_dir_item(self, dir_path: str) -> None:
+        bold = QFont()
+        bold.setBold(True)
+        p = Path(dir_path)
+        header = QTreeWidgetItem([f"📂 {p.name}  ({dir_path})"])
+        header.setFont(0, bold)
+        header.setData(0, Qt.ItemDataRole.UserRole,
+                       {"tier": "header_local", "path": dir_path})
+        self._file_tree.addTopLevelItem(header)
+        header.setExpanded(True)
+        py_files = sorted(p.glob("*.py")) if p.is_dir() else []
+        if not py_files:
+            empty = QTreeWidgetItem(["  (no .py files)"])
+            empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            header.addChild(empty)
+        for f in py_files:
+            item = QTreeWidgetItem([f"  {f.name}"])
+            item.setData(0, Qt.ItemDataRole.UserRole,
+                         {"tier": "local", "name": f.name, "path": str(f)})
+            header.addChild(item)
+
+    def _on_file_tree_click(self, item, col) -> None:
+        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+        tier = data.get("tier", "")
+        if tier not in ("remote", "local"):
+            return
+        if self._dirty:
+            r = QMessageBox.question(
+                self, "Unsaved Changes",
+                f"Discard unsaved changes to '{self._file_name or 'buffer'}' "
+                f"and open '{data.get('name')}'?")
+            if r != QMessageBox.StandardButton.Yes:
+                return
+        if tier == "remote":
+            self._open_remote_file(data["name"])
+        else:
+            self._open_local_file(data["path"])
+
+    def _open_remote_file(self, filename: str) -> None:
+        from .connection_settings import get_active_profile
+        profile = get_active_profile(self._conn_settings)
+        t = _RemoteFileReader(self._conn_settings, profile, filename, self)
+        t.result.connect(self._on_remote_file_read)
+        t.error.connect(self._on_remote_file_error)
+        t.start()
+        self._active_threads.append(t)
+        self.output.appendPlainText(f"  Loading {filename}…")
+
+    def _on_remote_file_read(self, filename: str, content: str) -> None:
+        self.editor.setPlainText(content)
+        self._file_tier = "remote"
+        self._file_name = filename
+        self._dirty = False
+        self._editor_file_lbl.setText(filename)
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(f"[{ts}] Opened remote:{filename}")
+
+    def _on_remote_file_error(self, filename: str, msg: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(f"[{ts}] ✗ Cannot open {filename}: {msg}")
+
+    def _open_local_file(self, path: str) -> None:
+        try:
+            content = Path(path).read_text(encoding="utf-8")
+            self.editor.setPlainText(content)
+            self._file_tier = "local"
+            self._file_name = path
+            self._dirty = False
+            self._editor_file_lbl.setText(Path(path).name)
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.output.appendPlainText(f"[{ts}] Opened {path}")
+        except Exception as e:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.output.appendPlainText(f"[{ts}] ✗ Cannot open {path}: {e}")
+
+    def _on_editor_changed(self) -> None:
+        if not self._dirty:
+            self._dirty = True
+            base = Path(self._file_name).name if self._file_name else ""
+            self._editor_file_lbl.setText((base + " *") if base else "*")
+
+    def _save_remote(self, content: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(f"[{ts}] Saving {self._file_name} to remote…")
+        from .connection_settings import get_active_profile
+        profile = get_active_profile(self._conn_settings)
+        t = _RemoteFileSaver(self._conn_settings, profile,
+                             self._file_name, content, self)
+        t.done.connect(self._on_remote_save_done)
+        t.start()
+        self._active_threads.append(t)
+
+    def _on_remote_save_done(self, ok: bool, msg: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(f"[{ts}] {'✓' if ok else '✗'} {msg}")
+        if ok:
+            self._dirty = False
+            self._editor_file_lbl.setText(self._file_name)
+            self.worker.close_environment()
+            self.output.appendPlainText(f"[{ts}] ↻ Reloading RE environment…")
+            self._env_reload_attempts = 0
+            QTimer.singleShot(2000, self.worker.open_environment)
+            QTimer.singleShot(4000, self._poll_for_env_ready)
+
+    def _save_local(self, content: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        try:
+            Path(self._file_name).write_text(content, encoding="utf-8")
+            self._dirty = False
+            self._editor_file_lbl.setText(Path(self._file_name).name)
+            self.output.appendPlainText(f"[{ts}] ✓ Saved to {self._file_name}")
+        except Exception as e:
+            self.output.appendPlainText(f"[{ts}] ✗ Save failed: {e}")
+            return
+        if self.worker and self.worker.rm:
+            ok, msg = self.worker.upload_script(content)
+            self.output.appendPlainText(
+                f"[{ts}] {'✓ Uploaded' if ok else '✗ Upload failed'}: {msg}")
+
+    def _on_file_tree_context(self, pos) -> None:
+        item = self._file_tree.itemAt(pos)
+        if not item:
+            return
+        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+        tier = data.get("tier", "")
+        menu = QMenu(self)
+        if tier == "remote":
+            menu.addAction("Delete from remote",
+                           lambda: self._delete_remote_file(data["name"]))
+        elif tier == "header_local":
+            menu.addAction("Remove folder from list",
+                           lambda: self._remove_local_dir(data["path"]))
+        if not menu.isEmpty():
+            menu.exec(self._file_tree.mapToGlobal(pos))
+
+    def _delete_remote_file(self, filename: str) -> None:
+        from .connection_settings import get_active_profile
+        from .ssh_manager import delete_remote_plan_file
+        r = QMessageBox.question(
+            self, "Delete File",
+            f"Delete '{filename}' from the remote plans directory?")
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        profile = get_active_profile(self._conn_settings)
+        ok, msg = delete_remote_plan_file(self._conn_settings, profile, filename)
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(f"[{ts}] {'✓' if ok else '✗'} {msg}")
+        if ok:
+            self._start_remote_list()
+
+    def _remove_local_dir(self, dir_path: str) -> None:
+        from .plans_manager import remove_user_dir
+        remove_user_dir(self._profile_name, dir_path)
+        self._refresh_file_tree()
+
+    def _on_add_folder_clicked(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Plan Folder")
+        if path:
+            self._add_folder(path)
+
+    def _on_folder_dropped(self, path: str) -> None:
+        self._add_folder(path)
+
+    def _add_folder(self, path: str) -> None:
+        from .plans_manager import add_user_dir
+        if add_user_dir(self._profile_name, path):
+            self._add_local_dir_item(path)
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.output.appendPlainText(f"[{ts}] Added folder: {path}")
+        else:
+            self.output.appendPlainText(f"  Folder already in list: {path}")
+
+    def _on_new_remote_file(self) -> None:
+        if not self._conn_settings or not self._profile_name:
+            QMessageBox.warning(self, "Not Connected", "Connect to a profile first.")
+            return
+        name, ok = QInputDialog.getText(
+            self, "New Remote Plan File",
+            "Filename (e.g. my_plan.py):")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if not name.endswith(".py"):
+            name += ".py"
+        from .connection_settings import get_active_profile
+        from .ssh_manager import write_remote_plan_file
+        profile = get_active_profile(self._conn_settings)
+        ok2, msg = write_remote_plan_file(
+            self._conn_settings, profile, name,
+            f"# {name}\nimport bluesky.plans as bp\nimport bluesky.plan_stubs as bps\n\n\n"
+        )
+        ts = datetime.now().strftime("%H:%M:%S")
+        if ok2:
+            self.output.appendPlainText(f"[{ts}] ✓ Created {name}")
+            self._start_remote_list()
+            self._open_remote_file(name)
+        else:
+            self.output.appendPlainText(f"[{ts}] ✗ {msg}")
+
+    def reupload_local_plans(self) -> None:
+        """Re-upload all local user-dir plan files after an env restart.
+
+        Connected to worker.env_opened — called whenever the RE environment opens.
+        """
+        if not self.worker or not self.worker.rm:
+            return
+        from .plans_manager import get_user_dirs
+        scripts = []
+        for d in get_user_dirs(self._profile_name):
+            p = Path(d)
+            if p.is_dir():
+                for f in sorted(p.glob("*.py")):
+                    try:
+                        scripts.append(f.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+        if not scripts:
+            return
+        results = self.worker.upload_scripts(scripts)
+        ts = datetime.now().strftime("%H:%M:%S")
+        n_ok = sum(1 for ok, _ in results if ok)
+        self.output.appendPlainText(
+            f"[{ts}] ↻ Re-uploaded {n_ok}/{len(results)} local plan files")
 
     # ── Public update slots ────────────────────────────────────────────────────
 
