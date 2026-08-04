@@ -521,6 +521,12 @@ class CodeEditor(QPlainTextEdit):
             and event.key() == Qt.Key.Key_Space
         )
 
+        # Toggle comment  Ctrl+/
+        if (event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                and event.key() == Qt.Key.Key_Slash):
+            self._toggle_comment()
+            return
+
         # Auto-indent on Enter
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._auto_indent()
@@ -548,6 +554,61 @@ class CodeEditor(QPlainTextEdit):
             return
 
         self._maybe_update_completer(is_ctrl_space)
+
+    # ── Comment toggle ─────────────────────────────────────────────────────────
+
+    def _toggle_comment(self):
+        """Add or remove a leading '# ' on every selected line (Ctrl+/)."""
+        cursor = self.textCursor()
+        doc    = self.document()
+
+        sel_start = cursor.selectionStart()
+        sel_end   = cursor.selectionEnd()
+
+        start_block = doc.findBlock(sel_start)
+        end_block   = doc.findBlock(sel_end)
+        # If selection ends exactly at the start of a block (not the first),
+        # don't include that block — the user selected up to the newline only.
+        if sel_end == end_block.position() and end_block != start_block:
+            end_block = end_block.previous()
+
+        blocks = []
+        b = start_block
+        while b.isValid():
+            blocks.append(b)
+            if b == end_block:
+                break
+            b = b.next()
+
+        non_empty = [b.text() for b in blocks if b.text().strip()]
+        all_commented = bool(non_empty) and all(
+            t.lstrip().startswith('#') for t in non_empty
+        )
+
+        cursor.beginEditBlock()
+        for block in blocks:
+            text = block.text()
+            bc   = QTextCursor(block)
+            if all_commented:
+                stripped = text.lstrip()
+                if stripped.startswith('# '):
+                    idx = text.index('#')
+                    bc.setPosition(block.position() + idx)
+                    bc.movePosition(QTextCursor.MoveOperation.Right,
+                                    QTextCursor.MoveMode.KeepAnchor, 2)
+                    bc.removeSelectedText()
+                elif stripped.startswith('#'):
+                    idx = text.index('#')
+                    bc.setPosition(block.position() + idx)
+                    bc.movePosition(QTextCursor.MoveOperation.Right,
+                                    QTextCursor.MoveMode.KeepAnchor, 1)
+                    bc.removeSelectedText()
+            else:
+                if text.strip():   # leave blank lines alone
+                    indent = len(text) - len(text.lstrip())
+                    bc.setPosition(block.position() + indent)
+                    bc.insertText('# ')
+        cursor.endEditBlock()
 
     # ── Auto-indent ────────────────────────────────────────────────────────────
 
