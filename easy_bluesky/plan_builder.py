@@ -2284,32 +2284,67 @@ class PlanBuilder(QWidget):
         catalog = get_catalog()
         n_ok    = 0
         busy    = False
+        # dir_path → [(fname, short_msg), ...]
+        failed: dict = {}
         _TRANSIENT = ("not idle", "environment is not open", "executing_task",
                       "must be in idle")
         for (path, code), (ok, msg) in zip(paths, results):
-            fname = Path(path).name
+            fname    = Path(path).name
+            dir_path = str(Path(path).parent)
             if ok:
                 n_ok += 1
                 self.output.appendPlainText(f"  ✓ {fname}")
                 if catalog:
                     catalog.register_code(code, path, PLAN_TYPE_SESSION)
             elif any(t in msg.lower() for t in _TRANSIENT):
-                busy = True   # transient — manager was mid-task; retry shortly
+                busy = True
             elif msg != "skipped":
                 self.output.appendPlainText(f"  ✗ {fname}: {msg}")
+                failed.setdefault(dir_path, []).append((fname, msg))
 
         if n_ok:
-            # script_upload is synchronous — by the time we reach here the RE
-            # Manager is already back to idle.  Reload the plan list immediately
-            # so the new plans appear without waiting for the next poll cycle.
             self.worker.reload_plans_devices()
 
+        if failed and _attempt == 0:
+            QTimer.singleShot(0, lambda: self._prompt_remove_bad_plans(failed))
+
         if busy and _attempt < 3:
-            delay = (1 + _attempt) * 2000   # 2 s, 4 s, 6 s
+            delay = (1 + _attempt) * 2000
             ts = datetime.now().strftime("%H:%M:%S")
             self.output.appendPlainText(
                 f"  [busy] RE Manager not idle — retry #{_attempt + 1} in {delay // 1000} s")
             QTimer.singleShot(delay, lambda: self.reupload_local_plans(_attempt + 1))
+
+    def _prompt_remove_bad_plans(self, failed: dict) -> None:
+        """Show one dialog per folder that had upload errors, offering removal."""
+        from PyQt6.QtWidgets import QMessageBox, QPushButton
+        for dir_path, errors in failed.items():
+            folder_name = Path(dir_path).name
+            detail = "\n".join(f"• {f}:\n  {m[:200]}" for f, m in errors)
+
+            mb = QMessageBox(self.window())
+            mb.setWindowTitle("Plan Files Failed to Load")
+            mb.setIcon(QMessageBox.Icon.Warning)
+            mb.setText(
+                f"<b>{len(errors)} file(s)</b> in folder "
+                f"<i>{folder_name}</i> could not be loaded into the RE Manager."
+            )
+            mb.setInformativeText(
+                "This usually means the file uses packages that are not "
+                "installed in the remote conda environment, or it is not a "
+                "valid Bluesky plan file.\n\n"
+                "Remove this folder from Plan Files so the app does not try "
+                "to reload these files on every startup?"
+            )
+            mb.setDetailedText(detail)
+            remove_btn = mb.addButton("Remove Folder from Plan Files",
+                                      QMessageBox.ButtonRole.DestructiveRole)
+            mb.addButton("Keep (I will fix the files manually)",
+                         QMessageBox.ButtonRole.RejectRole)
+            mb.exec()
+
+            if mb.clickedButton() is remove_btn:
+                self._on_local_plans_removed(dir_path)
 
     def _on_local_plans_added(self) -> None:
         """Close and reopen the RE environment so the new plan files are
