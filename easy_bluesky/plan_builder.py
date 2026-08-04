@@ -1580,6 +1580,9 @@ class PlanFileTreePanel(QWidget):
         if tier == "remote":
             menu.addAction("Delete from remote",
                            lambda: self._delete_remote_file(data["name"]))
+        elif tier == "local":
+            menu.addAction("Delete file",
+                           lambda: self._delete_local_file(data["path"]))
         elif tier == "header_local":
             menu.addAction("Remove folder from list",
                            lambda: self._remove_local_dir(data["path"]))
@@ -1611,6 +1614,26 @@ class PlanFileTreePanel(QWidget):
             f"  Plans from this folder remain in Available Plans until you "
             f"Close Env → Open Env.")
         self.local_plans_removed.emit(dir_path)
+
+    def _delete_local_file(self, file_path: str) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+        name = Path(file_path).name
+        if QMessageBox.question(
+                self, "Delete file",
+                f"Permanently delete '{name}' from disk?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            Path(file_path).unlink()
+        except Exception as e:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.output_message.emit(f"[{ts}] Could not delete {name}: {e}")
+            return
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output_message.emit(f"[{ts}] Deleted: {file_path}")
+        self._refresh()
+        self.local_plans_removed.emit(str(Path(file_path).parent))
 
     def _on_add_folder_clicked(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Plan Folder")
