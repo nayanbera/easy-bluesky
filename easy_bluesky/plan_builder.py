@@ -2295,13 +2295,18 @@ class PlanBuilder(QWidget):
             elif msg != "skipped":
                 self.output.appendPlainText(f"  ✗ {fname}: {msg}")
 
+        if n_ok:
+            # script_upload is synchronous — by the time we reach here the RE
+            # Manager is already back to idle.  Reload the plan list immediately
+            # so the new plans appear without waiting for the next poll cycle.
+            self.worker.reload_plans_devices()
+
         if busy and _attempt < 3:
             delay = (1 + _attempt) * 2000   # 2 s, 4 s, 6 s
             ts = datetime.now().strftime("%H:%M:%S")
             self.output.appendPlainText(
                 f"  [busy] RE Manager not idle — retry #{_attempt + 1} in {delay // 1000} s")
             QTimer.singleShot(delay, lambda: self.reupload_local_plans(_attempt + 1))
-        # Plan list refresh handled by executing_task → idle in the poll loop.
 
     def _on_local_plans_removed(self, dir_path: str) -> None:
         """Remove catalog entries for session plans from the removed folder,
