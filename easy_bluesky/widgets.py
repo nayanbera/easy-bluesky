@@ -6,9 +6,10 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QDialogButtonBox, QFormLayout, QScrollArea,
     QListWidget, QListWidgetItem, QComboBox, QLineEdit, QDoubleSpinBox,
     QSpinBox, QCheckBox, QLabel, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QAbstractItemView, QMessageBox, QPushButton, QFileDialog,
+    QAbstractItemView, QMessageBox, QPushButton, QFileDialog, QTreeView,
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QBrush, QColor
 
 
 class NoScrollSpinBox(QSpinBox):
@@ -725,6 +726,71 @@ class ParamForm(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 #  ADD/EDIT PLAN DIALOG
 # ══════════════════════════════════════════════════════════════════════════════
+class _MultiColumnPlanCombo(QComboBox):
+    """QComboBox with a QTreeView popup showing Plan / Type / Description columns."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._model = QStandardItemModel(0, 3, self)
+        self._model.setHorizontalHeaderLabels(["Plan", "Type", "Description"])
+
+        view = QTreeView(self)
+        view.setModel(self._model)
+        view.setRootIsDecorated(False)
+        view.setAllColumnsShowFocus(True)
+        view.header().setStretchLastSection(True)
+        view.header().resizeSection(0, 180)
+        view.header().resizeSection(1, 72)
+        view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setView(view)
+        self.setModel(self._model)
+        self.setModelColumn(0)
+
+    def showPopup(self):
+        self.view().setMinimumWidth(max(self.width(), 580))
+        super().showPopup()
+
+    def populate(self, plans: dict) -> None:
+        """Fill the model from a plans dict (name → info), grouped by type."""
+        self._model.removeRows(0, self._model.rowCount())
+        try:
+            from .plans_manager import (get_catalog, PLAN_COLORS, PLAN_TYPE_LABELS,
+                                        PLAN_TYPE_BUILTIN, PLAN_TYPE_PROFILE,
+                                        PLAN_TYPE_SESSION)
+            cat = get_catalog()
+        except Exception:
+            cat = None
+            PLAN_COLORS  = {}
+            PLAN_TYPE_LABELS = {}
+            PLAN_TYPE_BUILTIN = "builtin"
+            PLAN_TYPE_PROFILE = "profile"
+            PLAN_TYPE_SESSION = "session"
+
+        TYPE_ORDER = {PLAN_TYPE_BUILTIN: 0, PLAN_TYPE_PROFILE: 1, PLAN_TYPE_SESSION: 2}
+        sorted_names = sorted(
+            plans.keys(),
+            key=lambda n: (
+                TYPE_ORDER.get(cat.get_type(n) if cat else PLAN_TYPE_PROFILE, 1),
+                n.lower(),
+            ),
+        )
+        for name in sorted_names:
+            info  = plans[name]
+            ptype = cat.get_type(name) if cat else PLAN_TYPE_PROFILE
+            color = PLAN_COLORS.get(ptype, "#cccccc")
+            label = PLAN_TYPE_LABELS.get(ptype, ptype)
+            desc  = info.get("description", "")
+            brush = QBrush(QColor(color))
+
+            name_item = QStandardItem(name)
+            type_item = QStandardItem(label)
+            desc_item = QStandardItem(desc)
+            for it in (name_item, type_item, desc_item):
+                it.setForeground(brush)
+                it.setEditable(False)
+            self._model.appendRow([name_item, type_item, desc_item])
+
+
 class PlanDialog(QDialog):
     def __init__(self, plans, devices, item=None, parent=None):
         super().__init__(parent)
@@ -744,8 +810,8 @@ class PlanDialog(QDialog):
         # Plan selector
         top = QHBoxLayout()
         top.addWidget(QLabel("Plan:"))
-        self.plan_combo = QComboBox()
-        self.plan_combo.addItems(sorted(self.plans.keys()))
+        self.plan_combo = _MultiColumnPlanCombo()
+        self.plan_combo.populate(self.plans)
         self.plan_combo.currentTextChanged.connect(self._on_plan_changed)
         top.addWidget(self.plan_combo, 1)
         layout.addLayout(top)
