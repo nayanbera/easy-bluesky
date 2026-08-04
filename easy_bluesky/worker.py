@@ -507,6 +507,9 @@ class ZMQWorker(QObject):
         self._doc_writer     = _LocalDocWriter()
         self._device_reader  = None   # strong ref to _DeviceStatusReader
         self._pv_names_reader = None  # strong ref to _PVNamesReader
+        # Set by main thread after script_upload; polled each cycle so
+        # _load_plans_devices() always runs in the poll thread (thread-safe).
+        self._reload_plans_requested = False
 
     @pyqtSlot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -650,9 +653,13 @@ class ZMQWorker(QObject):
                 self.error_occurred.emit(f"Failed to load plans/devices: {e}")
 
     def reload_plans_devices(self):
-        """Re-fetch allowed plans and devices from the RE Manager."""
-        if self.rm:
-            self._load_plans_devices()
+        """Schedule a plans/devices refresh on the next poll cycle.
+
+        Setting a flag instead of calling _load_plans_devices() directly keeps
+        all rm ZMQ calls on the poll thread and avoids socket conflicts when
+        called from the main thread (e.g. after script_upload).
+        """
+        self._reload_plans_requested = True
 
     def diagnose_console(self, info_addr: str, duration: float = 6.0) -> str:
         """
@@ -755,6 +762,9 @@ class ZMQWorker(QObject):
 
         while self._active:
             if self.rm and not self._is_connecting:
+                if self._reload_plans_requested:
+                    self._reload_plans_requested = False
+                    self._load_plans_devices()
                 try:
                     status  = self.rm.status()
                     self.status_updated.emit(status)
