@@ -1208,6 +1208,9 @@ class MainWindow(QMainWindow):
 
         self.worker.env_opened.connect(self.plan_builder.reupload_local_plans)
 
+        self.devices_plans_tab.plan_file_open_requested.connect(
+            self._on_plan_file_open)
+
         self.worker.plans_updated.connect(self._on_plans_updated)
         self.worker.devices_updated.connect(self._on_devices_updated)
 
@@ -1265,6 +1268,7 @@ class MainWindow(QMainWindow):
         self._log(f"[{self._ts()}] ✓ Connected to '{profile.get('name', 'Default')}' RE Manager")
         self._plan_catalog.clear()
         self.plan_builder.set_profile(self._conn_settings)
+        self.devices_plans_tab.set_profile(self._conn_settings)
         _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
         self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(profile.get("name", "Default"))
@@ -1385,6 +1389,11 @@ class MainWindow(QMainWindow):
     def _log(self, msg: str):
         self.queue_mgr.append_console(msg)
         self.experiments_tab.append_console(msg)
+
+    def _on_plan_file_open(self, tier: str, name_or_path: str) -> None:
+        """Open a plan file in the Code Editor and switch to the Plan Builder tab."""
+        self.tabs.setCurrentWidget(self.plan_builder)
+        self.plan_builder.open_file(tier, name_or_path)
 
     def _on_error(self, msg):
         self.conn_label.setText("⬤  Error")

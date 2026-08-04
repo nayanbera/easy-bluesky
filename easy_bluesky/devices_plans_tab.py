@@ -17,6 +17,7 @@ from .plans_manager import (
     PlanCatalog, PLAN_COLORS, PLAN_TYPE_LABELS,
     plan_type_from_module,
 )
+from .plan_builder import PlanFileTreePanel
 
 _METADATA_PATH = Path.home() / ".easy_bluesky" / "device_metadata.json"
 
@@ -184,9 +185,10 @@ class _EPICSMonitor(QObject):
 class DevicesPlansTab(QWidget):
     """Two-panel tab: live device tree (left) | plans + details (right)."""
 
-    fetch_pvnames_requested  = pyqtSignal()
-    poll_sim_values_requested = pyqtSignal()   # triggers worker.read_devices_status()
-    set_sim_device_requested = pyqtSignal(str, float)  # dev_name, new_value
+    fetch_pvnames_requested   = pyqtSignal()
+    poll_sim_values_requested = pyqtSignal()
+    set_sim_device_requested  = pyqtSignal(str, float)
+    plan_file_open_requested  = pyqtSignal(str, str)   # (tier, name_or_path)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -345,7 +347,19 @@ class DevicesPlansTab(QWidget):
         self.plan_detail.setReadOnly(True)
         self.plan_detail.setPlaceholderText("Select a plan to view its parameters…")
         vlay.addWidget(self.plan_detail, 1)
+
+        # ── Plan file tree (click → opens file in Code Editor) ────────────────
+        self._plan_file_panel = PlanFileTreePanel(show_new_remote_btn=False)
+        self._plan_file_panel.setMaximumHeight(200)
+        self._plan_file_panel.file_open_requested.connect(
+            self.plan_file_open_requested)
+        vlay.addWidget(self._plan_file_panel)
+
         return w
+
+    def set_profile(self, conn_settings: dict) -> None:
+        """Called by MainWindow on connect to populate the plan file tree."""
+        self._plan_file_panel.set_profile(conn_settings)
 
     # ── Public slots ────────────────────────────────────────────────────────────
 
