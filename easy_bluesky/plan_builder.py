@@ -1434,7 +1434,8 @@ class PlanFileTreePanel(QWidget):
 
     file_open_requested = pyqtSignal(str, str)   # (tier, name_or_path)
     output_message      = pyqtSignal(str)
-    local_plans_changed = pyqtSignal()           # emitted when local dirs are added/removed
+    local_plans_added   = pyqtSignal()           # folder added — upload immediately
+    local_plans_removed = pyqtSignal(str)        # folder removed (path) — env restart needed
 
     def __init__(self, show_new_remote_btn: bool = True, parent=None):
         super().__init__(parent)
@@ -1604,7 +1605,12 @@ class PlanFileTreePanel(QWidget):
         from .plans_manager import remove_user_dir
         remove_user_dir(self._profile_name, dir_path)
         self._refresh()
-        self.local_plans_changed.emit()
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output_message.emit(
+            f"[{ts}] Removed folder: {dir_path}\n"
+            f"  Plans from this folder remain in Available Plans until you "
+            f"Close Env → Open Env.")
+        self.local_plans_removed.emit(dir_path)
 
     def _on_add_folder_clicked(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Plan Folder")
@@ -1617,7 +1623,7 @@ class PlanFileTreePanel(QWidget):
             self._add_local_dir(path)
             ts = datetime.now().strftime("%H:%M:%S")
             self.output_message.emit(f"[{ts}] Added folder: {path}")
-            self.local_plans_changed.emit()
+            self.local_plans_added.emit()
         else:
             self.output_message.emit(f"  Folder already in list: {path}")
 
@@ -1774,7 +1780,8 @@ class PlanBuilder(QWidget):
         self._file_panel = PlanFileTreePanel(show_new_remote_btn=True)
         self._file_panel.file_open_requested.connect(self._on_file_panel_open)
         self._file_panel.output_message.connect(self.output.appendPlainText)
-        self._file_panel.local_plans_changed.connect(self.reupload_local_plans)
+        self._file_panel.local_plans_added.connect(self.reupload_local_plans)
+        self._file_panel.local_plans_removed.connect(self._on_local_plans_removed)
         splitter.addWidget(self._file_panel)
         splitter.setSizes([620, 260])
 
@@ -2222,18 +2229,21 @@ class PlanBuilder(QWidget):
     def reupload_local_plans(self) -> None:
         """Re-upload all local user-dir plan files after an env restart.
 
-        Connected to worker.env_opened — called whenever the RE environment opens.
+        Connected to worker.env_opened and local_plans_added.
         """
         if not self.worker or not self.worker.rm:
             return
-        from .plans_manager import get_user_dirs
+        from .plans_manager import get_user_dirs, get_catalog, PLAN_TYPE_SESSION
         scripts = []
+        paths   = []
         for d in get_user_dirs(self._profile_name):
             p = Path(d)
             if p.is_dir():
                 for f in sorted(p.glob("*.py")):
                     try:
-                        scripts.append(f.read_text(encoding="utf-8"))
+                        code = f.read_text(encoding="utf-8")
+                        scripts.append(code)
+                        paths.append((str(f), code))
                     except Exception:
                         pass
         if not scripts:
@@ -2243,6 +2253,39 @@ class PlanBuilder(QWidget):
         n_ok = sum(1 for ok, _ in results if ok)
         self.output.appendPlainText(
             f"[{ts}] ↻ Re-uploaded {n_ok}/{len(results)} local plan files")
+        # Register uploaded plans as SESSION so they show amber in the plan list.
+        catalog = get_catalog()
+        if catalog:
+            for (path, code), (ok, _) in zip(paths, results):
+                if ok:
+                    catalog.register_code(code, path, PLAN_TYPE_SESSION)
+        if n_ok:
+            QTimer.singleShot(500, self.worker.reload_plans_devices)
+
+    def _on_local_plans_removed(self, dir_path: str) -> None:
+        """Clear session plans that came from the removed folder from the catalog.
+
+        The plans remain in the live RE environment until Close Env → Open Env;
+        this at least removes their amber 'Session' label from the local catalog
+        so they revert to the default profile classification on next poll.
+        """
+        from .plans_manager import get_catalog, PLAN_TYPE_SESSION
+        import ast as _ast
+        catalog = get_catalog()
+        if not catalog:
+            return
+        p = Path(dir_path)
+        for f in p.glob("*.py"):
+            try:
+                code = f.read_text(encoding="utf-8")
+                tree = _ast.parse(code)
+                for node in _ast.walk(tree):
+                    if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                        if catalog.get_type(node.name) == PLAN_TYPE_SESSION:
+                            catalog._types.pop(node.name, None)
+                            catalog._sources.pop(node.name, None)
+            except Exception:
+                pass
 
     # ── Public update slots ────────────────────────────────────────────────────
 
