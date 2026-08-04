@@ -1434,6 +1434,7 @@ class PlanFileTreePanel(QWidget):
 
     file_open_requested = pyqtSignal(str, str)   # (tier, name_or_path)
     output_message      = pyqtSignal(str)
+    local_plans_changed = pyqtSignal()           # emitted when local dirs are added/removed
 
     def __init__(self, show_new_remote_btn: bool = True, parent=None):
         super().__init__(parent)
@@ -1603,6 +1604,7 @@ class PlanFileTreePanel(QWidget):
         from .plans_manager import remove_user_dir
         remove_user_dir(self._profile_name, dir_path)
         self._refresh()
+        self.local_plans_changed.emit()
 
     def _on_add_folder_clicked(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Plan Folder")
@@ -1615,6 +1617,7 @@ class PlanFileTreePanel(QWidget):
             self._add_local_dir(path)
             ts = datetime.now().strftime("%H:%M:%S")
             self.output_message.emit(f"[{ts}] Added folder: {path}")
+            self.local_plans_changed.emit()
         else:
             self.output_message.emit(f"  Folder already in list: {path}")
 
@@ -1771,6 +1774,7 @@ class PlanBuilder(QWidget):
         self._file_panel = PlanFileTreePanel(show_new_remote_btn=True)
         self._file_panel.file_open_requested.connect(self._on_file_panel_open)
         self._file_panel.output_message.connect(self.output.appendPlainText)
+        self._file_panel.local_plans_changed.connect(self.reupload_local_plans)
         splitter.addWidget(self._file_panel)
         splitter.setSizes([620, 260])
 

@@ -643,7 +643,10 @@ class ZMQWorker(QObject):
             self.plans_updated.emit(plans.get("plans_allowed", {}))
             self.devices_updated.emit(devices.get("devices_allowed", {}))
         except Exception as e:
-            self.error_occurred.emit(f"Failed to load plans/devices: {e}")
+            # "environment is not open" is a transient state during RE Manager
+            # startup — not a user-visible error; the poll loop will retry.
+            if "environment is not open" not in str(e).lower():
+                self.error_occurred.emit(f"Failed to load plans/devices: {e}")
 
     def reload_plans_devices(self):
         """Re-fetch allowed plans and devices from the RE Manager."""
