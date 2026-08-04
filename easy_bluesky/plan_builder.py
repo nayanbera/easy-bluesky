@@ -1434,7 +1434,7 @@ class PlanFileTreePanel(QWidget):
 
     file_open_requested = pyqtSignal(str, str)   # (tier, name_or_path)
     output_message      = pyqtSignal(str)
-    local_plans_added   = pyqtSignal()           # folder added — upload immediately
+    local_plans_added   = pyqtSignal()           # folder added — triggers env restart
     local_plans_removed = pyqtSignal(str)        # folder removed (path) — env restart needed
 
     def __init__(self, show_new_remote_btn: bool = True, parent=None):
@@ -1805,7 +1805,7 @@ class PlanBuilder(QWidget):
         self._file_panel = PlanFileTreePanel(show_new_remote_btn=True)
         self._file_panel.file_open_requested.connect(self._on_file_panel_open)
         self._file_panel.output_message.connect(self.output.appendPlainText)
-        self._file_panel.local_plans_added.connect(self.reupload_local_plans)
+        self._file_panel.local_plans_added.connect(self._on_local_plans_added)
         self._file_panel.local_plans_removed.connect(self._on_local_plans_removed)
         splitter.addWidget(self._file_panel)
         splitter.setSizes([620, 260])
@@ -2252,11 +2252,10 @@ class PlanBuilder(QWidget):
                 f"[{ts}] {'✓ Uploaded' if ok else '✗ Upload failed'}: {msg}")
 
     def reupload_local_plans(self, _attempt: int = 0) -> None:
-        """Re-upload all local user-dir plan files after an env restart.
+        """Re-upload all local user-dir plan files via script_upload.
 
-        Connected to worker.env_opened and local_plans_added.  Retries up to
-        3 times (2 s apart) when the RE Manager is temporarily busy (e.g.
-        fetch_device_pvnames running function_execute in parallel).
+        Called after pv_names_ready fires (env is guaranteed idle at that point).
+        Retries up to 3 times on transient busy errors.
         """
         if not self.worker or not self.worker.rm:
             return
@@ -2311,6 +2310,17 @@ class PlanBuilder(QWidget):
             self.output.appendPlainText(
                 f"  [busy] RE Manager not idle — retry #{_attempt + 1} in {delay // 1000} s")
             QTimer.singleShot(delay, lambda: self.reupload_local_plans(_attempt + 1))
+
+    def _on_local_plans_added(self) -> None:
+        """Close and reopen the RE environment so the new plan files are
+        uploaded via reupload_local_plans() on the next env_opened cycle."""
+        if not self.worker or not self.worker.rm:
+            return
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(
+            f"[{ts}] Plan folder added — restarting environment to load new plans…")
+        self.worker.env_closed.connect(self._reopen_env_after_close)
+        self.worker.close_environment()
 
     def _on_local_plans_removed(self, dir_path: str) -> None:
         """Remove catalog entries for session plans from the removed folder,

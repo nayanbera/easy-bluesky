@@ -1223,8 +1223,8 @@ class MainWindow(QMainWindow):
         _dp_panel = self.devices_plans_tab._plan_file_panel
         _pb_panel = self.plan_builder._file_panel
 
-        # Adding a folder in Devices_Plans → upload + refresh PlanBuilder tree
-        _dp_panel.local_plans_added.connect(self.plan_builder.reupload_local_plans)
+        # Adding a folder in Devices_Plans → env restart + refresh PlanBuilder tree
+        _dp_panel.local_plans_added.connect(self.plan_builder._on_local_plans_added)
         _dp_panel.local_plans_added.connect(_pb_panel._refresh)
         # Removing a folder in Devices_Plans → env restart + refresh PlanBuilder tree
         _dp_panel.local_plans_removed.connect(self.plan_builder._on_local_plans_removed)
