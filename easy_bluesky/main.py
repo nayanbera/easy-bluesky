@@ -1588,6 +1588,26 @@ class MainWindow(QMainWindow):
 
     def _on_close_env_requested(self):
         ok, msg = self.worker.close_environment()
+        if ok:
+            self._log(f"[{self._ts()}] ✓ Close environment: {msg}")
+        elif "foreground task" in msg.lower() or "task execution is in progress" in msg.lower():
+            r = QMessageBox.question(
+                self, "Plan Running",
+                "A plan or task is currently running.\n\n"
+                "Abort it and close the environment?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if r == QMessageBox.StandardButton.Yes:
+                ab_ok, ab_msg = self.worker.re_abort()
+                self._log(f"[{self._ts()}] {'✓' if ab_ok else '✗'} Abort: {ab_msg}")
+                if ab_ok:
+                    QTimer.singleShot(1500, self._close_env_after_abort)
+        else:
+            self._log(f"[{self._ts()}] ✗ Close environment: {msg}")
+
+    def _close_env_after_abort(self):
+        ok, msg = self.worker.close_environment()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Close environment: {msg}")
 
     def _on_start_manager_requested(self):
