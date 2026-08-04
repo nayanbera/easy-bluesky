@@ -6,10 +6,11 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QDialogButtonBox, QFormLayout, QScrollArea,
     QListWidget, QListWidgetItem, QComboBox, QLineEdit, QDoubleSpinBox,
     QSpinBox, QCheckBox, QLabel, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QAbstractItemView, QMessageBox, QPushButton, QFileDialog, QTreeView,
+    QAbstractItemView, QMessageBox, QPushButton, QFileDialog,
+    QTreeView, QTreeWidget, QTreeWidgetItem,
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QBrush, QColor
+from PyQt6.QtGui import QBrush, QColor
 
 
 class NoScrollSpinBox(QSpinBox):
@@ -725,72 +726,6 @@ class ParamForm(QWidget):
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ADD/EDIT PLAN DIALOG
-# ══════════════════════════════════════════════════════════════════════════════
-class _MultiColumnPlanCombo(QComboBox):
-    """QComboBox with a QTreeView popup showing Plan / Type / Description columns."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._model = QStandardItemModel(0, 3, self)
-        self._model.setHorizontalHeaderLabels(["Plan", "Type", "Description"])
-
-        view = QTreeView(self)
-        view.setModel(self._model)
-        view.setRootIsDecorated(False)
-        view.setAllColumnsShowFocus(True)
-        view.header().setStretchLastSection(True)
-        view.header().resizeSection(0, 180)
-        view.header().resizeSection(1, 72)
-        view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.setView(view)
-        self.setModel(self._model)
-        self.setModelColumn(0)
-
-    def showPopup(self):
-        self.view().setMinimumWidth(max(self.width(), 580))
-        super().showPopup()
-
-    def populate(self, plans: dict) -> None:
-        """Fill the model from a plans dict (name → info), grouped by type."""
-        self._model.removeRows(0, self._model.rowCount())
-        try:
-            from .plans_manager import (get_catalog, PLAN_COLORS, PLAN_TYPE_LABELS,
-                                        PLAN_TYPE_BUILTIN, PLAN_TYPE_PROFILE,
-                                        PLAN_TYPE_SESSION)
-            cat = get_catalog()
-        except Exception:
-            cat = None
-            PLAN_COLORS  = {}
-            PLAN_TYPE_LABELS = {}
-            PLAN_TYPE_BUILTIN = "builtin"
-            PLAN_TYPE_PROFILE = "profile"
-            PLAN_TYPE_SESSION = "session"
-
-        TYPE_ORDER = {PLAN_TYPE_BUILTIN: 0, PLAN_TYPE_PROFILE: 1, PLAN_TYPE_SESSION: 2}
-        sorted_names = sorted(
-            plans.keys(),
-            key=lambda n: (
-                TYPE_ORDER.get(cat.get_type(n) if cat else PLAN_TYPE_PROFILE, 1),
-                n.lower(),
-            ),
-        )
-        for name in sorted_names:
-            info  = plans[name]
-            ptype = cat.get_type(name) if cat else PLAN_TYPE_PROFILE
-            color = PLAN_COLORS.get(ptype, "#cccccc")
-            label = PLAN_TYPE_LABELS.get(ptype, ptype)
-            desc  = info.get("description", "")
-            brush = QBrush(QColor(color))
-
-            name_item = QStandardItem(name)
-            type_item = QStandardItem(label)
-            desc_item = QStandardItem(desc)
-            for it in (name_item, type_item, desc_item):
-                it.setForeground(brush)
-                it.setEditable(False)
-            self._model.appendRow([name_item, type_item, desc_item])
-
-
 class PlanDialog(QDialog):
     def __init__(self, plans, devices, item=None, parent=None):
         super().__init__(parent)
@@ -799,48 +734,66 @@ class PlanDialog(QDialog):
         self.item    = item
         self.result_item = None
         self.setWindowTitle("Edit Plan" if item else "Add Plan")
-        self.setMinimumSize(500, 500)
+        self.setMinimumSize(560, 580)
         self._build()
         if item:
             self._populate(item)
 
+    # ── build ──────────────────────────────────────────────────────────────────
+
     def _build(self):
         layout = QVBoxLayout(self)
 
-        # Plan selector
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Plan:"))
-        self.plan_combo = _MultiColumnPlanCombo()
-        self.plan_combo.populate(self.plans)
-        self.plan_combo.currentTextChanged.connect(self._on_plan_changed)
-        top.addWidget(self.plan_combo, 1)
-        layout.addLayout(top)
+        # ── Plan browser ───────────────────────────────────────────────────────
+        filter_row = QHBoxLayout()
+        self._plan_search = QLineEdit()
+        self._plan_search.setPlaceholderText("Search plans…")
+        self._plan_search.textChanged.connect(self._apply_plan_filter)
+        filter_row.addWidget(self._plan_search, 1)
 
-        # Description
+        self._plan_type_filter = QComboBox()
+        self._plan_type_filter.addItems(["All Types", "Bluesky", "Profile", "Session"])
+        self._plan_type_filter.setFixedWidth(100)
+        self._plan_type_filter.currentTextChanged.connect(self._apply_plan_filter)
+        filter_row.addWidget(self._plan_type_filter)
+        layout.addLayout(filter_row)
+
+        self._plan_tree = QTreeWidget()
+        self._plan_tree.setColumnCount(3)
+        self._plan_tree.setHeaderLabels(["Plan", "Type", "Description"])
+        self._plan_tree.header().setStretchLastSection(True)
+        self._plan_tree.header().resizeSection(0, 180)
+        self._plan_tree.header().resizeSection(1, 72)
+        self._plan_tree.setRootIsDecorated(False)
+        self._plan_tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._plan_tree.setFixedHeight(170)
+        self._plan_tree.currentItemChanged.connect(self._on_tree_selection)
+        layout.addWidget(self._plan_tree)
+        self._populate_plan_tree()
+
+        # ── Description / source ───────────────────────────────────────────────
         self.desc_label = QLabel("")
         self.desc_label.setWordWrap(True)
         self.desc_label.setStyleSheet("color: #888; font-size: 12px; padding: 4px;")
         layout.addWidget(self.desc_label)
 
-        # Source file (populated from PlanCatalog when available)
         self._source_label = QLabel("")
         self._source_label.setWordWrap(True)
         self._source_label.setStyleSheet(
             "color: #666; font-size: 11px; padding: 2px 4px;"
-            "border-top: 1px solid #333;"
-        )
+            "border-top: 1px solid #333;")
         self._source_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self._source_label)
 
-        # Scrollable param form
+        # ── Param form ─────────────────────────────────────────────────────────
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.form_widget = QWidget()
         self.scroll.setWidget(self.form_widget)
         layout.addWidget(self.scroll, 1)
 
-        # Metadata
+        # ── Metadata ───────────────────────────────────────────────────────────
         meta_grp = QGroupBox("Metadata (optional)")
         meta_lay = QFormLayout(meta_grp)
         self.meta_edit = QLineEdit()
@@ -848,23 +801,88 @@ class PlanDialog(QDialog):
         meta_lay.addRow("md (JSON):", self.meta_edit)
         layout.addWidget(meta_grp)
 
-        # Buttons
+        # ── Buttons ────────────────────────────────────────────────────────────
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
-            QDialogButtonBox.StandardButton.Cancel
-        )
+            QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
-        self._on_plan_changed(self.plan_combo.currentText())
+        # Select first visible item
+        self._select_first_visible()
+
+    # ── Plan tree helpers ──────────────────────────────────────────────────────
+
+    def _populate_plan_tree(self) -> None:
+        try:
+            from .plans_manager import (get_catalog, PLAN_COLORS, PLAN_TYPE_LABELS,
+                                        PLAN_TYPE_BUILTIN, PLAN_TYPE_PROFILE,
+                                        PLAN_TYPE_SESSION)
+            cat = get_catalog()
+        except Exception:
+            cat = None
+            PLAN_COLORS = {}
+            PLAN_TYPE_LABELS = {}
+            PLAN_TYPE_BUILTIN = "builtin"
+            PLAN_TYPE_PROFILE = "profile"
+            PLAN_TYPE_SESSION = "session"
+
+        TYPE_ORDER = {PLAN_TYPE_BUILTIN: 0, PLAN_TYPE_PROFILE: 1, PLAN_TYPE_SESSION: 2}
+        sorted_names = sorted(
+            self.plans.keys(),
+            key=lambda n: (
+                TYPE_ORDER.get(cat.get_type(n) if cat else PLAN_TYPE_PROFILE, 1),
+                n.lower(),
+            ),
+        )
+        self._plan_tree.clear()
+        for name in sorted_names:
+            info  = self.plans[name]
+            ptype = cat.get_type(name) if cat else PLAN_TYPE_PROFILE
+            color = PLAN_COLORS.get(ptype, "#cccccc")
+            label = PLAN_TYPE_LABELS.get(ptype, ptype)
+            desc  = info.get("description", "")
+            brush = QBrush(QColor(color))
+            it = QTreeWidgetItem([name, label, desc])
+            for col in range(3):
+                it.setForeground(col, brush)
+            self._plan_tree.addTopLevelItem(it)
+
+    def _apply_plan_filter(self) -> None:
+        text       = self._plan_search.text().lower()
+        type_label = self._plan_type_filter.currentText()
+        for i in range(self._plan_tree.topLevelItemCount()):
+            it = self._plan_tree.topLevelItem(i)
+            name_match = (not text or
+                          text in it.text(0).lower() or
+                          text in it.text(2).lower())
+            type_match = (type_label == "All Types" or
+                          it.text(1) == type_label)
+            it.setHidden(not (name_match and type_match))
+        # If the current selection is now hidden, pick the first visible item
+        cur = self._plan_tree.currentItem()
+        if cur and cur.isHidden():
+            self._select_first_visible()
+
+    def _select_first_visible(self) -> None:
+        for i in range(self._plan_tree.topLevelItemCount()):
+            it = self._plan_tree.topLevelItem(i)
+            if not it.isHidden():
+                self._plan_tree.setCurrentItem(it)
+                return
+
+    def _on_tree_selection(self, current, _prev) -> None:
+        if current:
+            self._on_plan_changed(current.text(0))
+
+    # ── Plan change ────────────────────────────────────────────────────────────
 
     def _on_plan_changed(self, name):
         if name not in self.plans:
             return
         info = self.plans[name]
         self.desc_label.setText(info.get("description", ""))
-        # Show source file from catalog if available
         try:
             from .plans_manager import get_catalog, PLAN_TYPE_LABELS, PLAN_COLORS
             cat = get_catalog()
@@ -892,9 +910,12 @@ class PlanDialog(QDialog):
 
     def _populate(self, item):
         name = item.get("name", "")
-        idx  = self.plan_combo.findText(name)
-        if idx >= 0:
-            self.plan_combo.setCurrentIndex(idx)
+        for i in range(self._plan_tree.topLevelItemCount()):
+            it = self._plan_tree.topLevelItem(i)
+            if it.text(0) == name:
+                self._plan_tree.setCurrentItem(it)
+                self._plan_tree.scrollToItem(it)
+                break
         args   = item.get("args", [])
         kwargs = {k: v for k, v in item.get("kwargs", {}).items() if k != "md"}
         self.param_form.set_values(args, kwargs)
@@ -903,7 +924,8 @@ class PlanDialog(QDialog):
             self.meta_edit.setText(json.dumps(md))
 
     def _on_accept(self):
-        plan_name = self.plan_combo.currentText()
+        cur = self._plan_tree.currentItem()
+        plan_name = cur.text(0) if cur else ""
         if plan_name not in self.plans:
             QMessageBox.warning(self, "Error", "Select a valid plan")
             return
