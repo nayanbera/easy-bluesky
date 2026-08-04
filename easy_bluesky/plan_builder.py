@@ -2271,17 +2271,21 @@ class PlanBuilder(QWidget):
                         pass
         if not scripts:
             return
-        results = self.worker.upload_scripts(scripts)
         ts = datetime.now().strftime("%H:%M:%S")
-        n_ok = sum(1 for ok, _ in results if ok)
         self.output.appendPlainText(
-            f"[{ts}] ↻ Re-uploaded {n_ok}/{len(results)} local plan files")
-        # Register uploaded plans as SESSION so they show amber in the plan list.
+            f"[{ts}] ↻ Uploading {len(scripts)} local plan file(s)…")
+        results = self.worker.upload_scripts(scripts)
         catalog = get_catalog()
-        if catalog:
-            for (path, code), (ok, _) in zip(paths, results):
-                if ok:
+        n_ok = 0
+        for (path, code), (ok, msg) in zip(paths, results):
+            fname = Path(path).name
+            if ok:
+                n_ok += 1
+                self.output.appendPlainText(f"  ✓ {fname}")
+                if catalog:
                     catalog.register_code(code, path, PLAN_TYPE_SESSION)
+            elif msg != "skipped":
+                self.output.appendPlainText(f"  ✗ {fname}: {msg}")
         if n_ok:
             QTimer.singleShot(500, self.worker.reload_plans_devices)
 
