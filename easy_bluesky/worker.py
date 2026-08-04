@@ -491,6 +491,7 @@ class ZMQWorker(QObject):
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
     env_opened      = pyqtSignal()
+    env_closed      = pyqtSignal()
     re_manager_started = pyqtSignal(int)   # pid
     console_updated = pyqtSignal(str)      # new console text since last poll
 
@@ -773,6 +774,8 @@ class ZMQWorker(QObject):
                         self._load_plans_devices()
                         self.fetch_device_pvnames()
                         self.env_opened.emit()
+                    elif not _env_open and _was_open:
+                        self.env_closed.emit()
                     _prev_env_state = env_state
 
                     # Drain both ZMQ subscriber and SSH log tailer

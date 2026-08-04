@@ -2263,29 +2263,41 @@ class PlanBuilder(QWidget):
             QTimer.singleShot(500, self.worker.reload_plans_devices)
 
     def _on_local_plans_removed(self, dir_path: str) -> None:
-        """Clear session plans that came from the removed folder from the catalog.
-
-        The plans remain in the live RE environment until Close Env → Open Env;
-        this at least removes their amber 'Session' label from the local catalog
-        so they revert to the default profile classification on next poll.
+        """Remove catalog entries for session plans from the removed folder,
+        then close and reopen the RE environment to unload them from the Worker.
         """
         from .plans_manager import get_catalog, PLAN_TYPE_SESSION
         import ast as _ast
         catalog = get_catalog()
-        if not catalog:
+        if catalog:
+            p = Path(dir_path)
+            for f in p.glob("*.py"):
+                try:
+                    code = f.read_text(encoding="utf-8")
+                    tree = _ast.parse(code)
+                    for node in _ast.walk(tree):
+                        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                            if catalog.get_type(node.name) == PLAN_TYPE_SESSION:
+                                catalog._types.pop(node.name, None)
+                                catalog._sources.pop(node.name, None)
+                except Exception:
+                    pass
+
+        if not self.worker or not self.worker.rm:
             return
-        p = Path(dir_path)
-        for f in p.glob("*.py"):
-            try:
-                code = f.read_text(encoding="utf-8")
-                tree = _ast.parse(code)
-                for node in _ast.walk(tree):
-                    if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
-                        if catalog.get_type(node.name) == PLAN_TYPE_SESSION:
-                            catalog._types.pop(node.name, None)
-                            catalog._sources.pop(node.name, None)
-            except Exception:
-                pass
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(
+            f"[{ts}] Closing RE environment to unload removed plans…")
+        # Reopen as soon as the env_closed signal fires, then env_opened will
+        # trigger reupload_local_plans for any remaining local-folder plans.
+        self.worker.env_closed.connect(self._reopen_env_after_close)
+        self.worker.close_environment()
+
+    def _reopen_env_after_close(self) -> None:
+        self.worker.env_closed.disconnect(self._reopen_env_after_close)
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.output.appendPlainText(f"[{ts}] Reopening RE environment…")
+        self.worker.open_environment()
 
     # ── Public update slots ────────────────────────────────────────────────────
 
