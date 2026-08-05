@@ -1272,6 +1272,8 @@ class MainWindow(QMainWindow):
 
         self.queue_mgr.auto_start_toggled.connect(self._on_auto_start_toggled)
         self.queue_mgr.loop_count_changed.connect(self._on_loop_count_changed)
+        self.experiments_tab.auto_start_toggled.connect(self._on_auto_start_toggled)
+        self.experiments_tab.loop_count_changed.connect(self._on_loop_count_changed)
         self.worker.status_updated.connect(self._on_status_for_loop_and_autostart)
         self.worker.queue_updated.connect(self._on_queue_for_autostart)
 
@@ -1581,10 +1583,13 @@ class MainWindow(QMainWindow):
             self._loop_iteration = 0
             if self._loop_enabled:
                 self._loop_snapshot = self.queue_mgr.get_queue_items()
-                self.queue_mgr.set_loop_iteration(1, self.queue_mgr.spin_loop.value())
+                spin_val = self.queue_mgr.spin_loop.value()
+                self.queue_mgr.set_loop_iteration(1, spin_val)
+                self.experiments_tab.set_loop_iteration(1, spin_val)
             else:
                 self._loop_snapshot = []
                 self.queue_mgr.clear_loop_iteration()
+                self.experiments_tab.clear_loop_iteration()
 
     def _on_pause_requested(self):
         ok, msg = self.worker.re_pause()
@@ -1618,20 +1623,50 @@ class MainWindow(QMainWindow):
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}")
         self._queue_loop_cancelled = True
         self.queue_mgr.clear_loop_iteration()
+        self.experiments_tab.clear_loop_iteration()
 
     # ── Auto-start and loop handlers ──────────────────────────────────────────
 
     def _on_auto_start_toggled(self, enabled: bool) -> None:
         self._auto_start_enabled = enabled
+        # Sync both widgets without re-firing the signal
+        for w in (self.queue_mgr.chk_auto_start, self.experiments_tab.chk_auto_start):
+            if w.isChecked() != enabled:
+                w.blockSignals(True)
+                w.setChecked(enabled)
+                w.blockSignals(False)
 
     def _on_loop_count_changed(self, count: int) -> None:
         # count == -1 means loop disabled (checkbox unchecked)
         if count == -1:
             self._loop_enabled = False
             self.queue_mgr.clear_loop_iteration()
+            self.experiments_tab.clear_loop_iteration()
+            # Uncheck the other widget if it's still checked
+            for w in (self.queue_mgr.chk_loop, self.experiments_tab.chk_loop):
+                if w.isChecked():
+                    w.blockSignals(True)
+                    w.setChecked(False)
+                    w.blockSignals(False)
         else:
             self._loop_enabled = True
             self._loop_count = count
+            # Sync the spinbox on the other widget
+            for spin in (self.queue_mgr.spin_loop, self.experiments_tab.spin_loop):
+                if spin.value() != count:
+                    spin.blockSignals(True)
+                    spin.setValue(count)
+                    spin.blockSignals(False)
+            # Ensure both checkboxes are checked
+            for w in (self.queue_mgr.chk_loop, self.experiments_tab.chk_loop):
+                if not w.isChecked():
+                    w.blockSignals(True)
+                    w.setChecked(True)
+                    w.blockSignals(False)
+            # Ensure spinboxes are enabled on both
+            for spin in (self.queue_mgr.spin_loop, self.experiments_tab.spin_loop):
+                if not spin.isEnabled():
+                    spin.setEnabled(True)
 
     def _on_queue_for_autostart(self, items: list) -> None:
         n = len(items)
@@ -1667,17 +1702,21 @@ class MainWindow(QMainWindow):
         spin_val = self.queue_mgr.spin_loop.value()
         if spin_val > 0:
             new_val = spin_val - 1
-            self.queue_mgr.spin_loop.blockSignals(True)
-            self.queue_mgr.spin_loop.setValue(new_val)
-            self.queue_mgr.spin_loop.blockSignals(False)
+            for spin in (self.queue_mgr.spin_loop, self.experiments_tab.spin_loop):
+                spin.blockSignals(True)
+                spin.setValue(new_val)
+                spin.blockSignals(False)
             if new_val == 0:
                 # Last finite iteration exhausted — stop looping
                 self.queue_mgr.chk_loop.setChecked(False)
                 self.queue_mgr.clear_loop_iteration()
+                self.experiments_tab.chk_loop.setChecked(False)
+                self.experiments_tab.clear_loop_iteration()
                 return
         # spin_val == 0 means infinite → keep looping
         self._loop_iteration += 1
         self.queue_mgr.set_loop_iteration(self._loop_iteration + 1, spin_val)
+        self.experiments_tab.set_loop_iteration(self._loop_iteration + 1, spin_val)
         for item in snapshot:
             item_copy = {k: v for k, v in item.items() if k != 'item_uid'}
             self.worker.add_item(item_copy)

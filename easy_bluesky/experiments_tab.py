@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
     QMainWindow, QLineEdit, QFormLayout, QGroupBox, QMenu, QFrame,
+    QCheckBox, QSpinBox,
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer
 from PyQt6.QtGui import QColor, QFont
@@ -398,6 +399,8 @@ class ExperimentsTab(QWidget):
     resume_requested   = pyqtSignal()
     abort_requested    = pyqtSignal()
     stop_requested     = pyqtSignal()
+    auto_start_toggled = pyqtSignal(bool)
+    loop_count_changed = pyqtSignal(int)   # 0 = ∞; -1 = loop disabled
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -564,6 +567,51 @@ class ExperimentsTab(QWidget):
         self.btn_q_resume.clicked.connect(self.resume_requested)
         self.btn_q_abort.clicked.connect(self.abort_requested)
         self.btn_q_stop.clicked.connect(self.stop_requested)
+
+        # Auto-start + Loop row
+        opt_row = QHBoxLayout()
+        opt_row.setSpacing(8)
+
+        self.chk_auto_start = QCheckBox("Auto-start")
+        self.chk_auto_start.setToolTip(
+            "Automatically start the queue when the first plan is added\n"
+            "and the RE is idle.")
+        opt_row.addWidget(self.chk_auto_start)
+
+        vsep1 = QFrame()
+        vsep1.setFrameShape(QFrame.Shape.VLine)
+        vsep1.setFrameShadow(QFrame.Shadow.Sunken)
+        vsep1.setFixedWidth(1)
+        opt_row.addWidget(vsep1)
+
+        self.chk_loop = QCheckBox("Loop")
+        self.chk_loop.setToolTip("Re-run the queue repeatedly after it finishes.")
+        opt_row.addWidget(self.chk_loop)
+
+        self.spin_loop = QSpinBox()
+        self.spin_loop.setRange(0, 9999)
+        self.spin_loop.setValue(0)
+        self.spin_loop.setSpecialValueText("∞")
+        self.spin_loop.setToolTip("0 = loop forever; N = repeat N more times after the first run.")
+        self.spin_loop.setFixedWidth(64)
+        self.spin_loop.setEnabled(False)
+        opt_row.addWidget(self.spin_loop)
+
+        lbl_times = QLabel("times")
+        lbl_times.setStyleSheet("font-size: 11px;")
+        opt_row.addWidget(lbl_times)
+
+        self._loop_iter_lbl = QLabel("")
+        self._loop_iter_lbl.setStyleSheet("font-size: 11px; color: #e8a44a; font-style: italic;")
+        opt_row.addWidget(self._loop_iter_lbl)
+
+        opt_row.addStretch()
+        vlay.addLayout(opt_row)
+
+        # Wire auto-start + loop
+        self.chk_auto_start.toggled.connect(self.auto_start_toggled)
+        self.chk_loop.toggled.connect(self._on_loop_checkbox)
+        self.spin_loop.valueChanged.connect(self.loop_count_changed)
 
         q_hdr = QHBoxLayout()
         lbl_q = QLabel("QUEUE")
@@ -878,6 +926,23 @@ class ExperimentsTab(QWidget):
         for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
                   self.btn_q_abort, self.btn_q_stop):
             b.setEnabled(False)
+
+    def _on_loop_checkbox(self, checked: bool) -> None:
+        self.spin_loop.setEnabled(checked)
+        if not checked:
+            self._loop_iter_lbl.setText("")
+        self.loop_count_changed.emit(self.spin_loop.value() if checked else -1)
+
+    def set_loop_iteration(self, current: int, total: int) -> None:
+        if total == 0:
+            self._loop_iter_lbl.setText(f"(iteration {current}, ∞)")
+        elif total > 0:
+            self._loop_iter_lbl.setText(f"(iteration {current} of {total + current - 1})")
+        else:
+            self._loop_iter_lbl.setText("")
+
+    def clear_loop_iteration(self) -> None:
+        self._loop_iter_lbl.setText("")
 
     # ── Public setters ─────────────────────────────────────────────────────────
 
