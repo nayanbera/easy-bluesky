@@ -1011,6 +1011,15 @@ class MainWindow(QMainWindow):
         self._guard = guard
         self._operator_lock_claimed = False   # True when we hold the remote lock
         self._operator_lock_holder: dict = {} # holder info when another computer holds it
+        self._auto_start_enabled      = False
+        self._prev_queue_len          = 0      # for auto-start detection
+        self._loop_enabled            = False
+        self._loop_count              = 0      # 0=∞, N=N more after first
+        self._loop_iteration          = 0      # how many loops have run so far
+        self._loop_snapshot           : list  = []
+        self._prev_queue_running      = False  # last known queue_running from status
+        self._queue_loop_cancelled    = False
+        self._last_status             : dict  = {}
         self._detached_tabs: dict = {}        # widget → (QMainWindow, orig_index, title)
         self.worker = ZMQWorker()
         self._setup_ui()
@@ -1244,11 +1253,28 @@ class MainWindow(QMainWindow):
         self.worker.plans_updated.connect(self._on_plans_updated)
         self.worker.devices_updated.connect(self._on_devices_updated)
 
-        self.re_bar.start_requested.connect(self._on_start_requested)
-        self.re_bar.pause_requested.connect(self._on_pause_requested)
-        self.re_bar.resume_requested.connect(self._on_resume_requested)
-        self.re_bar.abort_requested.connect(self._on_abort_requested)
-        self.re_bar.stop_requested.connect(self._on_stop_requested)
+        self.queue_mgr.start_requested.connect(self._on_start_requested)
+        self.queue_mgr.pause_requested.connect(self._on_pause_requested)
+        self.queue_mgr.resume_requested.connect(self._on_resume_requested)
+        self.queue_mgr.abort_requested.connect(self._on_abort_requested)
+        self.queue_mgr.stop_requested.connect(self._on_stop_requested)
+
+        self.experiments_tab.start_requested.connect(self._on_start_requested)
+        self.experiments_tab.pause_requested.connect(self._on_pause_requested)
+        self.experiments_tab.resume_requested.connect(self._on_resume_requested)
+        self.experiments_tab.abort_requested.connect(self._on_abort_requested)
+        self.experiments_tab.stop_requested.connect(self._on_stop_requested)
+
+        self.worker.status_updated.connect(self.queue_mgr.update_re_status)
+        self.worker.status_updated.connect(self.experiments_tab.update_re_status)
+        self.worker.disconnected.connect(self.queue_mgr.on_disconnected)
+        self.worker.disconnected.connect(self.experiments_tab.on_disconnected)
+
+        self.queue_mgr.auto_start_toggled.connect(self._on_auto_start_toggled)
+        self.queue_mgr.loop_count_changed.connect(self._on_loop_count_changed)
+        self.worker.status_updated.connect(self._on_status_for_loop_and_autostart)
+        self.worker.queue_updated.connect(self._on_queue_for_autostart)
+
         self.re_bar.open_env_requested.connect(self._on_open_env_requested)
         self.re_bar.close_env_requested.connect(self._on_close_env_requested)
         self.re_bar.start_manager_requested.connect(self._on_start_manager_requested)
@@ -1550,6 +1576,15 @@ class MainWindow(QMainWindow):
             return
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
+        if ok:
+            self._queue_loop_cancelled = False
+            self._loop_iteration = 0
+            if self._loop_enabled:
+                self._loop_snapshot = self.queue_mgr.get_queue_items()
+                self.queue_mgr.set_loop_iteration(1, self.queue_mgr.spin_loop.value())
+            else:
+                self._loop_snapshot = []
+                self.queue_mgr.clear_loop_iteration()
 
     def _on_pause_requested(self):
         ok, msg = self.worker.re_pause()
@@ -1581,6 +1616,77 @@ class MainWindow(QMainWindow):
     def _on_stop_requested(self):
         ok, msg = self.worker.re_stop()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}")
+        self._queue_loop_cancelled = True
+        self.queue_mgr.clear_loop_iteration()
+
+    # ── Auto-start and loop handlers ──────────────────────────────────────────
+
+    def _on_auto_start_toggled(self, enabled: bool) -> None:
+        self._auto_start_enabled = enabled
+
+    def _on_loop_count_changed(self, count: int) -> None:
+        # count == -1 means loop disabled (checkbox unchecked)
+        if count == -1:
+            self._loop_enabled = False
+            self.queue_mgr.clear_loop_iteration()
+        else:
+            self._loop_enabled = True
+            self._loop_count = count
+
+    def _on_queue_for_autostart(self, items: list) -> None:
+        n = len(items)
+        if (self._auto_start_enabled
+                and n > 0
+                and self._prev_queue_len == 0
+                and not self._last_status.get("queue_running", False)):
+            status = self._last_status
+            env_state = status.get("worker_environment_state", "")
+            if not env_state:
+                env_state = "idle" if status.get("worker_environment_exists") else "closed"
+            re_state = status.get("re_state", "idle")
+            if re_state in ("", "idle") and env_state not in ("", "closed"):
+                self._on_start_requested()
+        self._prev_queue_len = n
+
+    def _on_status_for_loop_and_autostart(self, status: dict) -> None:
+        self._last_status = status
+        queue_running = status.get("queue_running", False)
+        if self._prev_queue_running and not queue_running:
+            # Queue just stopped — check if we should loop
+            if (self._loop_enabled
+                    and not self._queue_loop_cancelled):
+                self._trigger_loop_restart()
+        self._prev_queue_running = queue_running
+
+    def _trigger_loop_restart(self) -> None:
+        """Re-add snapshot items and restart the queue for another loop iteration."""
+        snapshot = self._loop_snapshot
+        if not snapshot:
+            return
+        # Read live spinbox value — user may have changed it during run
+        spin_val = self.queue_mgr.spin_loop.value()
+        if spin_val > 0:
+            new_val = spin_val - 1
+            self.queue_mgr.spin_loop.blockSignals(True)
+            self.queue_mgr.spin_loop.setValue(new_val)
+            self.queue_mgr.spin_loop.blockSignals(False)
+            if new_val == 0:
+                # Last finite iteration exhausted — stop looping
+                self.queue_mgr.chk_loop.setChecked(False)
+                self.queue_mgr.clear_loop_iteration()
+                return
+        # spin_val == 0 means infinite → keep looping
+        self._loop_iteration += 1
+        self.queue_mgr.set_loop_iteration(self._loop_iteration + 1, spin_val)
+        for item in snapshot:
+            item_copy = {k: v for k, v in item.items() if k != 'item_uid'}
+            self.worker.add_item(item_copy)
+        QTimer.singleShot(300, self._loop_queue_start)
+
+    def _loop_queue_start(self) -> None:
+        ok, msg = self.worker.queue_start()
+        if not ok:
+            self._log(f"[{self._ts()}] ✗ Loop restart failed: {msg}")
 
     def _on_open_env_requested(self):
         ok, msg = self.worker.open_environment()

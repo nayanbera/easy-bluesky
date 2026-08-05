@@ -7,9 +7,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QPlainTextEdit, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QMessageBox, QMenu, QDialog, QTabWidget, QHeaderView,
-    QLineEdit, QFileDialog,
+    QLineEdit, QFileDialog, QFrame, QCheckBox, QSpinBox,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from .config import SUCCESS, DANGER, DATA_RUNS_DIR, EXPERIMENTS_DIR
 from .widgets import PlanDialog
@@ -280,6 +280,14 @@ class RunDetailDialog(QDialog):
 
 
 class QueueManager(QWidget):
+    start_requested    = pyqtSignal()
+    pause_requested    = pyqtSignal()
+    resume_requested   = pyqtSignal()
+    abort_requested    = pyqtSignal()
+    stop_requested     = pyqtSignal()
+    auto_start_toggled = pyqtSignal(bool)
+    loop_count_changed = pyqtSignal(int)   # 0 = ∞; -1 = loop disabled
+
     def __init__(self, worker, parent=None):
         super().__init__(parent)
         self.worker  = worker
@@ -298,6 +306,62 @@ class QueueManager(QWidget):
         left = QWidget()
         llay = QVBoxLayout(left)
         llay.setContentsMargins(8, 8, 8, 8)
+
+        # ── Queue execution controls ───────────────────────────────────────────
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(4)
+
+        self.btn_q_start  = QPushButton("▶ Start")
+        self.btn_q_start.setObjectName("btn_primary")
+        self.btn_q_pause  = QPushButton("⏸ Pause")
+        self.btn_q_resume = QPushButton("▶▶ Resume")
+        self.btn_q_resume.setObjectName("btn_success")
+        self.btn_q_abort  = QPushButton("✕ Abort")
+        self.btn_q_abort.setObjectName("btn_danger")
+        self.btn_q_stop   = QPushButton("⬛ Stop")
+        for btn in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
+                    self.btn_q_abort, self.btn_q_stop):
+            btn.setEnabled(False)
+            ctrl_row.addWidget(btn)
+        ctrl_row.addStretch()
+        llay.addLayout(ctrl_row)
+
+        # Auto-start + Loop row
+        opt_row = QHBoxLayout()
+        opt_row.setSpacing(8)
+
+        self.chk_auto_start = QCheckBox("Auto-start")
+        self.chk_auto_start.setToolTip(
+            "Automatically start the queue when the first plan is added\n"
+            "and the RE is idle.")
+        opt_row.addWidget(self.chk_auto_start)
+
+        opt_row.addWidget(self._vsep())
+
+        self.chk_loop = QCheckBox("Loop")
+        self.chk_loop.setToolTip("Re-run the queue repeatedly after it finishes.")
+        opt_row.addWidget(self.chk_loop)
+
+        self.spin_loop = QSpinBox()
+        self.spin_loop.setRange(0, 9999)
+        self.spin_loop.setValue(0)
+        self.spin_loop.setSpecialValueText("∞")
+        self.spin_loop.setToolTip("0 = loop forever; N = repeat N more times after the first run.")
+        self.spin_loop.setFixedWidth(64)
+        self.spin_loop.setEnabled(False)
+        opt_row.addWidget(self.spin_loop)
+
+        lbl_times = QLabel("times")
+        lbl_times.setStyleSheet("font-size: 11px;")
+        opt_row.addWidget(lbl_times)
+
+        self._loop_iter_lbl = QLabel("")
+        self._loop_iter_lbl.setStyleSheet(
+            "font-size: 11px; color: #e8a44a; font-style: italic;")
+        opt_row.addWidget(self._loop_iter_lbl)
+
+        opt_row.addStretch()
+        llay.addLayout(opt_row)
 
         # Queue list
         queue_hdr = QHBoxLayout()
@@ -400,6 +464,17 @@ class QueueManager(QWidget):
         main.addWidget(splitter)
 
         self.queue_list.currentItemChanged.connect(self._on_queue_selection)
+
+        # Execution control wiring
+        self.btn_q_start.clicked.connect(self.start_requested)
+        self.btn_q_pause.clicked.connect(self.pause_requested)
+        self.btn_q_resume.clicked.connect(self.resume_requested)
+        self.btn_q_abort.clicked.connect(self.abort_requested)
+        self.btn_q_stop.clicked.connect(self.stop_requested)
+
+        self.chk_auto_start.toggled.connect(self.auto_start_toggled)
+        self.chk_loop.toggled.connect(self._on_loop_checkbox)
+        self.spin_loop.valueChanged.connect(self.loop_count_changed)
 
     # ── Queue operations ───────────────────────────────────────────────────────
     def _add_plan(self):
@@ -541,6 +616,7 @@ class QueueManager(QWidget):
     # ── Data update slots ──────────────────────────────────────────────────────
 
     def update_queue(self, items):
+        self._current_items = list(items)
         selected_uids = {
             self.queue_list.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(self.queue_list.count())
@@ -705,3 +781,57 @@ class QueueManager(QWidget):
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
         self.append_console(f"[{ts}] {msg}")
+
+    def _vsep(self) -> QFrame:
+        """Thin vertical separator line."""
+        f = QFrame()
+        f.setFrameShape(QFrame.Shape.VLine)
+        f.setFrameShadow(QFrame.Shadow.Sunken)
+        f.setFixedWidth(1)
+        return f
+
+    # ── Execution-control public API ───────────────────────────────────────────
+
+    def _on_loop_checkbox(self, checked: bool) -> None:
+        self.spin_loop.setEnabled(checked)
+        if not checked:
+            self._loop_iter_lbl.setText("")
+        self.loop_count_changed.emit(self.spin_loop.value() if checked else -1)
+        # -1 signals "loop disabled"
+
+    def update_re_status(self, status: dict) -> None:
+        """Enable/disable execution buttons based on RE state."""
+        env_state = status.get("worker_environment_state", "")
+        if not env_state:
+            env_state = "idle" if status.get("worker_environment_exists") else "closed"
+        re_state = status.get("re_state", "")
+        env_open = env_state not in ("", "closed")
+        running  = re_state == "running"
+        paused   = re_state == "paused"
+        idle     = re_state in ("", "idle") and env_open
+        self.btn_q_start.setEnabled(idle)
+        self.btn_q_pause.setEnabled(running)
+        self.btn_q_resume.setEnabled(paused)
+        self.btn_q_abort.setEnabled(running or paused)
+        self.btn_q_stop.setEnabled(running or paused)
+
+    def on_disconnected(self) -> None:
+        for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
+                  self.btn_q_abort, self.btn_q_stop):
+            b.setEnabled(False)
+
+    def set_loop_iteration(self, current: int, total: int) -> None:
+        """Called by main.py to display loop progress (1-based current)."""
+        if total == 0:
+            self._loop_iter_lbl.setText(f"(iteration {current}, ∞)")
+        elif total > 0:
+            self._loop_iter_lbl.setText(f"(iteration {current} of {total + current - 1})")
+        else:
+            self._loop_iter_lbl.setText("")
+
+    def clear_loop_iteration(self) -> None:
+        self._loop_iter_lbl.setText("")
+
+    def get_queue_items(self) -> list:
+        """Return a snapshot of the current queue items (for loop replay)."""
+        return list(getattr(self, '_current_items', []))

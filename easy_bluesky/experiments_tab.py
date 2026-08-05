@@ -393,6 +393,11 @@ class ExperimentsTab(QWidget):
 
     experiment_changed = pyqtSignal(str)   # emits runs_dir path
     scan_completed     = pyqtSignal()      # emits when a new scan is logged
+    start_requested    = pyqtSignal()
+    pause_requested    = pyqtSignal()
+    resume_requested   = pyqtSignal()
+    abort_requested    = pyqtSignal()
+    stop_requested     = pyqtSignal()
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -534,6 +539,31 @@ class ExperimentsTab(QWidget):
         vlay = QVBoxLayout(w)
         vlay.setContentsMargins(4, 8, 4, 8)
         vlay.setSpacing(4)
+
+        # Queue execution buttons
+        exec_row = QHBoxLayout()
+        exec_row.setSpacing(4)
+        self.btn_q_start  = QPushButton("▶ Start")
+        self.btn_q_start.setObjectName("btn_primary")
+        self.btn_q_pause  = QPushButton("⏸ Pause")
+        self.btn_q_resume = QPushButton("▶▶ Resume")
+        self.btn_q_resume.setObjectName("btn_success")
+        self.btn_q_abort  = QPushButton("✕ Abort")
+        self.btn_q_abort.setObjectName("btn_danger")
+        self.btn_q_stop   = QPushButton("⬛ Stop")
+        for btn in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
+                    self.btn_q_abort, self.btn_q_stop):
+            btn.setEnabled(False)
+            exec_row.addWidget(btn)
+        exec_row.addStretch()
+        vlay.addLayout(exec_row)
+
+        # Wire execution buttons
+        self.btn_q_start.clicked.connect(self.start_requested)
+        self.btn_q_pause.clicked.connect(self.pause_requested)
+        self.btn_q_resume.clicked.connect(self.resume_requested)
+        self.btn_q_abort.clicked.connect(self.abort_requested)
+        self.btn_q_stop.clicked.connect(self.stop_requested)
 
         q_hdr = QHBoxLayout()
         lbl_q = QLabel("QUEUE")
@@ -825,6 +855,29 @@ class ExperimentsTab(QWidget):
     def _log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         self.append_console(f"[{ts}] {msg}")
+
+    # ── RE-status-driven button enable/disable ─────────────────────────────────
+
+    def update_re_status(self, status: dict) -> None:
+        """Enable/disable execution buttons based on RE state."""
+        env_state = status.get("worker_environment_state", "")
+        if not env_state:
+            env_state = "idle" if status.get("worker_environment_exists") else "closed"
+        re_state = status.get("re_state", "")
+        env_open = env_state not in ("", "closed")
+        running  = re_state == "running"
+        paused   = re_state == "paused"
+        idle     = re_state in ("", "idle") and env_open
+        self.btn_q_start.setEnabled(idle)
+        self.btn_q_pause.setEnabled(running)
+        self.btn_q_resume.setEnabled(paused)
+        self.btn_q_abort.setEnabled(running or paused)
+        self.btn_q_stop.setEnabled(running or paused)
+
+    def on_disconnected(self) -> None:
+        for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
+                  self.btn_q_abort, self.btn_q_stop):
+            b.setEnabled(False)
 
     # ── Public setters ─────────────────────────────────────────────────────────
 

@@ -8,11 +8,6 @@ from .themes import ACCENT, SUCCESS, DANGER, WARNING, THEMES, DEFAULT_THEME
 class REControlBar(QFrame):
     """Compact persistent toolbar showing RE state and action buttons."""
 
-    start_requested         = pyqtSignal()
-    pause_requested         = pyqtSignal()
-    resume_requested        = pyqtSignal()
-    abort_requested         = pyqtSignal()
-    stop_requested          = pyqtSignal()
     open_env_requested      = pyqtSignal()
     close_env_requested     = pyqtSignal()
     start_manager_requested = pyqtSignal()
@@ -127,21 +122,6 @@ class REControlBar(QFrame):
 
         lay.addWidget(self._separator())
 
-        # RE control buttons
-        self.btn_start  = QPushButton("▶ Start")
-        self.btn_start.setObjectName("btn_primary")
-        self.btn_pause  = QPushButton("⏸ Pause")
-        self.btn_resume = QPushButton("▶▶ Resume")
-        self.btn_resume.setObjectName("btn_success")
-        self.btn_abort  = QPushButton("✕ Abort")
-        self.btn_abort.setObjectName("btn_danger")
-        self.btn_stop   = QPushButton("⬛ Stop")
-
-        for btn in (self.btn_start, self.btn_pause, self.btn_resume, self.btn_abort, self.btn_stop):
-            lay.addWidget(btn)
-
-        lay.addWidget(self._separator())
-
         self.btn_open_env  = QPushButton("Open Env")
         self.btn_open_env.setObjectName("btn_primary")
         self.btn_close_env = QPushButton("Close Env")
@@ -182,11 +162,6 @@ class REControlBar(QFrame):
         lay.addWidget(self.running_label)
 
         # Wire signals
-        self.btn_start.clicked.connect(self.start_requested)
-        self.btn_pause.clicked.connect(self.pause_requested)
-        self.btn_resume.clicked.connect(self.resume_requested)
-        self.btn_abort.clicked.connect(self.abort_requested)
-        self.btn_stop.clicked.connect(self.stop_requested)
         self.btn_open_env.clicked.connect(self.open_env_requested)
         self.btn_close_env.clicked.connect(self.close_env_requested)
         self.btn_start_mgr.clicked.connect(self.start_manager_requested)
@@ -220,11 +195,7 @@ class REControlBar(QFrame):
 
     def _set_re_buttons_enabled(self, running: bool, paused: bool, idle: bool = False,
                                  env_open: bool = False):
-        self.btn_start.setEnabled(idle and env_open)
-        self.btn_pause.setEnabled(running)
-        self.btn_resume.setEnabled(paused)
-        self.btn_abort.setEnabled(running or paused)
-        self.btn_stop.setEnabled(running or paused)
+        pass  # RE control buttons moved to QueueManager and ExperimentsTab
 
     # ── Public slots ───────────────────────────────────────────────────────────
 
