@@ -419,6 +419,7 @@ class ExperimentsTab(QWidget):
         self._sample_description: str = ""
         self._settings: dict   = {}         # connection settings for MongoDB export
         self._active_profile: str = ""      # current profile name — gates history logging
+        self._suppressed_uids: set = set()  # manually deleted UIDs — never re-logged
         self._hdf5_exporter    = None
         self.history_widget    = _HistoryWidgetStub()
         self._build()
@@ -762,6 +763,7 @@ class ExperimentsTab(QWidget):
         # Clear current state so history from the old profile is not mixed in.
         self._active_exp_path  = ""
         self._logged_uids      = set()
+        self._suppressed_uids  = set()
         self._shown_error_uids = set()
         self._exp_created_at   = 0.0
         self._exp_end_time     = 0.0
@@ -1325,6 +1327,7 @@ class ExperimentsTab(QWidget):
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()
+        self._suppressed_uids = set()   # suppressions are per-experiment
         created = info.get("created", "")
         try:
             self._exp_created_at = datetime.fromisoformat(created).timestamp()
@@ -1543,6 +1546,8 @@ class ExperimentsTab(QWidget):
                 self.plan_log_list.addItem(li)
         except Exception:
             pass
+        # Always re-apply manually suppressed UIDs so they survive repeated reloads
+        self._logged_uids |= self._suppressed_uids
         self._filter_plan_log(self._plan_log_search.text())
 
         if auto_select_newest and self.plan_log_list.count() > 0:
@@ -1756,10 +1761,10 @@ class ExperimentsTab(QWidget):
             QMessageBox.critical(self, "Error", f"Could not update plans_log.jsonl:\n{e}")
             return
 
-        # Reload the plan log display (rebuilds _logged_uids from disk)
+        # Persist removed UIDs so they survive repeated _load_plan_log resets
+        self._suppressed_uids |= uids_to_remove
+        # Reload the plan log display (_load_plan_log applies _suppressed_uids automatically)
         self._load_plan_log(self._active_exp_path)
-        # Re-add removed UIDs so update_history doesn't re-log them on the next poll
-        self._logged_uids |= uids_to_remove
 
     def _view_plan_detail(self, entry: dict):
         ts_str = entry.get("timestamp", "")
