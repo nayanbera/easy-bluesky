@@ -1019,6 +1019,131 @@ class ESAFImportDialog(QDialog):
         self.accept()
 
 
+# ── _ExtraFieldsDialog ────────────────────────────────────────────────────────
+
+class _ExtraFieldsDialog(QDialog):
+    """Edit user-defined extra_fields on a cached ESAFRecord.
+
+    Changes are written to the local cache on OK.  If the settings contain an
+    ESAF server URL the dialog offers to push the changes there too.
+    """
+
+    def __init__(self, record: ESAFRecord, settings: dict, parent=None):
+        super().__init__(parent)
+        self._record   = record
+        self._settings = settings
+        self.setWindowTitle(f"Extra Fields — ESAF {record.esaf_id}")
+        self.resize(500, 380)
+
+        lay = QVBoxLayout(self)
+
+        info = QLabel(
+            "Add any custom key-value fields to this ESAF.  Use these to record "
+            "beamline-specific metadata, approval notes, or any other information "
+            "not captured by the standard fields.  Older ESAF entries leave these "
+            "empty by default."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+        lay.addWidget(info)
+
+        self._table = QTableWidget(0, 2)
+        self._table.setHorizontalHeaderLabels(["Field Name", "Value"])
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        lay.addWidget(self._table)
+
+        for k, v in (record.extra_fields or {}).items():
+            self._add_row(k, str(v) if v is not None else "")
+
+        btn_row = QHBoxLayout()
+        btn_add = QPushButton("＋ Add field")
+        btn_add.clicked.connect(self._add_empty_row)
+        btn_remove = QPushButton("Remove selected")
+        btn_remove.clicked.connect(self._remove_row)
+        btn_row.addWidget(btn_add)
+        btn_row.addWidget(btn_remove)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        server_url = (settings.get("esaf_server_url") or "").strip()
+        if server_url:
+            from PyQt6.QtWidgets import QCheckBox
+            self._cb_push = QCheckBox(f"Push to server  ({server_url})")
+            self._cb_push.setChecked(True)
+            lay.addWidget(self._cb_push)
+        else:
+            self._cb_push = None
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_ok)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def _add_row(self, key: str = "", value: str = ""):
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        self._table.setItem(row, 0, QTableWidgetItem(key))
+        self._table.setItem(row, 1, QTableWidgetItem(value))
+
+    def _add_empty_row(self):
+        self._add_row()
+        row = self._table.rowCount() - 1
+        self._table.scrollToBottom()
+        self._table.editItem(self._table.item(row, 0))
+
+    def _remove_row(self):
+        rows = sorted(
+            set(idx.row() for idx in self._table.selectedIndexes()),
+            reverse=True,
+        )
+        for row in rows:
+            self._table.removeRow(row)
+
+    def _read_table(self) -> dict:
+        fields = {}
+        for row in range(self._table.rowCount()):
+            k_item = self._table.item(row, 0)
+            v_item = self._table.item(row, 1)
+            k = k_item.text().strip() if k_item else ""
+            v = v_item.text().strip() if v_item else ""
+            if k:
+                fields[k] = v
+        return fields
+
+    def _on_ok(self):
+        new_fields = self._read_table()
+        old_fields = dict(self._record.extra_fields or {})
+
+        # Persist to local cache
+        cached = load_cached(self._record.esaf_id) or self._record
+        cached.extra_fields = new_fields
+        save_cached(cached)
+        self._record = cached
+
+        # Push to server (merge: None-values delete keys server-side)
+        if self._cb_push and self._cb_push.isChecked():
+            url = (self._settings.get("esaf_server_url") or "").strip()
+            key = (self._settings.get("esaf_api_key") or "").strip()
+            try:
+                merge = dict(new_fields)
+                for k in old_fields:
+                    if k not in merge:
+                        merge[k] = None
+                ESAFServerClient(url, key).patch_extra_fields(
+                    self._record.esaf_id, merge
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self, "Server push failed",
+                    f"Extra fields saved locally, but server push failed:\n{exc}",
+                )
+
+        self.accept()
+
+
 # ── ESAFPickerWidget ───────────────────────────────────────────────────────────
 
 class ESAFPickerWidget(QWidget):
@@ -1080,18 +1205,25 @@ class ESAFPickerWidget(QWidget):
         self._sum_beamline  = QLabel("")
         self._sum_pi_group  = QLabel("")
         self._sum_source    = QLabel("")
+        self._sum_extra     = QLabel("")
 
         for lbl in (self._sum_title, self._sum_dates, self._sum_beamline,
-                    self._sum_pi_group, self._sum_source):
+                    self._sum_pi_group, self._sum_source, self._sum_extra):
             lbl.setWordWrap(True)
 
-        sf_lay.addRow("Title:",     self._sum_title)
-        sf_lay.addRow("Dates:",     self._sum_dates)
-        sf_lay.addRow("Beamline:",  self._sum_beamline)
-        sf_lay.addRow("PI group:",  self._sum_pi_group)
-        sf_lay.addRow("Source:",    self._sum_source)
+        sf_lay.addRow("Title:",        self._sum_title)
+        sf_lay.addRow("Dates:",        self._sum_dates)
+        sf_lay.addRow("Beamline:",     self._sum_beamline)
+        sf_lay.addRow("PI group:",     self._sum_pi_group)
+        sf_lay.addRow("Source:",       self._sum_source)
+        sf_lay.addRow("Extra fields:", self._sum_extra)
 
         lay.addWidget(self._summary_frame)
+
+        self._btn_edit_extra = QPushButton("Edit Extra Fields…")
+        self._btn_edit_extra.setEnabled(False)
+        self._btn_edit_extra.clicked.connect(self._on_edit_extra_fields)
+        lay.addWidget(self._btn_edit_extra)
 
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
@@ -1139,14 +1271,16 @@ class ESAFPickerWidget(QWidget):
         record = self.selected_esaf()
         if record is None:
             self._clear_summary()
+            self._btn_edit_extra.setEnabled(False)
             self.esaf_selected.emit(None)
             return
         self._update_summary(record)
+        self._btn_edit_extra.setEnabled(True)
         self.esaf_selected.emit(record)
 
     def _clear_summary(self):
         for lbl in (self._sum_title, self._sum_dates, self._sum_beamline,
-                    self._sum_pi_group, self._sum_source):
+                    self._sum_pi_group, self._sum_source, self._sum_extra):
             lbl.setText("")
 
     def _update_summary(self, record: ESAFRecord):
@@ -1162,6 +1296,21 @@ class ESAFPickerWidget(QWidget):
         else:
             self._sum_pi_group.setText("(none)")
         self._sum_source.setText(record.source or "")
+        n = len(record.extra_fields or {})
+        self._sum_extra.setText(f"{n} field(s)" if n else "(none)")
+
+    def _on_edit_extra_fields(self):
+        record = self.selected_esaf()
+        if record is None:
+            return
+        dlg = _ExtraFieldsDialog(record, self._settings, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            # Re-select the same ESAF after the list is rebuilt
+            for i, r in enumerate(self._records):
+                if r.esaf_id == record.esaf_id:
+                    self._combo.setCurrentIndex(i)
+                    break
 
     def _on_import(self):
         dlg = ESAFImportDialog(self._settings, parent=self)

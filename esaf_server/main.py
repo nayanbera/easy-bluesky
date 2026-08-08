@@ -24,6 +24,7 @@ from fastapi.templating import Jinja2Templates
 from .config import load_config
 from .models import (
     ESAFCreate,
+    ESAFPatch,
     ESAFRecord,
     ESAFUser,
     PIGroup,
@@ -131,6 +132,22 @@ def api_update_esaf(_auth: WriteAuth, esaf_id: str, body: ESAFCreate) -> ESAFRec
     updated = existing.model_copy(
         update={**body.model_dump(exclude_unset=True), "esaf_id": esaf_id}
     )
+    return _esaf_repo.save(updated)
+
+
+@app.patch("/api/esafs/{esaf_id}/extra_fields", response_model=ESAFRecord)
+def api_patch_extra_fields(_auth: WriteAuth, esaf_id: str, body: ESAFPatch) -> ESAFRecord:
+    """Merge ``body.fields`` into extra_fields for the given ESAF.
+
+    Existing keys not in ``body.fields`` are preserved.
+    Keys whose value is ``None`` are removed from extra_fields.
+    """
+    existing = _esaf_repo.get(esaf_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"ESAF {esaf_id!r} not found.")
+    merged = {**existing.extra_fields, **body.fields}
+    merged = {k: v for k, v in merged.items() if v is not None}
+    updated = existing.model_copy(update={"extra_fields": merged, "updated_at": _now()})
     return _esaf_repo.save(updated)
 
 

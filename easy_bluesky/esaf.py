@@ -49,6 +49,7 @@ class ESAFRecord:
     users: list = field(default_factory=list)   # list of ESAFUser
     source: str = "manual"   # "pdf", "server", "manual"
     raw_fields: dict = field(default_factory=dict)
+    extra_fields: dict = field(default_factory=dict)   # user-defined key-value pairs
     pdf_available: bool = False
     created_at: str = ""
     updated_at: str = ""
@@ -128,6 +129,7 @@ def _record_to_dict(r: ESAFRecord) -> dict:
         "users": [_user_to_dict(u) for u in r.users],
         "source": r.source,
         "raw_fields": r.raw_fields,
+        "extra_fields": r.extra_fields,
         "pdf_available": r.pdf_available,
         "created_at": r.created_at,
         "updated_at": r.updated_at,
@@ -146,6 +148,7 @@ def _record_from_dict(d: dict) -> ESAFRecord:
         users=[_user_from_dict(u) for u in d.get("users", [])],
         source=d.get("source", "manual"),
         raw_fields=d.get("raw_fields", {}),
+        extra_fields=d.get("extra_fields", {}),
         pdf_available=d.get("pdf_available", False),
         created_at=d.get("created_at", ""),
         updated_at=d.get("updated_at", ""),
@@ -349,13 +352,12 @@ class ESAFServerClient:
         except urllib.error.URLError as e:
             raise ESAFServerError(0, str(e.reason)) from e
 
-    def health(self) -> bool:
-        """Return True if the server is reachable at /health."""
-        try:
-            self._request("GET", "/health")
-            return True
-        except Exception:
-            return False
+    def health(self) -> dict:
+        """Return the server health dict {"status": ..., "backend": ...}.
+
+        Raises ESAFServerError if the server is unreachable.
+        """
+        return self._request("GET", "/health")
 
     def list_esafs(self, **filters) -> list[ESAFRecord]:
         """List ESAFs from server, optionally filtered by keyword args."""
@@ -388,6 +390,21 @@ class ESAFServerClient:
         body = json.dumps(_record_to_dict(record)).encode("utf-8")
         data = self._request(
             "PUT", f"/esafs/{urllib.parse.quote(record.esaf_id)}", data=body, write=True
+        )
+        return _record_from_dict(data)
+
+    def patch_extra_fields(self, esaf_id: str, fields: dict) -> ESAFRecord:
+        """Merge ``fields`` into the ESAF's extra_fields on the server.
+
+        Keys with value ``None`` are deleted from extra_fields on the server.
+        Returns the updated ESAFRecord.  Raises ESAFServerError on failure.
+        """
+        body = json.dumps({"fields": fields}).encode("utf-8")
+        data = self._request(
+            "PATCH",
+            f"/esafs/{urllib.parse.quote(esaf_id)}/extra_fields",
+            data=body,
+            write=True,
         )
         return _record_from_dict(data)
 

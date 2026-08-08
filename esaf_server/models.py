@@ -24,6 +24,7 @@ class ESAFRecord(BaseModel):
     users: list[ESAFUser] = Field(default_factory=list)
     source: str = "manual"     # "pdf", "server", "manual"
     raw_fields: dict = Field(default_factory=dict)  # everything else extracted from PDF
+    extra_fields: dict = Field(default_factory=dict)  # user-defined key-value pairs
     pdf_available: bool = False
     created_at: str = ""       # ISO datetime
     updated_at: str = ""
@@ -51,6 +52,15 @@ class ESAFCreate(BaseModel):
     users: list[ESAFUser] = Field(default_factory=list)
     source: str = "manual"
     raw_fields: dict = Field(default_factory=dict)
+    extra_fields: dict = Field(default_factory=dict)
+
+
+class ESAFPatch(BaseModel):
+    """Partial update for extra_fields only.
+
+    Keys map to new string values.  Set a key to None to remove it.
+    """
+    fields: dict
 
 
 class PIGroupCreate(BaseModel):
