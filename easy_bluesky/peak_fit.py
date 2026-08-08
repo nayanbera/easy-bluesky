@@ -59,7 +59,22 @@ def _lorentzian_fn(x, amplitude, center, sigma):
 def _supergaussian_fn(x, amplitude, center, sigma, exponent):
     return amplitude * np.exp(-(((x - center) ** 2) / (2 * sigma ** 2)) ** exponent)
 
+def _erf_step_fn(x, amplitude, center, sigma):
+    from scipy.special import erfc
+    # sigma may be negative to produce a decreasing step
+    return amplitude * erfc(-(x - center) / sigma) / 2.0
+
+def _arctan_step_fn(x, amplitude, center, sigma):
+    # sigma may be negative to produce a decreasing step
+    return amplitude * (0.5 + np.arctan((x - center) / sigma) / np.pi)
+
+def _logistic_step_fn(x, amplitude, center, sigma):
+    # sigma may be negative to produce a decreasing step
+    with np.errstate(over="ignore"):
+        return amplitude / (1.0 + np.exp(-(x - center) / sigma))
+
 def _tanh_step_fn(x, amplitude, center, sigma):
+    # sigma may be negative to produce a decreasing step
     return amplitude * (np.tanh((x - center) / sigma) + 1.0) / 2.0
 
 # ── Initial-guess helpers ──────────────────────────────────────────────────────
@@ -85,7 +100,10 @@ def _guess_step(x, y):
     amplitude = float(y[-1] - y[0])
     span      = float(x[-1] - x[0])
     step      = abs(float(x[1] - x[0])) if len(x) > 1 else 1.0
-    sigma     = max(span / 8.0, step)
+    mag       = max(span / 8.0, step)
+    # Negative sigma flips the step direction — use it for decreasing steps
+    # so the optimizer starts with the correct shape rather than an inverted one.
+    sigma = mag if amplitude >= 0 else -mag
     return amplitude, center, sigma
 
 # ── Background model factory ───────────────────────────────────────────────────
@@ -136,13 +154,13 @@ def make_lmfit_model(model_name: str):
     elif model_name == "Super-Gaussian":
         return lmfit.Model(_supergaussian_fn)
     elif model_name == "Step (erf)":
-        return lmfit.models.StepModel(form="erf")
+        return lmfit.Model(_erf_step_fn)
     elif model_name == "Step (tanh)":
         return lmfit.Model(_tanh_step_fn)
     elif model_name == "Step (arctan)":
-        return lmfit.models.StepModel(form="arctan")
+        return lmfit.Model(_arctan_step_fn)
     elif model_name == "Step (logistic)":
-        return lmfit.models.StepModel(form="logistic")
+        return lmfit.Model(_logistic_step_fn)
     else:
         raise ValueError(f"Unknown model: {model_name!r}")
 
@@ -218,32 +236,36 @@ def auto_guess(x, y, model_name: str, bg_name: str = "None"):
         params = model.make_params()
         params["amplitude"].set(value=amp0, min=-np.inf, max=np.inf)
         params["center"].set(value=cen0, min=-np.inf, max=np.inf)
-        params["sigma"].set(value=max(abs(sig0), 1e-12), min=1e-12, max=np.inf)
-        params.add("width_1090", expr="2.197 * sigma", vary=False)
+        params["sigma"].set(value=sig0 if abs(sig0) > 1e-12 else 1e-12,
+                            min=-np.inf, max=np.inf)
+        params.add("width_1090", expr="2.197 * abs(sigma)", vary=False)
 
     elif model_name == "Step (tanh)":
         amp0, cen0, sig0 = _guess_step(x, y)
         params = model.make_params()
         params["amplitude"].set(value=amp0, min=-np.inf, max=np.inf)
         params["center"].set(value=cen0, min=-np.inf, max=np.inf)
-        params["sigma"].set(value=max(abs(sig0 * 2), 1e-12), min=1e-12, max=np.inf)
-        params.add("width_1090", expr="2.197 * sigma", vary=False)
+        params["sigma"].set(value=sig0 * 2 if abs(sig0) > 1e-12 else 1e-12,
+                            min=-np.inf, max=np.inf)
+        params.add("width_1090", expr="2.197 * abs(sigma)", vary=False)
 
     elif model_name == "Step (arctan)":
         amp0, cen0, sig0 = _guess_step(x, y)
         params = model.make_params()
         params["amplitude"].set(value=amp0, min=-np.inf, max=np.inf)
         params["center"].set(value=cen0, min=-np.inf, max=np.inf)
-        params["sigma"].set(value=max(abs(sig0), 1e-12), min=1e-12, max=np.inf)
-        params.add("width_1090", expr="3.1416 * sigma * 0.8", vary=False)
+        params["sigma"].set(value=sig0 if abs(sig0) > 1e-12 else 1e-12,
+                            min=-np.inf, max=np.inf)
+        params.add("width_1090", expr="3.1416 * abs(sigma) * 0.8", vary=False)
 
     elif model_name == "Step (logistic)":
         amp0, cen0, sig0 = _guess_step(x, y)
         params = model.make_params()
         params["amplitude"].set(value=amp0, min=-np.inf, max=np.inf)
         params["center"].set(value=cen0, min=-np.inf, max=np.inf)
-        params["sigma"].set(value=max(abs(sig0), 1e-12), min=1e-12, max=np.inf)
-        params.add("width_1090", expr="2.197 * sigma", vary=False)
+        params["sigma"].set(value=sig0 if abs(sig0) > 1e-12 else 1e-12,
+                            min=-np.inf, max=np.inf)
+        params.add("width_1090", expr="2.197 * abs(sigma)", vary=False)
 
     else:
         raise ValueError(f"Unknown model: {model_name!r}")
