@@ -1162,17 +1162,19 @@ When you create a new experiment with **From ESAF**, the local and remote paths 
 <experiments_root>/
 └── uchicago_john_rogers/          ← PI group slug
     └── ESAF-12345_2026-08-01/     ← ESAF number + start date
-        └── 2026-08-08/            ← session date (today by default)
-            └── run_name/          ← optional run / sub-experiment label
-                ├── experiment.json
-                └── runs/
+        ├── run_A/                 ← first run (e.g. "SAXS_day1")
+        │   ├── experiment.json
+        │   └── runs/
+        └── run_B/                 ← second run, same ESAF, same or different day
+            ├── experiment.json
+            └── runs/
 ```
 
 The remote path on the RE machine mirrors this structure under the profile's **Remote Data Root**:
 
 ```
 /home/chem_epics/data/
-└── uchicago_john_rogers/ESAF-12345_2026-08-01/2026-08-08/run_name/
+└── uchicago_john_rogers/ESAF-12345_2026-08-01/run_A/
 ```
 
 ---
@@ -1201,16 +1203,18 @@ Open **File → Manage PI Groups…** (or click **Manage…** in any PI group pi
 
 ### Importing an ESAF
 
-#### From the New Experiment dialog
+#### From the Open / New Experiment dialog
+
+The **From ESAF** tab works as a combined open-or-create picker — you use it both to resume a previous run and to start a new one:
 
 1. Open the **Experiments** tab and click **New Experiment**.
 2. Select the **From ESAF** tab.
-3. In the ESAF picker:
-   - Choose an already-imported ESAF from the dropdown, or
-   - Click **Import New ESAF…** to open the import wizard.
-4. Confirm the **session date** (pre-filled with today) and an optional **run name**.
-5. The generated local and remote paths are shown live — edit session date or run name to adjust.
-6. Click **OK** — the folder structure is created automatically.
+3. Pick an ESAF from the dropdown (or click **Import New ESAF…**).
+4. The dialog scans the ESAF folder on disk and lists any existing runs.
+   - **To resume**: click a run in the list and press **OK** (or double-click). The experiment re-opens exactly as it was — sample name, remote path, and ESAF metadata are all restored.
+   - **To create a new run**: type a run name in the **New run name** field (selecting a run from the list and typing a name are mutually exclusive — one clears the other).
+5. The path preview updates live to show where the run folder will be created.
+6. Click **OK** — the folder is created (new run) or reopened (existing run).
 
 #### Import wizard (ESAFImportDialog)
 
@@ -1419,13 +1423,16 @@ experiments/<name>/
 experiments/
 └── uchicago_john_rogers/              ← PI group slug
     └── ESAF-12345_2026-08-01/         ← ESAF number + beam-time start date
-        └── 2026-08-08/                ← session date
-            └── run_name/              ← optional run label
-                ├── experiment.json    # includes "esaf" block (see below)
-                ├── plans_log.jsonl
-                └── runs/
-                    ├── <uid1>.jsonl
-                    └── <uid2>.jsonl
+        ├── SAXS_day1/                 ← first run
+        │   ├── experiment.json        #   includes "esaf" block (see below)
+        │   ├── plans_log.jsonl
+        │   └── runs/
+        │       ├── <uid1>.jsonl
+        │       └── <uid2>.jsonl
+        └── SAXS_day2/                 ← second run, same ESAF
+            ├── experiment.json
+            ├── plans_log.jsonl
+            └── runs/
 ```
 
 `experiment.json` for an ESAF-linked experiment includes an `esaf` block:
