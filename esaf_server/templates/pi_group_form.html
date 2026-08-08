@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block page_title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ title }}</h1>
+  {% if group %}
+  <a href="/admin/pi_groups" class="btn btn-sm btn-outline-secondary">Back to List</a>
+  {% else %}
+  <a href="/admin/pi_groups" class="btn btn-sm btn-outline-secondary">Cancel</a>
+  {% endif %}
+</div>
+
+<form method="post" action="{{ action }}" class="row g-3" style="max-width:720px">
+
+  <!-- Slug -->
+  <div class="col-12">
+    <label class="form-label fw-semibold">Slug <span class="text-danger">*</span></label>
+    <input type="text" name="slug" id="slug-input" class="form-control font-monospace"
+           value="{{ group.slug if group else '' }}" required
+           {% if group %}readonly{% endif %}
+           placeholder="uchicago_john_rogers">
+    <div class="form-text">
+      Unique identifier. Auto-generated from name fields below.
+      {% if group %}<span class="text-warning">Cannot be changed after creation.</span>{% endif %}
+    </div>
+  </div>
+
+  <!-- First / Last name -->
+  <div class="col-md-4">
+    <label class="form-label fw-semibold">PI First Name <span class="text-danger">*</span></label>
+    <input type="text" name="pi_first_name" id="first-name-input" class="form-control"
+           value="{{ group.pi_first_name if group else '' }}" required
+           placeholder="John">
+  </div>
+
+  <div class="col-md-4">
+    <label class="form-label fw-semibold">PI Last Name <span class="text-danger">*</span></label>
+    <input type="text" name="pi_last_name" id="last-name-input" class="form-control"
+           value="{{ group.pi_last_name if group else '' }}" required
+           placeholder="Rogers">
+  </div>
+
+  <!-- Univ short name -->
+  <div class="col-md-4">
+    <label class="form-label fw-semibold">University Short Name <span class="text-danger">*</span></label>
+    <input type="text" name="univ_short_name" id="univ-input" class="form-control"
+           value="{{ group.univ_short_name if group else '' }}" required
+           placeholder="uchicago">
+    <div class="form-text">e.g. uchicago, anl, mit, stanford</div>
+  </div>
+
+  <!-- Institution -->
+  <div class="col-12">
+    <label class="form-label fw-semibold">PI Institution</label>
+    <input type="text" name="pi_institution" class="form-control"
+           value="{{ group.pi_institution if group else '' }}"
+           placeholder="University of Chicago">
+  </div>
+
+  <!-- Known members -->
+  <div class="col-12">
+    <label class="form-label fw-semibold">Known Members</label>
+    <textarea name="known_members" class="form-control font-monospace" rows="8"
+              placeholder="One name per line, exactly as they appear in ESAF documents:
+John Rogers
+Jane Smith
+Bob Johnson">{{ '\n'.join(group.known_members) if group and group.known_members else '' }}</textarea>
+    <div class="form-text">
+      One full name per line. These names are matched against ESAF user lists to assign
+      this PI group automatically. Use the exact spelling from ESAF PDFs.
+    </div>
+  </div>
+
+  <!-- Submit -->
+  <div class="col-12">
+    <button type="submit" class="btn btn-primary">Save Group</button>
+    <a href="/admin/pi_groups" class="btn btn-outline-secondary ms-2">Cancel</a>
+  </div>
+
+</form>
+{% endblock %}
+
+{% block extra_scripts %}
+{% if not group %}
+<script>
+  // Auto-generate slug from first name + last name + univ short name
+  const slugInput = document.getElementById('slug-input');
+  const firstInput = document.getElementById('first-name-input');
+  const lastInput = document.getElementById('last-name-input');
+  const univInput = document.getElementById('univ-input');
+
+  let slugEdited = false;
+  slugInput.addEventListener('input', () => { slugEdited = true; });
+
+  function updateSlug() {
+    if (slugEdited) return;
+    const univ = univInput.value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    const first = firstInput.value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    const last = lastInput.value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    if (univ || first || last) {
+      slugInput.value = [univ, first, last].filter(Boolean).join('_');
+    }
+  }
+
+  firstInput.addEventListener('input', updateSlug);
+  lastInput.addEventListener('input', updateSlug);
+  univInput.addEventListener('input', updateSlug);
+</script>
+{% endif %}
+{% endblock %}

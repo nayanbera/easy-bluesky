@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block page_title %}{{ title }}{% endblock %}
+
+{% block extra_head %}
+<style>
+  .user-row { background: #1e2124; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
+  .confidence-badge { font-size: 0.72rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ title }}</h1>
+  {% if esaf %}
+  <a href="/admin/esafs/{{ esaf.esaf_id }}" class="btn btn-sm btn-outline-secondary">Cancel</a>
+  {% else %}
+  <a href="/admin" class="btn btn-sm btn-outline-secondary">Cancel</a>
+  {% endif %}
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+{% if confidence %}
+<div class="alert alert-info small mb-3">
+  <strong>PDF parsed.</strong> Review extracted fields below.
+  Confidence: high (&ge;0.9) / medium (&ge;0.5) / low (&lt;0.5).
+</div>
+{% endif %}
+
+<!-- Get list of PI group slugs for datalist -->
+{% set group_slugs = groups | map(attribute='slug') | list %}
+
+<form method="post" action="{{ action }}">
+  <div class="row g-3">
+
+    <!-- ESAF ID -->
+    <div class="col-md-3">
+      <label class="form-label fw-semibold">
+        ESAF ID <span class="text-danger">*</span>
+        {% if confidence and confidence.get('esaf_id') is not none %}
+          {% set c = confidence.get('esaf_id', 0) %}
+          <span class="badge confidence-badge {% if c >= 0.9 %}confidence-high{% elif c >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %} ms-1">
+            {{ "%.0f"|format(c * 100) }}%
+          </span>
+        {% endif %}
+      </label>
+      <input type="text" name="esaf_id" class="form-control"
+             value="{{ esaf.esaf_id if esaf else '' }}"
+             {% if esaf and esaf.esaf_id != 'UNKNOWN' %}required{% else %}required{% endif %}>
+    </div>
+
+    <!-- Source -->
+    <div class="col-md-2">
+      <label class="form-label fw-semibold">Source</label>
+      <select name="source" class="form-select">
+        {% for src in ['manual', 'pdf', 'server'] %}
+        <option value="{{ src }}" {% if esaf and esaf.source == src %}selected{% endif %}>
+          {{ src }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- PI Group -->
+    <div class="col-md-4">
+      <label class="form-label fw-semibold">PI Group Slug</label>
+      <input type="text" name="pi_group_slug" class="form-control"
+             value="{{ esaf.pi_group_slug if esaf else '' }}"
+             list="pi-group-slugs" autocomplete="off">
+      <datalist id="pi-group-slugs">
+        {% for slug in group_slugs %}
+        <option value="{{ slug }}">
+        {% endfor %}
+      </datalist>
+      <div class="form-text">e.g. uchicago_john_rogers — <a href="/admin/pi_groups/new" target="_blank">create new</a></div>
+    </div>
+
+    <!-- Proposal ID -->
+    <div class="col-md-3">
+      <label class="form-label fw-semibold">Proposal ID
+        {% if confidence and confidence.get('proposal_id') is not none %}
+          {% set c = confidence.get('proposal_id', 0) %}
+          <span class="badge confidence-badge {% if c >= 0.9 %}confidence-high{% elif c >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %} ms-1">
+            {{ "%.0f"|format(c * 100) }}%
+          </span>
+        {% endif %}
+      </label>
+      <input type="text" name="proposal_id" class="form-control"
+             value="{{ esaf.proposal_id if esaf else '' }}">
+    </div>
+
+    <!-- Title -->
+    <div class="col-12">
+      <label class="form-label fw-semibold">Experiment Title
+        {% if confidence and confidence.get('title') is not none %}
+          {% set c = confidence.get('title', 0) %}
+          <span class="badge confidence-badge {% if c >= 0.9 %}confidence-high{% elif c >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %} ms-1">
+            {{ "%.0f"|format(c * 100) }}%
+          </span>
+        {% endif %}
+      </label>
+      <input type="text" name="title" class="form-control"
+             value="{{ esaf.title if esaf else '' }}">
+    </div>
+
+    <!-- Beamline -->
+    <div class="col-md-4">
+      <label class="form-label fw-semibold">Beamline
+        {% if confidence and confidence.get('beamline') is not none %}
+          {% set c = confidence.get('beamline', 0) %}
+          <span class="badge confidence-badge {% if c >= 0.9 %}confidence-high{% elif c >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %} ms-1">
+            {{ "%.0f"|format(c * 100) }}%
+          </span>
+        {% endif %}
+      </label>
+      <input type="text" name="beamline" class="form-control"
+             value="{{ esaf.beamline if esaf else '' }}">
+    </div>
+
+    <!-- Start Date -->
+    <div class="col-md-4">
+      <label class="form-label fw-semibold">Start Date (YYYY-MM-DD)
+        {% if confidence and confidence.get('start_date') is not none %}
+          {% set c = confidence.get('start_date', 0) %}
+          <span class="badge confidence-badge {% if c >= 0.9 %}confidence-high{% elif c >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %} ms-1">
+            {{ "%.0f"|format(c * 100) }}%
+          </span>
+        {% endif %}
+      </label>
+      <input type="text" name="start_date" class="form-control"
+             placeholder="YYYY-MM-DD"
+             value="{{ esaf.start_date if esaf else '' }}">
+    </div>
+
+    <!-- End Date -->
+    <div class="col-md-4">
+      <label class="form-label fw-semibold">End Date (YYYY-MM-DD)
+        {% if confidence and confidence.get('end_date') is not none %}
+          {% set c = confidence.get('end_date', 0) %}
+          <span class="badge confidence-badge {% if c >= 0.9 %}confidence-high{% elif c >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %} ms-1">
+            {{ "%.0f"|format(c * 100) }}%
+          </span>
+        {% endif %}
+      </label>
+      <input type="text" name="end_date" class="form-control"
+             placeholder="YYYY-MM-DD"
+             value="{{ esaf.end_date if esaf else '' }}">
+    </div>
+
+    <!-- Users section -->
+    <div class="col-12">
+      <div class="d-flex align-items-center mb-2">
+        <span class="fw-semibold me-2">Users / Personnel</span>
+        {% if confidence and confidence.get('users') is not none %}
+          {% set c = confidence.get('users', 0) %}
+          <span class="badge confidence-badge {% if c >= 0.9 %}confidence-high{% elif c >= 0.5 %}confidence-medium{% else %}confidence-low{% endif %} me-auto">
+            {{ "%.0f"|format(c * 100) }}% confidence
+          </span>
+        {% endif %}
+        <button type="button" class="btn btn-sm btn-outline-success ms-auto" onclick="addUserRow()">+ Add User</button>
+      </div>
+      <div id="users-container">
+        {% if esaf and esaf.users %}
+          {% for user in esaf.users %}
+          {% set i = loop.index0 %}
+          <div class="user-row d-flex gap-2 align-items-center" id="user-row-{{ i }}">
+            <div class="flex-grow-1">
+              <input type="text" name="user_name_{{ i }}" class="form-control form-control-sm mb-1"
+                     placeholder="Full Name" value="{{ user.name }}">
+            </div>
+            <div class="flex-grow-1">
+              <input type="text" name="user_institution_{{ i }}" class="form-control form-control-sm mb-1"
+                     placeholder="Institution" value="{{ user.institution }}">
+            </div>
+            <div style="width:160px">
+              <select name="user_role_{{ i }}" class="form-select form-select-sm mb-1">
+                {% for role in ['', 'PI', 'co-investigator', 'user', 'staff'] %}
+                <option value="{{ role }}" {% if user.role == role %}selected{% endif %}>
+                  {{ role or '— Role —' }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div style="width:200px">
+              <input type="email" name="user_email_{{ i }}" class="form-control form-control-sm mb-1"
+                     placeholder="Email" value="{{ user.email }}">
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUserRow({{ i }})">✕</button>
+          </div>
+          {% endfor %}
+        {% else %}
+          <!-- Empty row to start -->
+          <div class="user-row d-flex gap-2 align-items-center" id="user-row-0">
+            <div class="flex-grow-1">
+              <input type="text" name="user_name_0" class="form-control form-control-sm mb-1" placeholder="Full Name">
+            </div>
+            <div class="flex-grow-1">
+              <input type="text" name="user_institution_0" class="form-control form-control-sm mb-1" placeholder="Institution">
+            </div>
+            <div style="width:160px">
+              <select name="user_role_0" class="form-select form-select-sm mb-1">
+                <option value="">— Role —</option>
+                <option value="PI">PI</option>
+                <option value="co-investigator">co-investigator</option>
+                <option value="user">user</option>
+                <option value="staff">staff</option>
+              </select>
+            </div>
+            <div style="width:200px">
+              <input type="email" name="user_email_0" class="form-control form-control-sm mb-1" placeholder="Email">
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUserRow(0)">✕</button>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="col-12 mt-2">
+      <button type="submit" class="btn btn-primary">Save ESAF</button>
+      {% if esaf and esaf.esaf_id %}
+      <a href="/admin/esafs/{{ esaf.esaf_id }}" class="btn btn-outline-secondary ms-2">Cancel</a>
+      {% else %}
+      <a href="/admin" class="btn btn-outline-secondary ms-2">Cancel</a>
+      {% endif %}
+    </div>
+
+  </div><!-- /.row -->
+</form>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  let _userCount = {{ (esaf.users | length) if esaf and esaf.users else 1 }};
+
+  function addUserRow() {
+    const idx = _userCount;
+    const container = document.getElementById('users-container');
+    const div = document.createElement('div');
+    div.className = 'user-row d-flex gap-2 align-items-center';
+    div.id = 'user-row-' + idx;
+    div.innerHTML = `
+      <div class="flex-grow-1">
+        <input type="text" name="user_name_${idx}" class="form-control form-control-sm mb-1" placeholder="Full Name">
+      </div>
+      <div class="flex-grow-1">
+        <input type="text" name="user_institution_${idx}" class="form-control form-control-sm mb-1" placeholder="Institution">
+      </div>
+      <div style="width:160px">
+        <select name="user_role_${idx}" class="form-select form-select-sm mb-1">
+          <option value="">— Role —</option>
+          <option value="PI">PI</option>
+          <option value="co-investigator">co-investigator</option>
+          <option value="user">user</option>
+          <option value="staff">staff</option>
+        </select>
+      </div>
+      <div style="width:200px">
+        <input type="email" name="user_email_${idx}" class="form-control form-control-sm mb-1" placeholder="Email">
+      </div>
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUserRow(${idx})">✕</button>
+    `;
+    container.appendChild(div);
+    _userCount++;
+  }
+
+  function removeUserRow(idx) {
+    const el = document.getElementById('user-row-' + idx);
+    if (el) el.remove();
+  }
+</script>
+{% endblock %}

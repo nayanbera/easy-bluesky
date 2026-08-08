@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block page_title %}ESAFs{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>ESAFs</h1>
+  <div class="d-flex gap-2">
+    <a href="/admin/esafs/new" class="btn btn-sm btn-success">+ Add ESAF</a>
+    <a href="#upload-modal" class="btn btn-sm btn-primary" data-bs-toggle="modal">Upload PDF</a>
+  </div>
+</div>
+
+<!-- Search / filter bar -->
+<form method="get" action="/admin" class="row g-2 mb-3">
+  <div class="col-md-4">
+    <input type="text" name="search" class="form-control form-control-sm"
+           placeholder="Search ID, title, beamline…" value="{{ search }}">
+  </div>
+  <div class="col-md-3">
+    <select name="pi_group" class="form-select form-select-sm">
+      <option value="">All PI Groups</option>
+      {% for g in groups %}
+      <option value="{{ g.slug }}" {% if pi_group == g.slug %}selected{% endif %}>
+        {{ g.slug }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-3">
+    <input type="text" name="beamline" class="form-control form-control-sm"
+           placeholder="Beamline filter" value="{{ beamline }}">
+  </div>
+  <div class="col-auto">
+    <button class="btn btn-sm btn-outline-secondary" type="submit">Filter</button>
+    <a href="/admin" class="btn btn-sm btn-link text-muted">Clear</a>
+  </div>
+</form>
+
+{% if esafs %}
+<div class="table-responsive">
+  <table class="table table-sm table-hover align-middle">
+    <thead>
+      <tr>
+        <th>ESAF ID</th>
+        <th>Title</th>
+        <th>PI Group</th>
+        <th>Beamline</th>
+        <th>Start Date</th>
+        <th>End Date</th>
+        <th>Source</th>
+        <th>PDF</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for esaf in esafs %}
+      <tr>
+        <td><code>{{ esaf.esaf_id }}</code></td>
+        <td>
+          <a href="/admin/esafs/{{ esaf.esaf_id }}" class="text-decoration-none text-light">
+            {{ esaf.title or "—" }}
+          </a>
+        </td>
+        <td>
+          {% if esaf.pi_group_slug %}
+          <a href="/admin/pi_groups/{{ esaf.pi_group_slug }}" class="text-decoration-none text-info">
+            {{ esaf.pi_group_slug }}
+          </a>
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ esaf.beamline or "—" }}</td>
+        <td>{{ esaf.start_date or "—" }}</td>
+        <td>{{ esaf.end_date or "—" }}</td>
+        <td>
+          <span class="badge badge-source-{{ esaf.source }}">{{ esaf.source }}</span>
+        </td>
+        <td>
+          {% if esaf.pdf_available %}
+          <a href="/api/esafs/{{ esaf.esaf_id }}/pdf" target="_blank"
+             class="btn btn-outline-secondary btn-sm py-0 px-1">PDF</a>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          <a href="/admin/esafs/{{ esaf.esaf_id }}" class="btn btn-outline-light btn-sm py-0 px-2">View</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="text-muted small">{{ esafs | length }} record(s) shown.</p>
+{% else %}
+<div class="text-muted py-5 text-center">
+  No ESAFs found.
+  {% if search or pi_group or beamline %}
+  <a href="/admin">Clear filters</a>
+  {% else %}
+  <a href="/admin/esafs/new">Add one</a> or <a href="#upload-modal" data-bs-toggle="modal">upload a PDF</a>.
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

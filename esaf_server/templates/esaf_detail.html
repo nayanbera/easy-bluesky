@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block page_title %}ESAF {{ esaf.esaf_id }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>ESAF <code>{{ esaf.esaf_id }}</code></h1>
+  <div class="d-flex gap-2">
+    <a href="/admin/esafs/{{ esaf.esaf_id }}#edit" class="btn btn-sm btn-primary">Edit</a>
+    {% if esaf.pdf_available %}
+    <a href="/api/esafs/{{ esaf.esaf_id }}/pdf" target="_blank" class="btn btn-sm btn-outline-secondary">Download PDF</a>
+    {% endif %}
+    <a href="/admin" class="btn btn-sm btn-outline-secondary">Back</a>
+  </div>
+</div>
+
+<div class="row g-4">
+  <!-- Left column: main fields -->
+  <div class="col-md-7">
+    <div class="card bg-dark border-secondary">
+      <div class="card-body">
+        <dl class="row mb-0">
+
+          <dt class="col-sm-4 text-muted">Title</dt>
+          <dd class="col-sm-8">{{ esaf.title or "—" }}</dd>
+
+          <dt class="col-sm-4 text-muted">Beamline</dt>
+          <dd class="col-sm-8">{{ esaf.beamline or "—" }}</dd>
+
+          <dt class="col-sm-4 text-muted">Start Date</dt>
+          <dd class="col-sm-8">{{ esaf.start_date or "—" }}</dd>
+
+          <dt class="col-sm-4 text-muted">End Date</dt>
+          <dd class="col-sm-8">{{ esaf.end_date or "—" }}</dd>
+
+          <dt class="col-sm-4 text-muted">Proposal ID</dt>
+          <dd class="col-sm-8">{{ esaf.proposal_id or "—" }}</dd>
+
+          <dt class="col-sm-4 text-muted">PI Group</dt>
+          <dd class="col-sm-8">
+            {% if esaf.pi_group_slug %}
+            <a href="/admin/pi_groups/{{ esaf.pi_group_slug }}" class="text-info">{{ esaf.pi_group_slug }}</a>
+            {% else %}—{% endif %}
+          </dd>
+
+          <dt class="col-sm-4 text-muted">Source</dt>
+          <dd class="col-sm-8">
+            <span class="badge badge-source-{{ esaf.source }}">{{ esaf.source }}</span>
+          </dd>
+
+          <dt class="col-sm-4 text-muted">PDF</dt>
+          <dd class="col-sm-8">
+            {% if esaf.pdf_available %}
+            <a href="/api/esafs/{{ esaf.esaf_id }}/pdf" target="_blank" class="btn btn-sm btn-outline-secondary py-0">
+              Download
+            </a>
+            {% else %}
+            <span class="text-muted">Not stored</span>
+            {% endif %}
+          </dd>
+
+          <dt class="col-sm-4 text-muted">Created</dt>
+          <dd class="col-sm-8"><small class="text-muted">{{ esaf.created_at or "—" }}</small></dd>
+
+          <dt class="col-sm-4 text-muted">Updated</dt>
+          <dd class="col-sm-8"><small class="text-muted">{{ esaf.updated_at or "—" }}</small></dd>
+
+        </dl>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right column: users -->
+  <div class="col-md-5">
+    <div class="card bg-dark border-secondary">
+      <div class="card-header border-secondary">
+        <span class="fw-semibold">Users / Personnel</span>
+        <span class="badge bg-secondary ms-2">{{ esaf.users | length }}</span>
+      </div>
+      <div class="card-body p-0">
+        {% if esaf.users %}
+        <table class="table table-sm table-dark mb-0">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Role</th>
+              <th>Institution</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for user in esaf.users %}
+            <tr>
+              <td>{{ user.name }}</td>
+              <td>
+                <span class="badge
+                  {% if user.role == 'PI' %}bg-warning text-dark
+                  {% elif user.role == 'co-investigator' %}bg-info text-dark
+                  {% else %}bg-secondary{% endif %}">
+                  {{ user.role or "user" }}
+                </span>
+              </td>
+              <td class="text-muted small">{{ user.institution or "—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted p-3 mb-0">No users recorded.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit form inline -->
+  <div class="col-12" id="edit">
+    <hr class="border-secondary">
+    <h5 class="mb-3">Edit ESAF</h5>
+    <form method="post" action="/admin/esafs/{{ esaf.esaf_id }}">
+      <div class="row g-3">
+
+        <div class="col-md-6">
+          <label class="form-label text-muted small">Title</label>
+          <input type="text" name="title" class="form-control" value="{{ esaf.title }}">
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label text-muted small">Beamline</label>
+          <input type="text" name="beamline" class="form-control" value="{{ esaf.beamline }}">
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label text-muted small">Proposal ID</label>
+          <input type="text" name="proposal_id" class="form-control" value="{{ esaf.proposal_id }}">
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label text-muted small">Start Date</label>
+          <input type="text" name="start_date" class="form-control" placeholder="YYYY-MM-DD" value="{{ esaf.start_date }}">
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label text-muted small">End Date</label>
+          <input type="text" name="end_date" class="form-control" placeholder="YYYY-MM-DD" value="{{ esaf.end_date }}">
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label text-muted small">PI Group Slug</label>
+          <input type="text" name="pi_group_slug" class="form-control" value="{{ esaf.pi_group_slug }}">
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label text-muted small">Source</label>
+          <select name="source" class="form-select">
+            {% for src in ['manual', 'pdf', 'server'] %}
+            <option value="{{ src }}" {% if esaf.source == src %}selected{% endif %}>{{ src }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

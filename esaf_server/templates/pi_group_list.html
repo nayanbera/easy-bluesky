@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block page_title %}PI Groups{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>PI Groups</h1>
+  <a href="/admin/pi_groups/new" class="btn btn-sm btn-success">+ Add Group</a>
+</div>
+
+{% if groups %}
+<div class="table-responsive">
+  <table class="table table-sm table-hover align-middle">
+    <thead>
+      <tr>
+        <th>Slug</th>
+        <th>PI Name</th>
+        <th>Institution</th>
+        <th>Univ Short</th>
+        <th class="text-center">Members</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for group in groups %}
+      <tr>
+        <td>
+          <a href="/admin/pi_groups/{{ group.slug }}" class="text-decoration-none text-info">
+            <code>{{ group.slug }}</code>
+          </a>
+        </td>
+        <td>{{ group.pi_first_name }} {{ group.pi_last_name }}</td>
+        <td>{{ group.pi_institution }}</td>
+        <td><span class="badge bg-secondary">{{ group.univ_short_name }}</span></td>
+        <td class="text-center">
+          <span class="badge bg-dark border border-secondary">{{ group.known_members | length }}</span>
+        </td>
+        <td class="text-muted small">{{ group.created_at[:10] if group.created_at else "—" }}</td>
+        <td>
+          <a href="/admin/pi_groups/{{ group.slug }}" class="btn btn-outline-light btn-sm py-0 px-2">Edit</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="text-muted small">{{ groups | length }} group(s).</p>
+{% else %}
+<div class="text-muted py-5 text-center">
+  No PI groups yet. <a href="/admin/pi_groups/new">Create one.</a>
+</div>
+{% endif %}
+{% endblock %}
