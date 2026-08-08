@@ -1,4 +1,4 @@
-"""code_editor.py — QPlainTextEdit with line numbers, auto-indentation, and auto-completion."""
+"""code_editor.py — QsciScintilla-based Python code editor with find/replace and jedi completion."""
 
 import threading
 
@@ -8,61 +8,97 @@ try:
 except ImportError:
     JEDI_AVAILABLE = False
 
+from PyQt6.Qsci import QsciScintilla, QsciLexerPython, QsciAPIs
 from PyQt6.QtWidgets import (
-    QPlainTextEdit, QCompleter, QAbstractItemView, QWidget, QTextEdit,
-    QLineEdit, QLabel, QPushButton, QCheckBox, QHBoxLayout, QVBoxLayout,
+    QWidget, QLineEdit, QLabel, QPushButton, QCheckBox,
+    QHBoxLayout, QVBoxLayout,
 )
-from PyQt6.QtCore import Qt, QStringListModel, QRect, QSize, QEvent, QTimer, pyqtSignal
-from PyQt6.QtGui import (
-    QTextCursor, QKeyEvent, QFont, QPainter, QColor,
-    QTextCharFormat, QPalette, QTextDocument,
-)
+from PyQt6.QtCore import Qt, QEvent, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPalette
 
 
-# ── Line number gutter ─────────────────────────────────────────────────────────
+# ── Static completion word lists ───────────────────────────────────────────────
 
-class _LineNumberArea(QWidget):
-    def __init__(self, editor: "CodeEditor"):
-        super().__init__(editor)
-        self._editor = editor
+_KEYWORDS = [
+    "False", "None", "True", "and", "as", "assert", "async", "await",
+    "break", "class", "continue", "def", "del", "elif", "else", "except",
+    "finally", "for", "from", "global", "if", "import", "in", "is",
+    "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+    "while", "with", "yield",
+]
 
-    def sizeHint(self) -> QSize:
-        return QSize(self._editor._gutter_width(), 0)
+_BPS_METHODS = [
+    "mv", "mvr", "sleep", "trigger_and_read", "abs_set", "rel_set",
+    "read", "stage", "unstage", "move_per_step", "kickoff", "complete",
+    "collect", "configure", "checkpoint", "clear_checkpoint",
+    "open_run", "close_run", "create", "save", "monitor", "unmonitor",
+    "null", "stop", "wait", "pause",
+]
 
-    def paintEvent(self, event):
-        self._editor._paint_gutter(event)
+_BP_METHODS = [
+    "scan", "rel_scan", "count", "grid_scan", "rel_grid_scan",
+    "list_scan", "log_scan", "spiral", "spiral_fermat",
+    "adaptive_scan", "tune_centroid", "fly",
+]
+
+_BLUESKY_GLOBALS = [
+    "bps", "bp",
+    "import bluesky.plans as bp",
+    "import bluesky.plan_stubs as bps",
+    "yield from bps.",
+    "yield from bp.",
+]
+
+_ALL_WORDS = sorted(set(
+    _KEYWORDS + _BLUESKY_GLOBALS +
+    [f"bps.{m}" for m in _BPS_METHODS] +
+    [f"bp.{m}" for m in _BP_METHODS]
+))
+
+
+# ── Jedi background worker ─────────────────────────────────────────────────────
+
+def _jedi_thread(source: str, line: int, col: int, prefix: str,
+                 cancel: threading.Event, signal):
+    """Run jedi.Script.complete() off the main thread and emit results via signal."""
+    try:
+        script = jedi.Script(source)
+        if cancel.is_set():
+            return
+        completions = script.complete(line, col)
+        if cancel.is_set():
+            return
+        words = [c.name for c in completions][:120]
+        if words and not cancel.is_set():
+            signal.emit(words, prefix)
+    except Exception:
+        pass
 
 
 # ── Find / Replace bar ─────────────────────────────────────────────────────────
 
 class FindBar(QWidget):
-    """
-    Floating find/replace bar overlaid in the top-right corner of a
-    QPlainTextEdit viewport.  Attach to any editor with::
+    """Floating find/replace bar overlaid in the top-right corner of a QsciScintilla editor.
 
-        self._find_bar = FindBar(some_plain_text_edit)
-
-    Ctrl+F focuses the search field; Ctrl+H (editable editors) also shows
-    the replace row.  Escape hides the bar and returns focus to the editor.
+    Ctrl+F focuses the search field; Ctrl+R (editable editors) shows the replace row.
+    Escape hides the bar and returns focus to the editor.
     """
 
-    _MATCH_BG   = QColor("#b5890044")   # amber — all matches
-    _CURRENT_BG = QColor("#ff8800")     # orange — current match
-    _NO_MATCH   = "background: #6b2020; color: #ffffff;"
-    _NORMAL     = ""
+    _IND_ALL = 8    # indicator number: all matches (amber outline)
+    _IND_CUR = 9    # indicator number: current match (orange outline)
+    _NO_MATCH_STYLE = "background: #6b2020; color: #ffffff;"
 
-    def __init__(self, editor: QPlainTextEdit):
-        super().__init__(editor)          # parent = editor, not viewport
-        self._editor   = editor
-        self._matches: list = []
-        self._current:  int = -1
+    def __init__(self, editor: "CodeEditor"):
+        super().__init__(editor)
+        self._editor = editor
+        self._results: list = []   # (lineFrom, idxFrom, lineTo, idxTo) for each match
+        self._current: int  = -1
         self._build()
+        self._setup_indicators()
         self.adjustSize()
         self._reposition()
         self.hide()
         editor.installEventFilter(self)
-
-    # ── UI construction ────────────────────────────────────────────────────────
 
     def _build(self):
         self.setAutoFillBackground(True)
@@ -133,7 +169,7 @@ class FindBar(QWidget):
 
         outer.addLayout(row1)
 
-        # ── Replace row (hidden until Ctrl+H) ───────────────────────────────
+        # ── Replace row (hidden until Ctrl+R) ───────────────────────────────
         row2 = QHBoxLayout()
         row2.setSpacing(4)
 
@@ -152,12 +188,34 @@ class FindBar(QWidget):
         self._replace_row.hide()
         outer.addWidget(self._replace_row)
 
+    def _setup_indicators(self):
+        ed = self._editor
+        try:
+            all_style = QsciScintilla.IndicatorStyle.RoundBoxIndicator
+            cur_style = QsciScintilla.IndicatorStyle.BoxIndicator
+        except AttributeError:
+            all_style = 7   # INDIC_ROUNDBOX
+            cur_style = 6   # INDIC_BOX
+        ed.indicatorDefine(all_style, self._IND_ALL)
+        ed.setIndicatorForegroundColor(QColor("#ffa500"), self._IND_ALL)
+        ed.indicatorDefine(cur_style, self._IND_CUR)
+        ed.setIndicatorForegroundColor(QColor("#ff4400"), self._IND_CUR)
+
+    def _clear_indicators(self, ind: int):
+        ed = self._editor
+        n = ed.lines()
+        if n == 0:
+            return
+        last = n - 1
+        last_len = len(ed.text(last).rstrip('\r\n'))
+        ed.clearIndicatorRange(0, 0, last, last_len, ind)
+
     # ── Positioning ────────────────────────────────────────────────────────────
 
     def _reposition(self):
-        vp  = self._editor.viewport()
-        geo = vp.geometry()              # viewport rect in editor coordinates
-        w   = min(420, max(280, geo.width() - 20))
+        vp = self._editor.viewport()
+        geo = vp.geometry()
+        w = min(420, max(280, geo.width() - 20))
         self.setFixedWidth(w)
         self.adjustSize()
         self.move(geo.right() - self.width() - 4, geo.top() + 4)
@@ -183,10 +241,11 @@ class FindBar(QWidget):
 
     def hide_bar(self):
         self.hide()
-        self._clear_highlights()
+        self._clear_indicators(self._IND_ALL)
+        self._clear_indicators(self._IND_CUR)
         self._editor.setFocus()
 
-    # ── Event filter — intercepts Ctrl+F / Ctrl+H on the host editor ──────────
+    # ── Event filter — Ctrl+F / Ctrl+R / Resize ───────────────────────────────
 
     def eventFilter(self, obj, event):
         if obj is not self._editor:
@@ -222,532 +281,321 @@ class FindBar(QWidget):
 
     # ── Search logic ───────────────────────────────────────────────────────────
 
-    def _find_flags(self) -> QTextDocument.FindFlag:
-        f = QTextDocument.FindFlag(0)
-        if self._case_cb.isChecked():
-            f |= QTextDocument.FindFlag.FindCaseSensitively
-        return f
-
     def _on_text_changed(self):
         text = self._search.text()
-        self._matches.clear()
+        self._results = []
         self._current = -1
+        self._clear_indicators(self._IND_ALL)
+        self._clear_indicators(self._IND_CUR)
 
         if not text:
             self._count.setText("")
-            self._search.setStyleSheet(self._NORMAL)
-            self._clear_highlights()
+            self._search.setStyleSheet("")
             return
 
-        doc   = self._editor.document()
-        flags = self._find_flags()
-        cur   = doc.find(text, 0, flags)
-        while not cur.isNull():
-            self._matches.append(QTextCursor(cur))
-            cur = doc.find(text, cur, flags)
+        ed = self._editor
+        cs = self._case_cb.isChecked()
 
-        if self._matches:
+        saved_line, saved_col = ed.getCursorPosition()
+
+        found = ed.findFirst(text, False, cs, False, False, True, 0, 0)
+        seen: set = set()
+        while found:
+            sel = ed.getSelection()
+            key = (sel[0], sel[1])
+            if key in seen:
+                break
+            seen.add(key)
+            self._results.append(sel)
+            ed.fillIndicatorRange(sel[0], sel[1], sel[2], sel[3], self._IND_ALL)
+            found = ed.findNext()
+
+        ed.setCursorPosition(saved_line, saved_col)
+
+        if self._results:
+            self._search.setStyleSheet("")
             self._current = 0
-            self._search.setStyleSheet(self._NORMAL)
+            self._highlight_current()
+            self._scroll_to_current()
         else:
-            self._search.setStyleSheet(self._NO_MATCH)
+            self._search.setStyleSheet(self._NO_MATCH_STYLE)
 
-        self._update_highlights()
-        self._scroll_to_current()
         self._update_count()
 
+    def _highlight_current(self):
+        self._clear_indicators(self._IND_CUR)
+        if 0 <= self._current < len(self._results):
+            lf, idx_f, lt, idx_t = self._results[self._current]
+            self._editor.fillIndicatorRange(lf, idx_f, lt, idx_t, self._IND_CUR)
+
+    def _scroll_to_current(self):
+        if 0 <= self._current < len(self._results):
+            lf, idx_f, lt, idx_t = self._results[self._current]
+            self._editor.setSelection(lf, idx_f, lt, idx_t)
+            self._editor.ensureLineVisible(lf)
+
     def _next(self):
-        if not self._matches:
+        if not self._results:
             return
-        self._current = (self._current + 1) % len(self._matches)
-        self._update_highlights()
+        self._current = (self._current + 1) % len(self._results)
+        self._highlight_current()
         self._scroll_to_current()
         self._update_count()
 
     def _prev(self):
-        if not self._matches:
+        if not self._results:
             return
-        self._current = (self._current - 1) % len(self._matches)
-        self._update_highlights()
+        self._current = (self._current - 1) % len(self._results)
+        self._highlight_current()
         self._scroll_to_current()
         self._update_count()
 
     def _update_count(self):
-        if not self._matches:
+        if not self._results:
             self._count.setText("0 / 0")
         else:
-            self._count.setText(f"{self._current + 1} / {len(self._matches)}")
-
-    def _scroll_to_current(self):
-        if 0 <= self._current < len(self._matches):
-            self._editor.setTextCursor(self._matches[self._current])
-            self._editor.ensureCursorVisible()
+            self._count.setText(f"{self._current + 1} / {len(self._results)}")
 
     # ── Replace ────────────────────────────────────────────────────────────────
 
     def _replace_one(self):
-        if not (0 <= self._current < len(self._matches)):
+        if not (0 <= self._current < len(self._results)):
             return
-        cur = self._matches[self._current]
-        if cur.hasSelection():
-            cur.insertText(self._replace.text())
+        lf, idx_f, lt, idx_t = self._results[self._current]
+        self._editor.setSelection(lf, idx_f, lt, idx_t)
+        self._editor.replaceSelectedText(self._replace.text())
         self._on_text_changed()
 
     def _replace_all(self):
-        if not self._matches:
+        if not self._results:
             return
         replacement = self._replace.text()
-        cursor = self._editor.textCursor()
-        cursor.beginEditBlock()
-        for cur in reversed(self._matches):
-            cur.insertText(replacement)
-        cursor.endEditBlock()
+        ed = self._editor
+        ed.beginUndoAction()
+        for lf, idx_f, lt, idx_t in reversed(self._results):
+            ed.setSelection(lf, idx_f, lt, idx_t)
+            ed.replaceSelectedText(replacement)
+        ed.endUndoAction()
         self._on_text_changed()
 
-    # ── Highlight helpers ──────────────────────────────────────────────────────
 
-    def _make_sel(self, cur: QTextCursor, bg: QColor) -> "QTextEdit.ExtraSelection":
-        sel = QTextEdit.ExtraSelection()
-        sel.format.setBackground(bg)
-        sel.format.setForeground(QColor("#000000"))
-        sel.cursor = cur
-        return sel
+# ── Code editor widget ─────────────────────────────────────────────────────────
 
-    def _update_highlights(self):
-        sels = []
-        for i, cur in enumerate(self._matches):
-            bg = self._CURRENT_BG if i == self._current else self._MATCH_BG
-            sels.append(self._make_sel(cur, bg))
-        self._apply_extra_selections(sels)
+class CodeEditor(QsciScintilla):
+    """QsciScintilla-based Python editor.
 
-    def _clear_highlights(self):
-        self._apply_extra_selections([])
+    Features: syntax highlighting, line numbers, code folding, brace matching,
+    auto-indentation, Tab/Shift+Tab multi-line indent, smart backspace,
+    Ctrl+/ comment toggle, jedi autocomplete, Ctrl+F find / Ctrl+R replace.
+    """
 
-    def _apply_extra_selections(self, match_sels):
-        # Merge with CodeEditor's current-line highlight if present
-        line_sel = getattr(self._editor, '_line_sel', None)
-        combined = ([line_sel] if line_sel is not None else []) + match_sels
-        self._editor.setExtraSelections(combined)
-        # Store so CodeEditor._update_extra_selections can include them
-        self._editor._match_sels = match_sels
-
-
-# ── Static word lists ──────────────────────────────────────────────────────────
-
-_KEYWORDS = [
-    "False", "None", "True", "and", "as", "assert", "async", "await",
-    "break", "class", "continue", "def", "del", "elif", "else", "except",
-    "finally", "for", "from", "global", "if", "import", "in", "is",
-    "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-    "while", "with", "yield",
-]
-
-_BPS_METHODS = [
-    "mv", "mvr", "sleep", "trigger_and_read", "abs_set", "rel_set",
-    "read", "stage", "unstage", "move_per_step", "kickoff", "complete",
-    "collect", "configure", "checkpoint", "clear_checkpoint",
-    "open_run", "close_run", "create", "save", "monitor", "unmonitor",
-    "null", "stop", "wait", "pause",
-]
-
-_BP_METHODS = [
-    "scan", "rel_scan", "count", "grid_scan", "rel_grid_scan",
-    "list_scan", "log_scan", "spiral", "spiral_fermat",
-    "adaptive_scan", "tune_centroid", "fly",
-]
-
-_BLUESKY_GLOBALS = [
-    "bps", "bp",
-    "import bluesky.plans as bp",
-    "import bluesky.plan_stubs as bps",
-    "yield from bps.",
-    "yield from bp.",
-]
-
-_ALL_WORDS = sorted(set(
-    _KEYWORDS + _BLUESKY_GLOBALS +
-    [f"bps.{m}" for m in _BPS_METHODS] +
-    [f"bp.{m}" for m in _BP_METHODS]
-))
-
-
-# ── Jedi background worker ─────────────────────────────────────────────────────
-
-def _jedi_thread(source: str, line: int, col: int, prefix: str,
-                 cancel: threading.Event, signal):
-    """Run jedi.Script.complete() off the main thread and emit results via signal."""
-    try:
-        script = jedi.Script(source)
-        if cancel.is_set():
-            return
-        completions = script.complete(line, col)
-        if cancel.is_set():
-            return
-        words = [c.name for c in completions][:120]
-        if words and not cancel.is_set():
-            signal.emit(words, prefix)
-    except Exception:
-        pass
-
-
-# ── Editor widget ──────────────────────────────────────────────────────────────
-
-class CodeEditor(QPlainTextEdit):
-    """QPlainTextEdit with line numbers, current-line highlight, auto-indentation, and auto-completion."""
-
-    _jedi_done = pyqtSignal(list, str)   # (word_list, prefix_that_triggered it)
+    _jedi_done = pyqtSignal(list, str)   # (word_list, prefix_that_triggered_it)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._completer      = None
-        self._gutter         = _LineNumberArea(self)
-        self._line_sel       = None   # current-line ExtraSelection
-        self._match_sels     = []     # FindBar match ExtraSelections
-        self._jedi_cancel    = threading.Event()
+        self._jedi_cancel = threading.Event()
 
-        self.blockCountChanged.connect(self._update_gutter_width)
-        self.updateRequest.connect(self._update_gutter)
-        self.cursorPositionChanged.connect(self._highlight_current_line)
-
-        self._update_gutter_width(0)
-        self._highlight_current_line()
+        self._setup_editor()
+        self._setup_lexer()
+        self._setup_margins()
         self._setup_completer()
         self._find_bar = FindBar(self)
 
-        # Debounce timer: jedi runs in a thread 300 ms after the last keypress
         self._jedi_timer = QTimer(self)
         self._jedi_timer.setSingleShot(True)
         self._jedi_timer.setInterval(300)
         self._jedi_timer.timeout.connect(self._start_jedi_async)
         self._jedi_done.connect(self._apply_jedi_completions)
 
-    # ── Line number gutter ─────────────────────────────────────────────────────
+    # ── Editor configuration ───────────────────────────────────────────────────
 
-    def _gutter_width(self) -> int:
-        digits = max(3, len(str(self.blockCount())))
-        return 8 + self.fontMetrics().horizontalAdvance("9") * digits
-
-    def _update_gutter_width(self, _=0):
-        self.setViewportMargins(self._gutter_width(), 0, 0, 0)
-
-    def _update_gutter(self, rect: QRect, dy: int):
-        if dy:
-            self._gutter.scroll(0, dy)
-        else:
-            self._gutter.update(0, rect.y(), self._gutter.width(), rect.height())
-        if rect.contains(self.viewport().rect()):
-            self._update_gutter_width()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        cr = self.contentsRect()
-        self._gutter.setGeometry(
-            QRect(cr.left(), cr.top(), self._gutter_width(), cr.height())
+    def _setup_editor(self):
+        self.setIndentationsUseTabs(False)
+        self.setTabWidth(4)
+        self.setAutoIndent(True)
+        self.setBackspaceUnindents(True)
+        self.setTabIndents(True)
+        self.setCaretLineVisible(True)
+        self.setCaretLineBackgroundColor(
+            self.palette().color(QPalette.ColorRole.AlternateBase)
         )
-        if hasattr(self, '_find_bar') and self._find_bar.isVisible():
-            self._find_bar._reposition()
+        try:
+            self.setBraceMatching(QsciScintilla.BraceMatch.SloppyBraceMatch)
+        except AttributeError:
+            self.setBraceMatching(QsciScintilla.SloppyBraceMatch)
+        try:
+            self.setFolding(QsciScintilla.FoldStyle.BoxedTreeFoldStyle)
+        except AttributeError:
+            self.setFolding(QsciScintilla.BoxedTreeFoldStyle)
 
-    def _paint_gutter(self, event):
-        pal = self.palette()
-        bg = pal.color(QPalette.ColorRole.AlternateBase)
-        fg = pal.color(QPalette.ColorRole.PlaceholderText)
+    def _setup_lexer(self):
+        self._lexer = QsciLexerPython(self)
+        self._lexer.setDefaultFont(self.font())
+        self.setLexer(self._lexer)
 
-        painter = QPainter(self._gutter)
-        painter.fillRect(event.rect(), bg)
-        painter.setFont(self.font())
-
-        block = self.firstVisibleBlock()
-        num   = block.blockNumber()
-        top   = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
-        bot   = top + round(self.blockBoundingRect(block).height())
-        lh    = self.fontMetrics().height()
-
-        while block.isValid() and top <= event.rect().bottom():
-            if block.isVisible() and bot >= event.rect().top():
-                painter.setPen(fg)
-                painter.drawText(
-                    0, top, self._gutter.width() - 4, lh,
-                    Qt.AlignmentFlag.AlignRight,
-                    str(num + 1),
-                )
-            block = block.next()
-            top   = bot
-            bot   = top + round(self.blockBoundingRect(block).height())
-            num  += 1
-
-    def _highlight_current_line(self):
-        pal = self.palette()
-        color = pal.color(QPalette.ColorRole.AlternateBase)
-        sel = QTextEdit.ExtraSelection()
-        sel.format.setBackground(color)
-        sel.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
-        sel.cursor = self.textCursor()
-        sel.cursor.clearSelection()
-        self._line_sel = sel if not self.isReadOnly() else None
-        self._update_extra_selections()
-
-    def _update_extra_selections(self):
-        sels = []
-        if self._line_sel is not None:
-            sels.append(self._line_sel)
-        sels.extend(self._match_sels)
-        self.setExtraSelections(sels)
+    def _setup_margins(self):
+        try:
+            num_margin = QsciScintilla.MarginType.NumberMargin
+            sym_margin = QsciScintilla.MarginType.SymbolMargin
+        except AttributeError:
+            num_margin = 1   # SC_MARGIN_NUMBER
+            sym_margin = 0   # SC_MARGIN_SYMBOL
+        self.setMarginType(0, num_margin)
+        self.setMarginWidth(0, "0000")
+        self.setMarginsForegroundColor(QColor("#888888"))
+        self.setMarginsBackgroundColor(
+            self.palette().color(QPalette.ColorRole.AlternateBase)
+        )
+        self.setMarginType(1, sym_margin)
+        self.setMarginWidth(1, 12)
+        self.setMarginSensitivity(1, True)
 
     def _setup_completer(self):
-        self._completer = QCompleter(self)
-        self._completer.setModel(QStringListModel(_ALL_WORDS, self._completer))
-        self._completer.setWidget(self)
-        self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseSensitive)
-        self._completer.popup().setFont(QFont("Courier New", 11))
-        self._completer.activated.connect(self._insert_completion)
+        self._api = QsciAPIs(self._lexer)
+        for word in _ALL_WORDS:
+            self._api.add(word)
+        self._api.prepare()
+        try:
+            acs_apis = QsciScintilla.AutoCompletionSource.AcsAPIs
+        except AttributeError:
+            acs_apis = QsciScintilla.AcsAPIs
+        self.setAutoCompletionSource(acs_apis)
+        self.setAutoCompletionThreshold(2)
+        self.setAutoCompletionCaseSensitivity(True)
+        self.setAutoCompletionReplaceWord(True)
+        if JEDI_AVAILABLE:
+            self._api.apiPreparationFinished.connect(self._on_api_ready)
+
+    def _on_api_ready(self):
+        """Re-trigger autocomplete popup after API is rebuilt with jedi words."""
+        prefix = self._completion_prefix()
+        if len(prefix) >= 2:
+            self.autoCompleteFromAPIs()
+
+    # ── Font propagation ───────────────────────────────────────────────────────
+
+    def setFont(self, font: QFont):
+        super().setFont(font)
+        if hasattr(self, '_lexer'):
+            self._lexer.setDefaultFont(font)
+            self.setMarginsFont(font)
 
     # ── Key handling ───────────────────────────────────────────────────────────
 
     def keyPressEvent(self, event: QKeyEvent):
-        c = self._completer
-        popup_visible = c and c.popup().isVisible()
-
-        # Let completer consume navigation keys while popup is open
-        if popup_visible and event.key() in (
-            Qt.Key.Key_Enter, Qt.Key.Key_Return,
-            Qt.Key.Key_Escape, Qt.Key.Key_Tab, Qt.Key.Key_Backtab,
-        ):
-            event.ignore()
-            return
-
-        is_ctrl_space = (
-            event.modifiers() == Qt.KeyboardModifier.ControlModifier
-            and event.key() == Qt.Key.Key_Space
-        )
-
-        # Toggle comment  Ctrl+/
+        # Ctrl+/ — toggle comment on all selected lines
         if (event.modifiers() == Qt.KeyboardModifier.ControlModifier
                 and event.key() == Qt.Key.Key_Slash):
             self._toggle_comment()
             return
 
-        # Auto-indent on Enter
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self._auto_indent()
-            self._maybe_hide_completer()
+        # Enter — QScintilla auto-indents; add extra level when line ends with ':'
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not self.isReadOnly():
+            line, _ = self.getCursorPosition()
+            ends_colon = self.text(line).rstrip('\r\n').rstrip().endswith(':')
+            super().keyPressEvent(event)
+            if ends_colon:
+                cur_line, cur_col = self.getCursorPosition()
+                self.insert('    ')
+                self.setCursorPosition(cur_line, cur_col + 4)
             return
-
-        # Tab → 4 spaces
-        if event.key() == Qt.Key.Key_Tab:
-            self._insert_tab_spaces()
-            return
-
-        # Smart backspace — remove one indent level
-        if event.key() == Qt.Key.Key_Backspace:
-            if self._smart_backspace():
-                self._maybe_update_completer(is_ctrl_space)
-                return
 
         super().keyPressEvent(event)
 
-        # Hide completer on Escape or bare modifier keys
-        if event.key() == Qt.Key.Key_Escape:
-            c and c.popup().hide()
-            return
-        if not event.text() and not is_ctrl_space:
-            return
-
-        self._maybe_update_completer(is_ctrl_space)
+        # Trigger jedi completion after each typed character
+        if JEDI_AVAILABLE and event.text() and not self.isReadOnly():
+            self._jedi_timer.start()
 
     # ── Comment toggle ─────────────────────────────────────────────────────────
 
     def _toggle_comment(self):
-        """Add or remove a leading '# ' on every selected line (Ctrl+/)."""
-        cursor = self.textCursor()
-        doc    = self.document()
+        """Add/remove '# ' on every line in the current selection (Ctrl+/)."""
+        lf, idx_f, lt, idx_t = self.getSelection()
+        cur_line, _ = self.getCursorPosition()
 
-        sel_start = cursor.selectionStart()
-        sel_end   = cursor.selectionEnd()
+        if lf == -1:
+            lf = lt = cur_line
+        elif idx_t == 0 and lt > lf:
+            lt -= 1
 
-        start_block = doc.findBlock(sel_start)
-        end_block   = doc.findBlock(sel_end)
-        # If selection ends exactly at the start of a block (not the first),
-        # don't include that block — the user selected up to the newline only.
-        if sel_end == end_block.position() and end_block != start_block:
-            end_block = end_block.previous()
-
-        blocks = []
-        b = start_block
-        while b.isValid():
-            blocks.append(b)
-            if b == end_block:
-                break
-            b = b.next()
-
-        non_empty = [b.text() for b in blocks if b.text().strip()]
+        lines_text = [self.text(i).rstrip('\r\n') for i in range(lf, lt + 1)]
+        non_empty = [t for t in lines_text if t.strip()]
         all_commented = bool(non_empty) and all(
             t.lstrip().startswith('#') for t in non_empty
         )
 
-        cursor.beginEditBlock()
-        for block in blocks:
-            text = block.text()
-            bc   = QTextCursor(block)
+        self.beginUndoAction()
+        for line_num in range(lf, lt + 1):
+            text = self.text(line_num).rstrip('\r\n')
             if all_commented:
                 stripped = text.lstrip()
+                indent = len(text) - len(stripped)
                 if stripped.startswith('# '):
-                    idx = text.index('#')
-                    bc.setPosition(block.position() + idx)
-                    bc.movePosition(QTextCursor.MoveOperation.Right,
-                                    QTextCursor.MoveMode.KeepAnchor, 2)
-                    bc.removeSelectedText()
+                    self.setSelection(line_num, indent, line_num, indent + 2)
+                    self.removeSelectedText()
                 elif stripped.startswith('#'):
-                    idx = text.index('#')
-                    bc.setPosition(block.position() + idx)
-                    bc.movePosition(QTextCursor.MoveOperation.Right,
-                                    QTextCursor.MoveMode.KeepAnchor, 1)
-                    bc.removeSelectedText()
+                    self.setSelection(line_num, indent, line_num, indent + 1)
+                    self.removeSelectedText()
             else:
-                if text.strip():   # leave blank lines alone
+                if text.strip():
                     indent = len(text) - len(text.lstrip())
-                    bc.setPosition(block.position() + indent)
-                    bc.insertText('# ')
-        cursor.endEditBlock()
+                    self.insertAt('# ', line_num, indent)
+        self.endUndoAction()
 
-    # ── Auto-indent ────────────────────────────────────────────────────────────
-
-    def _auto_indent(self):
-        cursor = self.textCursor()
-        line = cursor.block().text()
-        indent = len(line) - len(line.lstrip(' '))
-        new_indent = ' ' * indent
-        if line.rstrip().endswith(':'):
-            new_indent += '    '
-        cursor.insertText('\n' + new_indent)
-        self.setTextCursor(cursor)
-
-    def _insert_tab_spaces(self):
-        cursor = self.textCursor()
-        col = cursor.positionInBlock()
-        spaces = 4 - (col % 4)
-        cursor.insertText(' ' * spaces)
-        self.setTextCursor(cursor)
-
-    def _smart_backspace(self) -> bool:
-        """Remove a full indent block (4 spaces) when cursor is at indent boundary."""
-        cursor = self.textCursor()
-        if cursor.hasSelection():
-            return False
-        line = cursor.block().text()
-        col = cursor.positionInBlock()
-        before = line[:col]
-        if before and before == ' ' * len(before) and len(before) % 4 == 0 and len(before) > 0:
-            for _ in range(4):
-                cursor.deletePreviousChar()
-            return True
-        return False
-
-    # ── Completion ─────────────────────────────────────────────────────────────
-
-    def _maybe_hide_completer(self):
-        if self._completer:
-            self._completer.popup().hide()
-
-    def _maybe_update_completer(self, force: bool = False):
-        c = self._completer
-        prefix = self._completion_prefix()
-
-        if not force and len(prefix) < 2:
-            c.popup().hide()
-            self._jedi_timer.stop()
-            return
-
-        # Show static words instantly, then schedule jedi for richer results
-        self._set_static_model(prefix)
-        self._show_popup(prefix)
-
-        if JEDI_AVAILABLE:
-            self._jedi_timer.start()   # restarts the 300ms debounce
-
-    def _set_static_model(self, prefix: str):
-        if '.' in prefix:
-            module = prefix.rsplit('.', 1)[0]
-            if module == 'bps':
-                words = _BPS_METHODS
-            elif module == 'bp':
-                words = _BP_METHODS
-            else:
-                words = _ALL_WORDS
-        else:
-            words = _ALL_WORDS
-        self._completer.model().setStringList(words)
-
-    def _show_popup(self, prefix: str):
-        c = self._completer
-        if c.completionPrefix() != prefix:
-            c.setCompletionPrefix(prefix)
-            c.popup().setCurrentIndex(c.completionModel().index(0, 0))
-        if c.completionCount() == 0:
-            c.popup().hide()
-            return
-        cr = self.cursorRect()
-        cr.setWidth(
-            c.popup().sizeHintForColumn(0)
-            + c.popup().verticalScrollBar().sizeHint().width()
-            + 8
-        )
-        c.complete(cr)
+    # ── Jedi completion ────────────────────────────────────────────────────────
 
     def _completion_prefix(self) -> str:
-        """Return the word (including module prefix) under the cursor."""
-        cursor = self.textCursor()
-        pos = cursor.position()
-        text = self.toPlainText()
-        start = pos
+        line, col = self.getCursorPosition()
+        text = self.text(line)[:col]
+        start = len(text)
         while start > 0 and text[start - 1] in (
             'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.'
         ):
             start -= 1
-        return text[start:pos]
+        return text[start:]
 
     def _start_jedi_async(self):
-        """Snapshot editor state and run jedi in a daemon thread."""
-        self._jedi_cancel.set()           # signal any running thread to stop
+        self._jedi_cancel.set()
         self._jedi_cancel = threading.Event()
-        source = self.toPlainText()
-        cursor = self.textCursor()
-        line   = cursor.blockNumber() + 1
-        col    = cursor.positionInBlock()
+        source = self.text()
+        line, col = self.getCursorPosition()
         prefix = self._completion_prefix()
         cancel = self._jedi_cancel
         signal = self._jedi_done
         threading.Thread(
             target=_jedi_thread,
-            args=(source, line, col, prefix, cancel, signal),
+            args=(source, line + 1, col, prefix, cancel, signal),
             daemon=True,
         ).start()
 
     def _apply_jedi_completions(self, words: list, prefix: str):
-        """Called on main thread when jedi finishes; update popup if prefix still matches."""
-        if not words:
+        if not words or self._completion_prefix() != prefix:
             return
-        if self._completion_prefix() != prefix:
-            return   # user has typed more — stale result, discard
-        if not self._completer.popup().isVisible():
-            return   # popup was closed in the meantime
-        self._completer.model().setStringList(words)
-        self._show_popup(prefix)
+        self._api.clear()
+        for w in sorted(set(_ALL_WORDS + words)):
+            self._api.add(w)
+        self._api.prepare()   # async; _on_api_ready re-triggers the popup when done
 
-    def _insert_completion(self, completion: str):
-        cursor = self.textCursor()
-        prefix = self._completer.completionPrefix()
-        # Only replace the part after the last dot
-        replace_len = len(prefix.rsplit('.', 1)[-1]) if '.' in prefix else len(prefix)
-        cursor.movePosition(
-            QTextCursor.MoveOperation.Left,
-            QTextCursor.MoveMode.KeepAnchor,
-            replace_len,
-        )
-        cursor.insertText(completion)
-        self.setTextCursor(cursor)
+    # ── Public helpers ─────────────────────────────────────────────────────────
 
-    def focusOutEvent(self, event):
-        if self._completer:
-            self._completer.popup().hide()
-        super().focusOutEvent(event)
+    def set_word_list(self, words: list):
+        """Replace the autocomplete word list (e.g. to add ophyd device names)."""
+        self._api.clear()
+        for w in words:
+            self._api.add(w)
+        self._api.prepare()
+
+    # ── Compatibility shims for code that used QPlainTextEdit API ──────────────
+
+    def toPlainText(self) -> str:
+        return self.text()
+
+    def setPlainText(self, text: str):
+        self.setText(text)
+
+    def setPlaceholderText(self, _text: str):
+        pass   # QScintilla has no placeholder; editor starts empty
+
+    def ensureCursorVisible(self):
+        line, _ = self.getCursorPosition()
+        self.ensureLineVisible(line)

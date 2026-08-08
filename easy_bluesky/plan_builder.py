@@ -15,7 +15,6 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QThread
 from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox
 from PyQt6.QtGui import QFont, QColor, QDrag
 
-from .highlighter import PythonHighlighter
 from .code_editor import CodeEditor
 from .widgets import ParamForm
 
@@ -1748,8 +1747,7 @@ class PlanBuilder(QWidget):
             "def my_plan(detector, motor, start, stop, num):\n"
             "    yield from bp.scan([detector], motor, start, stop, num)\n"
         )
-        self.highlighter = PythonHighlighter(self.editor.document())
-        self.editor.document().contentsChanged.connect(self._on_editor_changed)
+        self.editor.textChanged.connect(self._on_editor_changed)
         lay.addWidget(self.editor, 1)
 
         tmpl_row = QHBoxLayout()
@@ -1869,12 +1867,8 @@ class PlanBuilder(QWidget):
     def _jump_to_line(self, lineno: int):
         if lineno < 1:
             return
-        block = self.editor.document().findBlockByLineNumber(lineno - 1)
-        if block.isValid():
-            cursor = self.editor.textCursor()
-            cursor.setPosition(block.position())
-            self.editor.setTextCursor(cursor)
-            self.editor.ensureCursorVisible()
+        self.editor.setCursorPosition(lineno - 1, 0)
+        self.editor.ensureLineVisible(lineno - 1)
 
     def _check_plan(self) -> bool:
         """Run all checks; log results to output. Returns True if syntax is valid."""
