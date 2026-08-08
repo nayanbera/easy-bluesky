@@ -160,6 +160,21 @@ class LiveViewer(QWidget):
         )
         ctrl.addWidget(self._live_fit_model_combo)
 
+        bg_lbl = QLabel("+ BG:")
+        bg_lbl.setStyleSheet("font-size: 11px;")
+        ctrl.addWidget(bg_lbl)
+
+        self._live_fit_bg_combo = QComboBox()
+        self._live_fit_bg_combo.setFixedHeight(26)
+        self._live_fit_bg_combo.setMinimumWidth(80)
+        self._live_fit_bg_combo.setMaximumWidth(120)
+        for bg in _peak_fit.BACKGROUND_MODELS:
+            self._live_fit_bg_combo.addItem(bg)
+        self._live_fit_bg_combo.currentTextChanged.connect(
+            lambda: self._run_live_fit(force=True)
+        )
+        ctrl.addWidget(self._live_fit_bg_combo)
+
         ctrl.addStretch()
 
         self.run_label = QLabel("No active run")
@@ -675,9 +690,10 @@ class LiveViewer(QWidget):
         n = len(x)
         if not force and (n - self._live_fit_n_fitted) < 5:
             return
+        bg_name = self._live_fit_bg_combo.currentText()
         try:
-            params = _peak_fit.auto_guess(x, y, model_name)
-            x_fit, y_fit, info = _peak_fit.run_fit(x, y, params, model_name)
+            params = _peak_fit.auto_guess(x, y, model_name, bg_name)
+            x_fit, y_fit, info = _peak_fit.run_fit(x, y, params, model_name, bg_name=bg_name)
             self._live_fit_n_fitted = n
 
             fit_pen = pg.mkPen("#ffcc44", width=2, style=Qt.PenStyle.DashLine)
