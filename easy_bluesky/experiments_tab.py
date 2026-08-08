@@ -418,6 +418,7 @@ class ExperimentsTab(QWidget):
         self._sample_name: str = ""
         self._sample_description: str = ""
         self._settings: dict   = {}         # connection settings for MongoDB export
+        self._active_profile: str = ""      # current profile name — gates history logging
         self._hdf5_exporter    = None
         self.history_widget    = _HistoryWidgetStub()
         self._build()
@@ -751,6 +752,32 @@ class ExperimentsTab(QWidget):
 
     def update_settings(self, settings: dict):
         self._settings = settings
+
+    def set_profile(self, profile_name: str):
+        """Switch the active profile — clears the current experiment and loads the
+        one saved for the new profile, if any.  Called by main.py on profile change."""
+        if profile_name == self._active_profile:
+            return
+        self._active_profile = profile_name
+        # Clear current state so history from the old profile is not mixed in.
+        self._active_exp_path  = ""
+        self._logged_uids      = set()
+        self._shown_error_uids = set()
+        self._exp_created_at   = 0.0
+        self._exp_end_time     = 0.0
+        self._next_scan_num    = 1
+        self._clear_sample()
+        # Reset display labels — _set_active_experiment will re-populate them
+        # if a saved experiment exists for this profile.
+        self.exp_name_label.setText("—")
+        self.exp_path_label.setText("")
+        self.exp_date_label.setText("")
+        self.plan_log_list.clear()
+        self._load_active_experiment()
+        # Notify the rest of the app (mongo browser, RE startup md, etc.)
+        if self._active_exp_path:
+            runs_dir = str(Path(self._active_exp_path) / "runs")
+            self.experiment_changed.emit(runs_dir)
 
     # ── Queue operations ───────────────────────────────────────────────────────
 
@@ -1258,7 +1285,17 @@ class ExperimentsTab(QWidget):
     def _write_active_experiment(self, info: dict):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
         active_file.parent.mkdir(parents=True, exist_ok=True)
-        active_file.write_text(json.dumps(info, indent=2))
+        # Store per-profile so switching profiles restores the correct experiment.
+        try:
+            existing = json.loads(active_file.read_text()) if active_file.exists() else {}
+        except Exception:
+            existing = {}
+        # Migrate legacy flat format (single dict with "path" key) on first write.
+        if "path" in existing:
+            existing = {}
+        profile_key = self._active_profile or "__default__"
+        existing[profile_key] = info
+        active_file.write_text(json.dumps(existing, indent=2))
 
     def _compute_exp_end_time(self) -> float:
         if not self._exp_created_at:
@@ -1307,7 +1344,13 @@ class ExperimentsTab(QWidget):
         if not active_file.exists():
             return
         try:
-            info = json.loads(active_file.read_text())
+            data = json.loads(active_file.read_text())
+            # Legacy flat format (single dict with "path" key) — treat as __default__
+            if "path" in data:
+                info = data
+            else:
+                profile_key = self._active_profile or "__default__"
+                info = data.get(profile_key) or {}
             path = info.get("path", "")
             if path and Path(path).exists():
                 self._set_active_experiment(path, info)

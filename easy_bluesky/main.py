@@ -1046,6 +1046,9 @@ class MainWindow(QMainWindow):
         self.mongo_browser      = MongoDataBrowserTab(self._conn_settings)
         self.hdf5_viewer        = HDF5Viewer()
         self.experiments_tab.update_settings(self._conn_settings)
+        # Set initial profile so _load_active_experiment reads the right slot.
+        initial_profile = self._conn_settings.get("active_profile", "Default")
+        self.experiments_tab._active_profile = initial_profile
         self.re_console         = REConsoleWidget()
 
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
@@ -1913,6 +1916,7 @@ class MainWindow(QMainWindow):
         self.experiments_tab.live_viewer.restart_zmq(doc)
         self.mongo_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
+        self.experiments_tab.set_profile(name)
         self.watchdog_tab.load_for_profile(name)
 
     def _on_open_hdf5(self):
