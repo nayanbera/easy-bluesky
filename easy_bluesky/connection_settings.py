@@ -316,6 +316,9 @@ _DEFAULTS = {
     "deleted_profiles": [],
     "epics_ca_addr_list": "",
     "epics_ca_auto_addr_list": True,
+    # ESAF server — global (not per-profile)
+    "esaf_server_url": "",   # e.g. http://beamline-host:8765
+    "esaf_api_key":    "",   # shared API key for write operations
 }
 
 
@@ -1303,6 +1306,58 @@ class ConnectionDialog(QDialog):
         self._reg_status.setWordWrap(True)
         lay.addWidget(self._reg_status)
 
+        # ── ESAF Server section ────────────────────────────────────────────────
+        sep_esaf = QFrame()
+        sep_esaf.setFrameShape(QFrame.Shape.HLine)
+        sep_esaf.setFrameShadow(QFrame.Shadow.Sunken)
+        lay.addWidget(sep_esaf)
+
+        esaf_title = QLabel("ESAF Server")
+        esaf_title.setStyleSheet("font-weight: bold; font-size: 12px;")
+        lay.addWidget(esaf_title)
+
+        esaf_note = QLabel(
+            "Optional service that stores ESAF records and PI groups for the beamline.\n"
+            "Run  uvicorn esaf_server.main:app  on the beamline machine or a lab server.\n"
+            "Leave URL empty to use local PDF parsing and cached records only."
+        )
+        esaf_note.setWordWrap(True)
+        esaf_note.setObjectName("dim_text")
+        lay.addWidget(esaf_note)
+
+        esaf_form = QFormLayout()
+        esaf_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        esaf_form.setHorizontalSpacing(12)
+
+        self._esaf_url = QLineEdit(self._settings.get("esaf_server_url", ""))
+        self._esaf_url.setPlaceholderText("http://beamline-host:8765  (leave empty to disable)")
+        esaf_form.addRow("Server URL:", self._esaf_url)
+
+        self._esaf_key = QLineEdit(self._settings.get("esaf_api_key", ""))
+        self._esaf_key.setPlaceholderText("API key for write operations (optional)")
+        self._esaf_key.setEchoMode(QLineEdit.EchoMode.Password)
+        esaf_form.addRow("API key:", self._esaf_key)
+
+        lay.addLayout(esaf_form)
+
+        esaf_btn_row = QHBoxLayout()
+        btn_test_esaf = QPushButton("Test ESAF Server")
+        btn_test_esaf.clicked.connect(self._test_esaf_server)
+        btn_start_esaf = QPushButton("Start ESAF Server via SSH…")
+        btn_start_esaf.setToolTip(
+            "SSH to the beamline machine and start the ESAF server\n"
+            "using uvicorn in the background."
+        )
+        btn_start_esaf.clicked.connect(self._start_esaf_server)
+        esaf_btn_row.addWidget(btn_test_esaf)
+        esaf_btn_row.addWidget(btn_start_esaf)
+        esaf_btn_row.addStretch()
+        lay.addLayout(esaf_btn_row)
+
+        self._esaf_status = QLabel("")
+        self._esaf_status.setWordWrap(True)
+        lay.addWidget(self._esaf_status)
+
         # ── Profiles section ───────────────────────────────────────────────────
         sep_prof = QFrame()
         sep_prof.setFrameShape(QFrame.Shape.HLine)
@@ -1939,6 +1994,75 @@ class ConnectionDialog(QDialog):
             # Remember the registry host so Registry Admin can reach it
             self._settings["registry_host"] = host
 
+    def _test_esaf_server(self):
+        url = self._esaf_url.text().strip()
+        if not url:
+            self._esaf_status.setText("No server URL configured.")
+            self._esaf_status.setStyleSheet("color: #888;")
+            return
+        self._esaf_status.setText("Testing…")
+        self._esaf_status.setStyleSheet("color: #888;")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        try:
+            import urllib.request as _ur
+            req = _ur.Request(f"{url.rstrip('/')}/health", method="GET")
+            with _ur.urlopen(req, timeout=5) as resp:
+                import json as _json
+                data = _json.loads(resp.read())
+            backend = data.get("backend", "?")
+            self._esaf_status.setText(f"✓  Server OK  (backend: {backend})")
+            self._esaf_status.setStyleSheet("color: #2ca02c;")
+        except Exception as exc:
+            self._esaf_status.setText(f"✗  {exc}")
+            self._esaf_status.setStyleSheet("color: #d62728;")
+
+    def _start_esaf_server(self):
+        settings = self._collect_top_level()
+        if is_local_host(settings):
+            self._esaf_status.setText(
+                "Host is localhost — start the ESAF server manually:\n"
+                "  uvicorn esaf_server.main:app --host 0.0.0.0 --port 8765"
+            )
+            self._esaf_status.setStyleSheet("color: #888;")
+            return
+        url = self._esaf_url.text().strip()
+        port = 8765
+        try:
+            port = int(url.rsplit(":", 1)[-1])
+        except Exception:
+            pass
+        host = settings.get("host", "localhost")
+        conda_env  = settings.get("conda_env", "").strip()
+        conda_path = settings.get("conda_path", "~/miniconda3").strip()
+
+        self._esaf_status.setText("Starting ESAF server via SSH…")
+        self._esaf_status.setStyleSheet("color: #888;")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        try:
+            from .ssh_manager import _get_client
+            client = _get_client(settings)
+            cmd = ""
+            if conda_env:
+                base = conda_path.replace("~", "$HOME")
+                cmd = (f"source {base}/etc/profile.d/conda.sh 2>/dev/null; "
+                       f"conda activate {conda_env} 2>/dev/null; ")
+            cmd += (f"nohup uvicorn esaf_server.main:app "
+                    f"--host 0.0.0.0 --port {port} "
+                    f">> ~/.easy_bluesky/esaf_server.log 2>&1 &")
+            _, stdout, stderr = client.exec_command(cmd, timeout=10)
+            stdout.channel.recv_exit_status()
+            client.close()
+            self._esaf_status.setText(
+                f"✓  ESAF server start command sent to {host}:{port}.\n"
+                f"   Wait a few seconds then click Test."
+            )
+            self._esaf_status.setStyleSheet("color: #2ca02c;")
+        except Exception as exc:
+            self._esaf_status.setText(f"✗  SSH error: {exc}")
+            self._esaf_status.setStyleSheet("color: #d62728;")
+
     def _collect_top_level(self) -> dict:
         return {
             **self._settings,
@@ -1953,6 +2077,8 @@ class ConnectionDialog(QDialog):
             "registry_path":            self._settings.get("registry_path", ""),
             "epics_ca_addr_list":       self._ca_addr_list.text().strip(),
             "epics_ca_auto_addr_list":  self._ca_auto.isChecked(),
+            "esaf_server_url":          self._esaf_url.text().strip(),
+            "esaf_api_key":             self._esaf_key.text().strip(),
         }
 
     def _on_accept(self):

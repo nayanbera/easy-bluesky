@@ -386,26 +386,146 @@ class _StartupExperimentDialog(QDialog):
 # ── New experiment dialog ─────────────────────────────────────────────────────
 
 class _NewExperimentDialog(QDialog):
-    """Dialog that collects both the local and remote paths for a new experiment.
+    """Two-tab dialog for creating a new experiment.
 
-    The remote path is pre-populated from the active profile's ``remote_data_root``
-    and updated automatically as the user types the experiment name.
+    Tab 1 "From ESAF" — selects a cached ESAF, auto-builds the folder structure
+        ``<experiments_root>/<pi_slug>/ESAF-<id>_<start_date>/<session_date>/<run_name>``.
+    Tab 2 "Manual" — the original free-form name + local/remote paths.
+
+    Result attributes (set on accept):
+        experiment_name   : str — bare name (folder leaf)
+        local_parent_dir  : str — parent directory; final path = parent/sanitized_name
+        remote_exp_dir    : str — full remote path (may be empty)
+        esaf_info         : dict — ESAF metadata to embed in experiment.json (may be {})
     """
 
     def __init__(self, remote_data_root: str = "", settings: dict = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("New Experiment")
-        self.setMinimumWidth(540)
+        self.setMinimumWidth(580)
         self._remote_data_root = remote_data_root.rstrip("/")
         self._settings         = settings or {}
         self.experiment_name   = ""
         self.local_parent_dir  = ""
         self.remote_exp_dir    = ""
+        self.esaf_info         = {}
+        self._selected_esaf    = None   # ESAFRecord | None
         self._build()
+
+    # ── Layout ────────────────────────────────────────────────────────────────
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setSpacing(10)
+        lay.setSpacing(8)
+
+        self._tabs = QTabWidget()
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        lay.addWidget(self._tabs, 1)
+
+        self._build_esaf_tab()
+        self._build_manual_tab()
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    # ── Tab 1: From ESAF ──────────────────────────────────────────────────────
+
+    def _build_esaf_tab(self):
+        from .esaf_dialog import ESAFPickerWidget
+        from datetime import date as _date
+
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        esaf_grp = QGroupBox("ESAF")
+        eg_lay = QVBoxLayout(esaf_grp)
+        self._esaf_picker = ESAFPickerWidget(self._settings)
+        self._esaf_picker.esaf_selected.connect(self._on_esaf_selected)
+        eg_lay.addWidget(self._esaf_picker)
+        lay.addWidget(esaf_grp)
+
+        details_form = QFormLayout()
+        details_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        details_form.setHorizontalSpacing(12)
+
+        self._session_date = QLineEdit(_date.today().isoformat())
+        self._session_date.setPlaceholderText("YYYY-MM-DD")
+        self._session_date.setMaximumWidth(140)
+        self._session_date.textChanged.connect(self._update_esaf_paths)
+        details_form.addRow("Session date:", self._session_date)
+
+        self._esaf_run_name = QLineEdit()
+        self._esaf_run_name.setPlaceholderText("optional run / sub-experiment name")
+        self._esaf_run_name.textChanged.connect(self._update_esaf_paths)
+        details_form.addRow("Run name:", self._esaf_run_name)
+
+        lay.addLayout(details_form)
+
+        path_grp = QGroupBox("Generated Paths")
+        pg_lay = QFormLayout(path_grp)
+        pg_lay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        pg_lay.setHorizontalSpacing(10)
+
+        self._esaf_local_lbl = QLabel("(select an ESAF above)")
+        self._esaf_local_lbl.setWordWrap(True)
+        self._esaf_local_lbl.setStyleSheet("font-size: 10px;")
+        pg_lay.addRow("Local:", self._esaf_local_lbl)
+
+        self._esaf_remote_lbl = QLabel("(not configured)" if not self._remote_data_root
+                                        else "(select an ESAF above)")
+        self._esaf_remote_lbl.setWordWrap(True)
+        self._esaf_remote_lbl.setStyleSheet("font-size: 10px;")
+        pg_lay.addRow("Remote:", self._esaf_remote_lbl)
+
+        lay.addWidget(path_grp)
+        lay.addStretch()
+        self._tabs.addTab(w, "From ESAF")
+
+    def _on_esaf_selected(self, record):
+        self._selected_esaf = record
+        self._update_esaf_paths()
+
+    def _update_esaf_paths(self):
+        rec = self._selected_esaf
+        if rec is None:
+            self._esaf_local_lbl.setText("(select an ESAF above)")
+            self._esaf_remote_lbl.setText("(select an ESAF above)")
+            return
+
+        pi_slug = rec.pi_group_slug or "no_pi_group"
+        esaf_folder = f"ESAF-{rec.esaf_id}"
+        if rec.start_date:
+            esaf_folder += f"_{rec.start_date}"
+        session = self._session_date.text().strip() or "session"
+        run     = self._sanitize(self._esaf_run_name.text().strip())
+
+        parts_local  = [EXPERIMENTS_DIR, pi_slug, esaf_folder, session]
+        parts_remote = ([self._remote_data_root, pi_slug, esaf_folder, session]
+                        if self._remote_data_root else [])
+        if run:
+            parts_local.append(run)
+            if parts_remote:
+                parts_remote.append(run)
+
+        self._esaf_local_lbl.setText("/".join(parts_local))
+        if parts_remote:
+            self._esaf_remote_lbl.setText("/".join(parts_remote))
+        else:
+            self._esaf_remote_lbl.setText("(remote_data_root not set in profile)")
+
+    # ── Tab 2: Manual ─────────────────────────────────────────────────────────
+
+    def _build_manual_tab(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
 
         name_form = QFormLayout()
         name_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -416,7 +536,6 @@ class _NewExperimentDialog(QDialog):
         name_form.addRow("Experiment name:", self._name_edit)
         lay.addLayout(name_form)
 
-        # ── Local path ────────────────────────────────────────────────────────
         local_grp = QGroupBox("Local Path  (this computer)")
         local_lay = QVBoxLayout(local_grp)
         local_form = QFormLayout()
@@ -437,7 +556,6 @@ class _NewExperimentDialog(QDialog):
         local_lay.addLayout(local_form)
         lay.addWidget(local_grp)
 
-        # ── Remote path ───────────────────────────────────────────────────────
         remote_grp = QGroupBox("Remote Path  (RE machine — for detector files)")
         remote_lay = QVBoxLayout(remote_grp)
         remote_note = QLabel(
@@ -465,15 +583,15 @@ class _NewExperimentDialog(QDialog):
         remote_form.addRow("Remote path:", remote_row)
         remote_lay.addLayout(remote_form)
         lay.addWidget(remote_grp)
+        lay.addStretch()
 
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.accepted.connect(self._on_accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
-
+        self._tabs.addTab(w, "Manual")
         self._update_local_label()
+
+    def _on_tab_changed(self, _):
+        pass
+
+    # ── Shared helpers ─────────────────────────────────────────────────────────
 
     @staticmethod
     def _sanitize(name: str) -> str:
@@ -520,7 +638,49 @@ class _NewExperimentDialog(QDialog):
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_path:
             self._remote_edit.setText(dlg.selected_path)
 
+    # ── Accept ─────────────────────────────────────────────────────────────────
+
     def _on_accept(self):
+        if self._tabs.currentIndex() == 0:
+            self._accept_esaf()
+        else:
+            self._accept_manual()
+
+    def _accept_esaf(self):
+        rec = self._selected_esaf
+        if rec is None:
+            QMessageBox.warning(self, "Required", "Select an ESAF or import one first.")
+            return
+
+        pi_slug    = rec.pi_group_slug or "no_pi_group"
+        esaf_folder = f"ESAF-{rec.esaf_id}"
+        if rec.start_date:
+            esaf_folder += f"_{rec.start_date}"
+        session = self._session_date.text().strip()
+        if not session:
+            QMessageBox.warning(self, "Required", "Session date is required.")
+            return
+        run_raw = self._esaf_run_name.text().strip()
+        run     = self._sanitize(run_raw) if run_raw else session
+
+        local_parent = "/".join([EXPERIMENTS_DIR, pi_slug, esaf_folder, session])
+        remote_parts = ([self._remote_data_root, pi_slug, esaf_folder, session, run]
+                        if self._remote_data_root else [])
+
+        self.experiment_name  = run
+        self.local_parent_dir = local_parent
+        self.remote_exp_dir   = "/".join(remote_parts) if remote_parts else ""
+        self.esaf_info = {
+            "esaf_id":       rec.esaf_id,
+            "pi_group":      pi_slug,
+            "proposal_id":   rec.proposal_id,
+            "esaf_start_date": rec.start_date,
+            "title":         rec.title,
+            "beamline":      rec.beamline,
+        }
+        self.accept()
+
+    def _accept_manual(self):
         name = self._name_edit.text().strip()
         if not name:
             QMessageBox.warning(self, "Required", "Experiment name is required.")
@@ -532,6 +692,7 @@ class _NewExperimentDialog(QDialog):
         self.experiment_name  = name
         self.local_parent_dir = parent
         self.remote_exp_dir   = self._remote_edit.text().strip()
+        self.esaf_info        = {}
         self.accept()
 
 
@@ -561,6 +722,7 @@ class ExperimentsTab(QWidget):
         self._devices: dict    = {}
         self._active_exp_path  = ""
         self._remote_exp_dir: str = ""   # Linux path on RE machine for detector files
+        self._esaf_info: dict  = {}      # esaf_id, pi_group, proposal_id, esaf_start_date
         self._logged_uids: set = set()
         self._shown_error_uids: set = set()
         self._exp_created_at: float = 0.0
@@ -922,6 +1084,7 @@ class ExperimentsTab(QWidget):
         # Clear current state so history from the old profile is not mixed in.
         self._active_exp_path  = ""
         self._remote_exp_dir   = ""
+        self._esaf_info        = {}
         self._logged_uids      = set()
         self._suppressed_uids  = set()
         self._shown_error_uids = set()
@@ -955,6 +1118,11 @@ class ExperimentsTab(QWidget):
             md["sample_name"] = self._sample_name
         if self._sample_description:
             md["sample_description"] = self._sample_description
+        # ESAF metadata — injected when an experiment was created from an ESAF
+        esaf = getattr(self, "_esaf_info", {})
+        for key in ("esaf_id", "pi_group", "proposal_id", "esaf_start_date"):
+            if esaf.get(key):
+                md[key] = esaf[key]
         return md
 
     def _inject_metadata(self, result_item: dict):
@@ -1215,6 +1383,7 @@ class ExperimentsTab(QWidget):
         name           = dlg.experiment_name
         parent_dir     = dlg.local_parent_dir
         remote_exp_dir = dlg.remote_exp_dir
+        esaf_info      = dlg.esaf_info
 
         ts        = datetime.now()
         sanitized = re.sub(r"[^\w\-]", "_", name)
@@ -1238,6 +1407,8 @@ class ExperimentsTab(QWidget):
             "description":    "",
             "remote_exp_dir": remote_exp_dir,
         }
+        if esaf_info:
+            exp_info["esaf"] = esaf_info
         (exp_dir / "experiment.json").write_text(json.dumps(exp_info, indent=2))
 
         active_info = {
@@ -1246,6 +1417,8 @@ class ExperimentsTab(QWidget):
             "created":        ts.isoformat(),
             "remote_exp_dir": remote_exp_dir,
         }
+        if esaf_info:
+            active_info["esaf"] = esaf_info
         self._write_active_experiment(active_info)
         self._set_active_experiment(str(exp_dir), active_info)
         self._clear_sample()
@@ -1503,6 +1676,7 @@ class ExperimentsTab(QWidget):
         _add_to_recent_list(path, info)
         self._active_exp_path = path
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
+        self._esaf_info       = info.get("esaf", {})
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()

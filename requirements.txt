@@ -14,6 +14,9 @@ suitcase-jsonl>=0.2
 # EPICS Channel Access (real-hardware mode)
 pyepics>=3.5
 
+# ESAF PDF parsing (optional — only needed for local PDF parsing without server)
+pdfplumber>=0.10
+
 # Optional editor enhancements (auto-completion and static analysis)
 jedi>=0.19
 pyflakes>=3.0
