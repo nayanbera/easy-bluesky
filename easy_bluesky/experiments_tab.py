@@ -1443,10 +1443,29 @@ class ExperimentsTab(QWidget):
             item = self.plan_log_list.item(i)
             item.setHidden(bool(q and q not in item.text().lower()))
 
+    def _suppressed_file(self, exp_path: str) -> Path:
+        return Path(exp_path) / "suppressed_uids.json"
+
+    def _load_suppressed_uids(self, exp_path: str) -> None:
+        try:
+            data = json.loads(self._suppressed_file(exp_path).read_text())
+            self._suppressed_uids = set(data) if isinstance(data, list) else set()
+        except Exception:
+            self._suppressed_uids = set()
+
+    def _save_suppressed_uids(self, exp_path: str) -> None:
+        try:
+            self._suppressed_file(exp_path).write_text(
+                json.dumps(sorted(self._suppressed_uids), indent=2)
+            )
+        except Exception:
+            pass
+
     def _load_plan_log(self, exp_path: str, auto_select_newest: bool = False):
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
         self._logged_uids = set()
+        self._load_suppressed_uids(exp_path)   # restore persisted deletions
 
         # Collect UIDs from all experiments so we don't double-log after switching.
         exps_dir = Path(EXPERIMENTS_DIR)
@@ -1761,9 +1780,10 @@ class ExperimentsTab(QWidget):
             QMessageBox.critical(self, "Error", f"Could not update plans_log.jsonl:\n{e}")
             return
 
-        # Persist removed UIDs so they survive repeated _load_plan_log resets
+        # Persist removed UIDs — survives both repeated reloads and app restarts
         self._suppressed_uids |= uids_to_remove
-        # Reload the plan log display (_load_plan_log applies _suppressed_uids automatically)
+        self._save_suppressed_uids(self._active_exp_path)
+        # Reload the plan log display (_load_plan_log re-reads suppressed_uids.json)
         self._load_plan_log(self._active_exp_path)
 
     def _view_plan_detail(self, entry: dict):
