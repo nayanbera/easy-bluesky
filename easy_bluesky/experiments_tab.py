@@ -386,30 +386,35 @@ class _StartupExperimentDialog(QDialog):
 # ── New experiment dialog ─────────────────────────────────────────────────────
 
 class _NewExperimentDialog(QDialog):
-    """Two-tab dialog for creating a new experiment.
+    """Two-tab dialog for opening or creating an experiment.
 
-    Tab 1 "From ESAF" — selects a cached ESAF, auto-builds the folder structure
-        ``<experiments_root>/<pi_slug>/ESAF-<id>_<start_date>/<session_date>/<run_name>``.
+    Tab 1 "From ESAF" — open-or-create within the canonical ESAF folder structure:
+        ``<experiments_root>/<pi_slug>/ESAF-<id>_<start_date>/<run_name>``
+        Existing runs are listed; selecting one opens it.  Typing a new name creates it.
     Tab 2 "Manual" — the original free-form name + local/remote paths.
 
     Result attributes (set on accept):
-        experiment_name   : str — bare name (folder leaf)
-        local_parent_dir  : str — parent directory; final path = parent/sanitized_name
-        remote_exp_dir    : str — full remote path (may be empty)
-        esaf_info         : dict — ESAF metadata to embed in experiment.json (may be {})
+        experiment_name    : str  — bare run name
+        local_parent_dir   : str  — parent dir; final path = parent/sanitized_name
+        remote_exp_dir     : str  — full remote path (may be empty)
+        esaf_info          : dict — ESAF metadata for experiment.json (may be {})
+        open_existing_path : str  — if non-empty, open this existing experiment
+                                    instead of creating a new one
     """
 
     def __init__(self, remote_data_root: str = "", settings: dict = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("New Experiment")
-        self.setMinimumWidth(580)
+        self.setWindowTitle("Open / New Experiment")
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(480)
         self._remote_data_root = remote_data_root.rstrip("/")
         self._settings         = settings or {}
-        self.experiment_name   = ""
-        self.local_parent_dir  = ""
-        self.remote_exp_dir    = ""
-        self.esaf_info         = {}
-        self._selected_esaf    = None   # ESAFRecord | None
+        self.experiment_name    = ""
+        self.local_parent_dir   = ""
+        self.remote_exp_dir     = ""
+        self.esaf_info          = {}
+        self.open_existing_path = ""   # set when opening an existing run
+        self._selected_esaf     = None
         self._build()
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -425,18 +430,17 @@ class _NewExperimentDialog(QDialog):
         self._build_esaf_tab()
         self._build_manual_tab()
 
-        btns = QDialogButtonBox(
+        self._ok_btn = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        btns.accepted.connect(self._on_accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
+        self._ok_btn.accepted.connect(self._on_accept)
+        self._ok_btn.rejected.connect(self.reject)
+        lay.addWidget(self._ok_btn)
 
     # ── Tab 1: From ESAF ──────────────────────────────────────────────────────
 
     def _build_esaf_tab(self):
         from .esaf_dialog import ESAFPickerWidget
-        from datetime import date as _date
 
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -450,72 +454,161 @@ class _NewExperimentDialog(QDialog):
         eg_lay.addWidget(self._esaf_picker)
         lay.addWidget(esaf_grp)
 
-        details_form = QFormLayout()
-        details_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        details_form.setHorizontalSpacing(12)
+        # ── Existing runs ──────────────────────────────────────────────────────
+        runs_lbl = QLabel("Existing runs under this ESAF:")
+        runs_lbl.setStyleSheet("font-weight: bold;")
+        lay.addWidget(runs_lbl)
 
-        self._session_date = QLineEdit(_date.today().isoformat())
-        self._session_date.setPlaceholderText("YYYY-MM-DD")
-        self._session_date.setMaximumWidth(140)
-        self._session_date.textChanged.connect(self._update_esaf_paths)
-        details_form.addRow("Session date:", self._session_date)
+        self._runs_list = QListWidget()
+        self._runs_list.setMaximumHeight(130)
+        self._runs_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._runs_list.itemSelectionChanged.connect(self._on_run_selected)
+        self._runs_list.itemDoubleClicked.connect(self._on_accept)
+        self._no_runs_lbl = QLabel("  (none yet — select an ESAF above)")
+        self._no_runs_lbl.setStyleSheet("color: #888; font-style: italic;")
+        lay.addWidget(self._runs_list)
+        lay.addWidget(self._no_runs_lbl)
 
+        # ── Separator ──────────────────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #555;")
+        lay.addWidget(sep)
+
+        new_lbl = QLabel("— or create a new run —")
+        new_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        new_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(new_lbl)
+
+        new_form = QFormLayout()
+        new_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        new_form.setHorizontalSpacing(12)
         self._esaf_run_name = QLineEdit()
-        self._esaf_run_name.setPlaceholderText("optional run / sub-experiment name")
-        self._esaf_run_name.textChanged.connect(self._update_esaf_paths)
-        details_form.addRow("Run name:", self._esaf_run_name)
+        self._esaf_run_name.setPlaceholderText("run name (e.g. SAXS_day1)")
+        self._esaf_run_name.textChanged.connect(self._on_new_run_name_changed)
+        new_form.addRow("New run name:", self._esaf_run_name)
+        lay.addLayout(new_form)
 
-        lay.addLayout(details_form)
-
-        path_grp = QGroupBox("Generated Paths")
+        # ── Path preview ───────────────────────────────────────────────────────
+        path_grp = QGroupBox("Path")
         pg_lay = QFormLayout(path_grp)
         pg_lay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         pg_lay.setHorizontalSpacing(10)
-
         self._esaf_local_lbl = QLabel("(select an ESAF above)")
         self._esaf_local_lbl.setWordWrap(True)
         self._esaf_local_lbl.setStyleSheet("font-size: 10px;")
         pg_lay.addRow("Local:", self._esaf_local_lbl)
-
-        self._esaf_remote_lbl = QLabel("(not configured)" if not self._remote_data_root
-                                        else "(select an ESAF above)")
+        self._esaf_remote_lbl = QLabel(
+            "(not configured)" if not self._remote_data_root else "(select an ESAF above)"
+        )
         self._esaf_remote_lbl.setWordWrap(True)
         self._esaf_remote_lbl.setStyleSheet("font-size: 10px;")
         pg_lay.addRow("Remote:", self._esaf_remote_lbl)
-
         lay.addWidget(path_grp)
-        lay.addStretch()
+
         self._tabs.addTab(w, "From ESAF")
+        self._refresh_runs_list()
+
+    def _esaf_base_path(self) -> str | None:
+        """Return the ESAF folder path (pi_slug/ESAF-id_date) or None if no ESAF selected."""
+        rec = self._selected_esaf
+        if rec is None:
+            return None
+        pi_slug = rec.pi_group_slug or "no_pi_group"
+        esaf_folder = f"ESAF-{rec.esaf_id}"
+        if rec.start_date:
+            esaf_folder += f"_{rec.start_date}"
+        return "/".join([EXPERIMENTS_DIR, pi_slug, esaf_folder])
 
     def _on_esaf_selected(self, record):
         self._selected_esaf = record
+        self._refresh_runs_list()
+        self._update_esaf_paths()
+
+    def _refresh_runs_list(self):
+        """Scan the ESAF folder on disk and populate the existing-runs list."""
+        self._runs_list.clear()
+        base = self._esaf_base_path()
+        if base is None:
+            self._runs_list.setVisible(False)
+            self._no_runs_lbl.setText("  (none yet — select an ESAF above)")
+            self._no_runs_lbl.setVisible(True)
+            return
+
+        base_path = Path(base)
+        runs = []
+        if base_path.is_dir():
+            for child in sorted(base_path.iterdir()):
+                if child.is_dir() and (child / "experiment.json").exists():
+                    try:
+                        info = json.loads((child / "experiment.json").read_text())
+                        created = info.get("created", "")[:16].replace("T", "  ")
+                        label = f"{child.name}   —   created {created}" if created else child.name
+                    except Exception:
+                        label = child.name
+                    runs.append((child.name, str(child), label))
+
+        if runs:
+            for name, path, label in runs:
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, path)
+                self._runs_list.addItem(item)
+            self._runs_list.setVisible(True)
+            self._no_runs_lbl.setVisible(False)
+        else:
+            self._runs_list.setVisible(False)
+            self._no_runs_lbl.setText("  (no runs yet under this ESAF)")
+            self._no_runs_lbl.setVisible(True)
+
+    def _on_run_selected(self):
+        """When an existing run is selected, clear the new-run name field."""
+        if self._runs_list.currentItem():
+            self._esaf_run_name.blockSignals(True)
+            self._esaf_run_name.clear()
+            self._esaf_run_name.blockSignals(False)
+            self._update_esaf_paths()
+
+    def _on_new_run_name_changed(self, text: str):
+        """When typing a new name, deselect any existing run."""
+        if text:
+            self._runs_list.clearSelection()
         self._update_esaf_paths()
 
     def _update_esaf_paths(self):
-        rec = self._selected_esaf
-        if rec is None:
+        base = self._esaf_base_path()
+        if base is None:
             self._esaf_local_lbl.setText("(select an ESAF above)")
             self._esaf_remote_lbl.setText("(select an ESAF above)")
             return
+
+        # Determine the run name to preview
+        selected_item = self._runs_list.currentItem()
+        if selected_item:
+            # Opening existing — show its full path
+            existing_path = selected_item.data(Qt.ItemDataRole.UserRole)
+            self._esaf_local_lbl.setText(f"Open: {existing_path}")
+            self._esaf_remote_lbl.setText("(remote path stored in experiment.json)")
+            return
+
+        run = self._sanitize(self._esaf_run_name.text().strip())
+        rec = self._selected_esaf
 
         pi_slug = rec.pi_group_slug or "no_pi_group"
         esaf_folder = f"ESAF-{rec.esaf_id}"
         if rec.start_date:
             esaf_folder += f"_{rec.start_date}"
-        session = self._session_date.text().strip() or "session"
-        run     = self._sanitize(self._esaf_run_name.text().strip())
 
-        parts_local  = [EXPERIMENTS_DIR, pi_slug, esaf_folder, session]
-        parts_remote = ([self._remote_data_root, pi_slug, esaf_folder, session]
+        parts_local  = [EXPERIMENTS_DIR, pi_slug, esaf_folder]
+        parts_remote = ([self._remote_data_root, pi_slug, esaf_folder]
                         if self._remote_data_root else [])
         if run:
             parts_local.append(run)
             if parts_remote:
                 parts_remote.append(run)
 
-        self._esaf_local_lbl.setText("/".join(parts_local))
+        self._esaf_local_lbl.setText("/".join(parts_local) + ("/" if not run else ""))
         if parts_remote:
-            self._esaf_remote_lbl.setText("/".join(parts_remote))
+            self._esaf_remote_lbl.setText("/".join(parts_remote) + ("/" if not run else ""))
         else:
             self._esaf_remote_lbl.setText("(remote_data_root not set in profile)")
 
@@ -652,31 +745,41 @@ class _NewExperimentDialog(QDialog):
             QMessageBox.warning(self, "Required", "Select an ESAF or import one first.")
             return
 
-        pi_slug    = rec.pi_group_slug or "no_pi_group"
+        # ── Open existing run ──────────────────────────────────────────────────
+        selected_item = self._runs_list.currentItem()
+        if selected_item:
+            self.open_existing_path = selected_item.data(Qt.ItemDataRole.UserRole)
+            self.accept()
+            return
+
+        # ── Create new run ─────────────────────────────────────────────────────
+        run_raw = self._esaf_run_name.text().strip()
+        if not run_raw:
+            QMessageBox.warning(self, "Required",
+                                "Select an existing run from the list or enter a new run name.")
+            return
+        run = self._sanitize(run_raw)
+
+        pi_slug     = rec.pi_group_slug or "no_pi_group"
         esaf_folder = f"ESAF-{rec.esaf_id}"
         if rec.start_date:
             esaf_folder += f"_{rec.start_date}"
-        session = self._session_date.text().strip()
-        if not session:
-            QMessageBox.warning(self, "Required", "Session date is required.")
-            return
-        run_raw = self._esaf_run_name.text().strip()
-        run     = self._sanitize(run_raw) if run_raw else session
 
-        local_parent = "/".join([EXPERIMENTS_DIR, pi_slug, esaf_folder, session])
-        remote_parts = ([self._remote_data_root, pi_slug, esaf_folder, session, run]
+        local_parent = "/".join([EXPERIMENTS_DIR, pi_slug, esaf_folder])
+        remote_parts = ([self._remote_data_root, pi_slug, esaf_folder, run]
                         if self._remote_data_root else [])
 
-        self.experiment_name  = run
-        self.local_parent_dir = local_parent
-        self.remote_exp_dir   = "/".join(remote_parts) if remote_parts else ""
+        self.experiment_name    = run
+        self.local_parent_dir   = local_parent
+        self.remote_exp_dir     = "/".join(remote_parts) if remote_parts else ""
+        self.open_existing_path = ""
         self.esaf_info = {
-            "esaf_id":       rec.esaf_id,
-            "pi_group":      pi_slug,
-            "proposal_id":   rec.proposal_id,
+            "esaf_id":         rec.esaf_id,
+            "pi_group":        pi_slug,
+            "proposal_id":     rec.proposal_id,
             "esaf_start_date": rec.start_date,
-            "title":         rec.title,
-            "beamline":      rec.beamline,
+            "title":           rec.title,
+            "beamline":        rec.beamline,
         }
         self.accept()
 
@@ -1380,6 +1483,12 @@ class ExperimentsTab(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
+        # ── Open existing run (From ESAF → selected from list) ────────────────
+        if dlg.open_existing_path:
+            self._open_experiment_at(dlg.open_existing_path)
+            return
+
+        # ── Create new run ─────────────────────────────────────────────────────
         name           = dlg.experiment_name
         parent_dir     = dlg.local_parent_dir
         remote_exp_dir = dlg.remote_exp_dir
@@ -1429,6 +1538,10 @@ class ExperimentsTab(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Open Experiment Folder")
         if not path:
             return
+        self._open_experiment_at(path)
+
+    def _open_experiment_at(self, path: str):
+        """Open an experiment folder by absolute path (shared by open_experiment and new_experiment)."""
         exp_json = Path(path) / "experiment.json"
         if not exp_json.exists():
             QMessageBox.warning(
@@ -1447,6 +1560,8 @@ class ExperimentsTab(QWidget):
             "created":        info.get("created", ""),
             "remote_exp_dir": info.get("remote_exp_dir", ""),
         }
+        if info.get("esaf"):
+            active_info["esaf"] = info["esaf"]
         self._write_active_experiment(active_info)
         self._set_active_experiment(path, active_info)
         self._clear_sample()
