@@ -27,7 +27,6 @@ classifiers = [
 
 dependencies = [
     "PyQt6>=6.4",
-    "PyQtScintilla>=2.13",
     "pyqtgraph>=0.13",
     "numpy>=1.24",
     "scipy>=1.10",
