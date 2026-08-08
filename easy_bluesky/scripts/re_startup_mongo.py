@@ -73,6 +73,13 @@ if _plans_dir and os.path.isdir(_plans_dir):
             _spec_pd.loader.exec_module(_mod_pd)
             globals().update({k: v for k, v in vars(_mod_pd).items()
                               if not k.startswith('_')})
+            # Inject device objects so _resolve_device() in plan modules can
+            # look up device-name strings via globals().get(name).
+            import ophyd as _oph_pd
+            for _dk, _dv in list(globals().items()):
+                if not _dk.startswith('_') and isinstance(_dv, (_oph_pd.Device,
+                                                                  _oph_pd.Signal)):
+                    vars(_mod_pd)[_dk] = _dv
             print(f"[re_startup_mongo] {_pf.name} loaded")
         except Exception as _e_pd:
             print(f"[re_startup_mongo] WARNING: {_pf.name} failed to load: {_e_pd}")

@@ -34,6 +34,28 @@ def _exp_dir_from_md(md: dict) -> str:
     )
 
 
+def _resolve_device(name_or_obj):
+    """Coerce a device parameter to an actual Device object.
+
+    bluesky-queueserver v0.0.25 may pass Optional[Device] parameters as the
+    string "None" instead of Python None, or as a device-name string instead
+    of the resolved object.  This helper normalises all three cases:
+
+      None / "None" / ""  →  None   (skip shutter logic)
+      "motor_name"        →  globals().get("motor_name") — works after
+                              re_startup_mongo injects devices into this
+                              module's namespace at startup.
+      <Device object>     →  returned unchanged
+    """
+    if name_or_obj is None:
+        return None
+    if not isinstance(name_or_obj, str):
+        return name_or_obj  # already a Device / Signal object
+    if name_or_obj.lower() in ("none", "", "null"):
+        return None
+    return globals().get(name_or_obj)  # resolve device name string
+
+
 # ---------------------------------------------------------------------------
 # Beam-loss suspender
 # ---------------------------------------------------------------------------
@@ -244,6 +266,7 @@ def count_w_time(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -295,6 +318,7 @@ def scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -347,6 +371,7 @@ def rel_scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -396,6 +421,7 @@ def grid_scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -445,6 +471,7 @@ def rel_grid_scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -494,6 +521,7 @@ def list_scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -543,6 +571,7 @@ def rel_list_scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -592,6 +621,7 @@ def list_grid_scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -641,6 +671,7 @@ def rel_list_grid_scan_w_time_n_delay(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -711,6 +742,7 @@ def list_scan_w_time_n_delay_from_csv(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -959,6 +991,7 @@ def aswaxs_energy_scan(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
@@ -1181,6 +1214,7 @@ def capillary_transmission_scan_plan(
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
     md = md or {}
+    shutter = _resolve_device(shutter)
     _dir = _exp_dir_from_md(md)
 
     scan_md = dict(md)
