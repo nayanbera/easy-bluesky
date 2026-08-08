@@ -293,6 +293,32 @@ class _HistoryWidgetStub:
     run_label = type("_L", (), {"setText": lambda *a: None})()
 
 
+class _ESAFHealthWorker(QThread):
+    """Background check of ESAF server health — non-blocking UI."""
+    result = pyqtSignal(str, str)   # (status, detail)  status: ok_mongo|ok_sqlite|error|unconfigured
+
+    def __init__(self, url: str, api_key: str, parent=None):
+        super().__init__(parent)
+        self._url     = url.strip()
+        self._api_key = api_key.strip()
+
+    def run(self):
+        if not self._url:
+            self.result.emit("unconfigured", "")
+            return
+        try:
+            from .esaf import ESAFServerClient
+            client = ESAFServerClient(self._url, self._api_key)
+            data   = client.health()
+            backend = data.get("backend", "unknown")
+            if backend == "mongodb":
+                self.result.emit("ok_mongo", self._url)
+            else:
+                self.result.emit("ok_sqlite", self._url)
+        except Exception as exc:
+            self.result.emit("error", str(exc))
+
+
 
 
 # ── Startup experiment picker ──────────────────────────────────────────────────
@@ -889,6 +915,29 @@ class ExperimentsTab(QWidget):
         self.exp_date_label.setStyleSheet("font-size: 10px;")
         vlay.addWidget(self.exp_date_label)
 
+        # ── ESAF server status ─────────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #444;")
+        vlay.addWidget(sep)
+
+        esaf_row = QHBoxLayout()
+        esaf_row.setSpacing(4)
+        self._esaf_dot = QLabel("●")
+        self._esaf_dot.setStyleSheet("font-size: 12px; color: #888888;")
+        self._esaf_status = QLabel("ESAF server not configured")
+        self._esaf_status.setStyleSheet("font-size: 10px; color: #888888;")
+        self._esaf_status.setWordWrap(True)
+        self._btn_check_esaf = QPushButton("Check")
+        self._btn_check_esaf.setFixedWidth(46)
+        self._btn_check_esaf.setFixedHeight(20)
+        self._btn_check_esaf.setStyleSheet("font-size: 10px;")
+        self._btn_check_esaf.clicked.connect(self._check_esaf_server)
+        esaf_row.addWidget(self._esaf_dot)
+        esaf_row.addWidget(self._esaf_status, 1)
+        esaf_row.addWidget(self._btn_check_esaf)
+        vlay.addLayout(esaf_row)
+
         btn_row = QHBoxLayout()
         btn_new  = QPushButton("New Experiment")
         btn_new.setObjectName("btn_primary")
@@ -1177,6 +1226,43 @@ class ExperimentsTab(QWidget):
 
     def update_settings(self, settings: dict):
         self._settings = settings
+        self._check_esaf_server()
+
+    def _check_esaf_server(self):
+        """Spawn a background thread to ping the ESAF server health endpoint."""
+        url = (self._settings.get("esaf_server_url") or "").strip()
+        key = (self._settings.get("esaf_api_key") or "").strip()
+        if not url:
+            self._on_esaf_health_result("unconfigured", "")
+            return
+        self._esaf_dot.setStyleSheet("font-size: 12px; color: #888888;")
+        self._esaf_status.setText("Checking…")
+        self._esaf_status.setStyleSheet("font-size: 10px; color: #888888;")
+        self._btn_check_esaf.setEnabled(False)
+        worker = _ESAFHealthWorker(url, key, self)
+        worker.result.connect(self._on_esaf_health_result)
+        worker.finished.connect(lambda: self._btn_check_esaf.setEnabled(True))
+        worker.start()
+
+    def _on_esaf_health_result(self, status: str, detail: str):
+        self._btn_check_esaf.setEnabled(True)
+        if status == "unconfigured":
+            self._esaf_dot.setStyleSheet("font-size: 12px; color: #888888;")
+            self._esaf_status.setText("ESAF server not configured")
+            self._esaf_status.setStyleSheet("font-size: 10px; color: #888888;")
+        elif status == "ok_mongo":
+            self._esaf_dot.setStyleSheet("font-size: 12px; color: #33aa44;")
+            self._esaf_status.setText("Connected · MongoDB")
+            self._esaf_status.setStyleSheet("font-size: 10px; color: #33aa44;")
+        elif status == "ok_sqlite":
+            self._esaf_dot.setStyleSheet("font-size: 12px; color: #cc8800;")
+            self._esaf_status.setText("Connected · SQLite")
+            self._esaf_status.setStyleSheet("font-size: 10px; color: #cc8800;")
+        else:
+            self._esaf_dot.setStyleSheet("font-size: 12px; color: #cc3333;")
+            host = detail.split("/")[2] if "//" in detail else detail
+            self._esaf_status.setText(f"Unreachable ({host})" if host else "Unreachable")
+            self._esaf_status.setStyleSheet("font-size: 10px; color: #cc3333;")
 
     def set_profile(self, profile_name: str):
         """Switch the active profile — clears the current experiment and loads the
@@ -1207,6 +1293,7 @@ class ExperimentsTab(QWidget):
         if self._active_exp_path:
             runs_dir = str(Path(self._active_exp_path) / "runs")
             self.experiment_changed.emit(runs_dir)
+        self._check_esaf_server()
 
     # ── Queue operations ───────────────────────────────────────────────────────
 
