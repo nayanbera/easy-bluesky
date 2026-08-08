@@ -101,9 +101,10 @@ def _guess_step(x, y):
     span      = float(x[-1] - x[0])
     step      = abs(float(x[1] - x[0])) if len(x) > 1 else 1.0
     mag       = max(span / 8.0, step)
-    # Negative sigma flips the step direction — use it for decreasing steps
-    # so the optimizer starts with the correct shape rather than an inverted one.
-    sigma = mag if amplitude >= 0 else -mag
+    # Encode direction in sigma sign so amplitude is always the step height (positive).
+    # Negative sigma flips the step function; positive sigma = increasing step.
+    sigma     = mag if amplitude >= 0 else -mag
+    amplitude = abs(amplitude)
     return amplitude, center, sigma
 
 # ── Background model factory ───────────────────────────────────────────────────
