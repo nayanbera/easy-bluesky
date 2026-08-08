@@ -492,7 +492,7 @@ _MONTHS = {
 
 
 def _parse_date(raw: str) -> str:
-    """Parse various date string formats into YYYY-MM-DD. Returns '' on failure."""
+    """Parse various APS date string formats into YYYY-MM-DD. Returns '' on failure."""
     raw = raw.strip()
     if not raw:
         return ""
@@ -510,12 +510,15 @@ def _parse_date(raw: str) -> str:
         mname = m.group(1).lower()
         if mname in _MONTHS:
             return f"{m.group(3)}-{_MONTHS[mname]:02d}-{int(m.group(2)):02d}"
-    # DD-Mon-YYYY
-    m = re.match(r"^(\d{1,2})-([A-Za-z]+)-(\d{4})$", raw)
+    # DD-Mon-YYYY  or  DD-Mon-YY  (APS uses 2-digit year: 06-FEB-26 = 2026-02-06)
+    m = re.match(r"^(\d{1,2})-([A-Za-z]+)-(\d{2,4})$", raw)
     if m:
         mname = m.group(2).lower()
         if mname in _MONTHS:
-            return f"{m.group(3)}-{_MONTHS[mname]:02d}-{int(m.group(1)):02d}"
+            year = int(m.group(3))
+            if year < 100:
+                year += 2000 if year < 50 else 1900
+            return f"{year:04d}-{_MONTHS[mname]:02d}-{int(m.group(1)):02d}"
     return ""
 
 
@@ -527,44 +530,48 @@ def _extract_first_date(text: str) -> str:
     m = re.search(r"\d{4}-\d{2}-\d{2}", text)
     if m:
         return _parse_date(m.group(0))
-    m = re.search(r"\d{1,2}-[A-Za-z]+-\d{4}", text)
+    # DD-Mon-YYYY or DD-Mon-YY
+    m = re.search(r"\d{1,2}-[A-Za-z]+-\d{2,4}", text)
     if m:
         return _parse_date(m.group(0))
     return ""
 
 
+def _pen_to_beamline(pen: str) -> str:
+    """Convert an APS PEN string like '15-IDCD-2026-17' to '15-ID-CD'."""
+    m = re.match(r"(\d+)-([A-Z\d]+)-\d{4}", pen.strip())
+    if not m:
+        return pen
+    sector, branch = m.group(1), m.group(2)
+    for prefix in ("ID", "BM", "XSD", "XFD", "LOM", "EXP"):
+        if branch.startswith(prefix) and len(branch) > len(prefix):
+            return f"{sector}-{prefix}-{branch[len(prefix):]}"
+    return f"{sector}-{branch}"
+
+
 def parse_esaf_pdf(path_or_bytes) -> tuple[ESAFRecord, dict]:
-    """Parse an ESAF PDF locally using pdfplumber.
+    """Parse an APS ESAF PDF locally using pdfplumber.
 
     Returns (ESAFRecord, confidence_dict).
-    Confidence values: 1.0 = clean regex match, 0.7 = some ambiguity, 0.0 = not found.
+    Confidence: 1.0 = high-confidence regex match, 0.0 = not found.
 
-    Raises ImportError (with install hint) if pdfplumber is not installed.
-
-    Patterns matched (case-insensitive):
-    - ESAF ID/Number/#   → esaf_id
-    - Experiment Title   → title
-    - Start/End Date     → start_date / end_date
-    - Beamline           → beamline
-    - Proposal Number/ID → proposal_id
-    - User table rows    → users list
+    Handles the APS "Experiment Hazard Control Plan Report" format:
+    - ESAF ID from "ESAF ID: NNNNNN" header line
+    - Title from "Title: ..." header line
+    - Start/End dates from "ID Start/End Date: MM/DD/YYYY" header
+    - Beamline derived from "PEN: XX-BRANCH-YYYY-N" (not "Beamline Laboratory Used")
+    - Proposal ID from "GUP ID: NNNNNNN" header
+    - Users from "On-site / Remote" personnel training table
+    - PI identified via "Spokesperson: LastName" header
     """
-    try:
-        import pdfplumber
-    except ImportError:
-        raise ImportError(
-            "pdfplumber is required for local PDF parsing.\n"
-            "Install it with:  pip install pdfplumber"
-        )
-
-    import io
+    import io as _io
+    import pdfplumber
 
     if isinstance(path_or_bytes, (str, Path)):
         pdf = pdfplumber.open(str(path_or_bytes))
     else:
-        pdf = pdfplumber.open(io.BytesIO(path_or_bytes))
+        pdf = pdfplumber.open(_io.BytesIO(path_or_bytes))
 
-    # Extract all text across pages
     pages_text = []
     with pdf as _pdf:
         for page in _pdf.pages:
@@ -573,131 +580,206 @@ def parse_esaf_pdf(path_or_bytes) -> tuple[ESAFRecord, dict]:
                 pages_text.append(t)
     full_text = "\n".join(pages_text)
 
-    def _find_field(patterns: list[tuple[str, float]]) -> tuple[str, float]:
-        """Return (value, confidence) for the first matching pattern."""
-        for pat, conf in patterns:
-            m = re.search(pat, full_text, re.IGNORECASE | re.MULTILINE)
+    raw_fields: dict = {}
+    confidence: dict = {}
+    extracted: dict = {}
+
+    # ── ESAF ID ───────────────────────────────────────────────────────────────
+    # "ESAF ID: 289784 (GUP)"
+    m = re.search(r"ESAF\s+ID:\s*(\d+)", full_text)
+    if m:
+        extracted["esaf_id"] = m.group(1)
+        confidence["esaf_id"] = 1.0
+    else:
+        m = re.search(r"ESAF\s*(?:Number|No\.?|#)\s*[:\-]?\s*(\d+)", full_text, re.IGNORECASE)
+        if m:
+            extracted["esaf_id"] = m.group(1)
+            confidence["esaf_id"] = 0.9
+        else:
+            confidence["esaf_id"] = 0.0
+
+    # ── Title ─────────────────────────────────────────────────────────────────
+    # "Title: Complexation of ..."
+    m = re.search(r"^Title:\s*(.+)$", full_text, re.MULTILINE)
+    if m:
+        extracted["title"] = m.group(1).strip()
+        confidence["title"] = 1.0
+    else:
+        m = re.search(r"(?:Experiment\s+)?Title\s*[:\-]\s*(.+?)(?:\n|$)", full_text, re.IGNORECASE)
+        if m:
+            extracted["title"] = m.group(1).strip()
+            confidence["title"] = 0.8
+        else:
+            confidence["title"] = 0.0
+
+    # ── Dates ─────────────────────────────────────────────────────────────────
+    # Primary: "ID Start Date: 02/06/2026 08:00 AM"
+    m = re.search(r"ID\s+Start\s+Date:\s*(\d{1,2}/\d{1,2}/\d{4})", full_text)
+    if m:
+        extracted["start_date"] = _parse_date(m.group(1))
+        confidence["start_date"] = 1.0
+    else:
+        # Secondary: "Start Date: 06-FEB-26"  (2-digit year)
+        m = re.search(r"(?<![A-Za-z])Start\s+Date:\s*(\d{1,2}-[A-Za-z]{3}-\d{2,4})", full_text)
+        if m:
+            extracted["start_date"] = _parse_date(m.group(1))
+            confidence["start_date"] = 0.7
+        else:
+            raw, _ = "", 0.0
+            m = re.search(
+                r"Start\s+Date\s*[:\-]?\s*([\d/\-A-Za-z,\s]+?)(?:\n|End|$)",
+                full_text, re.IGNORECASE,
+            )
             if m:
-                val = m.group(1).strip().rstrip(":").strip()
-                if val:
-                    return val, conf
-        return "", 0.0
+                d = _parse_date(m.group(1).strip()) or _extract_first_date(m.group(1))
+                if d:
+                    extracted["start_date"] = d
+                    confidence["start_date"] = 0.6
+                else:
+                    confidence["start_date"] = 0.0
+            else:
+                confidence["start_date"] = 0.0
 
-    # ESAF ID
-    esaf_id, esaf_conf = _find_field([
-        (r"ESAF\s*(?:ID|Number|No\.?|#)\s*[:\-]?\s*(\d+)", 1.0),
-        (r"Experiment\s+Safety\s+Approval\s+Form\s*[:\-#]?\s*(\d+)", 0.9),
-        (r"(?:^|\s)ESAF\s*[:\-]?\s*(\d{4,})", 0.8),
-        (r"(?:Number|ID|#)\s*[:\-]?\s*(\d{5,})", 0.7),
-    ])
+    m = re.search(r"ID\s+End\s+Date:\s*(\d{1,2}/\d{1,2}/\d{4})", full_text)
+    if m:
+        extracted["end_date"] = _parse_date(m.group(1))
+        confidence["end_date"] = 1.0
+    else:
+        m = re.search(r"(?<![A-Za-z])End\s+Date:\s*(\d{1,2}-[A-Za-z]{3}-\d{2,4})", full_text)
+        if m:
+            extracted["end_date"] = _parse_date(m.group(1))
+            confidence["end_date"] = 0.7
+        else:
+            m = re.search(
+                r"End\s+Date\s*[:\-]?\s*([\d/\-A-Za-z,\s]+?)(?:\n|$)",
+                full_text, re.IGNORECASE,
+            )
+            if m:
+                d = _parse_date(m.group(1).strip()) or _extract_first_date(m.group(1))
+                if d:
+                    extracted["end_date"] = d
+                    confidence["end_date"] = 0.6
+                else:
+                    confidence["end_date"] = 0.0
+            else:
+                confidence["end_date"] = 0.0
 
-    # Title
-    title, title_conf = _find_field([
-        (r"Experiment\s+Title\s*[:\-]?\s*(.+?)(?:\n|$)", 1.0),
-        (r"^Title\s*[:\-]\s*(.+?)(?:\n|$)", 0.9),
-        (r"Proposal\s+Title\s*[:\-]?\s*(.+?)(?:\n|$)", 0.7),
-    ])
+    # ── Beamline — from PEN, not "Beamline Laboratory Used" ──────────────────
+    # "PEN: 15-IDCD-2026-17"  →  "15-ID-CD"
+    m = re.search(r"PEN:\s*([\w\-]+)", full_text)
+    if m:
+        pen = m.group(1).strip()
+        raw_fields["pen"] = pen
+        extracted["beamline"] = _pen_to_beamline(pen)
+        confidence["beamline"] = 0.9
+    else:
+        m = re.search(r"Beamline\s*[:\-]?\s*([A-Za-z0-9\-\s]+?)(?:\n|$)", full_text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if "laboratory" not in val.lower() and len(val) < 30:
+                extracted["beamline"] = val
+                confidence["beamline"] = 0.7
+            else:
+                confidence["beamline"] = 0.0
+        else:
+            confidence["beamline"] = 0.0
 
-    # Start date
-    start_raw, start_conf = _find_field([
-        (r"(?:Experiment\s+)?Start\s+Date\s*[:\-]?\s*([\d/\-A-Za-z,\s]+?)(?:\n|End|$)", 1.0),
-        (r"(?:^|\n)Start\s*[:\-]\s*([\d/\-A-Za-z,\s]+?)(?:\n|End|$)", 0.8),
-        (r"From\s*[:\-]?\s*([\d/\-]+)", 0.7),
-    ])
-    start_date = ""
-    if start_raw:
-        start_date = _parse_date(start_raw.split("\n")[0].strip())
-        if not start_date:
-            start_date = _extract_first_date(start_raw)
-            if start_date:
-                start_conf = 0.7
+    # ── Proposal / GUP ID ────────────────────────────────────────────────────
+    # "GUP ID: 1018531"
+    m = re.search(r"GUP\s+ID:\s*(\d+)", full_text)
+    if m:
+        extracted["proposal_id"] = f"GUP-{m.group(1)}"
+        confidence["proposal_id"] = 1.0
+    else:
+        m = re.search(r"GUP\s*[:\-]?\s*(\d{4,})", full_text)
+        if m:
+            extracted["proposal_id"] = f"GUP-{m.group(1)}"
+            confidence["proposal_id"] = 0.9
+        else:
+            m = re.search(r"Proposal\s+(?:Number|ID|#)\s*[:\-]?\s*(\w[\w\-]*)", full_text, re.IGNORECASE)
+            if m:
+                extracted["proposal_id"] = m.group(1)
+                confidence["proposal_id"] = 0.7
+            else:
+                confidence["proposal_id"] = 0.0
 
-    # End date
-    end_raw, end_conf = _find_field([
-        (r"(?:Experiment\s+)?End\s+Date\s*[:\-]?\s*([\d/\-A-Za-z,\s]+?)(?:\n|$)", 1.0),
-        (r"(?:^|\n)End\s*[:\-]\s*([\d/\-A-Za-z,\s]+?)(?:\n|$)", 0.8),
-        (r"To\s*[:\-]?\s*([\d/\-]+)", 0.7),
-    ])
-    end_date = ""
-    if end_raw:
-        end_date = _parse_date(end_raw.split("\n")[0].strip())
-        if not end_date:
-            end_date = _extract_first_date(end_raw)
-            if end_date:
-                end_conf = 0.7
+    # ── Spokesperson → PI ─────────────────────────────────────────────────────
+    spokesperson_last = ""
+    m = re.search(r"Spokesperson:\s*(\S+)", full_text)
+    if m:
+        spokesperson_last = m.group(1).strip()
+        raw_fields["spokesperson_last"] = spokesperson_last
 
-    # Beamline
-    beamline, beamline_conf = _find_field([
-        (r"Beamline\s*[:\-]?\s*([A-Za-z0-9\-\s]+?)(?:\n|$)", 1.0),
-        (r"Sector\s*[:\-]?\s*([A-Za-z0-9\-\s]+?)(?:\n|$)", 0.7),
-    ])
-    beamline = beamline.strip()
-
-    # Proposal ID
-    proposal_id, prop_conf = _find_field([
-        (r"GUP\s*[:\-]?\s*(\d+)", 1.0),
-        (r"Proposal\s+(?:Number|ID|#)\s*[:\-]?\s*(\w[\w\-]*)", 1.0),
-        (r"Proposal\s*[:\-]?\s*(\d{5,})", 0.8),
-    ])
-
-    # Users — try to extract from user/experimenter table sections
+    # ── Users ─────────────────────────────────────────────────────────────────
     users: list[ESAFUser] = []
+    seen: set[str] = set()
 
-    user_section_m = re.search(
-        r"(?:User|Experimenter|Participant)s?\s*(?:List|Table|:)?\s*\n(.*?)(?:\n{2,}|\Z)",
-        full_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if user_section_m:
-        user_section = user_section_m.group(1)
-        for line in user_section.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            # Skip header rows
-            if re.match(r"(?i)^\s*(name|institution|role|email|experimenter|user)", line):
-                continue
-            # Split on 2+ spaces or tabs
-            parts = re.split(r"[ \t]{2,}|\t", line)
-            if len(parts) >= 2 and parts[0] and not re.match(r"^\d+$", parts[0]):
-                u = ESAFUser(
-                    name=parts[0].strip(),
-                    institution=parts[1].strip() if len(parts) > 1 else "",
-                    role=parts[2].strip() if len(parts) > 2 else "",
-                    email=parts[3].strip() if len(parts) > 3 else "",
-                )
-                users.append(u)
+    # Training table: "On-site Erik Binter 02-SEP-26 OK ..."
+    for tm in re.finditer(
+        r"^(On-site|Remote)\s+"
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-zA-Z'\-\.]+)+)"
+        r"\s+\d{2}-[A-Z]+-\d{2,4}",
+        full_text, re.MULTILINE,
+    ):
+        name = tm.group(2).strip()
+        if name not in seen:
+            seen.add(name)
+            users.append(ESAFUser(name=name, institution="", role=""))
 
-    # Fallback: look for PI line
+    # Fallback: Authorization signature block
     if not users:
-        pi_m = re.search(
-            r"(?:Principal\s+Investigator|PI)\s*[:\-]?\s*(.+?)(?:\n|$)",
-            full_text,
-            re.IGNORECASE,
-        )
-        if pi_m:
-            users.append(ESAFUser(name=pi_m.group(1).strip(), role="PI"))
+        for sm in re.finditer(
+            r"^([A-Z][a-z]+(?:\s+[A-Z][a-zA-Z'\-\.]+)+) +(.+?) +_{4,}",
+            full_text, re.MULTILINE,
+        ):
+            name = sm.group(1).strip()
+            inst = sm.group(2).strip()
+            if name not in seen and len(name) < 60:
+                seen.add(name)
+                users.append(ESAFUser(name=name, institution=inst, role=""))
 
-    confidence = {
-        "esaf_id":     esaf_conf,
-        "title":       title_conf,
-        "start_date":  start_conf if start_date else 0.0,
-        "end_date":    end_conf if end_date else 0.0,
-        "beamline":    beamline_conf if beamline else 0.0,
-        "proposal_id": prop_conf,
-        "users":       0.8 if users else 0.0,
-    }
+    # Enrich institutions from Authorization signature block.
+    # Anchor each search to the known user name to avoid greedy-match errors
+    # (institution words start with capitals, confusing a generic name pattern).
+    for user in users:
+        if user.institution:
+            continue
+        sm = re.search(
+            re.escape(user.name) + r"[ ]+([^\n]+?)[ ]+_{4,}",
+            full_text, re.MULTILINE,
+        )
+        if sm:
+            inst = sm.group(1).strip()
+            if len(inst) > 3 and not inst.isupper():
+                user.institution = inst
+
+    # Tag PI by spokesperson last name
+    if spokesperson_last:
+        last_lower = spokesperson_last.lower()
+        for user in users:
+            if user.name.split()[-1].lower() == last_lower:
+                user.role = "PI"
+                break
+    for user in users:
+        if not user.role:
+            user.role = "user"
+
+    confidence["users"] = 0.9 if users else 0.0
+
+    for k, v in extracted.items():
+        raw_fields.setdefault(k, v)
+    raw_fields["full_text_preview"] = full_text[:2000]
 
     record = ESAFRecord(
-        esaf_id=esaf_id or "UNKNOWN",
-        title=title,
-        start_date=start_date,
-        end_date=end_date,
-        beamline=beamline,
-        proposal_id=proposal_id,
+        esaf_id=extracted.get("esaf_id", "UNKNOWN"),
+        title=extracted.get("title", ""),
+        start_date=extracted.get("start_date", ""),
+        end_date=extracted.get("end_date", ""),
+        beamline=extracted.get("beamline", ""),
+        proposal_id=extracted.get("proposal_id", ""),
         users=users,
         source="pdf",
-        raw_fields={"full_text_preview": full_text[:2000]},
+        raw_fields=raw_fields,
     )
 
     return record, confidence
