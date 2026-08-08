@@ -4,7 +4,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 
 ## Features
 
-- **Experiments** — Create and manage experiments with sample metadata and plan log. Supports ESAF-based folder structure (`PI group / ESAF / session date / run`) or free-form manual paths.
+- **Experiments** — Create and manage experiments with sample metadata and plan log. Supports ESAF-based folder structure (`PI group / ESAF / run`) or free-form manual paths. A live ESAF server health indicator (coloured dot) shows connection status at a glance.
 - **Queue Manager** — Add, reorder, and delete plans. Full RE controls (open environment, start, pause, resume, abort, stop).
 - **Plan Builder** — Two-panel interface: a **Visual Composer** for assembling scan sequences from drag-and-drop blocks (no Python required), and a **Code Editor** for full custom plans with syntax highlighting, auto-indent, and templates.
 - **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move, screenshot.
@@ -18,7 +18,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Sim Device Monitor** — In simulation mode, device values are polled from the RE environment every 2 seconds via `read_devices_status()`. Tweak widgets on motor rows allow nudging simulated motors without running a full plan.
 - **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. The non-modal Curve Fit dialog displays a live preview curve on the plot the moment it opens, and the preview updates in real time as you edit parameters. Run Fit refines the model and updates the table with fitted values. Choose from 5 peak models, 4 step/interface models, 4 polynomial background terms, and 6 minimisation algorithms. Fit parameters are saved automatically so re-opening the dialog pre-populates it with the previous result. Export fitted parameters and curves to CSV, or copy the results text to the clipboard.
 - **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors.
-- **ESAF Integration** — Import Experiment Safety Assessment Forms (ESAFs) from a local PDF, a REST server, or manual entry. Auto-generates the beamline folder structure and injects ESAF metadata into every plan. Includes a standalone FastAPI admin server with MongoDB or SQLite backend.
+- **ESAF Integration** — Import Experiment Safety Assessment Forms (ESAFs) from a local PDF, a REST server, or manual entry. Auto-generates the beamline folder structure and injects ESAF metadata into every plan. Attach arbitrary **extra fields** (custom key-value pairs) to any ESAF — empty for older entries, editable from the picker or via the REST API. Includes a standalone FastAPI admin server with MongoDB or SQLite backend.
 - **Remote Data Root** — Per-profile setting for the Linux RE machine's data root directory. Automatically propagated to every plan as `remote_exp_dir` so area detectors can write HDF files to the correct network path without manual entry each run.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
@@ -70,7 +70,7 @@ Or from PyPI (once released):
 pip install easy-bluesky
 ```
 
-Core dependencies installed automatically: `PyQt6`, `pyqtgraph`, `numpy`, `scipy`, `lmfit`, `pandas`, `pyzmq`, `h5py`, `paramiko`, `pymongo`. EPICS support (`pyepics`) is auto-installed on first use of the Live Device Monitor.
+Core dependencies installed automatically: `PyQt6`, `pyqtgraph`, `numpy`, `scipy`, `lmfit`, `pandas`, `pyzmq`, `h5py`, `paramiko`, `pymongo`, `pdfplumber`. EPICS support (`pyepics`) is auto-installed on first use of the Live Device Monitor.
 
 ### RE Manager host
 
@@ -1253,6 +1253,64 @@ Clicking **OK** saves the ESAF to the local cache at `~/.easy_bluesky/esaf_cache
 
 ---
 
+### ESAF server health indicator
+
+The **Experiments tab** left panel shows a persistent live indicator of the ESAF server's status — no need to open settings to see whether the shared database is reachable:
+
+| Dot colour | Text | Meaning |
+|-----------|------|---------|
+| Grey | ESAF server not configured | No server URL set in Connection Settings |
+| Green | Connected · MongoDB | Server reachable; MongoDB backend active |
+| Orange | Connected · SQLite | Server reachable; SQLite backend active |
+| Red | Unreachable (`host:port`) | Server URL configured but not responding |
+
+The indicator auto-checks whenever you switch profiles or save new connection settings. A small **Check** button next to it triggers an immediate re-check at any time. The check runs in a background thread so the UI stays responsive.
+
+---
+
+### Extra fields (custom key-value pairs)
+
+Every `ESAFRecord` supports an `extra_fields` dictionary for arbitrary user-defined metadata. This field is empty by default so **older ESAF entries are completely unaffected** — they gain an empty `extra_fields: {}` transparently on load.
+
+Use extra fields to record anything not captured by the standard ESAF schema:
+- Beamline-specific notes (`"optics_config": "pink_beam"`)
+- Approval or safety annotations (`"hazmat_review": "approved 2026-07-01"`)
+- Data processing parameters (`"calibration_file": "LaB6_2026.poni"`)
+
+#### Editing from the picker
+
+In the ESAF picker (New Experiment → From ESAF), select an ESAF from the dropdown and click **Edit Extra Fields…**. A dialog shows the current key-value table:
+
+- **Add field** — inserts a new empty row; type the field name and value
+- **Remove selected** — deletes the highlighted rows
+- **Push to server** checkbox — if an ESAF server URL is configured, the changes are also pushed to the shared database via `PATCH /api/esafs/{id}/extra_fields`. Setting a value to empty removes the key server-side.
+
+The picker summary panel shows the count of extra fields for the selected ESAF at a glance.
+
+#### Via the REST API
+
+Send a `PATCH` request to merge new key-value pairs into an existing ESAF's extra fields:
+
+```bash
+curl -X PATCH http://mybeamline:8765/api/esafs/12345/extra_fields \
+     -H "X-API-Key: secret-key" \
+     -H "Content-Type: application/json" \
+     -d '{"fields": {"optics_config": "pink_beam", "calibration_file": "LaB6_2026.poni"}}'
+```
+
+Merging is additive: existing keys not present in the request are preserved. To **delete** a key, set its value to `null`:
+
+```bash
+curl -X PATCH http://mybeamline:8765/api/esafs/12345/extra_fields \
+     -H "X-API-Key: secret-key" \
+     -H "Content-Type: application/json" \
+     -d '{"fields": {"calibration_file": null}}'
+```
+
+The full updated `ESAFRecord` (including the merged `extra_fields`) is returned as JSON.
+
+---
+
 ### Plan metadata injection
 
 Every plan added to the queue from an ESAF-linked experiment automatically receives the following fields in its `md` (metadata) kwargs:
@@ -1303,7 +1361,8 @@ The ESAF server is optional. Local PDF parsing and the local ESAF cache work wit
 
 ```bash
 cd easy-bluesky
-pip install -e ".[esaf]"                    # installs pdfplumber, fastapi, uvicorn, jinja2
+pip install -e .                            # pdfplumber included; also add fastapi, uvicorn, jinja2
+pip install fastapi uvicorn jinja2
 uvicorn esaf_server.main:app --host 0.0.0.0 --port 8765
 ```
 
@@ -1335,14 +1394,16 @@ All endpoints are under `/api/`. Reads are open; writes require the `X-API-Key` 
 | GET | `/api/esafs` | List all ESAFs |
 | GET | `/api/esafs/{id}` | Get a single ESAF |
 | POST | `/api/esafs` | Create an ESAF |
-| PUT | `/api/esafs/{id}` | Update an ESAF |
+| PUT | `/api/esafs/{id}` | Full update of an ESAF |
+| PATCH | `/api/esafs/{id}/extra_fields` | Merge-update `extra_fields`; `null` values delete keys |
+| DELETE | `/api/esafs/{id}` | Delete an ESAF |
 | POST | `/api/esafs/{id}/pdf` | Upload a PDF |
 | GET | `/api/esafs/{id}/pdf` | Download the stored PDF |
 | POST | `/api/parse-pdf` | Parse a PDF; returns fields + confidence scores |
 | GET | `/api/pi-groups` | List all PI groups |
 | POST | `/api/pi-groups` | Create a PI group |
 | PUT | `/api/pi-groups/{slug}` | Update a PI group |
-| GET | `/health` | Health check; returns backend type |
+| GET | `/health` | Health check; returns `{"status": "ok", "backend": "mongodb"|"sqlite"}` |
 
 #### Configuring the app
 
@@ -1357,17 +1418,9 @@ In **File → Connection Settings**, under **ESAF Server**:
 
 Once configured, the **Import New ESAF…** dialog offers two additional source modes: *Upload PDF to server* and *Fetch from server by ESAF ID*. The ESAF picker also shows a **Refresh from server** button that syncs all server records to the local cache.
 
-#### Installing `pdfplumber` (optional)
+#### `pdfplumber` is a core dependency
 
-Local PDF parsing requires `pdfplumber`. Install it with:
-
-```bash
-pip install "easy-bluesky[esaf]"
-# or
-pip install pdfplumber
-```
-
-If `pdfplumber` is not installed, the *Parse PDF locally* source option shows an error pointing to the install command. The *Upload PDF to server* option always works regardless.
+`pdfplumber` is installed automatically with `pip install easy-bluesky` — no separate step needed. Local PDF parsing works immediately after installation.
 
 ---
 
