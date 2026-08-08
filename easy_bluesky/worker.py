@@ -477,6 +477,31 @@ class _DeviceStatusReader(QThread):
             self.read_error.emit(str(e))
 
 
+class _ScanLogFetcher(QThread):
+    """Fetch scans_log.json from the remote RE machine via SFTP."""
+    data_ready  = pyqtSignal(bytes)
+    fetch_error = pyqtSignal(str)
+
+    def __init__(self, settings: dict, remote_path: str):
+        super().__init__()
+        self._settings    = settings
+        self._remote_path = remote_path
+
+    def run(self):
+        try:
+            import io
+            from .ssh_manager import _get_client
+            client = _get_client(self._settings)
+            sftp   = client.open_sftp()
+            buf    = io.BytesIO()
+            sftp.getfo(self._remote_path, buf)
+            sftp.close()
+            client.close()
+            self.data_ready.emit(buf.getvalue())
+        except Exception as e:
+            self.fetch_error.emit(str(e))
+
+
 class ZMQWorker(QObject):
     status_updated  = pyqtSignal(dict)
     queue_updated   = pyqtSignal(list)
@@ -494,6 +519,8 @@ class ZMQWorker(QObject):
     env_closed      = pyqtSignal()
     re_manager_started = pyqtSignal(int)   # pid
     console_updated = pyqtSignal(str)      # new console text since last poll
+    scan_log_ready  = pyqtSignal(bytes)    # raw bytes of remote scans_log.json
+    scan_log_error  = pyqtSignal(str)      # error message if SFTP fetch failed
 
     def __init__(self):
         super().__init__()
@@ -507,6 +534,8 @@ class ZMQWorker(QObject):
         self._doc_writer     = _LocalDocWriter()
         self._device_reader  = None   # strong ref to _DeviceStatusReader
         self._pv_names_reader = None  # strong ref to _PVNamesReader
+        self._ssh_settings   = {}     # saved from start_log_tail for SFTP use
+        self._scan_log_fetcher = None  # strong ref to _ScanLogFetcher
         # Set by main thread after script_upload; polled each cycle so
         # _load_plans_devices() always runs in the poll thread (thread-safe).
         self._reload_plans_requested = False
@@ -568,6 +597,7 @@ class ZMQWorker(QObject):
 
     def start_log_tail(self, settings: dict, log_file: str):
         """Start SSH log-file tailing for SSH-managed RE Manager instances."""
+        self._ssh_settings = settings   # reused by fetch_scan_log
         msg = self._log_tailer.start(settings, log_file)
         self.console_updated.emit(f"[EasyBluesky] {msg}\n")
 
@@ -1010,6 +1040,22 @@ class ZMQWorker(QObject):
                 pass
         import threading
         threading.Thread(target=_run, daemon=True).start()
+
+    def fetch_scan_log(self, remote_path: str):
+        """Fetch scans_log.json from the remote machine via SFTP.
+
+        Emits scan_log_ready(bytes) on success or scan_log_error(str) on failure.
+        If SSH settings are not available (local/sim profile), emits scan_log_error.
+        """
+        if not self._ssh_settings.get("host"):
+            self.scan_log_error.emit("No SSH host configured — cannot fetch remote scan log")
+            return
+        if self._scan_log_fetcher and self._scan_log_fetcher.isRunning():
+            return   # already in flight
+        self._scan_log_fetcher = _ScanLogFetcher(self._ssh_settings, remote_path)
+        self._scan_log_fetcher.data_ready.connect(self.scan_log_ready)
+        self._scan_log_fetcher.fetch_error.connect(self.scan_log_error)
+        self._scan_log_fetcher.start()
 
     def reset_scan_id(self):
         """Reset the RunEngine scan_id counter to 0 (fire-and-forget background thread)."""

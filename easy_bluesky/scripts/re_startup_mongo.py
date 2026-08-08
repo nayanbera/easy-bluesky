@@ -736,3 +736,87 @@ try:
     print("[re_startup_mongo] PeakStats subscribed")
 except Exception as _e:
     print(f"[re_startup_mongo] WARNING: PeakStats not subscribed: {_e}")
+
+# ── scans_log.json — one summary entry per run ────────────────────────────────
+# Written to <remote_exp_dir>/scans_log.json (preferred) or <exp_dir>/scans_log.json.
+# The app fetches this via SFTP to populate the Plan Log panel instead of reading
+# local JSONL run files, so the RE machine is the single source of truth for history.
+
+import json as _j_sl
+from pathlib import Path as _P_sl
+
+
+class _ScanLogCallback(_CallableCB):
+    """Append one summary entry to scans_log.json when a run completes."""
+
+    def __init__(self, exp_path: str, start_doc: dict):
+        self._exp_path   = exp_path
+        self._uid        = start_doc.get("uid", "unknown")
+        self._scan_id    = start_doc.get("scan_id", 0)
+        self._plan_name  = start_doc.get("plan_name", "") or ""
+        self._sample     = start_doc.get("sample_name", "")
+        self._start_time = start_doc.get("time", 0.0)
+        self._motors     = list(start_doc.get("motors",    []) or [])
+        self._detectors  = list(start_doc.get("detectors", []) or [])
+        self._plan_args  = list(start_doc.get("plan_args",   []) or [])
+        self._plan_kwargs = dict(start_doc.get("plan_kwargs", {}) or {})
+        self._num_events = 0
+
+    def event(self, doc):
+        self._num_events += 1
+
+    def event_page(self, doc):
+        self._num_events += len(doc.get("seq_num", []))
+
+    def stop(self, doc):
+        stop_time   = doc.get("time", 0.0)
+        exit_status = doc.get("exit_status", "unknown")
+        dur = round(stop_time - self._start_time, 2) if (stop_time and self._start_time) else None
+
+        entry = {
+            "uid":         self._uid,
+            "scan_id":     self._scan_id,
+            "plan_name":   self._plan_name,
+            "sample_name": self._sample,
+            "start_time":  self._start_time,
+            "stop_time":   stop_time,
+            "exit_status": exit_status,
+            "num_events":  self._num_events,
+            "duration_s":  dur,
+            "motors":      self._motors,
+            "detectors":   self._detectors,
+            "plan_args":   self._plan_args,
+            "plan_kwargs": self._plan_kwargs,
+        }
+
+        log_path = _P_sl(self._exp_path) / "scans_log.json"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = []
+            if log_path.exists():
+                try:
+                    existing = _j_sl.loads(log_path.read_text(encoding="utf-8"))
+                    if not isinstance(existing, list):
+                        existing = []
+                except Exception:
+                    existing = []
+            existing.append(entry)
+            tmp = log_path.with_suffix(".json.tmp")
+            tmp.write_text(_j_sl.dumps(existing, indent=2), encoding="utf-8")
+            tmp.replace(log_path)
+        except Exception as _e_sl:
+            print(f"[re_startup_mongo] scans_log write error: {_e_sl}")
+
+
+def _scan_log_factory(name, doc):
+    exp_path = doc.get("remote_exp_dir") or doc.get("exp_dir") or ""
+    if not exp_path:
+        return [], []
+    return [_ScanLogCallback(exp_path, doc)], []
+
+
+try:
+    RE.subscribe(_RR([_scan_log_factory]))
+    print("[re_startup_mongo] scans_log writer subscribed")
+except Exception as _e:
+    print(f"[re_startup_mongo] WARNING: scans_log writer not subscribed: {_e}")

@@ -877,8 +877,12 @@ class ExperimentsTab(QWidget):
         self._active_profile: str = ""      # current profile name — gates history logging
         self._suppressed_uids: set = set()  # manually deleted UIDs — never re-logged
         self._hdf5_exporter    = None
+        self._scan_log_exp     = ""    # exp path that triggered the in-flight SFTP fetch
         self.history_widget    = _HistoryWidgetStub()
         self._build()
+        if worker:
+            worker.scan_log_ready.connect(self._on_scan_log_fetched)
+            worker.scan_log_error.connect(self._on_scan_log_error)
 
     # ── Layout ─────────────────────────────────────────────────────────────────
 
@@ -2029,6 +2033,113 @@ class ExperimentsTab(QWidget):
             item = self.plan_log_list.item(i)
             item.setHidden(bool(q and q not in item.text().lower()))
 
+    def _trigger_scan_log_fetch(self):
+        """Start an SFTP fetch of scans_log.json from the remote exp directory.
+
+        Falls back to reading a local scans_log.json (NFS case) when no remote_exp_dir
+        is configured.  Silent no-op when there is no worker or no active experiment.
+        """
+        if not self._active_exp_path or not self.worker:
+            return
+        self._scan_log_exp = self._active_exp_path  # guard for late-arriving responses
+        if self._remote_exp_dir:
+            remote_path = self._remote_exp_dir.rstrip("/") + "/scans_log.json"
+            self.worker.fetch_scan_log(remote_path)
+        else:
+            # NFS / local case: scans_log.json written by RE at local exp path
+            local_sl = Path(self._active_exp_path) / "scans_log.json"
+            if local_sl.exists():
+                try:
+                    self._on_scan_log_fetched(local_sl.read_bytes())
+                except Exception:
+                    pass
+
+    def _on_scan_log_fetched(self, data: bytes):
+        """Handle raw bytes of scans_log.json received from the RE machine."""
+        if self._scan_log_exp != self._active_exp_path:
+            return   # experiment switched while fetch was in flight
+        try:
+            entries = json.loads(data.decode("utf-8"))
+            if not isinstance(entries, list):
+                return
+        except Exception:
+            return
+        self._populate_plan_log_from_scan_log(entries)
+
+    def _on_scan_log_error(self, _msg: str):
+        """SFTP fetch failed — fall back to local plans_log.jsonl."""
+        if self._active_exp_path:
+            self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+
+    def _populate_plan_log_from_scan_log(self, entries: list):
+        """Repopulate the Plan Log list from scans_log.json entries."""
+        # Sort by start_time ascending; filter suppressed UIDs
+        try:
+            entries = sorted(entries, key=lambda e: e.get("start_time", 0))
+        except Exception:
+            pass
+
+        self.plan_log_list.clear()
+        scan_counter = 1
+        for entry in reversed(entries):
+            uid = entry.get("uid", "")
+            if uid and uid in self._suppressed_uids:
+                continue
+            name        = entry.get("plan_name", "?")
+            exit_status = entry.get("exit_status", "")
+            ok          = exit_status in ("completed", "success")
+            motion      = _is_motion_only(name, {})
+            icon        = "✓" if ok else ("✗" if exit_status else "?")
+            color       = _NEUTRAL_COLOR if motion else (SUCCESS if ok else DANGER)
+
+            start_time = entry.get("start_time", 0)
+            t_str = (datetime.fromtimestamp(start_time).strftime("%H:%M:%S")
+                     if start_time else "?")
+
+            dur     = entry.get("duration_s")
+            dur_str = f"  ({dur:.1f}s)" if dur is not None else ""
+
+            # Scan number: only actual scans (non-motion) get a number.
+            # We count backwards from the reversed iteration.
+            scan_num = None if motion else scan_counter
+            prefix   = f"#{scan_num:<3} " if scan_num is not None else "     "
+
+            # Brief summary from motors / detectors / events
+            motors    = entry.get("motors", []) or []
+            detectors = entry.get("detectors", []) or []
+            num_ev    = entry.get("num_events", 0) or 0
+            sample    = entry.get("sample_name", "") or ""
+            parts = []
+            if sample:
+                parts.append(sample)
+            if motors:
+                parts.append(", ".join(str(m) for m in motors[:2]))
+            if detectors:
+                parts.append(", ".join(str(d) for d in detectors[:2]))
+            if num_ev:
+                parts.append(f"{num_ev}pts")
+            summary = f"  [{', '.join(parts)}]" if parts else ""
+
+            li = QListWidgetItem(f"{prefix}{icon}  {t_str}  {name}{summary}{dur_str}")
+            li.setForeground(QColor(color))
+            li.setData(Qt.ItemDataRole.UserRole, {
+                "uid":         uid,
+                "name":        name,
+                "args":        entry.get("plan_args",   []) or [],
+                "kwargs":      entry.get("plan_kwargs", {}) or {},
+                "exit_status": exit_status,
+                "run_uids":    [uid] if uid else [],
+                "timestamp":   (datetime.fromtimestamp(start_time).isoformat()
+                                if start_time else ""),
+                "duration_s":  dur,
+                "scan_num":    scan_num,
+            })
+            self.plan_log_list.addItem(li)
+            if not motion:
+                scan_counter += 1
+
+        self._filter_plan_log(self._plan_log_search.text())
+
     def _suppressed_file(self, exp_path: str) -> Path:
         return Path(exp_path) / "suppressed_uids.json"
 
@@ -2158,6 +2269,10 @@ class ExperimentsTab(QWidget):
         if auto_select_newest and self.plan_log_list.count() > 0:
             self.plan_log_list.scrollToTop()
 
+        # Prefer the remote scans_log.json as the display source of truth.
+        # This replaces the local plans_log.jsonl display when the fetch succeeds.
+        self._trigger_scan_log_fetch()
+
     # ── Public update slots ────────────────────────────────────────────────────
 
     def update_history(self, items: list):
@@ -2228,7 +2343,12 @@ class ExperimentsTab(QWidget):
                 )
 
         if changed:
-            self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+            if self._remote_exp_dir or (Path(self._active_exp_path) / "scans_log.json").exists():
+                # Remote (or NFS-local) scans_log.json is the display source; fetch it.
+                # _on_scan_log_error falls back to _load_plan_log automatically.
+                self._trigger_scan_log_fetch()
+            else:
+                self._load_plan_log(self._active_exp_path, auto_select_newest=True)
             self.scan_completed.emit()
 
     def update_compact_queue(self, items: list):
