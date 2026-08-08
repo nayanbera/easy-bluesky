@@ -807,9 +807,13 @@ class _NewExperimentDialog(QDialog):
         self.local_parent_dir   = local_parent
         self.remote_exp_dir     = "/".join(remote_parts) if remote_parts else ""
         self.open_existing_path = ""
+        from .esaf import PIGroupRegistry
+        pi_group = PIGroupRegistry.get(pi_slug)
         self.esaf_info = {
             "esaf_id":         rec.esaf_id,
             "pi_group":        pi_slug,
+            "pi_name":         pi_group.pi_name         if pi_group else "",
+            "pi_institution":  pi_group.pi_institution  if pi_group else "",
             "proposal_id":     rec.proposal_id,
             "esaf_start_date": rec.start_date,
             "title":           rec.title,
@@ -1318,9 +1322,18 @@ class ExperimentsTab(QWidget):
             md["sample_description"] = self._sample_description
         # ESAF metadata — injected when an experiment was created from an ESAF
         esaf = getattr(self, "_esaf_info", {})
-        for key in ("esaf_id", "pi_group", "proposal_id", "esaf_start_date"):
+        for key in ("esaf_id", "pi_name", "pi_institution", "proposal_id",
+                    "esaf_start_date", "pi_group"):
             if esaf.get(key):
                 md[key] = esaf[key]
+        # Backfill pi_name/pi_institution from PIGroupRegistry for older experiments
+        # that only stored the pi_group slug in experiment.json.
+        if md.get("pi_group") and not (md.get("pi_name") and md.get("pi_institution")):
+            from .esaf import PIGroupRegistry
+            g = PIGroupRegistry.get(md["pi_group"])
+            if g:
+                md.setdefault("pi_name", g.pi_name)
+                md.setdefault("pi_institution", g.pi_institution)
         return md
 
     def _inject_metadata(self, result_item: dict):
