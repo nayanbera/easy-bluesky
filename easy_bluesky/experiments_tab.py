@@ -1640,6 +1640,8 @@ class ExperimentsTab(QWidget):
             active_info["esaf"] = esaf_info
         self._write_active_experiment(active_info)
         self._set_active_experiment(str(exp_dir), active_info)
+        if self.worker:
+            self.worker.reset_scan_id()
         self._clear_sample()
         self.experiment_changed.emit(str(runs_dir))
         self._exp_end_time = self._compute_exp_end_time()

@@ -1011,6 +1011,19 @@ class ZMQWorker(QObject):
         import threading
         threading.Thread(target=_run, daemon=True).start()
 
+    def reset_scan_id(self):
+        """Reset the RunEngine scan_id counter to 0 (fire-and-forget background thread)."""
+        if self.rm is None:
+            return
+        def _run():
+            try:
+                from bluesky_queueserver_api import BFunc
+                self.rm.function_execute(item=BFunc("reset_scan_id"))
+            except Exception:
+                pass
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+
     def fetch_device_pvnames(self):
         """Fetch PV names for all devices from the RE environment and emit pv_names_ready."""
         if self.rm is None:

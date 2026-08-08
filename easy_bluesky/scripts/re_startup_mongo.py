@@ -214,6 +214,15 @@ def set_sim_device(name: str, value: float):
     _st.wait(timeout=10)
 
 
+def reset_scan_id():
+    """Reset the RunEngine scan counter to 0 so the next scan gets scan_id=1.
+
+    Call this via function_execute when a new experiment is opened in EasyBluesky.
+    Safe to call at any time (does not require an active run or environment state).
+    """
+    RE.md['scan_id'] = 0
+
+
 def read_devices_status():
     """Return {name: {connected, kind, reading:{sig:{value,units}}, error}} for all top-level devices."""
     import ophyd as _oph
