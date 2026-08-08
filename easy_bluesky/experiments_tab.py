@@ -1747,11 +1747,10 @@ class ExperimentsTab(QWidget):
             QMessageBox.critical(self, "Error", f"Could not update plans_log.jsonl:\n{e}")
             return
 
-        # Remove from the in-memory set so re-logging is possible if desired
-        self._logged_uids -= uids_to_remove
-
-        # Reload the plan log display
+        # Reload the plan log display (rebuilds _logged_uids from disk)
         self._load_plan_log(self._active_exp_path)
+        # Re-add removed UIDs so update_history doesn't re-log them on the next poll
+        self._logged_uids |= uids_to_remove
 
     def _view_plan_detail(self, entry: dict):
         ts_str = entry.get("timestamp", "")
