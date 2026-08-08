@@ -539,6 +539,7 @@ class _NewExperimentDialog(QDialog):
 
         self._tabs.addTab(w, "From ESAF")
         self._refresh_runs_list()
+        self._update_esaf_paths()
 
     def _esaf_base_path(self) -> str | None:
         """Return the ESAF folder path (pi_slug/ESAF-id_date) or None if no ESAF selected."""
