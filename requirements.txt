@@ -10,12 +10,10 @@ h5py>=3.8
 pymongo>=4.0
 bluesky-queueserver-api>=0.0.13
 suitcase-jsonl>=0.2
+pdfplumber>=0.10
 
 # EPICS Channel Access (real-hardware mode)
 pyepics>=3.5
-
-# ESAF PDF parsing (optional — only needed for local PDF parsing without server)
-pdfplumber>=0.10
 
 # Optional editor enhancements (auto-completion and static analysis)
 jedi>=0.19

@@ -38,6 +38,7 @@ dependencies = [
     "bluesky-queueserver-api>=0.0.13",
     "paramiko>=3.0",
     "pymongo>=4.0",
+    "pdfplumber>=0.10",
 ]
 
 [project.optional-dependencies]
@@ -53,9 +54,6 @@ data = [
     "tiled",
     "intake>=0.6",
 ]
-esaf = [
-    "pdfplumber>=0.10",
-]
 dev = [
     "pytest>=7",
     "pytest-qt>=4",
@@ -70,7 +68,6 @@ all = [
     "databroker>=1.2",
     "tiled",
     "intake>=0.6",
-    "pdfplumber>=0.10",
 ]
 
 [project.scripts]
