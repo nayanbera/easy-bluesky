@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 from .widgets import NoScrollSpinBox
 
@@ -296,6 +296,9 @@ _PROFILE_DEFAULTS = {
     "mongo_db":   "",
     "mongo_host": "",      # empty → localhost on the RE machine
     "mongo_port": 27017,
+    # Remote data directory — base path on the RE machine for detector files.
+    # Injected as 'remote_exp_dir' in every plan's md kwargs.
+    "remote_data_root": "",
 }
 
 _DEFAULTS = {
@@ -937,6 +940,182 @@ class _MongoCheckDialog(QDialog):
             self._help_label.setVisible(True)
 
 
+# ── Remote path browser ───────────────────────────────────────────────────────
+
+class _SFTPConnectWorker(QThread):
+    """Open an SFTP channel to the remote host in a background thread."""
+    connected = pyqtSignal(object)   # emits (sftp, home_dir, ssh_client)
+    error     = pyqtSignal(str)
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+
+    def run(self):
+        try:
+            from .ssh_manager import _get_client
+            client = _get_client(self._settings)
+            sftp = client.open_sftp()
+            _, stdout, _ = client.exec_command("echo $HOME")
+            home = stdout.read().decode().strip() or "/home"
+            self.connected.emit((sftp, home, client))
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class RemotePathBrowser(QDialog):
+    """Browse the remote Linux filesystem over SSH/SFTP and select a directory.
+
+    Uses the active connection profile's SSH credentials.  The caller reads
+    ``selected_path`` after the dialog is accepted.
+    """
+
+    def __init__(self, settings: dict, initial_path: str = "~", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Browse Remote Path")
+        self.setMinimumSize(520, 400)
+        self._settings      = settings
+        self._initial_path  = initial_path
+        self._sftp          = None
+        self._client        = None
+        self._home          = ""
+        self._current_path  = ""
+        self.selected_path  = ""
+        self._build()
+        self._start_connect()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(6)
+
+        self._status_lbl = QLabel("Connecting via SSH…")
+        self._status_lbl.setObjectName("dim_text")
+        lay.addWidget(self._status_lbl)
+
+        path_row = QHBoxLayout()
+        self._path_edit = QLineEdit()
+        self._path_edit.setPlaceholderText("/path/on/remote/machine")
+        self._path_edit.returnPressed.connect(self._on_path_entered)
+        btn_go = QPushButton("Go")
+        btn_go.setMaximumWidth(40)
+        btn_go.clicked.connect(self._on_path_entered)
+        btn_up = QPushButton("↑ Up")
+        btn_up.setMaximumWidth(60)
+        btn_up.clicked.connect(self._go_up)
+        path_row.addWidget(self._path_edit)
+        path_row.addWidget(btn_go)
+        path_row.addWidget(btn_up)
+        lay.addLayout(path_row)
+
+        self._dir_list = QListWidget()
+        self._dir_list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._dir_list.setEnabled(False)
+        lay.addWidget(self._dir_list, 1)
+
+        btn_row = QHBoxLayout()
+        self._btn_new = QPushButton("New Folder…")
+        self._btn_new.setEnabled(False)
+        self._btn_new.clicked.connect(self._on_new_folder)
+        self._btn_select = QPushButton("Select This Directory")
+        self._btn_select.setDefault(True)
+        self._btn_select.setEnabled(False)
+        self._btn_select.clicked.connect(self._on_select)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self._btn_new)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(self._btn_select)
+        lay.addLayout(btn_row)
+
+    def _start_connect(self):
+        self._worker = _SFTPConnectWorker(self._settings, parent=self)
+        self._worker.connected.connect(self._on_connected)
+        self._worker.error.connect(self._on_connect_error)
+        self._worker.start()
+
+    def _on_connected(self, args):
+        self._sftp, self._home, self._client = args
+        start = self._initial_path or self._home
+        start = start.replace("~", self._home)
+        self._navigate(start)
+
+    def _on_connect_error(self, msg: str):
+        self._status_lbl.setText(f"✗  SSH error: {msg}")
+        self._status_lbl.setStyleSheet("color: #d62728;")
+
+    def _navigate(self, path: str):
+        if not self._sftp:
+            return
+        import stat as _stat
+        try:
+            attrs = self._sftp.listdir_attr(path)
+        except Exception as exc:
+            self._status_lbl.setText(f"Cannot open {path}: {exc}")
+            self._status_lbl.setStyleSheet("color: #d62728;")
+            return
+        dirs = sorted(
+            [a.filename for a in attrs
+             if _stat.S_ISDIR(a.st_mode) and not a.filename.startswith(".")],
+            key=str.lower,
+        )
+        self._current_path = path
+        self._path_edit.setText(path)
+        self._status_lbl.setText(path)
+        self._status_lbl.setStyleSheet("")
+        self._dir_list.clear()
+        self._dir_list.setEnabled(True)
+        self._btn_select.setEnabled(True)
+        self._btn_new.setEnabled(True)
+        for d in dirs:
+            self._dir_list.addItem(f"📁  {d}")
+
+    def _on_item_double_clicked(self, item):
+        name = item.text().replace("📁  ", "")
+        self._navigate(self._current_path.rstrip("/") + "/" + name)
+
+    def _on_path_entered(self):
+        path = self._path_edit.text().strip()
+        if path:
+            self._navigate(path.replace("~", self._home))
+
+    def _go_up(self):
+        if self._current_path:
+            parent = self._current_path.rsplit("/", 1)[0] or "/"
+            self._navigate(parent)
+
+    def _on_new_folder(self):
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        if not ok or not name.strip():
+            return
+        new_path = self._current_path.rstrip("/") + "/" + name.strip()
+        try:
+            self._sftp.mkdir(new_path)
+            self._navigate(self._current_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Could not create folder:\n{exc}")
+
+    def _on_select(self):
+        self.selected_path = self._current_path
+        self.accept()
+
+    def closeEvent(self, event):
+        if hasattr(self, "_worker") and self._worker.isRunning():
+            self._worker.quit()
+            self._worker.wait(2000)
+        if self._sftp:
+            try:
+                self._sftp.close()
+            except Exception:
+                pass
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+        event.accept()
+
+
 # ── Connection dialog ──────────────────────────────────────────────────────────
 
 class ConnectionDialog(QDialog):
@@ -1268,6 +1447,37 @@ class ConnectionDialog(QDialog):
         self._mongo_result.setWordWrap(True)
         self._prof_form.addRow("", self._mongo_result)
 
+        # ── Remote data directory section ──────────────────────────────────────
+        _sep_remote = QFrame()
+        _sep_remote.setFrameShape(QFrame.Shape.HLine)
+        _sep_remote.setFrameShadow(QFrame.Shadow.Sunken)
+        self._prof_form.addRow(_sep_remote)
+
+        _remote_title = QLabel("Remote Data Directory")
+        _remote_title.setStyleSheet("font-weight: bold;")
+        self._prof_form.addRow(_remote_title)
+
+        _remote_note = QLabel(
+            "Base directory on the RE machine where detector data is saved.\n"
+            "EasyBluesky appends the experiment name and injects the result\n"
+            "as  remote_exp_dir  in every plan's metadata."
+        )
+        _remote_note.setWordWrap(True)
+        _remote_note.setObjectName("dim_text")
+        self._prof_form.addRow(_remote_note)
+
+        _remote_path_row = QHBoxLayout()
+        self._prof_remote_data_root = QLineEdit()
+        self._prof_remote_data_root.setPlaceholderText(
+            "/home/chem_epics/data  or  ~/data  (leave empty to disable)"
+        )
+        _btn_browse_remote_root = QPushButton("Browse…")
+        _btn_browse_remote_root.setMaximumWidth(70)
+        _btn_browse_remote_root.clicked.connect(self._browse_remote_data_root)
+        _remote_path_row.addWidget(self._prof_remote_data_root)
+        _remote_path_row.addWidget(_btn_browse_remote_root)
+        self._prof_form.addRow("Data root:", _remote_path_row)
+
         for _sb in (self._prof_ctrl, self._prof_info):
             _sb.valueChanged.connect(self._update_zmq_label)
 
@@ -1372,6 +1582,7 @@ class ConnectionDialog(QDialog):
         self._prof_mongo_db.setText(p.get("mongo_db", ""))
         self._prof_mongo_host.setText(p.get("mongo_host", ""))
         self._prof_mongo_port.setValue(p.get("mongo_port", 27017))
+        self._prof_remote_data_root.setText(p.get("remote_data_root", ""))
         # Show/hide procServ row based on is_local
         self._on_is_local_toggled(p.get("is_local", False))
         self._auto_assign_note.setText("")
@@ -1390,17 +1601,18 @@ class ConnectionDialog(QDialog):
         is_local = self._prof_is_local.isChecked()
 
         profiles[row] = {
-            "name":         new_name,
-            "host":         self._prof_host.text().strip(),
-            "devices_file": self._prof_devices.text().strip() or "devices.py",
-            "is_local":     is_local,
-            "control_port": self._prof_ctrl.value(),
-            "info_port":    self._prof_info.value(),
-            "doc_port":     self._prof_doc.value(),
-            "procserv_port":self._prof_procserv.value(),
-            "mongo_db":     self._prof_mongo_db.text().strip(),
-            "mongo_host":   self._prof_mongo_host.text().strip(),
-            "mongo_port":   self._prof_mongo_port.value(),
+            "name":             new_name,
+            "host":             self._prof_host.text().strip(),
+            "devices_file":     self._prof_devices.text().strip() or "devices.py",
+            "is_local":         is_local,
+            "control_port":     self._prof_ctrl.value(),
+            "info_port":        self._prof_info.value(),
+            "doc_port":         self._prof_doc.value(),
+            "procserv_port":    self._prof_procserv.value(),
+            "mongo_db":         self._prof_mongo_db.text().strip(),
+            "mongo_host":       self._prof_mongo_host.text().strip(),
+            "mongo_port":       self._prof_mongo_port.value(),
+            "remote_data_root": self._prof_remote_data_root.text().strip(),
         }
 
         if old_name == self._settings.get("active_profile") and new_name != old_name:
@@ -1582,6 +1794,29 @@ class ConnectionDialog(QDialog):
         dlg = _MongoCheckDialog(settings, db, host, int(port), parent=self)
         dlg.exec()
         self._mongo_result.setText("")
+
+    def _browse_remote_data_root(self):
+        """Open a file browser (local or remote SSH) to select the data root."""
+        settings = self._collect_top_level()
+        current  = self._prof_remote_data_root.text().strip() or "~"
+        if is_local_host(settings):
+            path = QFileDialog.getExistingDirectory(
+                self, "Select Remote Data Root",
+                str(Path(current).expanduser()) if current != "~" else str(Path.home()),
+            )
+            if path:
+                self._prof_remote_data_root.setText(path)
+            return
+        host = settings.get("host", "").strip()
+        if not host:
+            QMessageBox.information(
+                self, "No Host",
+                "Set a host in the global SSH settings first, then use Browse."
+            )
+            return
+        dlg = RemotePathBrowser(settings, initial_path=current, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_path:
+            self._prof_remote_data_root.setText(dlg.selected_path)
 
     def _current_mongo_profile(self) -> dict:
         row = self._current_row if self._current_row is not None else 0

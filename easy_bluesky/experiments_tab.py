@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
-    QMainWindow, QLineEdit, QFormLayout, QGroupBox, QMenu, QFrame,
-    QCheckBox, QSpinBox,
+    QDialogButtonBox, QMainWindow, QLineEdit, QFormLayout, QGroupBox,
+    QMenu, QFrame, QCheckBox, QSpinBox,
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer
 from PyQt6.QtGui import QColor, QFont
@@ -383,6 +383,158 @@ class _StartupExperimentDialog(QDialog):
         self.accept()
 
 
+# ── New experiment dialog ─────────────────────────────────────────────────────
+
+class _NewExperimentDialog(QDialog):
+    """Dialog that collects both the local and remote paths for a new experiment.
+
+    The remote path is pre-populated from the active profile's ``remote_data_root``
+    and updated automatically as the user types the experiment name.
+    """
+
+    def __init__(self, remote_data_root: str = "", settings: dict = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New Experiment")
+        self.setMinimumWidth(540)
+        self._remote_data_root = remote_data_root.rstrip("/")
+        self._settings         = settings or {}
+        self.experiment_name   = ""
+        self.local_parent_dir  = ""
+        self.remote_exp_dir    = ""
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        name_form = QFormLayout()
+        name_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        name_form.setHorizontalSpacing(12)
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("e.g. SAXS_run_2026")
+        self._name_edit.textChanged.connect(self._on_name_changed)
+        name_form.addRow("Experiment name:", self._name_edit)
+        lay.addLayout(name_form)
+
+        # ── Local path ────────────────────────────────────────────────────────
+        local_grp = QGroupBox("Local Path  (this computer)")
+        local_lay = QVBoxLayout(local_grp)
+        local_form = QFormLayout()
+        local_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        local_form.setHorizontalSpacing(12)
+        local_row = QHBoxLayout()
+        self._local_edit = QLineEdit(EXPERIMENTS_DIR)
+        btn_local = QPushButton("Browse…")
+        btn_local.setMaximumWidth(70)
+        btn_local.clicked.connect(self._browse_local)
+        local_row.addWidget(self._local_edit)
+        local_row.addWidget(btn_local)
+        local_form.addRow("Parent folder:", local_row)
+        self._local_result_lbl = QLabel("")
+        self._local_result_lbl.setObjectName("dim_text")
+        self._local_result_lbl.setStyleSheet("font-size: 10px;")
+        local_form.addRow("Will create:", self._local_result_lbl)
+        local_lay.addLayout(local_form)
+        lay.addWidget(local_grp)
+
+        # ── Remote path ───────────────────────────────────────────────────────
+        remote_grp = QGroupBox("Remote Path  (RE machine — for detector files)")
+        remote_lay = QVBoxLayout(remote_grp)
+        remote_note = QLabel(
+            "Path on the Linux beamline machine where detector data is saved.\n"
+            "Injected as  <b>remote_exp_dir</b>  in every plan's metadata.\n"
+            "Leave empty if not using a remote detector path."
+        )
+        remote_note.setTextFormat(Qt.TextFormat.RichText)
+        remote_note.setWordWrap(True)
+        remote_note.setObjectName("dim_text")
+        remote_lay.addWidget(remote_note)
+        remote_form = QFormLayout()
+        remote_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        remote_form.setHorizontalSpacing(12)
+        remote_row = QHBoxLayout()
+        self._remote_edit = QLineEdit()
+        self._remote_edit.setPlaceholderText(
+            "/home/chem_epics/data/experiment_name  (optional)"
+        )
+        self._btn_browse_remote = QPushButton("Browse…")
+        self._btn_browse_remote.setMaximumWidth(70)
+        self._btn_browse_remote.clicked.connect(self._browse_remote)
+        remote_row.addWidget(self._remote_edit)
+        remote_row.addWidget(self._btn_browse_remote)
+        remote_form.addRow("Remote path:", remote_row)
+        remote_lay.addLayout(remote_form)
+        lay.addWidget(remote_grp)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+        self._update_local_label()
+
+    @staticmethod
+    def _sanitize(name: str) -> str:
+        return re.sub(r"[^\w\-]", "_", name.strip())
+
+    def _on_name_changed(self, text: str):
+        self._update_local_label()
+        if self._remote_data_root:
+            sanitized = self._sanitize(text)
+            self._remote_edit.setText(
+                (self._remote_data_root + "/" + sanitized) if sanitized else ""
+            )
+
+    def _update_local_label(self):
+        name   = self._name_edit.text().strip()
+        parent = self._local_edit.text().strip()
+        if name and parent:
+            self._local_result_lbl.setText(f"{parent}/{self._sanitize(name)}")
+        else:
+            self._local_result_lbl.setText("")
+
+    def _browse_local(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Choose parent folder for experiment",
+            self._local_edit.text() or EXPERIMENTS_DIR,
+        )
+        if path:
+            self._local_edit.setText(path)
+            self._update_local_label()
+
+    def _browse_remote(self):
+        from .connection_settings import RemotePathBrowser, is_local_host
+        settings = self._settings
+        current  = self._remote_edit.text().strip() or self._remote_data_root or "~"
+        if is_local_host(settings) or not settings.get("host", ""):
+            path = QFileDialog.getExistingDirectory(
+                self, "Select Remote Data Directory",
+                current if current != "~" else str(Path.home()),
+            )
+            if path:
+                self._remote_edit.setText(path)
+            return
+        dlg = RemotePathBrowser(settings, initial_path=current, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_path:
+            self._remote_edit.setText(dlg.selected_path)
+
+    def _on_accept(self):
+        name = self._name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Required", "Experiment name is required.")
+            return
+        parent = self._local_edit.text().strip()
+        if not parent:
+            QMessageBox.warning(self, "Required", "Local parent folder is required.")
+            return
+        self.experiment_name  = name
+        self.local_parent_dir = parent
+        self.remote_exp_dir   = self._remote_edit.text().strip()
+        self.accept()
+
+
 # ── Main experiments tab ───────────────────────────────────────────────────────
 
 class ExperimentsTab(QWidget):
@@ -408,6 +560,7 @@ class ExperimentsTab(QWidget):
         self._plans: dict      = {}
         self._devices: dict    = {}
         self._active_exp_path  = ""
+        self._remote_exp_dir: str = ""   # Linux path on RE machine for detector files
         self._logged_uids: set = set()
         self._shown_error_uids: set = set()
         self._exp_created_at: float = 0.0
@@ -459,6 +612,12 @@ class ExperimentsTab(QWidget):
         self.exp_path_label.setStyleSheet("font-size: 10px;")
         self.exp_path_label.setWordWrap(True)
         vlay.addWidget(self.exp_path_label)
+
+        self.exp_remote_label = QLabel("")
+        self.exp_remote_label.setObjectName("dim_text")
+        self.exp_remote_label.setStyleSheet("font-size: 10px;")
+        self.exp_remote_label.setWordWrap(True)
+        vlay.addWidget(self.exp_remote_label)
 
         self.exp_date_label = QLabel("")
         self.exp_date_label.setObjectName("dim_text")
@@ -762,6 +921,7 @@ class ExperimentsTab(QWidget):
         self._active_profile = profile_name
         # Clear current state so history from the old profile is not mixed in.
         self._active_exp_path  = ""
+        self._remote_exp_dir   = ""
         self._logged_uids      = set()
         self._suppressed_uids  = set()
         self._shown_error_uids = set()
@@ -773,6 +933,7 @@ class ExperimentsTab(QWidget):
         # if a saved experiment exists for this profile.
         self.exp_name_label.setText("—")
         self.exp_path_label.setText("")
+        self.exp_remote_label.setText("")
         self.exp_date_label.setText("")
         self.plan_log_list.clear()
         self._load_active_experiment()
@@ -788,6 +949,8 @@ class ExperimentsTab(QWidget):
         md: dict = {}
         if self._active_exp_path:
             md["exp_dir"] = self._active_exp_path
+        if self._remote_exp_dir:
+            md["remote_exp_dir"] = self._remote_exp_dir
         if self._sample_name:
             md["sample_name"] = self._sample_name
         if self._sample_description:
@@ -1037,18 +1200,21 @@ class ExperimentsTab(QWidget):
     # ── Experiment management ──────────────────────────────────────────────────
 
     def new_experiment(self):
-        name, ok = QInputDialog.getText(
-            self, "New Experiment", "Experiment name:")
-        if not ok or not name.strip():
-            return
-        name = name.strip()
+        from .connection_settings import get_active_profile
+        profile          = get_active_profile(self._settings)
+        remote_data_root = profile.get("remote_data_root", "").strip()
 
-        parent_dir = QFileDialog.getExistingDirectory(
-            self, "Choose parent folder for experiment",
-            EXPERIMENTS_DIR,
+        dlg = _NewExperimentDialog(
+            remote_data_root=remote_data_root,
+            settings=self._settings,
+            parent=self,
         )
-        if not parent_dir:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+
+        name           = dlg.experiment_name
+        parent_dir     = dlg.local_parent_dir
+        remote_exp_dir = dlg.remote_exp_dir
 
         ts        = datetime.now()
         sanitized = re.sub(r"[^\w\-]", "_", name)
@@ -1058,7 +1224,7 @@ class ExperimentsTab(QWidget):
             while (Path(parent_dir) / f"{sanitized}_{suffix}").exists():
                 suffix += 1
             exp_dir = Path(parent_dir) / f"{sanitized}_{suffix}"
-        runs_dir    = exp_dir / "runs"
+        runs_dir = exp_dir / "runs"
         try:
             runs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -1066,10 +1232,20 @@ class ExperimentsTab(QWidget):
                 self, "Error", f"Could not create experiment folder:\n{e}")
             return
 
-        exp_info    = {"name": name, "created": ts.isoformat(), "description": ""}
+        exp_info = {
+            "name":           name,
+            "created":        ts.isoformat(),
+            "description":    "",
+            "remote_exp_dir": remote_exp_dir,
+        }
         (exp_dir / "experiment.json").write_text(json.dumps(exp_info, indent=2))
 
-        active_info = {"name": name, "path": str(exp_dir), "created": ts.isoformat()}
+        active_info = {
+            "name":           name,
+            "path":           str(exp_dir),
+            "created":        ts.isoformat(),
+            "remote_exp_dir": remote_exp_dir,
+        }
         self._write_active_experiment(active_info)
         self._set_active_experiment(str(exp_dir), active_info)
         self._clear_sample()
@@ -1093,9 +1269,10 @@ class ExperimentsTab(QWidget):
             return
 
         active_info = {
-            "name":    info.get("name", Path(path).name),
-            "path":    path,
-            "created": info.get("created", ""),
+            "name":           info.get("name", Path(path).name),
+            "path":           path,
+            "created":        info.get("created", ""),
+            "remote_exp_dir": info.get("remote_exp_dir", ""),
         }
         self._write_active_experiment(active_info)
         self._set_active_experiment(path, active_info)
@@ -1132,9 +1309,10 @@ class ExperimentsTab(QWidget):
                 info = {"name": Path(path).name, "path": path, "created": ""}
 
         active_info = {
-            "name":    info.get("name", Path(path).name),
-            "path":    path,
-            "created": info.get("created", ""),
+            "name":           info.get("name", Path(path).name),
+            "path":           path,
+            "created":        info.get("created", ""),
+            "remote_exp_dir": info.get("remote_exp_dir", ""),
         }
         self._write_active_experiment(active_info)
         self._set_active_experiment(path, active_info)
@@ -1324,6 +1502,7 @@ class ExperimentsTab(QWidget):
     def _set_active_experiment(self, path: str, info: dict):
         _add_to_recent_list(path, info)
         self._active_exp_path = path
+        self._remote_exp_dir  = info.get("remote_exp_dir", "")
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()
@@ -1339,6 +1518,12 @@ class ExperimentsTab(QWidget):
         display_path = path if len(path) <= 60 else "…" + path[-59:]
         self.exp_name_label.setText(name)
         self.exp_path_label.setText(display_path)
+        if self._remote_exp_dir:
+            remote_display = (self._remote_exp_dir if len(self._remote_exp_dir) <= 55
+                              else "…" + self._remote_exp_dir[-54:])
+            self.exp_remote_label.setText(f"Remote: {remote_display}")
+        else:
+            self.exp_remote_label.setText("")
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
         self._load_plan_log(path)
 
