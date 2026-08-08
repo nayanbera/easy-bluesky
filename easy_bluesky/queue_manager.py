@@ -293,6 +293,8 @@ class QueueManager(QWidget):
         self.worker  = worker
         self.plans   = {}
         self.devices = {}
+        self._all_history_items = []   # full list from last history_updated signal
+        self._current_exp_path  = ""   # set by set_current_experiment()
         self._build()
 
     def _build(self):
@@ -413,6 +415,21 @@ class QueueManager(QWidget):
         lbl2.setObjectName("section_title")
         hist_hdr.addWidget(lbl2)
         hist_hdr.addStretch()
+        self._hist_range = QLineEdit("0-100")
+        self._hist_range.setFixedWidth(72)
+        self._hist_range.setToolTip(
+            "Range of history entries to show (newest-first).\n"
+            "0-100 = most recent 100 items.\n"
+            "100-200 = next 100 older items.\n"
+            "Press Enter to apply."
+        )
+        self._hist_range.returnPressed.connect(self._apply_history_range)
+        self._hist_range.editingFinished.connect(self._apply_history_range)
+        hist_hdr.addWidget(self._hist_range)
+        self._hist_count_lbl = QLabel("of 0")
+        self._hist_count_lbl.setObjectName("dim_text")
+        self._hist_count_lbl.setToolTip("Total history entries available in the RE Manager")
+        hist_hdr.addWidget(self._hist_count_lbl)
         btn_clr_hist = QPushButton("Clear")
         btn_clr_hist.clicked.connect(self._clear_history)
         hist_hdr.addWidget(btn_clr_hist)
@@ -716,9 +733,38 @@ class QueueManager(QWidget):
             item = self.history_list.item(i)
             item.setHidden(bool(q and q not in item.text().lower()))
 
+    def set_current_experiment(self, path: str):
+        """Update the active experiment path so history entries can be colour-coded."""
+        self._current_exp_path = path
+        self._apply_history_range()
+
     def update_history(self, items):
+        """Cache the full history list and refresh the visible range."""
+        self._all_history_items = items
+        self._apply_history_range()
+
+    def _apply_history_range(self):
+        """Slice _all_history_items by the range field and repopulate the list."""
+        text = self._hist_range.text().strip()
+        try:
+            lo, hi = [int(p.strip()) for p in text.split("-", 1)]
+            if lo < 0 or hi <= lo:
+                raise ValueError
+        except Exception:
+            lo, hi = 0, 100
+
+        # API returns oldest-first; display newest-first
+        items_rev  = list(reversed(self._all_history_items))
+        visible    = items_rev[lo:hi]
+
+        cur = self._current_exp_path
+        try:
+            cur_resolved = str(Path(cur).resolve()) if cur else ""
+        except Exception:
+            cur_resolved = cur
+
         self.history_list.clear()
-        for item in reversed(items[-30:]):
+        for item in visible:
             name   = item.get("name", "unknown")
             args   = item.get("args", []) or []
             kwargs = item.get("kwargs", {}) or {}
@@ -726,21 +772,38 @@ class QueueManager(QWidget):
             status = result.get("exit_status", "?")
             t_stop  = result.get("time_stop",  0)
             t_start = result.get("time_start", 0)
-            t_str  = datetime.fromtimestamp(t_stop).strftime("%H:%M:%S") if t_stop else "?"
+            t_str   = datetime.fromtimestamp(t_stop).strftime("%H:%M:%S") if t_stop else "?"
             dur_str = ""
             if t_stop and t_start:
-                secs = t_stop - t_start
-                dur_str = f"  ({secs:.1f}s)"
+                dur_str = f"  ({t_stop - t_start:.1f}s)"
             ok_    = status in ("completed", "success")
             motion = _is_motion_only(name, kwargs)
             icon   = "✓" if ok_ else "✗"
-            color  = _NEUTRAL_COLOR if motion else (SUCCESS if ok_ else DANGER)
+
+            item_exp = (kwargs.get("md") or {}).get("exp_dir", "")
+            try:
+                is_cur = bool(cur_resolved and item_exp and
+                              str(Path(item_exp).resolve()) == cur_resolved)
+            except Exception:
+                is_cur = False
+
+            if motion:
+                color = _NEUTRAL_COLOR if is_cur else "#666666"
+            elif ok_:
+                color = SUCCESS if is_cur else "#5588aa"
+            else:
+                color = DANGER if is_cur else "#aa6644"
+
             summary = self._plan_summary(name, kwargs, args)
-            label = f"{icon}  {t_str}  {name}{summary}{dur_str}"
+            label   = f"{icon}  {t_str}  {name}{summary}{dur_str}"
             li = QListWidgetItem(label)
             li.setForeground(QColor(color))
             li.setData(Qt.ItemDataRole.UserRole, item)
-            li.setToolTip(f"Exit: {status}\nDouble-click to view data  |  Right-click to re-queue")
+            li.setToolTip(
+                f"Exit: {status}"
+                + ("" if is_cur else "  [other experiment]")
+                + "\nDouble-click to view data  |  Right-click to re-queue"
+            )
             self.history_list.addItem(li)
         self._filter_history(self._history_search.text())
 
@@ -814,6 +877,8 @@ class QueueManager(QWidget):
         self.btn_q_resume.setEnabled(paused)
         self.btn_q_abort.setEnabled(running or paused)
         self.btn_q_stop.setEnabled(running or paused)
+        n = status.get("items_in_history", 0)
+        self._hist_count_lbl.setText(f"of {n}")
 
     def on_disconnected(self) -> None:
         for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,

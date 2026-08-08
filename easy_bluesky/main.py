@@ -2206,6 +2206,7 @@ class MainWindow(QMainWindow):
         self._refresh_recent_menu()
         exp_dir = str(Path(runs_dir).parent)
         self.mongo_browser.set_active_experiment(exp_dir)
+        self.queue_mgr.set_current_experiment(exp_dir)
 
     def _on_mongo_move_requested(self, motor: str, position: float):
         if not self.worker:
