@@ -415,12 +415,13 @@ class _NewExperimentDialog(QDialog):
     """Two-tab dialog for opening or creating an experiment.
 
     Tab 1 "From ESAF" — open-or-create within the canonical ESAF folder structure:
-        ``<experiments_root>/<pi_slug>/ESAF-<id>_<start_date>/<run_name>``
-        Existing runs are listed; selecting one opens it.  Typing a new name creates it.
+        ``<experiments_root>/<pi_slug>/ESAF-<id>_<start_date>/<experiment_name>``
+        Existing experiments are listed; selecting one opens it.
+        Typing a new name creates a new experiment subfolder.
     Tab 2 "Manual" — the original free-form name + local/remote paths.
 
     Result attributes (set on accept):
-        experiment_name    : str  — bare run name
+        experiment_name    : str  — folder name (ESAF-id_date or manual name)
         local_parent_dir   : str  — parent dir; final path = parent/sanitized_name
         remote_exp_dir     : str  — full remote path (may be empty)
         esaf_info          : dict — ESAF metadata for experiment.json (may be {})
@@ -480,8 +481,8 @@ class _NewExperimentDialog(QDialog):
         eg_lay.addWidget(self._esaf_picker)
         lay.addWidget(esaf_grp)
 
-        # ── Existing runs ──────────────────────────────────────────────────────
-        runs_lbl = QLabel("Existing runs under this ESAF:")
+        # ── Existing experiments ───────────────────────────────────────────────
+        runs_lbl = QLabel("Existing experiments under this ESAF:")
         runs_lbl.setStyleSheet("font-weight: bold;")
         lay.addWidget(runs_lbl)
 
@@ -490,7 +491,7 @@ class _NewExperimentDialog(QDialog):
         self._runs_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._runs_list.itemSelectionChanged.connect(self._on_run_selected)
         self._runs_list.itemDoubleClicked.connect(self._on_accept)
-        self._no_runs_lbl = QLabel("  (none yet — select an ESAF above)")
+        self._no_runs_lbl = QLabel("  (no experiments yet — select an ESAF above)")
         self._no_runs_lbl.setStyleSheet("color: #888; font-style: italic;")
         lay.addWidget(self._runs_list)
         lay.addWidget(self._no_runs_lbl)
@@ -501,7 +502,7 @@ class _NewExperimentDialog(QDialog):
         sep.setStyleSheet("color: #555;")
         lay.addWidget(sep)
 
-        new_lbl = QLabel("— or create a new run —")
+        new_lbl = QLabel("— or create a new experiment —")
         new_lbl.setStyleSheet("color: #888; font-size: 10px;")
         new_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(new_lbl)
@@ -510,9 +511,9 @@ class _NewExperimentDialog(QDialog):
         new_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         new_form.setHorizontalSpacing(12)
         self._esaf_run_name = QLineEdit()
-        self._esaf_run_name.setPlaceholderText("run name (e.g. SAXS_day1)")
+        self._esaf_run_name.setPlaceholderText("experiment name (e.g. SAXS_day1)")
         self._esaf_run_name.textChanged.connect(self._on_new_run_name_changed)
-        new_form.addRow("New run name:", self._esaf_run_name)
+        new_form.addRow("New experiment name:", self._esaf_run_name)
         lay.addLayout(new_form)
 
         # ── Path preview ───────────────────────────────────────────────────────
@@ -583,7 +584,7 @@ class _NewExperimentDialog(QDialog):
             self._no_runs_lbl.setVisible(False)
         else:
             self._runs_list.setVisible(False)
-            self._no_runs_lbl.setText("  (no runs yet under this ESAF)")
+            self._no_runs_lbl.setText("  (no experiments yet under this ESAF)")
             self._no_runs_lbl.setVisible(True)
 
     def _on_run_selected(self):
@@ -782,7 +783,7 @@ class _NewExperimentDialog(QDialog):
         run_raw = self._esaf_run_name.text().strip()
         if not run_raw:
             QMessageBox.warning(self, "Required",
-                                "Select an existing run from the list or enter a new run name.")
+                                "Select an existing experiment from the list or enter a new experiment name.")
             return
         run = self._sanitize(run_raw)
 
