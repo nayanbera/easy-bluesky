@@ -296,6 +296,8 @@ _PROFILE_DEFAULTS = {
     "mongo_db":   "",
     "mongo_host": "",      # empty → localhost on the RE machine
     "mongo_port": 27017,
+    # Local experiment root — overrides ~/.easy_bluesky/experiments/ (e.g. NFS mount).
+    "local_data_root": "",
     # Remote data directory — base path on the RE machine for detector files.
     # Injected as 'remote_exp_dir' in every plan's md kwargs.
     "remote_data_root": "",
@@ -1502,6 +1504,38 @@ class ConnectionDialog(QDialog):
         self._mongo_result.setWordWrap(True)
         self._prof_form.addRow("", self._mongo_result)
 
+        # ── Local data directory section ───────────────────────────────────────
+        _sep_local_data = QFrame()
+        _sep_local_data.setFrameShape(QFrame.Shape.HLine)
+        _sep_local_data.setFrameShadow(QFrame.Shadow.Sunken)
+        self._prof_form.addRow(_sep_local_data)
+
+        _local_data_title = QLabel("Local Experiment Root")
+        _local_data_title.setStyleSheet("font-weight: bold;")
+        self._prof_form.addRow(_local_data_title)
+
+        _local_data_note = QLabel(
+            "Root folder where experiment subfolders are created on this machine.\n"
+            "Leave empty to use the default  ~/.easy_bluesky/experiments/.\n"
+            "Set this to an NFS/shared network mount if the same drive is accessible\n"
+            "from both this machine and the RE machine."
+        )
+        _local_data_note.setWordWrap(True)
+        _local_data_note.setObjectName("dim_text")
+        self._prof_form.addRow(_local_data_note)
+
+        _local_path_row = QHBoxLayout()
+        self._prof_local_data_root = QLineEdit()
+        self._prof_local_data_root.setPlaceholderText(
+            "~/.easy_bluesky/experiments  (default, leave empty)"
+        )
+        _btn_browse_local_root = QPushButton("Browse…")
+        _btn_browse_local_root.setMaximumWidth(70)
+        _btn_browse_local_root.clicked.connect(self._browse_local_data_root)
+        _local_path_row.addWidget(self._prof_local_data_root)
+        _local_path_row.addWidget(_btn_browse_local_root)
+        self._prof_form.addRow("Local root:", _local_path_row)
+
         # ── Remote data directory section ──────────────────────────────────────
         _sep_remote = QFrame()
         _sep_remote.setFrameShape(QFrame.Shape.HLine)
@@ -1637,6 +1671,7 @@ class ConnectionDialog(QDialog):
         self._prof_mongo_db.setText(p.get("mongo_db", ""))
         self._prof_mongo_host.setText(p.get("mongo_host", ""))
         self._prof_mongo_port.setValue(p.get("mongo_port", 27017))
+        self._prof_local_data_root.setText(p.get("local_data_root", ""))
         self._prof_remote_data_root.setText(p.get("remote_data_root", ""))
         # Show/hide procServ row based on is_local
         self._on_is_local_toggled(p.get("is_local", False))
@@ -1667,6 +1702,7 @@ class ConnectionDialog(QDialog):
             "mongo_db":         self._prof_mongo_db.text().strip(),
             "mongo_host":       self._prof_mongo_host.text().strip(),
             "mongo_port":       self._prof_mongo_port.value(),
+            "local_data_root":  self._prof_local_data_root.text().strip(),
             "remote_data_root": self._prof_remote_data_root.text().strip(),
         }
 
@@ -1849,6 +1885,14 @@ class ConnectionDialog(QDialog):
         dlg = _MongoCheckDialog(settings, db, host, int(port), parent=self)
         dlg.exec()
         self._mongo_result.setText("")
+
+    def _browse_local_data_root(self):
+        """Open a local folder browser to select the local experiment root."""
+        current = self._prof_local_data_root.text().strip()
+        start = str(Path(current).expanduser()) if current else str(Path.home())
+        path = QFileDialog.getExistingDirectory(self, "Select Local Experiment Root", start)
+        if path:
+            self._prof_local_data_root.setText(path)
 
     def _browse_remote_data_root(self):
         """Open a file browser (local or remote SSH) to select the data root."""

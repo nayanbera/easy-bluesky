@@ -429,12 +429,14 @@ class _NewExperimentDialog(QDialog):
                                     instead of creating a new one
     """
 
-    def __init__(self, remote_data_root: str = "", settings: dict = None, parent=None):
+    def __init__(self, remote_data_root: str = "", local_data_root: str = "",
+                 settings: dict = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Open / New Experiment")
         self.setMinimumWidth(600)
         self.setMinimumHeight(480)
         self._remote_data_root = remote_data_root.rstrip("/")
+        self._local_data_root  = local_data_root.rstrip("/") or EXPERIMENTS_DIR
         self._settings         = settings or {}
         self.experiment_name    = ""
         self.local_parent_dir   = ""
@@ -550,7 +552,7 @@ class _NewExperimentDialog(QDialog):
         esaf_folder = f"ESAF-{rec.esaf_id}"
         if rec.start_date:
             esaf_folder += f"_{rec.start_date}"
-        return "/".join([EXPERIMENTS_DIR, pi_slug, esaf_folder])
+        return "/".join([self._local_data_root, pi_slug, esaf_folder])
 
     def _on_esaf_selected(self, record):
         self._selected_esaf = record
@@ -630,7 +632,7 @@ class _NewExperimentDialog(QDialog):
         if rec.start_date:
             esaf_folder += f"_{rec.start_date}"
 
-        parts_local  = [EXPERIMENTS_DIR, pi_slug, esaf_folder]
+        parts_local  = [self._local_data_root, pi_slug, esaf_folder]
         parts_remote = ([self._remote_data_root, pi_slug, esaf_folder]
                         if self._remote_data_root else [])
         if run:
@@ -667,7 +669,7 @@ class _NewExperimentDialog(QDialog):
         local_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         local_form.setHorizontalSpacing(12)
         local_row = QHBoxLayout()
-        self._local_edit = QLineEdit(EXPERIMENTS_DIR)
+        self._local_edit = QLineEdit(self._local_data_root)
         btn_local = QPushButton("Browse…")
         btn_local.setMaximumWidth(70)
         btn_local.clicked.connect(self._browse_local)
@@ -741,7 +743,7 @@ class _NewExperimentDialog(QDialog):
     def _browse_local(self):
         path = QFileDialog.getExistingDirectory(
             self, "Choose parent folder for experiment",
-            self._local_edit.text() or EXPERIMENTS_DIR,
+            self._local_edit.text() or self._local_data_root,
         )
         if path:
             self._local_edit.setText(path)
@@ -797,7 +799,7 @@ class _NewExperimentDialog(QDialog):
         if rec.start_date:
             esaf_folder += f"_{rec.start_date}"
 
-        local_parent = "/".join([EXPERIMENTS_DIR, pi_slug, esaf_folder])
+        local_parent = "/".join([self._local_data_root, pi_slug, esaf_folder])
         remote_parts = ([self._remote_data_root, pi_slug, esaf_folder, run]
                         if self._remote_data_root else [])
 
@@ -1567,9 +1569,11 @@ class ExperimentsTab(QWidget):
         from .connection_settings import get_active_profile
         profile          = get_active_profile(self._settings)
         remote_data_root = profile.get("remote_data_root", "").strip()
+        local_data_root  = profile.get("local_data_root", "").strip()
 
         dlg = _NewExperimentDialog(
             remote_data_root=remote_data_root,
+            local_data_root=local_data_root,
             settings=self._settings,
             parent=self,
         )
