@@ -1482,12 +1482,21 @@ class ExperimentsTab(QWidget):
                     except Exception:
                         pass
 
-            # Renumber in file order: entries with non-empty run_uids are actual
+            # Sort chronologically by timestamp so display and numbering are
+            # consistent even when entries were appended out of order.
+            def _ts_key(e):
+                try:
+                    return datetime.fromisoformat(e.get("timestamp", "")).timestamp()
+                except Exception:
+                    return 0.0
+            all_entries.sort(key=_ts_key)
+
+            # Renumber in time order: entries with non-empty run_uids are actual
             # scans and get sequential numbers 1, 2, 3…; motion-only plans (empty
             # run_uids) get scan_num = None.  The MongoDB browser column shows the
             # same time-ordered position, so the numbers match across both tables.
             scan_counter = 1
-            file_changed = False
+            file_changed = True   # always write back after sort
             for e in all_entries:
                 new_num = scan_counter if e.get("run_uids") else None
                 if e.get("scan_num") != new_num:
