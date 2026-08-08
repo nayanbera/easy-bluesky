@@ -1690,10 +1690,68 @@ class ExperimentsTab(QWidget):
         entry = li.data(Qt.ItemDataRole.UserRole)
         if not entry:
             return
+        # If the right-clicked item is not already selected, select it alone.
+        if not li.isSelected():
+            self.plan_log_list.clearSelection()
+            li.setSelected(True)
+        selected = self.plan_log_list.selectedItems()
         menu = QMenu(self)
         menu.addAction("Edit & Re-queue", lambda: self._on_plan_log_double_clicked(li))
         menu.addAction("View Details",    lambda: self._view_plan_detail(entry))
+        menu.addSeparator()
+        n = len(selected)
+        lbl = f"Remove {n} entr{'ies' if n != 1 else 'y'} from log"
+        menu.addAction(lbl, lambda: self._remove_from_plan_log(selected))
         menu.exec(self.plan_log_list.viewport().mapToGlobal(pos))
+
+    def _remove_from_plan_log(self, items: list):
+        if not items or not self._active_exp_path:
+            return
+        n = len(items)
+        if n > 1:
+            r = QMessageBox.question(
+                self, "Remove Entries",
+                f"Remove {n} entries from the plan log?\n"
+                "This edits plans_log.jsonl on disk and cannot be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+
+        # Collect UIDs to remove
+        uids_to_remove = set()
+        for item in items:
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if entry:
+                uids_to_remove.add(entry.get("uid", ""))
+        uids_to_remove.discard("")
+
+        # Rewrite plans_log.jsonl keeping only entries not in the removal set
+        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
+        try:
+            lines = log_file.read_text().splitlines() if log_file.exists() else []
+            kept = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("uid", "") not in uids_to_remove:
+                        kept.append(line)
+                except Exception:
+                    kept.append(line)   # keep malformed lines intact
+            log_file.write_text("\n".join(kept) + ("\n" if kept else ""))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not update plans_log.jsonl:\n{e}")
+            return
+
+        # Remove from the in-memory set so re-logging is possible if desired
+        self._logged_uids -= uids_to_remove
+
+        # Reload the plan log display
+        self._load_plan_log(self._active_exp_path)
 
     def _view_plan_detail(self, entry: dict):
         ts_str = entry.get("timestamp", "")
