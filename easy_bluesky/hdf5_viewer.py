@@ -249,6 +249,18 @@ class HDF5Viewer(QWidget):
             self._fit_model_combo.addItem(m)
         ctrl_bar.addWidget(self._fit_model_combo)
 
+        bg_lbl = QLabel("+ BG:")
+        bg_lbl.setStyleSheet("font-size: 11px;")
+        ctrl_bar.addWidget(bg_lbl)
+        self._fit_bg_combo = QComboBox()
+        self._fit_bg_combo.setFixedHeight(26)
+        self._fit_bg_combo.setMinimumWidth(80)
+        self._fit_bg_combo.setMaximumWidth(110)
+        for bg in _peak_fit.BACKGROUND_MODELS:
+            self._fit_bg_combo.addItem(bg)
+        self._fit_bg_combo.setToolTip("Background model added to the peak/step")
+        ctrl_bar.addWidget(self._fit_bg_combo)
+
         btn_fit = QPushButton("Fit")
         btn_fit.setFixedHeight(26)
         btn_fit.clicked.connect(self._fit_peak)
@@ -680,11 +692,11 @@ class HDF5Viewer(QWidget):
                 pass
 
         initial_model   = self._fit_model_combo.currentText()
-        initial_bg_name = "None"
+        initial_bg_name = self._fit_bg_combo.currentText()
         initial_params  = None
         if self._saved_fit_state:
             initial_model   = self._saved_fit_state.get("model_name", initial_model)
-            initial_bg_name = self._saved_fit_state.get("bg_name", "None")
+            initial_bg_name = self._saved_fit_state.get("bg_name", initial_bg_name)
             initial_params  = self._saved_fit_state.get("params")
 
         self._fit_dlg = FitParamsDialog(

@@ -727,8 +727,21 @@ class MongoDataBrowserTab(QWidget):
         for m in _peak_fit.STEP_MODELS:
             self._fit_model_combo.addItem(m)
         self._fit_model_combo.setFixedHeight(26)
-        self._fit_model_combo.setToolTip("Peak model for curve fitting")
+        self._fit_model_combo.setToolTip("Peak/step model for curve fitting")
         ctrl_bar.addWidget(self._fit_model_combo)
+
+        bg_lbl = QLabel("+ BG:")
+        bg_lbl.setStyleSheet("font-size: 11px;")
+        ctrl_bar.addWidget(bg_lbl)
+        self._fit_bg_combo = QComboBox()
+        self._fit_bg_combo.setFixedHeight(26)
+        self._fit_bg_combo.setMinimumWidth(80)
+        self._fit_bg_combo.setMaximumWidth(110)
+        for bg in _peak_fit.BACKGROUND_MODELS:
+            self._fit_bg_combo.addItem(bg)
+        self._fit_bg_combo.setToolTip("Background model added to the peak/step")
+        ctrl_bar.addWidget(self._fit_bg_combo)
+
         self._btn_fit = QPushButton("Fit")
         self._btn_fit.setFixedHeight(26)
         self._btn_fit.setToolTip("Fit a peak to the plotted data")
@@ -1587,11 +1600,11 @@ class MongoDataBrowserTab(QWidget):
             except Exception:
                 pass
 
-        initial_bg_name = "None"
+        initial_bg_name = self._fit_bg_combo.currentText()
         initial_params  = None
         if self._saved_fit_state:
             model_name      = self._saved_fit_state.get("model_name", model_name)
-            initial_bg_name = self._saved_fit_state.get("bg_name", "None")
+            initial_bg_name = self._saved_fit_state.get("bg_name", initial_bg_name)
             initial_params  = self._saved_fit_state.get("params")
 
         self._fit_dlg = _FitParamsDialog(
