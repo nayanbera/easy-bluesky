@@ -14,7 +14,8 @@ suitcase-jsonl>=0.2
 # EPICS Channel Access (real-hardware mode)
 pyepics>=3.5
 
-# Optional editor enhancements (auto-completion and static analysis)
+# Optional editor enhancements (auto-completion, syntax highlighting, static analysis)
+PyQtScintilla>=2.13
 jedi>=0.19
 pyflakes>=3.0
 
