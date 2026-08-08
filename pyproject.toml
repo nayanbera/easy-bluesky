@@ -27,6 +27,7 @@ classifiers = [
 
 dependencies = [
     "PyQt6>=6.4",
+    "PyQtScintilla>=2.13",
     "pyqtgraph>=0.13",
     "numpy>=1.24",
     "scipy>=1.10",
@@ -45,7 +46,6 @@ epics = [
     "pyepics>=3.5",
 ]
 editor = [
-    "PyQtScintilla>=2.13",
     "jedi>=0.19",
     "pyflakes>=3.0",
 ]
@@ -63,7 +63,6 @@ dev = [
 ]
 all = [
     "pyepics>=3.5",
-    "PyQtScintilla>=2.13",
     "jedi>=0.19",
     "pyflakes>=3.0",
     "databroker>=1.2",
