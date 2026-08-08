@@ -481,6 +481,10 @@ class _NewExperimentDialog(QDialog):
         eg_lay.addWidget(self._esaf_picker)
         lay.addWidget(esaf_grp)
 
+        # Seed _selected_esaf: the picker emits esaf_selected during __init__,
+        # before the signal was connected, so we read it back explicitly here.
+        self._selected_esaf = self._esaf_picker.selected_esaf()
+
         # ── Existing experiments ───────────────────────────────────────────────
         runs_lbl = QLabel("Existing experiments under this ESAF:")
         runs_lbl.setStyleSheet("font-weight: bold;")
