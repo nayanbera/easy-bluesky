@@ -124,6 +124,28 @@ class _ParsePDFWorker(QThread):
             self.error.emit(str(exc))
 
 
+class _ServerSyncWorker(QThread):
+    """Fetch all ESAFs from the shared server and merge into local cache."""
+    done  = pyqtSignal(int)   # number of records synced
+    error = pyqtSignal(str)
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+
+    def run(self):
+        try:
+            url = (self._settings.get("esaf_server_url") or "").strip()
+            key = (self._settings.get("esaf_api_key") or "").strip()
+            client = ESAFServerClient(url, key)
+            records = client.list_esafs()
+            for r in records:
+                save_cached(r)
+            self.done.emit(len(records))
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 # ── PIGroupPickerWidget ────────────────────────────────────────────────────────
 
 class PIGroupPickerWidget(QWidget):
@@ -898,22 +920,49 @@ class ESAFImportDialog(QDialog):
         gb_lay.addWidget(self._pi_picker)
         lay.addWidget(grp_box)
 
-        # Upload to server checkbox (only shown if server available)
+        # ── Shared server sync ─────────────────────────────────────────────────
+        from PyQt6.QtWidgets import QCheckBox
         if self._has_server:
-            sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.HLine)
-            lay.addWidget(sep)
+            server_url = (self._settings.get("esaf_server_url") or "").strip()
+            host = server_url.split("//")[-1].split("/")[0]
+            srv_grp = QGroupBox("Shared MongoDB Server")
+            srv_lay = QVBoxLayout(srv_grp)
 
-            from PyQt6.QtWidgets import QCheckBox
-            self._cb_upload = QCheckBox("Upload record to server after saving")
-            self._cb_upload.setChecked(False)
-            lay.addWidget(self._cb_upload)
+            srv_note = QLabel(
+                f"Server: <b>{server_url}</b><br>"
+                "Saving to the server makes this ESAF visible to all connected apps "
+                "on the same network."
+            )
+            srv_note.setTextFormat(Qt.TextFormat.RichText)
+            srv_note.setWordWrap(True)
+            srv_note.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+            srv_lay.addWidget(srv_note)
+
+            self._cb_upload = QCheckBox(
+                f"Save this ESAF to the shared server ({host})"
+            )
+            self._cb_upload.setChecked(True)   # default ON when server is configured
+            srv_lay.addWidget(self._cb_upload)
+
+            self._upload_status = QLabel("")
+            self._upload_status.setWordWrap(True)
+            self._upload_status.setStyleSheet("font-size: 10px;")
+            srv_lay.addWidget(self._upload_status)
+
+            lay.addWidget(srv_grp)
         else:
             self._cb_upload = None
+            self._upload_status = QLabel("")
 
-        self._upload_status = QLabel("")
-        self._upload_status.setWordWrap(True)
-        lay.addWidget(self._upload_status)
+            no_srv = QLabel(
+                "No ESAF server configured — record will be saved to the local cache only.\n"
+                "To share ESAFs across machines, add a server URL in "
+                "File → Connection Settings → ESAF Server."
+            )
+            no_srv.setWordWrap(True)
+            no_srv.setStyleSheet(f"color: {_WARNING}; font-size: 11px;")
+            lay.addWidget(no_srv)
+
         lay.addStretch()
 
         self._tabs.addTab(w, "3. PI Group")
@@ -988,6 +1037,7 @@ class ESAFPickerWidget(QWidget):
         super().__init__(parent)
         self._settings = settings
         self._records: list[ESAFRecord] = []
+        self._sync_worker = None   # _ServerSyncWorker | None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1009,9 +1059,10 @@ class ESAFPickerWidget(QWidget):
         server_url = (settings.get("esaf_server_url") or "").strip()
         self._has_server = bool(server_url)
         if self._has_server:
-            btn_refresh = QPushButton("Refresh from server")
-            btn_refresh.clicked.connect(self._on_refresh_server)
-            top_row.addWidget(btn_refresh)
+            self._btn_refresh = QPushButton("⟳ Sync server")
+            self._btn_refresh.setToolTip(f"Sync from {server_url}")
+            self._btn_refresh.clicked.connect(self._on_refresh_server)
+            top_row.addWidget(self._btn_refresh)
 
         lay.addLayout(top_row)
 
@@ -1046,7 +1097,10 @@ class ESAFPickerWidget(QWidget):
         self._status_lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
         lay.addWidget(self._status_lbl)
 
+        # Load from local cache first, then kick off a background server sync
         self.refresh()
+        if self._has_server:
+            self._start_sync(auto=True)
 
     # ── public interface ───────────────────────────────────────────────────────
 
@@ -1120,20 +1174,37 @@ class ESAFPickerWidget(QWidget):
                     break
 
     def _on_refresh_server(self):
-        """Pull all ESAFs from the server into the local cache."""
-        server_url = (self._settings.get("esaf_server_url") or "").strip()
-        api_key = (self._settings.get("esaf_api_key") or "").strip()
-        if not server_url:
+        self._start_sync(auto=False)
+
+    def _start_sync(self, auto: bool = False):
+        """Start a background server sync. auto=True suppresses errors if unreachable."""
+        if self._sync_worker and self._sync_worker.isRunning():
             return
-        self._status_lbl.setText("Refreshing from server…")
-        try:
-            client = ESAFServerClient(server_url, api_key)
-            records = client.list_esafs()
-            for r in records:
-                save_cached(r)
-            self._status_lbl.setText(
-                f"Synced {len(records)} record(s) from server."
-            )
-        except Exception as exc:
-            self._status_lbl.setText(f"Server error: {exc}")
+        prefix = "Syncing" if auto else "Refreshing"
+        self._status_lbl.setText(f"{prefix} from server…")
+        self._status_lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+        if self._has_server:
+            self._btn_refresh.setEnabled(False)
+        self._sync_worker = _ServerSyncWorker(self._settings, parent=self)
+        self._sync_worker.done.connect(lambda n: self._on_sync_done(n))
+        self._sync_worker.error.connect(lambda e: self._on_sync_error(e, silent=auto))
+        self._sync_worker.start()
+
+    def _on_sync_done(self, count: int):
+        server_url = (self._settings.get("esaf_server_url") or "").strip()
+        host = server_url.split("//")[-1].split("/")[0]
+        self._status_lbl.setText(f"✓  {count} ESAF(s) synced from {host}")
+        self._status_lbl.setStyleSheet(f"color: {_SUCCESS}; font-size: 11px;")
+        if self._has_server:
+            self._btn_refresh.setEnabled(True)
         self.refresh()
+
+    def _on_sync_error(self, msg: str, silent: bool = False):
+        if silent:
+            self._status_lbl.setText("Server unreachable — showing local cache.")
+            self._status_lbl.setStyleSheet(f"color: {_WARNING}; font-size: 11px;")
+        else:
+            self._status_lbl.setText(f"✗  {msg}")
+            self._status_lbl.setStyleSheet(f"color: {_DANGER}; font-size: 11px;")
+        if self._has_server:
+            self._btn_refresh.setEnabled(True)
