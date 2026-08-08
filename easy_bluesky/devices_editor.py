@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .connection_settings import is_local_host
+from .highlighter import PythonHighlighter
 from .code_editor import CodeEditor
 
 
@@ -83,6 +84,7 @@ class DevicesEditorDialog(QDialog):
         font.setPointSize(11)
         self._editor.setFont(font)
         self._editor.textChanged.connect(self._on_text_changed)
+        self._highlighter = PythonHighlighter(self._editor.document())
         # Extend autocomplete with ophyd device classes and common args
         self._extend_completions()
         layout.addWidget(self._editor, 1)
@@ -138,7 +140,7 @@ class DevicesEditorDialog(QDialog):
             "name=", "kind=", "labels=", "read_attrs=", "configuration_attrs=",
         ]
         merged = sorted(set(_ALL_WORDS + ophyd_words))
-        self._editor.set_word_list(merged)
+        self._editor._completer.model().setStringList(merged)
 
     # ── Profile selection ──────────────────────────────────────────────────────
 
@@ -388,8 +390,13 @@ class DevicesEditorDialog(QDialog):
     def _jump_to_line(self, lineno: int):
         if lineno < 1:
             return
-        self._editor.setCursorPosition(lineno - 1, 0)
-        self._editor.ensureLineVisible(lineno - 1)
+        doc = self._editor.document()
+        block = doc.findBlockByLineNumber(lineno - 1)
+        if block.isValid():
+            cursor = self._editor.textCursor()
+            cursor.setPosition(block.position())
+            self._editor.setTextCursor(cursor)
+            self._editor.ensureCursorVisible()
 
     def _pyflakes_check(self, content: str, filename: str) -> list[str]:
         """Run pyflakes on content; return list of warning/error message strings."""

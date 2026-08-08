@@ -15,7 +15,6 @@ suitcase-jsonl>=0.2
 pyepics>=3.5
 
 # Optional editor enhancements (auto-completion and static analysis)
-# QScintilla (syntax highlighting, code folding): conda install -c conda-forge qscintilla
 jedi>=0.19
 pyflakes>=3.0
 
