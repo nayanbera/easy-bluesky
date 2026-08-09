@@ -78,12 +78,19 @@ def _save_and_set_det_mode(detectors, hdf_autosave: bool, saved: dict):
         if not hasattr(det, 'cam'):
             continue
 
-        # Patch stage_sigs so staging doesn't clobber image_mode back to Multiple.
-        # CamBase.stage_sigs typically has {'image_mode': 1} (1 = Multiple).
-        _cam_ss = getattr(det.cam, 'stage_sigs', {})
-        if 'image_mode' in _cam_ss:
-            saved[('_stage_sigs', det.cam, 'image_mode')] = _cam_ss['image_mode']
-            det.cam.stage_sigs['image_mode'] = 'Single'
+        # Patch ALL stage_sigs that reference image_mode — on both cam and hdf1.
+        # Some HDF5Plugin subclasses carry 'parent.cam.image_mode': 'Multiple' in
+        # their stage_sigs. Because det.hdf1 stages AFTER det.cam, that key overrides
+        # cam.stage_sigs even if we patched it, putting image_mode back to Multiple.
+        _subs = [det.cam] + ([det.hdf1] if hasattr(det, 'hdf1') else [])
+        for _sub in _subs:
+            _ss = getattr(_sub, 'stage_sigs', None)
+            if not _ss:
+                continue
+            for _key in list(_ss.keys()):
+                if 'image_mode' in (_key if isinstance(_key, str) else ''):
+                    saved[('_stage_sigs', _sub, _key)] = _ss[_key]
+                    _ss[_key] = 'Single'
 
         if hasattr(det.cam, 'image_mode'):
             orig = yield from bps.rd(det.cam.image_mode)
@@ -91,7 +98,6 @@ def _save_and_set_det_mode(detectors, hdf_autosave: bool, saved: dict):
             yield from bps.mv(det.cam.image_mode, 'Single')
 
         if hasattr(det, 'hdf1') and hasattr(det.hdf1, 'auto_save'):
-            # Also patch hdf1 stage_sigs if auto_save is staged there
             _hdf_ss = getattr(det.hdf1, 'stage_sigs', {})
             if 'auto_save' in _hdf_ss:
                 saved[('_stage_sigs', det.hdf1, 'auto_save')] = _hdf_ss['auto_save']

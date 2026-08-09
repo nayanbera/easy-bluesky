@@ -2346,12 +2346,7 @@ class ExperimentsTab(QWidget):
                 )
 
         if changed:
-            if self._remote_exp_dir or (Path(self._active_exp_path) / "scans_log.json").exists():
-                # Remote (or NFS-local) scans_log.json is the display source; fetch it.
-                # _on_scan_log_error falls back to _load_plan_log automatically.
-                self._trigger_scan_log_fetch()
-            else:
-                self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+            self._load_plan_log(self._active_exp_path, auto_select_newest=True)
             self.scan_completed.emit()
 
     def update_compact_queue(self, items: list):
