@@ -75,6 +75,24 @@ def _save_and_set_det_mode(detectors, hdf_autosave: bool, saved: dict):
     """
     _autosave_str = 'Yes' if hdf_autosave else 'No'
     for det in detectors:
+        # Save acquire_time for all detector types so _cleanup restores it after
+        # set_detector_acquire_time changes it.
+        if hasattr(det, 'cam') and hasattr(det.cam, 'acquire_time'):
+            _orig = yield from bps.rd(det.cam.acquire_time)
+            saved[det.cam.acquire_time] = _orig
+            if hasattr(det.cam, 'acquire_period'):
+                _orig = yield from bps.rd(det.cam.acquire_period)
+                saved[det.cam.acquire_period] = _orig
+        elif hasattr(det, 'preset_time'):
+            _orig = yield from bps.rd(det.preset_time)
+            saved[det.preset_time] = _orig
+        elif hasattr(det, 'count_time'):
+            _orig = yield from bps.rd(det.count_time)
+            saved[det.count_time] = _orig
+        elif hasattr(det, 'preset_real'):
+            _orig = yield from bps.rd(det.preset_real)
+            saved[det.preset_real] = _orig
+
         if not hasattr(det, 'cam'):
             continue
 
@@ -285,6 +303,20 @@ def set_areadetector_hdf(det, exp_dir: str, sample_name: str, scan_num: int):
             yield from mv(det.hdf1.file_name, sample_name + f"_S_{scan_num:04d}")
 
 
+def _set_image_mode_single(detectors):
+    """Set image_mode='Single' on all cam-equipped detectors.
+
+    Called at the start of each per_step / per_shot function, after staging
+    has already run.  Some FileStoreHDF5 / plugin stage() implementations
+    directly put 'Multiple' to parent.cam.image_mode (not via stage_sigs),
+    so stage_sigs patching alone is insufficient.  Setting it here, before
+    every trigger, is the reliable override — the extra CA put is negligible.
+    """
+    for _det in detectors:
+        if hasattr(_det, 'cam') and hasattr(_det.cam, 'image_mode'):
+            yield from bps.mv(_det.cam.image_mode, 'Single')
+
+
 # ---------------------------------------------------------------------------
 # Scan plans
 # ---------------------------------------------------------------------------
@@ -326,6 +358,7 @@ def count_w_time(
     _scan_n = md.get("scan_id", 0)
 
     def per_shot(detectors):
+        yield from _set_image_mode_single(detectors)
         if shutter is not None:
             yield from mv(shutter, 0)
             yield from sleep(0.3)
@@ -394,6 +427,7 @@ def scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -463,6 +497,7 @@ def rel_scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -529,6 +564,7 @@ def grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -595,6 +631,7 @@ def rel_grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -661,6 +698,7 @@ def list_scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -727,6 +765,7 @@ def rel_list_scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -793,6 +832,7 @@ def list_grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -859,6 +899,7 @@ def rel_list_grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -952,6 +993,7 @@ def list_scan_w_time_n_delay_from_csv(
         )
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
         yield from move_per_step(step, pos_cache)
         if shutter is not None:
             yield from mv(shutter, 0)
@@ -1224,6 +1266,10 @@ def aswaxs_energy_scan(
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
         for detector in detector_list:
             yield from bps.stage(detector)
+        # Override image_mode after staging — stage() may put 'Multiple' directly.
+        for detector in detector_list:
+            if hasattr(detector, 'cam') and hasattr(detector.cam, 'image_mode'):
+                yield from bps.mv(detector.cam.image_mode, 'Single')
 
         try:
             for j, energy in enumerate(energy_list):
