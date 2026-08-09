@@ -56,6 +56,34 @@ def _resolve_device(name_or_obj):
     return globals().get(name_or_obj)  # resolve device name string
 
 
+def _save_and_set_det_mode(detectors, hdf_autosave: bool, saved: dict):
+    """Save image_mode and hdf1.auto_save for each area detector, then set new values.
+
+    Parameters
+    ----------
+    detectors :
+        List of detector objects from the plan.
+    hdf_autosave : bool
+        True  → set hdf1.auto_save = 'Yes'
+        False → set hdf1.auto_save = 'No'
+    saved : dict
+        Mutable dict populated with {signal: original_value}; pass the same
+        dict to the _cleanup closure so originals are restored after the scan.
+    """
+    _autosave_str = 'Yes' if hdf_autosave else 'No'
+    for det in detectors:
+        if not hasattr(det, 'cam'):
+            continue
+        if hasattr(det.cam, 'image_mode'):
+            orig = yield from bps.rd(det.cam.image_mode)
+            saved[det.cam.image_mode] = orig
+            yield from bps.mv(det.cam.image_mode, 'Single')
+        if hasattr(det, 'hdf1') and hasattr(det.hdf1, 'auto_save'):
+            orig = yield from bps.rd(det.hdf1.auto_save)
+            saved[det.hdf1.auto_save] = orig
+            yield from bps.mv(det.hdf1.auto_save, _autosave_str)
+
+
 # ---------------------------------------------------------------------------
 # Beam-loss suspender
 # ---------------------------------------------------------------------------
@@ -245,6 +273,7 @@ def count_w_time(
     exposure_time: float = 1.0,
     *,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -262,6 +291,8 @@ def count_w_time(
         Detector exposure time in seconds.
     shutter : Device, optional
         Fast shutter device — opened before each trigger, closed after.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -280,12 +311,21 @@ def count_w_time(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, exposure_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_shot", per_shot)
-    yield from count(detectors, num=num, delay=delay, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, exposure_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_shot", per_shot)
+        yield from count(detectors, num=num, delay=delay, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def scan_w_time_n_delay(
@@ -295,6 +335,7 @@ def scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -314,6 +355,8 @@ def scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -333,12 +376,21 @@ def scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from scan(detectors, *args, num=num, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from scan(detectors, *args, num=num, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def rel_scan_w_time_n_delay(
@@ -348,6 +400,7 @@ def rel_scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -367,6 +420,8 @@ def rel_scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -386,12 +441,21 @@ def rel_scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from rel_scan(detectors, *args, num=num, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from rel_scan(detectors, *args, num=num, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def grid_scan_w_time_n_delay(
@@ -400,6 +464,7 @@ def grid_scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -417,6 +482,8 @@ def grid_scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -436,12 +503,21 @@ def grid_scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from grid_scan(detectors, *args, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from grid_scan(detectors, *args, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def rel_grid_scan_w_time_n_delay(
@@ -450,6 +526,7 @@ def rel_grid_scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -467,6 +544,8 @@ def rel_grid_scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -486,12 +565,21 @@ def rel_grid_scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from rel_grid_scan(detectors, *args, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from rel_grid_scan(detectors, *args, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def list_scan_w_time_n_delay(
@@ -500,6 +588,7 @@ def list_scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -517,6 +606,8 @@ def list_scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -536,12 +627,21 @@ def list_scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from list_scan(detectors, *args, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from list_scan(detectors, *args, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def rel_list_scan_w_time_n_delay(
@@ -550,6 +650,7 @@ def rel_list_scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -567,6 +668,8 @@ def rel_list_scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -586,12 +689,21 @@ def rel_list_scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from rel_list_scan(detectors, *args, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from rel_list_scan(detectors, *args, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def list_grid_scan_w_time_n_delay(
@@ -600,6 +712,7 @@ def list_grid_scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -617,6 +730,8 @@ def list_grid_scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -636,12 +751,21 @@ def list_grid_scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from list_grid_scan(detectors, *args, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from list_grid_scan(detectors, *args, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 def rel_list_grid_scan_w_time_n_delay(
@@ -650,6 +774,7 @@ def rel_list_grid_scan_w_time_n_delay(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -667,6 +792,8 @@ def rel_list_grid_scan_w_time_n_delay(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -686,12 +813,21 @@ def rel_list_grid_scan_w_time_n_delay(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
-    yield from rel_list_grid_scan(detectors, *args, md=md, **kwargs)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        yield from rel_list_grid_scan(detectors, *args, md=md, **kwargs)
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +854,7 @@ def list_scan_w_time_n_delay_from_csv(
     acquire_time: float = 1.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
@@ -738,6 +875,8 @@ def list_scan_w_time_n_delay_from_csv(
         Extra wait after each step in seconds.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -763,17 +902,24 @@ def list_scan_w_time_n_delay_from_csv(
             yield from mv(shutter, 1)
         yield from sleep(delay)
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, acquire_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+    saved = {}
 
-    kwargs.setdefault("per_step", one_nd_step_with_delay)
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, acquire_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        scan_args = []
+        for motor, pos_list in zip(motors, columns):
+            scan_args.extend([motor, pos_list])
+        yield from list_scan(detectors, *scan_args, md=md, **kwargs)
 
-    scan_args = []
-    for motor, pos_list in zip(motors, columns):
-        scan_args.extend([motor, pos_list])
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
 
-    yield from list_scan(detectors, *scan_args, md=md, **kwargs)
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1105,7 @@ def aswaxs_energy_scan(
     sleep_time: float = 0.0,
     shutter: Optional[Device] = None,
     undulator=None,
+    hdf_autosave: bool = True,
     md: dict = None,
 ):
     """Absolute energy scan: move to each energy, sweep positions, take frames.
@@ -985,6 +1132,8 @@ def aswaxs_energy_scan(
         Sleep after energy motor moves.  First and last move get 10x.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     undulator : Device, optional
         Undulator motor, moved in tandem with energy_motor.
     md : dict, optional
@@ -996,59 +1145,70 @@ def aswaxs_energy_scan(
     _sample = md.get("sample_name", "sample")
     _scan_n = md.get("scan_id", 0)
 
-    yield from open_run(md=md)
-    initial_energy = energy_motor.user_readback.get()
-    initial_coords = [m.user_readback.get() for m in coord_motor_list]
+    saved = {}
 
-    beamdown = RelativeBeamdownSuspenders(ref_pv="15IDC:userTran10.E")
+    def _body():
+        yield from _save_and_set_det_mode(detector_list, hdf_autosave, saved)
 
-    for detector in detector_list:
-        yield from set_detector_acquire_time(detector, exposure_time)
-        yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-    for detector in detector_list:
-        yield from bps.stage(detector)
+        yield from open_run(md=md)
+        initial_energy = energy_motor.user_readback.get()
+        initial_coords = [m.user_readback.get() for m in coord_motor_list]
 
-    try:
-        for j, energy in enumerate(energy_list):
-            yield from mv(energy_motor, energy)
-            print(f"*** Set energy to {energy} keV ***")
-            if undulator is not None:
-                yield from mv(undulator, energy)
-            yield from sleep(
-                sleep_time * 10 if (j < 1 or j == len(energy_list) - 1) else sleep_time
-            )
+        beamdown = RelativeBeamdownSuspenders(ref_pv="15IDC:userTran10.E")
 
-            beamdown.configure(capture_reference=True, suspend_fraction=0.50, resume_fraction=0.80)
-            beamdown.status()
-            yield from beamdown.install_plan()
-
-            try:
-                for pos in coord_list:
-                    for motor, coord in zip(coord_motor_list, pos):
-                        yield from mv(motor, coord)
-                    for i in range(num_frame):
-                        yield from bps.checkpoint()
-                        if shutter is not None:
-                            yield from mv(shutter, 0)
-                        yield from sleep(0.3)
-                        yield from trigger_and_read(list(detector_list))
-                        if shutter is not None:
-                            yield from mv(shutter, 1)
-                        if i < num_frame - 1:
-                            yield from sleep(delay_time)
-            finally:
-                yield from beamdown.remove_plan()
-    finally:
         for detector in detector_list:
-            yield from bps.unstage(detector)
-        yield from mv(energy_motor, initial_energy)
-        if undulator is not None:
-            yield from mv(undulator, initial_energy)
-        for motor, coord in zip(coord_motor_list, initial_coords):
-            yield from mv(motor, coord)
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from close_run()
+            yield from set_detector_acquire_time(detector, exposure_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
+        for detector in detector_list:
+            yield from bps.stage(detector)
+
+        try:
+            for j, energy in enumerate(energy_list):
+                yield from mv(energy_motor, energy)
+                print(f"*** Set energy to {energy} keV ***")
+                if undulator is not None:
+                    yield from mv(undulator, energy)
+                yield from sleep(
+                    sleep_time * 10 if (j < 1 or j == len(energy_list) - 1) else sleep_time
+                )
+
+                beamdown.configure(capture_reference=True, suspend_fraction=0.50, resume_fraction=0.80)
+                beamdown.status()
+                yield from beamdown.install_plan()
+
+                try:
+                    for pos in coord_list:
+                        for motor, coord in zip(coord_motor_list, pos):
+                            yield from mv(motor, coord)
+                        for i in range(num_frame):
+                            yield from bps.checkpoint()
+                            if shutter is not None:
+                                yield from mv(shutter, 0)
+                            yield from sleep(0.3)
+                            yield from trigger_and_read(list(detector_list))
+                            if shutter is not None:
+                                yield from mv(shutter, 1)
+                            if i < num_frame - 1:
+                                yield from sleep(delay_time)
+                finally:
+                    yield from beamdown.remove_plan()
+        finally:
+            for detector in detector_list:
+                yield from bps.unstage(detector)
+            yield from mv(energy_motor, initial_energy)
+            if undulator is not None:
+                yield from mv(undulator, initial_energy)
+            for motor, coord in zip(coord_motor_list, initial_coords):
+                yield from mv(motor, coord)
+            if shutter is not None:
+                yield from mv(shutter, 1)
+            yield from close_run()
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
 # ---------------------------------------------------------------------------
@@ -1178,6 +1338,7 @@ def capillary_transmission_scan_plan(
     threshold_fraction: float = 0.55,
     min_points: int = 3,
     shutter: Optional[Device] = None,
+    hdf_autosave: bool = True,
     md: dict = None,
 ):
     """Scan across capillaries, extract their centres, and save to CSV.
@@ -1210,6 +1371,8 @@ def capillary_transmission_scan_plan(
         Minimum dip width in points.
     shutter : Device, optional
         Fast shutter device.
+    hdf_autosave : bool
+        True (default) saves HDF files; False disables auto_save.
     md : dict, optional
         Additional metadata (experiment fields auto-injected by EasyBluesky).
     """
@@ -1228,10 +1391,6 @@ def capillary_transmission_scan_plan(
 
     x_data, ch2_data, ch8_data = [], [], []
 
-    for detector in detectors:
-        yield from set_detector_acquire_time(detector, exposure_time)
-    yield from bps.mv(sy, y_fixed)
-
     @bpp.run_decorator(md=scan_md)
     def inner_scan():
         for x in np.linspace(x_range[0], x_range[1], num_points):
@@ -1246,29 +1405,42 @@ def capillary_transmission_scan_plan(
             ch2_data.append(float(reading[ch2_key]["value"]))
             ch8_data.append(float(reading[ch8_key]["value"]))
 
-    yield from inner_scan()
+    saved = {}
 
-    centers_x, y_norm, y_smooth, threshold = extract_capillary_centers_from_arrays(
-        x=x_data, ch2=ch2_data, ch8=ch8_data,
-        smooth_sigma=smooth_sigma,
-        threshold_fraction=threshold_fraction,
-        min_points=min_points,
-    )
-    centers_x  = sort_centers_by_scan_direction(centers_x, x_range=x_range)
-    centers_xy = [(float(x), float(y_fixed)) for x in centers_x]
+    def _body():
+        yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
+        for detector in detectors:
+            yield from set_detector_acquire_time(detector, exposure_time)
+        yield from bps.mv(sy, y_fixed)
+        yield from inner_scan()
 
-    print("=" * 80)
-    print("Extracted capillary centers:")
-    print(f"Normalization: {ch8_key} / {ch2_key}")
-    print(f"x_range: {x_range}")
-    print(f"Sorting: {'large to small' if x_range[0] > x_range[1] else 'small to large'}")
-    print()
-    print(", ".join(f"({x:.5f}, {y:.5f})" for x, y in centers_xy))
-    print("=" * 80)
+        centers_x, y_norm, y_smooth, threshold = extract_capillary_centers_from_arrays(
+            x=x_data, ch2=ch2_data, ch8=ch8_data,
+            smooth_sigma=smooth_sigma,
+            threshold_fraction=threshold_fraction,
+            min_points=min_points,
+        )
+        centers_x  = sort_centers_by_scan_direction(centers_x, x_range=x_range)
+        centers_xy = [(float(x), float(y_fixed)) for x in centers_x]
 
-    save_path = os.path.join(_dir, "sample_positions.csv")
-    with open(save_path, "w") as f:
-        f.write(", ".join(f"({x:.5f}, {y:.5f})" for x, y in centers_xy))
-    print(f"Saved centre list to: {save_path}")
+        print("=" * 80)
+        print("Extracted capillary centers:")
+        print(f"Normalization: {ch8_key} / {ch2_key}")
+        print(f"x_range: {x_range}")
+        print(f"Sorting: {'large to small' if x_range[0] > x_range[1] else 'small to large'}")
+        print()
+        print(", ".join(f"({x:.5f}, {y:.5f})" for x, y in centers_xy))
+        print("=" * 80)
 
-    return centers_xy
+        save_path = os.path.join(_dir, "sample_positions.csv")
+        with open(save_path, "w") as f:
+            f.write(", ".join(f"({x:.5f}, {y:.5f})" for x, y in centers_xy))
+        print(f"Saved centre list to: {save_path}")
+
+        return centers_xy
+
+    def _cleanup():
+        for sig, val in saved.items():
+            yield from bps.mv(sig, val)
+
+    return (yield from bpp.finalize_wrapper(_body(), _cleanup()))
