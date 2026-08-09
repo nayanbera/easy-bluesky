@@ -61,6 +61,21 @@ else:
 if _mod is not None:
     globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
 
+# ── Area-detector staging fix: keep image_mode = 'Single' ─────────────────────
+# ophyd's CamBase.stage_sigs sets image_mode to 'Multiple' by default, but
+# SingleTrigger detectors (e.g. Pilatus) must stay in 'Single' mode so each
+# software trigger acquires exactly one frame.
+for _name, _dev in list(globals().items()):
+    if _name.startswith('_'):
+        continue
+    try:
+        _cam = getattr(_dev, 'cam', None)
+        if _cam is not None and 'image_mode' in getattr(_cam, 'stage_sigs', {}):
+            _cam.stage_sigs['image_mode'] = 'Single'
+            print(f"[re_startup_mongo] {_name}: cam.stage_sigs image_mode → Single")
+    except Exception:
+        pass
+
 # ── Profile plans (from EASY_BLUESKY_PLANS_DIR or legacy user_plans.py) ──────
 _plans_dir = os.getenv("EASY_BLUESKY_PLANS_DIR", "").strip()
 if _plans_dir and os.path.isdir(_plans_dir):
