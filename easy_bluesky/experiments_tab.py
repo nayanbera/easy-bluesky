@@ -1367,6 +1367,7 @@ class ExperimentsTab(QWidget):
             self._log(f"{'✓' if ok else '✗'} Add plan: {msg}")
 
     def _on_compact_queue_reorder(self, parent, start, end, dest, row):
+        self._compact_queue_uids = None  # force re-render after drag-reorder
         QTimer.singleShot(100, self._sync_compact_queue_order)
 
     def _sync_compact_queue_order(self):
@@ -2352,6 +2353,10 @@ class ExperimentsTab(QWidget):
             self.scan_completed.emit()
 
     def update_compact_queue(self, items: list):
+        new_uids = [item.get("item_uid", "") for item in items]
+        if new_uids == getattr(self, "_compact_queue_uids", None):
+            return  # nothing changed — skip full rebuild
+        self._compact_queue_uids = new_uids
         selected_uids = {
             self.queue_compact.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(self.queue_compact.count())

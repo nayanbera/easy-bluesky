@@ -295,6 +295,8 @@ class QueueManager(QWidget):
         self.devices = {}
         self._all_history_items = []   # full list from last history_updated signal
         self._current_exp_path  = ""   # set by set_current_experiment()
+        self._last_queue_uids   = None # fingerprint to skip identical rebuilds
+        self._last_history_fp   = None # (len, last_uid) fingerprint
         self._build()
 
     def _build(self):
@@ -633,6 +635,10 @@ class QueueManager(QWidget):
     # ── Data update slots ──────────────────────────────────────────────────────
 
     def update_queue(self, items):
+        new_uids = [item.get("item_uid", "") for item in items]
+        if new_uids == self._last_queue_uids:
+            return  # nothing changed — skip full rebuild
+        self._last_queue_uids = new_uids
         self._current_items = list(items)
         selected_uids = {
             self.queue_list.item(i).data(Qt.ItemDataRole.UserRole)
@@ -740,6 +746,10 @@ class QueueManager(QWidget):
 
     def update_history(self, items):
         """Cache the full history list and refresh the visible range."""
+        new_fp = (len(items), items[-1].get("item_uid", "") if items else "")
+        if new_fp == self._last_history_fp:
+            return  # nothing changed — skip rebuild
+        self._last_history_fp   = new_fp
         self._all_history_items = items
         self._apply_history_range()
 
