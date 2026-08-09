@@ -110,8 +110,11 @@ RE environment opens (closed → idle)
 → _PVNamesReader calls get_device_pvnames() via function_execute
 → pv_names_ready(pv_map) signal → DevicesPlansTab.setup_epics_monitors()
 → pyepics ca.subscribe() with DBR_CTRL for each PV
-→ CA callback (pyepics thread) → queued signal → tree cell update
+→ CA callback (pyepics thread) → queued signal → _pending_pv_updates / _pending_desc_updates buffer
+→ _pv_flush_timer fires every 100 ms → bulk-apply buffered updates → single tree repaint
 ```
+
+Device list changes are fingerprinted (`_last_devices_fp`). If the fingerprint is unchanged (e.g. after a ZMQ reconnect without an environment restart), CA monitor teardown and rebuild are skipped entirely — avoiding unnecessary PV reconnections.
 
 ### Device monitoring (sim mode)
 
@@ -238,6 +241,18 @@ The MongoDB Browser has no Plot button. The plot re-renders automatically via si
 - `_log_y_cb.stateChanged` → `_auto_plot()`
 
 `_y_list` signals are blocked during `_update_field_lists()` rebuilds to prevent spurious re-plots.
+
+### `custom_plans.py` — beamline scan plans
+
+`custom_plans.py` (repo root) is a standalone Python module of scan plans that is SFTPed to the RE Manager host on every restart alongside `re_startup_mongo.py`. It is **not** part of the `easy_bluesky` package; it runs entirely inside the RE worker environment.
+
+Every plan wraps its body in `bpp.finalize_wrapper(_body(), _cleanup())` so the cleanup closure runs unconditionally on abort, pause-abort, or normal completion. The `_save_and_set_det_mode(detectors, hdf_autosave, saved)` helper populates a `saved` dict that maps signal objects (or `('_stage_sigs', obj, attr)` tuples for in-memory `stage_sigs` entries) to their original values; `_cleanup()` iterates this dict and restores each value via `bps.mv` or direct `stage_sigs` assignment.
+
+`_set_image_mode_single(detectors)` is called at the top of every `per_step` / `per_shot` function, after staging has already run, to override any `'Multiple'` that an HDF5Plugin `stage()` implementation may have written directly to `cam.image_mode`.
+
+### Smart legend positioning
+
+`plot_tools.smart_legend_position(plot_widget)` is called at the end of `_plot()` / `_update_plot()` / `_replot()` in `live_viewer.py`, `mongo_browser.py`, and `hdf5_viewer.py`. It divides the current view into four quadrants, counts data points per quadrant (subsampled to 500 pts for performance), and calls `legend.setOffset()` with the corner offsets that correspond to the emptiest quadrant. Users can override the automatic position by dragging the legend (pyqtgraph 0.12+ legends are already draggable by default).
 
 ## Adding New Features
 

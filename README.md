@@ -16,6 +16,8 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Edit Devices File** — Full code editor for any profile's devices file: line numbers, current-line highlight, auto-indent, Tab→spaces, and ophyd-aware autocomplete. Local profiles read/write the file on disk; remote profiles pull from and push to the RE machine via SFTP.
 - **Live Device Monitor** — Real-time EPICS Channel Access (CA) monitoring in the Devices & Plans tab. Each device shows its connected/disconnected status and live PV readings that update instantly as values change — no polling during scans. pyepics is auto-installed if missing.
 - **Sim Device Monitor** — In simulation mode, device values are polled from the RE environment every 2 seconds via `read_devices_status()`. Tweak widgets on motor rows allow nudging simulated motors without running a full plan.
+- **Custom Scan Plans** — A library of beamline-optimised scan plans (`custom_plans.py`) that ship with the app. Every plan guarantees `image_mode='Single'` at each detector step, saves and restores `acquire_time` (even on abort), and accepts `hdf_autosave=False` to suppress HDF file writing for alignment scans without permanently changing detector configuration.
+- **Smart Legend Positioning** — After each plot update in the Live Viewer, MongoDB Browser, and HDF5 Viewer, the legend automatically moves to the emptiest quadrant of the view. Legends are also draggable — click and drag to pin them anywhere on the plot.
 - **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. The non-modal Curve Fit dialog displays a live preview curve on the plot the moment it opens, and the preview updates in real time as you edit parameters. Run Fit refines the model and updates the table with fitted values. Choose from 5 peak models, 4 step/interface models, 4 polynomial background terms, and 6 minimisation algorithms. Fit parameters are saved automatically so re-opening the dialog pre-populates it with the previous result. Export fitted parameters and curves to CSV, or copy the results text to the clipboard.
 - **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors.
 - **ESAF Integration** — Import Experiment Safety Assessment Forms (ESAFs) from a local PDF, a REST server, or manual entry. Auto-generates the beamline folder structure and injects ESAF metadata into every plan. Attach arbitrary **extra fields** (custom key-value pairs) to any ESAF — empty for older entries, editable from the picker or via the REST API. Includes a standalone FastAPI admin server with MongoDB or SQLite backend.
@@ -632,6 +634,16 @@ In simulation profiles (devices are `ophyd.sim` objects), PV names are empty so 
 
 Tweak buttons in sim mode call `set_sim_device(name, value)` in the RE environment via `function_execute` — the device is moved without adding a queue item.
 
+### CA callback coalescing
+
+In real mode, pyepics can fire dozens of CA callbacks per second during active scans. Applying each callback directly to the Qt tree (one repaint per callback) drove CPU usage above 1000 % during scans. EasyBluesky coalesces all incoming updates before applying them:
+
+- Incoming value and description callbacks are buffered into dictionaries (`_pending_pv_updates` and `_pending_desc_updates`).
+- A 100 ms `QTimer` (`_pv_flush_timer`) flushes and applies all buffered changes at 10 Hz — at most one tree repaint per 100 ms, regardless of scan speed.
+- Device list changes are fingerprinted (`_last_devices_fp`). If the device list has not changed between RE Manager restarts, CA monitor teardown and rebuild are skipped entirely — avoiding unnecessary PV reconnections.
+
+This keeps the Live Device Monitor responsive at full scan speed without any additional polling overhead.
+
 ### pyepics auto-install
 
 If `pyepics` is not installed in the app's Python environment, a background thread runs `pip install pyepics` automatically the first time live monitoring is attempted. No manual installation step is needed.
@@ -734,6 +746,10 @@ Select one or more runs, choose signals and axes, then click **Fit**. The **Curv
 | Points | Number of primary-stream events |
 | Detectors | Detector names from the run start document |
 
+### Plot legend
+
+The legend auto-positions to the emptiest corner of the view after each plot update. Drag it to any position to override the automatic placement.
+
 ---
 
 ## Live Viewer
@@ -762,6 +778,10 @@ Double-click any point on the live plot to move the X-axis motor to that positio
 ### Crosshair cursor
 
 A crosshair follows the mouse and a tooltip shows the nearest curve's value at the cursor position.
+
+### Plot legend
+
+The legend auto-positions to the emptiest corner of the view at the end of each scan update. Drag it to any position to pin it there.
 
 ---
 
@@ -802,6 +822,10 @@ easy-bluesky
 ```
 
 Open the **HDF5 Viewer** tab — everything else can be ignored. Users at the beamline export their data once (`Export HDF5…` in the MongoDB Browser or Experiments tab), copy the `.h5` file to a USB drive or network share, and open it at home.
+
+### Plot legend
+
+The legend auto-positions to the emptiest corner of the view after each scan selection change. Drag it to any position to override the automatic placement.
 
 ---
 
@@ -1142,6 +1166,81 @@ Auto-generated by **File → Generate Sim Devices…**. Contains simulated equiv
 - `existing_plans_and_devices.yaml` — device/plan list for the Default profile (auto-updated when environment opens)
 - `existing_plans_and_devices_sim.yaml` — device/plan list for the Sim profile (kept separate so real and sim don't overwrite each other)
 - `user_group_permissions.yaml` — controls which user groups can run which plans
+
+---
+
+## Custom Scan Plans
+
+`custom_plans.py` (at the repo root) is a library of beamline-optimised scan plans that ships with EasyBluesky. The file is uploaded to the RE Manager alongside `re_startup_mongo.py` on every restart, so all plans are immediately available in the queue without any extra installation step.
+
+### Area detector save/restore
+
+Every plan in `custom_plans.py` applies the following safety measures around area detectors:
+
+- **`image_mode` forced to `'Single'`** — called at the start of each per-step or per-shot callback via `_set_image_mode_single(detectors)`. Some HDF5Plugin `stage()` implementations put `'Multiple'` directly to `cam.image_mode`, bypassing `stage_sigs`. Setting it explicitly before every trigger is the reliable override — the extra CA put is negligible.
+
+- **`acquire_time` save and restore** — the detector's `cam.acquire_time` (and `cam.acquire_period` for area detectors, or `preset_time` / `count_time` / `preset_real` for scalers) is read before the scan body runs and written back after via the `bpp.finalize_wrapper` cleanup closure. Restore runs even when the scan is aborted.
+
+- **`hdf1.auto_save` control** — every plan accepts an `hdf_autosave: bool = True` keyword argument. When `False`, `hdf1.auto_save` is set to `'No'` for the scan duration and the matching `stage_sigs` entry is patched so staging cannot re-enable it. The original value is restored after the scan completes or aborts.
+
+The helper that manages all save/restore logic is `_save_and_set_det_mode(detectors, hdf_autosave, saved)`. The mutable `saved` dict is populated by this helper and consumed by the `_cleanup()` closure that `bpp.finalize_wrapper` calls unconditionally.
+
+### Common parameters
+
+All standard plans share the following keyword parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `acquire_time` / `exposure_time` | float | `1.0` | Detector exposure time in seconds |
+| `delay` | float | `0.0` | Extra wait after each step or shot (seconds) |
+| `shutter` | Device | `None` | Fast shutter — opened before each trigger, closed after (300 ms settling time) |
+| `hdf_autosave` | bool | `True` | `False` suppresses HDF file writing; useful for alignment scans |
+| `md` | dict | `None` | Plan metadata; experiment fields are auto-injected by EasyBluesky |
+
+### Available plans
+
+| Plan | Description |
+|------|-------------|
+| `count_w_time` | Fixed-position count with per-shot exposure time and optional shutter |
+| `scan_w_time_n_delay` | Absolute motor scan (`bp.scan`) |
+| `rel_scan_w_time_n_delay` | Relative motor scan from current position (`bp.rel_scan`) |
+| `grid_scan_w_time_n_delay` | Absolute grid scan (`bp.grid_scan`) |
+| `rel_grid_scan_w_time_n_delay` | Relative grid scan from current position (`bp.rel_grid_scan`) |
+| `list_scan_w_time_n_delay` | Scan over an explicit position list (`bp.list_scan`) |
+| `rel_list_scan_w_time_n_delay` | Relative list scan from current position (`bp.rel_list_scan`) |
+| `list_grid_scan_w_time_n_delay` | List grid scan (`bp.list_grid_scan`) |
+| `rel_list_grid_scan_w_time_n_delay` | Relative list grid scan (`bp.rel_list_grid_scan`) |
+| `list_scan_w_time_n_delay_from_csv` | Multi-motor list scan with positions loaded from a CSV file (one column per motor) |
+| `aswaxs_energy_scan` | Move to each energy in a list, sweep sample positions, take frames; includes a relative beam-loss suspender |
+| `energy_xrf_scan` | Relative energy scan around a centre value with XRF measurement at each point; opens/closes a single Bluesky run |
+| `energy_nested_scan` | Run an arbitrary inner plan at each absolute energy in a list; optional undulator tracking |
+| `energy_nested_scan_relative` | Relative energy scan around a centre with configurable step, optional undulator tracking, and initial-energy restore |
+
+### Example
+
+```python
+# Alignment count — 5 frames, 0.2 s exposure, no HDF files saved
+count_w_time(
+    [Pil300K],
+    num=5,
+    exposure_time=0.2,
+    hdf_autosave=False,
+    md={"sample_name": "align"},
+)
+
+# Standard scan — 1 s exposure, 0.5 s settling delay
+scan_w_time_n_delay(
+    [Pil300K],
+    sample_x, 0, 5,
+    num=11,
+    acquire_time=1.0,
+    delay=0.5,
+)
+```
+
+### Beam-loss suspender (`RelativeBeamdownSuspenders`)
+
+`aswaxs_energy_scan` installs a `RelativeBeamdownSuspenders` at the start of each energy point. The suspender reads a ring-current PV and captures its live value as the reference. If the readback falls below `suspend_fraction × reference` (default 50 %), the RE pauses automatically. Scanning resumes when the readback recovers above `resume_fraction × reference` (default 80 %).
 
 ---
 
@@ -1607,7 +1706,7 @@ easy-bluesky/
 │   ├── devices_plans_tab.py  # Devices & Plans tab (CA monitor, sim monitor, tweak, search)
 │   ├── peak_fit.py           # lmfit models (peaks, steps, background polynomials) + auto-guess
 │   ├── curve_fit_dialog.py   # Interactive parameter dialog (initial values, bounds, algorithm)
-│   ├── plot_tools.py         # Shared plot utilities (crosshair, norm combo)
+│   ├── plot_tools.py         # Shared plot utilities (crosshair, smart_legend_position, norm combo)
 │   ├── pv_watchdog.py        # PV Watchdog tab
 │   ├── themes.py             # Theme definitions + stylesheet builder
 │   └── scripts/              # Bundled default scripts (copied to ~/.easy_bluesky/scripts/)
