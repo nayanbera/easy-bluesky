@@ -220,6 +220,16 @@ class DevicesPlansTab(QWidget):
         self._pending_pv_map: dict = {}
         self._installer: _EpicsInstaller | None = None
         self._plan_catalog: PlanCatalog | None = None
+        # Coalesce CA value/desc callbacks — apply at most 10x/sec to avoid
+        # flooding the tree widget with setText() calls during scans.
+        self._pending_pv_updates: dict = {}    # (dev, sig) → (value, units)
+        self._pending_desc_updates: dict = {}  # (dev, sig) → desc
+        self._pv_flush_timer = QTimer(self)
+        self._pv_flush_timer.setInterval(100)
+        self._pv_flush_timer.timeout.connect(self._flush_pv_updates)
+        self._pv_flush_timer.start()
+        # Fingerprint to skip full rebuild when devices list is unchanged
+        self._last_devices_fp: str = ""
         self._build()
 
     def _build(self):
@@ -376,6 +386,16 @@ class DevicesPlansTab(QWidget):
     # ── Public slots ────────────────────────────────────────────────────────────
 
     def update_devices(self, devices: dict):
+        # Skip full rebuild if the device list is identical (same names + classes).
+        # Avoids clearing CA monitors and re-fetching PV names on every poll cycle.
+        fp = "|".join(
+            f"{n}:{info.get('classname','')}"
+            for n, info in sorted(devices.items())
+        )
+        if fp == self._last_devices_fp and devices:
+            return
+        self._last_devices_fp = fp
+
         if self._sim_timer is not None:
             self._sim_timer.stop()
             self._sim_timer = None
@@ -392,6 +412,7 @@ class DevicesPlansTab(QWidget):
         self._epics_monitor.clear()
 
         if not devices:
+            self._last_devices_fp = ""
             self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
             self._status_lbl.setText("● No devices — open the RE environment")
             self._refresh_btn.setEnabled(False)
@@ -656,49 +677,57 @@ class DevicesPlansTab(QWidget):
                 dev_item.setText(3, "")
 
     def _on_pv_changed(self, dev_name: str, sig_name: str, value, units: str):
-        green = QColor("#2ca02c")
-        dim   = QColor("#666666")
-
-        # Update signal sub-row
-        sig_item = self._signal_items.get((dev_name, sig_name))
-        if sig_item:
-            sig_item.setText(2, _fmt_value(value))
-            sig_item.setText(3, units)
-            sig_item.setForeground(2, dim)
-
-        # Update device row if this is the primary signal
-        if self._primary_signal.get(dev_name) == sig_name:
-            dev_item = self._device_items.get(dev_name)
-            if dev_item:
-                dev_item.setText(2, _fmt_value(value))
-                dev_item.setText(3, units)
-                dev_item.setForeground(2, green)
-
-        # Track numeric readback for tweak calculations
+        # Buffer — tree setText() calls are flushed at 10 Hz by _flush_pv_updates
+        self._pending_pv_updates[(dev_name, sig_name)] = (value, units)
+        # Track numeric readback immediately (used for tweak calculations)
         if sig_name in ("user_readback", "readback") or (
             self._primary_signal.get(dev_name) == sig_name
         ):
             if isinstance(value, (int, float)):
                 self._readback_values[dev_name] = float(value)
-
-        # Cache units for sim mode reuse
+        # Cache units (no Qt tree ops)
         if units:
             self._metadata_cache.setdefault(dev_name, {})["units"] = units
             self._metadata_save_timer.start()
 
     def _on_desc_changed(self, dev_name: str, sig_name: str, desc: str):
-        sig_item = self._signal_items.get((dev_name, sig_name))
-        if sig_item:
-            sig_item.setText(4, desc)
-        if self._primary_signal.get(dev_name) == sig_name:
-            dev_item = self._device_items.get(dev_name)
-            if dev_item:
-                dev_item.setText(4, desc)
-
-        # Cache description for sim mode reuse
+        # Buffer — applied at 10 Hz by _flush_pv_updates
+        self._pending_desc_updates[(dev_name, sig_name)] = desc
         if desc:
             self._metadata_cache.setdefault(dev_name, {})["desc"] = desc
             self._metadata_save_timer.start()
+
+    def _flush_pv_updates(self):
+        """Apply buffered CA value/desc updates to the tree (called at 10 Hz)."""
+        if not self._pending_pv_updates and not self._pending_desc_updates:
+            return
+
+        green = QColor("#2ca02c")
+        dim   = QColor("#666666")
+
+        pv_updates, self._pending_pv_updates = self._pending_pv_updates, {}
+        for (dev_name, sig_name), (value, units) in pv_updates.items():
+            sig_item = self._signal_items.get((dev_name, sig_name))
+            if sig_item:
+                sig_item.setText(2, _fmt_value(value))
+                sig_item.setText(3, units)
+                sig_item.setForeground(2, dim)
+            if self._primary_signal.get(dev_name) == sig_name:
+                dev_item = self._device_items.get(dev_name)
+                if dev_item:
+                    dev_item.setText(2, _fmt_value(value))
+                    dev_item.setText(3, units)
+                    dev_item.setForeground(2, green)
+
+        desc_updates, self._pending_desc_updates = self._pending_desc_updates, {}
+        for (dev_name, sig_name), desc in desc_updates.items():
+            sig_item = self._signal_items.get((dev_name, sig_name))
+            if sig_item:
+                sig_item.setText(4, desc)
+            if self._primary_signal.get(dev_name) == sig_name:
+                dev_item = self._device_items.get(dev_name)
+                if dev_item:
+                    dev_item.setText(4, desc)
 
     def _save_metadata_cache(self):
         try:
