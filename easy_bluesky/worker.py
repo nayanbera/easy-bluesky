@@ -217,6 +217,11 @@ class _SSHLogTailer:
                 except Exception:
                     if not self._active:
                         break
+                    # Timeout (socket.timeout) is the expected path — settimeout(0.5)
+                    # keeps the loop responsive.  Any other exception (connection
+                    # dropped, channel closed) would otherwise spin the thread at
+                    # 100 % per core.  Sleep briefly so we don't peg the CPU.
+                    time.sleep(0.2)
         except Exception as e:
             if self._active:
                 self._q.put(f"[Console] SSH log tail error: {e}\n")
@@ -299,7 +304,7 @@ class _LocalDocWriter:
             except zmq.Again:
                 continue
             except Exception:
-                pass
+                time.sleep(0.1)  # prevent CPU spin on persistent socket errors
 
         for fh in self._open_fhs.values():
             try:
