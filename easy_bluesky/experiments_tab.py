@@ -2068,9 +2068,8 @@ class ExperimentsTab(QWidget):
         self._populate_plan_log_from_scan_log(entries)
 
     def _on_scan_log_error(self, _msg: str):
-        """SFTP fetch failed — fall back to local plans_log.jsonl."""
-        if self._active_exp_path:
-            self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+        """SFTP fetch failed — plan_log_list already shows plans_log.jsonl, nothing to do."""
+        pass
 
     def _populate_plan_log_from_scan_log(self, entries: list):
         """Repopulate the Plan Log list from scans_log.json entries."""
@@ -2276,10 +2275,6 @@ class ExperimentsTab(QWidget):
 
         if auto_select_newest and self.plan_log_list.count() > 0:
             self.plan_log_list.scrollToTop()
-
-        # Prefer the remote scans_log.json as the display source of truth.
-        # This replaces the local plans_log.jsonl display when the fetch succeeds.
-        self._trigger_scan_log_fetch()
 
     # ── Public update slots ────────────────────────────────────────────────────
 
