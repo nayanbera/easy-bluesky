@@ -67,18 +67,35 @@ def _save_and_set_det_mode(detectors, hdf_autosave: bool, saved: dict):
         True  → set hdf1.auto_save = 'Yes'
         False → set hdf1.auto_save = 'No'
     saved : dict
-        Mutable dict populated with {signal: original_value}; pass the same
-        dict to the _cleanup closure so originals are restored after the scan.
+        Mutable dict populated with restore entries; passed to the _cleanup
+        closure so originals are restored after the scan.
+        Signal objects as keys → values restored via bps.mv.
+        ('_stage_sigs', obj, attr) tuple keys → values restored directly into
+        obj.stage_sigs[attr] (no bps.mv needed, not a CA put).
     """
     _autosave_str = 'Yes' if hdf_autosave else 'No'
     for det in detectors:
         if not hasattr(det, 'cam'):
             continue
+
+        # Patch stage_sigs so staging doesn't clobber image_mode back to Multiple.
+        # CamBase.stage_sigs typically has {'image_mode': 1} (1 = Multiple).
+        _cam_ss = getattr(det.cam, 'stage_sigs', {})
+        if 'image_mode' in _cam_ss:
+            saved[('_stage_sigs', det.cam, 'image_mode')] = _cam_ss['image_mode']
+            det.cam.stage_sigs['image_mode'] = 'Single'
+
         if hasattr(det.cam, 'image_mode'):
             orig = yield from bps.rd(det.cam.image_mode)
             saved[det.cam.image_mode] = orig
             yield from bps.mv(det.cam.image_mode, 'Single')
+
         if hasattr(det, 'hdf1') and hasattr(det.hdf1, 'auto_save'):
+            # Also patch hdf1 stage_sigs if auto_save is staged there
+            _hdf_ss = getattr(det.hdf1, 'stage_sigs', {})
+            if 'auto_save' in _hdf_ss:
+                saved[('_stage_sigs', det.hdf1, 'auto_save')] = _hdf_ss['auto_save']
+                det.hdf1.stage_sigs['auto_save'] = _autosave_str
             orig = yield from bps.rd(det.hdf1.auto_save)
             saved[det.hdf1.auto_save] = orig
             yield from bps.mv(det.hdf1.auto_save, _autosave_str)
@@ -322,8 +339,12 @@ def count_w_time(
         yield from count(detectors, num=num, delay=delay, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -387,8 +408,12 @@ def scan_w_time_n_delay(
         yield from scan(detectors, *args, num=num, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -452,8 +477,12 @@ def rel_scan_w_time_n_delay(
         yield from rel_scan(detectors, *args, num=num, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -514,8 +543,12 @@ def grid_scan_w_time_n_delay(
         yield from grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -576,8 +609,12 @@ def rel_grid_scan_w_time_n_delay(
         yield from rel_grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -638,8 +675,12 @@ def list_scan_w_time_n_delay(
         yield from list_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -700,8 +741,12 @@ def rel_list_scan_w_time_n_delay(
         yield from rel_list_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -762,8 +807,12 @@ def list_grid_scan_w_time_n_delay(
         yield from list_grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -824,8 +873,12 @@ def rel_list_grid_scan_w_time_n_delay(
         yield from rel_list_grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -916,8 +969,12 @@ def list_scan_w_time_n_delay_from_csv(
         yield from list_scan(detectors, *scan_args, md=md, **kwargs)
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -1205,8 +1262,12 @@ def aswaxs_energy_scan(
             yield from close_run()
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
@@ -1440,7 +1501,11 @@ def capillary_transmission_scan_plan(
         return centers_xy
 
     def _cleanup():
-        for sig, val in saved.items():
-            yield from bps.mv(sig, val)
+        for key, val in saved.items():
+            if isinstance(key, tuple) and len(key) == 3 and key[0] == '_stage_sigs':
+                _, obj, attr = key
+                obj.stage_sigs[attr] = val
+            else:
+                yield from bps.mv(key, val)
 
     return (yield from bpp.finalize_wrapper(_body(), _cleanup()))
