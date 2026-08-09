@@ -22,7 +22,7 @@ from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer
 from PyQt6.QtGui import QColor, QFont
 
 from .config import (
-    SUCCESS, DANGER, ACCENT,
+    SUCCESS, DANGER, WARNING, ACCENT,
     EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS,
 )
 from .live_viewer import LiveViewer
@@ -2089,9 +2089,11 @@ class ExperimentsTab(QWidget):
             name        = entry.get("plan_name", "?")
             exit_status = entry.get("exit_status", "")
             ok          = exit_status in ("completed", "success")
+            aborted     = exit_status == "aborted"
             motion      = _is_motion_only(name, {})
-            icon        = "✓" if ok else ("✗" if exit_status else "?")
-            color       = _NEUTRAL_COLOR if motion else (SUCCESS if ok else DANGER)
+            icon        = "✓" if ok else ("⊘" if aborted else ("✗" if exit_status else "?"))
+            color       = (_NEUTRAL_COLOR if motion
+                           else (SUCCESS if ok else (WARNING if aborted else DANGER)))
 
             start_time = entry.get("start_time", 0)
             t_str = (datetime.fromtimestamp(start_time).strftime("%H:%M:%S")
@@ -2243,12 +2245,17 @@ class ExperimentsTab(QWidget):
                 kwargs  = entry.get("kwargs", {}) or {}
                 status  = entry.get("exit_status", "")
                 ok      = status in ("completed", "success")
+                aborted = status == "aborted"
                 motion  = _is_motion_only(name, kwargs)
-                icon    = "✓" if ok else ("✗" if status else "?")
+                icon    = "✓" if ok else ("⊘" if aborted else ("✗" if status else "?"))
                 if motion:
                     color = _NEUTRAL_COLOR
+                elif ok:
+                    color = SUCCESS
+                elif aborted:
+                    color = WARNING
                 else:
-                    color = SUCCESS if ok else DANGER
+                    color = DANGER
                 ts       = entry.get("timestamp", "")
                 t_str    = ts[11:19] if len(ts) >= 19 else ts[:19]
                 dur      = entry.get("duration_s")
