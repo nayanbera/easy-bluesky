@@ -229,27 +229,33 @@ def delete_cached(esaf_id: str):
 # ── PI Group registry ──────────────────────────────────────────────────────────
 
 class PIGroupRegistry:
-    _path = Path.home() / ".easy_bluesky" / "pi_groups.json"
+    _path  = Path.home() / ".easy_bluesky" / "pi_groups.json"
+    _cache: list | None = None   # in-memory cache; invalidated by save()
 
     @classmethod
     def load(cls) -> list[PIGroup]:
-        """Return all PIGroups from the local registry file."""
+        """Return all PIGroups from the local registry file (cached after first read)."""
+        if cls._cache is not None:
+            return cls._cache
         if not cls._path.exists():
-            return []
+            cls._cache = []
+            return cls._cache
         try:
             data = json.loads(cls._path.read_text(encoding="utf-8"))
-            return [_group_from_dict(d) for d in data]
+            cls._cache = [_group_from_dict(d) for d in data]
         except Exception:
-            return []
+            cls._cache = []
+        return cls._cache
 
     @classmethod
     def save(cls, groups: list[PIGroup]):
-        """Persist the full list of PIGroups to the registry file."""
+        """Persist the full list of PIGroups and invalidate the in-memory cache."""
         cls._path.parent.mkdir(parents=True, exist_ok=True)
         cls._path.write_text(
             json.dumps([_group_to_dict(g) for g in groups], indent=2),
             encoding="utf-8",
         )
+        cls._cache = None   # force reload on next access
 
     @classmethod
     def get(cls, slug: str) -> PIGroup | None:
