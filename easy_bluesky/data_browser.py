@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from .config import CATALOG_NAME, TILED_URI, TILED_API_KEY, DATA_RUNS_DIR, SUCCESS, DANGER, ACCENT, PLOT_COLORS
+from .plot_tools import smart_legend_position
 
 
 # ── Background loader thread ───────────────────────────────────────────────────
@@ -431,3 +432,4 @@ class DataBrowser(QWidget):
         self.plot_widget.setLabel("bottom", xc)
         self.plot_widget.setLabel("left",   ", ".join(ycs))
         self.stats_label.setText("\n".join(stats))
+        smart_legend_position(self.plot_widget)

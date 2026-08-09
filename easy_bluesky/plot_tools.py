@@ -137,3 +137,53 @@ def setup_crosshair(plot_widget, coord_label, get_curves_fn=None):
     # Keep a reference so the filter isn't garbage-collected
     cleanup._leave_filter = _leave_filter
     return cleanup
+
+
+def smart_legend_position(plot_widget):
+    """Move the legend to the quadrant with the least data density.
+
+    Call after all curves are plotted.  Accepts a PlotWidget or PlotItem.
+    Legends in pyqtgraph 0.12+ are already draggable — the user can override
+    the automatic position by clicking and dragging it anywhere on the plot.
+    """
+    if not PG_AVAILABLE:
+        return
+    pi = plot_widget.getPlotItem() if hasattr(plot_widget, 'getPlotItem') else plot_widget
+    legend = getattr(pi, 'legend', None)
+    if legend is None or not pi.curves:
+        return
+
+    vr = pi.viewRange()
+    if not vr or len(vr) < 2:
+        return
+    x_min, x_max = vr[0]
+    y_min, y_max = vr[1]
+    if x_max == x_min or y_max == y_min:
+        return
+    x_mid = (x_min + x_max) / 2.0
+    y_mid = (y_min + y_max) / 2.0
+
+    # Count data points in each corner quadrant: [TL, TR, BL, BR]
+    scores = np.zeros(4, dtype=int)
+    for curve in pi.curves:
+        try:
+            xd, yd = curve.getData()
+        except Exception:
+            continue
+        if xd is None or len(xd) == 0:
+            continue
+        xd = np.asarray(xd, dtype=float)
+        yd = np.asarray(yd, dtype=float)
+        if len(xd) > 500:
+            step = max(1, len(xd) // 500)
+            xd, yd = xd[::step], yd[::step]
+        left = xd < x_mid
+        top  = yd >= y_mid
+        scores[0] += int(np.sum( left &  top))   # top-left
+        scores[1] += int(np.sum(~left &  top))   # top-right
+        scores[2] += int(np.sum( left & ~top))   # bottom-left
+        scores[3] += int(np.sum(~left & ~top))   # bottom-right
+
+    # setOffset sign convention: positive → from left/top, negative → from right/bottom
+    _offsets = [(10, 10), (-10, 10), (10, -10), (-10, -10)]
+    legend.setOffset(_offsets[int(np.argmin(scores))])

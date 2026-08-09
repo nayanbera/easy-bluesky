@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 
 
 from .config import PLOT_COLORS
-from .plot_tools import setup_crosshair
+from .plot_tools import setup_crosshair, smart_legend_position
 from . import peak_fit as _peak_fit
 from .curve_fit_dialog import FitParamsDialog as _FitParamsDialog
 
@@ -1420,6 +1420,7 @@ class MongoDataBrowserTab(QWidget):
             if len(rows) > 1:
                 title += f"  (+{len(rows)-1} more)"
             self._plot_widget.setTitle(title)
+        smart_legend_position(self._plot_widget)
 
     def _clear_plot(self):
         if self._plot_widget is None:

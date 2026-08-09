@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
-from .plot_tools import setup_crosshair
+from .plot_tools import setup_crosshair, smart_legend_position
 from . import peak_fit as _peak_fit
 
 
@@ -559,6 +559,7 @@ class LiveViewer(QWidget):
         if norm_key:
             y_label += f"  /  {norm_key}"
         self.plot_widget.setLabel("left", y_label)
+        smart_legend_position(self.plot_widget)
 
     def _reset_run(self):
         self._data    = {}

@@ -41,7 +41,7 @@ def _poisson_sigma(y_raw, norm_raw=None):
     n = np.abs(norm_raw)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(n > 0, np.sqrt(y / n ** 2 + y ** 2 / n ** 3), np.nan)
-from .plot_tools import setup_crosshair
+from .plot_tools import setup_crosshair, smart_legend_position
 from . import peak_fit as _peak_fit
 from .curve_fit_dialog import FitParamsDialog
 
@@ -576,6 +576,7 @@ class HDF5Viewer(QWidget):
             y_label += f"  /  {norm_col}"
         self.plot_widget.setLabel("left", y_label)
         self.stats_label.setText("   ".join(stats))
+        smart_legend_position(self.plot_widget)
 
     # ── Double-click → details dialog ─────────────────────────────────────────
 
