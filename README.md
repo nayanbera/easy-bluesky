@@ -20,8 +20,10 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Smart Legend Positioning** — After each plot update in the Live Viewer, MongoDB Browser, and HDF5 Viewer, the legend automatically moves to the emptiest quadrant of the view. Legends are also draggable — click and drag to pin them anywhere on the plot.
 - **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. The non-modal Curve Fit dialog displays a live preview curve on the plot the moment it opens, and the preview updates in real time as you edit parameters. Run Fit refines the model and updates the table with fitted values. Choose from 5 peak models, 4 step/interface models, 4 polynomial background terms, and 6 minimisation algorithms. Fit parameters are saved automatically so re-opening the dialog pre-populates it with the previous result. Export fitted parameters and curves to CSV, or copy the results text to the clipboard.
 - **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors.
-- **ESAF Integration** — Import Experiment Safety Assessment Forms (ESAFs) from a local PDF, a REST server, or manual entry. Auto-generates the beamline folder structure and injects ESAF metadata into every plan. Attach arbitrary **extra fields** (custom key-value pairs) to any ESAF — empty for older entries, editable from the picker or via the REST API. Includes a standalone FastAPI admin server with MongoDB or SQLite backend.
+- **ESAF Integration** — Import Experiment Safety Assessment Forms (ESAFs) from a local PDF, a REST server, or manual entry. Auto-generates the beamline folder structure and injects ESAF metadata into every plan. The picker includes a **technique dropdown** to filter ESAFs by technique (selection is persisted per profile across sessions) and a **client-side regex search** that matches any field — PI name, title, ESAF ID, users, and more. Attach arbitrary **extra fields** (custom key-value pairs) to any ESAF — empty for older entries, editable from the picker or via the REST API. Includes a standalone FastAPI admin server with MongoDB or SQLite backend.
 - **Remote Data Root** — Per-profile setting for the Linux RE machine's data root directory. Automatically propagated to every plan as `remote_exp_dir` so area detectors can write HDF files to the correct network path without manual entry each run.
+- **Experiment Console Log** — RE Manager console output is automatically appended to `<exp_dir>/console.log` for the duration of each session. The log opens when an experiment is set and closes cleanly when the experiment changes or the app exits.
+- **Experiment Folder Monitoring** — A background filesystem watcher detects if the active experiment folder is deleted or becomes inaccessible while the app is running. A modal dialog notifies the user; if a scan is running it is paused automatically. NFS mount failures (ESTALE, EIO, ENOTCONN) are reported with a distinct message. All filesystem probes run in daemon threads — the Qt event loop is never blocked.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
 
@@ -1148,6 +1150,8 @@ You can also split hardware across multiple files and import them from `devices.
 
 Handles RE setup, MongoDB data routing, and ZMQ doc publishing. Reads `EASY_BLUESKY_DEVICES_FILE` and `EASY_BLUESKY_MONGO_DB` from the environment. **All profiles share this single startup script** — no per-profile startup scripts needed.
 
+The devices file is loaded by direct path (`importlib.util.spec_from_file_location`) rather than by module name, with a case-insensitive glob fallback. This means `devices_file: "devices_aswaxs.py"` in the profile will find `devices_ASWAXS.py` on a Linux beamline machine even though Linux filesystems are case-sensitive.
+
 Callable functions (via `function_execute`):
 
 | Function | Purpose |
@@ -1308,12 +1312,14 @@ The **From ESAF** tab works as a combined open-or-create picker — you use it b
 
 1. Open the **Experiments** tab and click **New Experiment**.
 2. Select the **From ESAF** tab.
-3. Pick an ESAF from the dropdown (or click **Import New ESAF…**).
-4. The dialog scans the ESAF folder on disk and lists any existing runs.
+3. Use the **Technique** dropdown to narrow ESAFs by technique. The selection is remembered per profile across sessions.
+4. Type in the **Search** field to filter by any field — ESAF ID, PI name, title, user names, proposal ID, institution, or any other text. Regex patterns are supported (e.g. `rogers|smith` for multiple PIs).
+5. Pick an ESAF from the filtered list (or click **Import New ESAF…**).
+6. The dialog scans the ESAF folder on disk and lists any existing runs.
    - **To resume**: click a run in the list and press **OK** (or double-click). The experiment re-opens exactly as it was — sample name, remote path, and ESAF metadata are all restored.
    - **To create a new run**: type a run name in the **New run name** field (selecting a run from the list and typing a name are mutually exclusive — one clears the other).
-5. The path preview updates live to show where the run folder will be created.
-6. Click **OK** — the folder is created (new run) or reopened (existing run).
+7. The path preview updates live to show where the run folder will be created.
+8. Click **OK** — the folder is created (new run) or reopened (existing run).
 
 #### Import wizard (ESAFImportDialog)
 
@@ -1564,6 +1570,7 @@ The **Experiments tab** uses these JSONL files directly when MongoDB is not conf
 experiments/<name>/
 ├── experiment.json         # experiment metadata (name, created, remote_exp_dir)
 ├── plans_log.jsonl         # lightweight plan execution log (scan IDs, status, timestamps)
+├── console.log             # RE Manager console output (appended each session)
 └── runs/
     ├── <uid1>.jsonl        # per-run JSONL data files (NFS-accessible)
     └── <uid2>.jsonl
@@ -1578,12 +1585,14 @@ experiments/
         ├── SAXS_day1/                 ← first run
         │   ├── experiment.json        #   includes "esaf" block (see below)
         │   ├── plans_log.jsonl
+        │   ├── console.log            #   RE console output for this run
         │   └── runs/
         │       ├── <uid1>.jsonl
         │       └── <uid2>.jsonl
         └── SAXS_day2/                 ← second run, same ESAF
             ├── experiment.json
             ├── plans_log.jsonl
+            ├── console.log
             └── runs/
 ```
 
@@ -1747,6 +1756,22 @@ easy-bluesky/
 | `~/.easy_bluesky/pi_groups.json` | PI group registry |
 | `~/.easy_bluesky/esaf_server/config.json` | ESAF server configuration (backend, URI, API key) |
 | `~/.easy_bluesky/device_metadata.json` | Cached EPICS units/descriptions (reused in sim mode) |
+
+---
+
+## Changelog
+
+### 2026-08-14
+
+- **Fix: devices file case mismatch on Linux** — `re_startup_mongo.py` now loads the devices file by direct path (`spec_from_file_location`) with a case-insensitive glob fallback. Profiles with `devices_file: "devices_aswaxs.py"` now correctly find `devices_ASWAXS.py` on case-sensitive Linux filesystems, fixing empty device lists after RE Manager restart.
+- **Fix: Qt main thread blocking from filesystem watcher** — `_on_exp_dir_changed` no longer calls `Path.exists()` on the main thread. Watcher events are debounced (500 ms) and all filesystem probes run in background threads. Parent-directory watching removed to eliminate spurious events on NFS-mounted experiment directories. This was the root cause of ZMQ heartbeat failures that cleared the device list.
+- **Fix: Reconnect button now reloads full device list** — Previously, clicking ⟳ Reconnect only re-fetched PV names. It now calls `reload_plans_devices()` so devices are fully re-enumerated from the RE environment. The device fingerprint is also cleared on disconnect so CA monitors are rebuilt correctly after a reconnect.
+- **Feat: ESAF technique filter** — Technique dropdown in the ESAF picker narrows results by technique before text search. Selection is persisted per profile across sessions.
+- **Feat: Client-side regex ESAF search** — The search field filters across all ESAF record fields (PI name, title, users, institution, proposal ID, ESAF ID, etc.) using Python regex. Replaces the previous server-side partial-text search which missed many fields.
+- **Feat: Auto console log** — RE Manager console output is automatically appended to `<exp_dir>/console.log` while an experiment is active. Each session is delimited by a timestamp header.
+- **Feat: Experiment folder loss detection** — QFileSystemWatcher + 10-second background health check detect if the active experiment folder is deleted or the NFS mount is lost. A modal dialog notifies the user; running scans are paused automatically.
+- **Fix: ESAF folder name** — Folder name uses date only (`ESAF-{ID}_{YYYY-MM-DD}`), with no time component.
+- **Fix: ESAF picker button layout** — Removed fixed-size constraints from Check and Open buttons so they render correctly on macOS.
 
 ---
 
