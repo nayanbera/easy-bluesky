@@ -949,9 +949,17 @@ class ExperimentsTab(QWidget):
         self._btn_check_esaf.setFixedHeight(20)
         self._btn_check_esaf.setStyleSheet("font-size: 10px;")
         self._btn_check_esaf.clicked.connect(self._check_esaf_server)
+        self._btn_open_esaf = QPushButton("Open ↗")
+        self._btn_open_esaf.setFixedWidth(52)
+        self._btn_open_esaf.setFixedHeight(20)
+        self._btn_open_esaf.setStyleSheet("font-size: 10px;")
+        self._btn_open_esaf.setToolTip("Open ESAF server in browser")
+        self._btn_open_esaf.setEnabled(False)
+        self._btn_open_esaf.clicked.connect(self._open_esaf_browser)
         esaf_row.addWidget(self._esaf_dot)
         esaf_row.addWidget(self._esaf_status, 1)
         esaf_row.addWidget(self._btn_check_esaf)
+        esaf_row.addWidget(self._btn_open_esaf)
         vlay.addLayout(esaf_row)
 
         btn_row = QHBoxLayout()
@@ -1244,10 +1252,20 @@ class ExperimentsTab(QWidget):
         self._settings = settings
         self._check_esaf_server()
 
+    def _open_esaf_browser(self):
+        """Open the ESAF server URL in the system browser."""
+        url = (self._settings.get("esaf_server_url") or "").strip()
+        if not url:
+            return
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(url))
+
     def _check_esaf_server(self):
         """Spawn a background thread to ping the ESAF server health endpoint."""
         url = (self._settings.get("esaf_server_url") or "").strip()
         key = (self._settings.get("esaf_api_key") or "").strip()
+        self._btn_open_esaf.setEnabled(bool(url))
         if not url:
             self._on_esaf_health_result("unconfigured", "")
             return
@@ -1330,6 +1348,9 @@ class ExperimentsTab(QWidget):
                     "esaf_start_date", "pi_group"):
             if esaf.get(key):
                 md[key] = esaf[key]
+        for key in ("title", "beamline"):
+            if esaf.get(key):
+                md[f"esaf_{key}"] = esaf[key]
         # Backfill pi_name/pi_institution from PIGroupRegistry for older experiments
         # that only stored the pi_group slug in experiment.json.
         if md.get("pi_group") and not (md.get("pi_name") and md.get("pi_institution")):
