@@ -186,6 +186,7 @@ class DevicesPlansTab(QWidget):
     """Two-panel tab: live device tree (left) | plans + details (right)."""
 
     fetch_pvnames_requested   = pyqtSignal()
+    reload_devices_requested  = pyqtSignal()   # full device+plan reload from RE env
     poll_sim_values_requested = pyqtSignal()
     set_sim_device_requested  = pyqtSignal(str, float)
     plan_file_open_requested  = pyqtSignal(str, str)   # (tier, name_or_path)
@@ -422,7 +423,8 @@ class DevicesPlansTab(QWidget):
             self._last_devices_fp = ""
             self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
             self._status_lbl.setText("● No devices — open the RE environment")
-            self._refresh_btn.setEnabled(False)
+            self._refresh_btn.setEnabled(True)
+            self._refresh_btn.setText("⟳ Reconnect")
             return
 
         groups: dict = {}
@@ -828,10 +830,11 @@ class DevicesPlansTab(QWidget):
 
     def _on_reconnect_clicked(self):
         self._refresh_btn.setEnabled(False)
-        self._refresh_btn.setText("Fetching…")
+        self._refresh_btn.setText("Loading…")
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
-        self._status_lbl.setText("Fetching PV names from RE environment…")
-        self.fetch_pvnames_requested.emit()
+        self._status_lbl.setText("● Reloading devices from RE environment…")
+        self._last_devices_fp = ""   # force full rebuild on next update_devices
+        self.reload_devices_requested.emit()
 
     def _on_plan_selected(self, current, _previous):
         if not current:

@@ -4,6 +4,7 @@ import errno
 import json
 import os
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -2280,14 +2281,29 @@ class ExperimentsTab(QWidget):
         self._handle_exp_dir_lost(nfs=False)
 
     def _check_exp_dir_health(self):
-        """Periodic NFS fallback: stat the experiment dir to detect stale mounts."""
-        if not self._active_exp_path:
+        """Periodic NFS fallback: stat the experiment dir in a background thread
+        to avoid blocking the Qt event loop on slow or stale NFS mounts."""
+        path = self._active_exp_path
+        if not path:
             return
-        try:
-            os.stat(self._active_exp_path)
-        except OSError as exc:
-            nfs = getattr(exc, "errno", None) in (
-                errno.ESTALE, errno.EIO, errno.ENOTCONN, errno.ENOENT)
+
+        def _stat_worker():
+            try:
+                os.stat(path)
+                lost, nfs = False, False
+            except OSError as exc:
+                lost = True
+                nfs = getattr(exc, "errno", None) in (
+                    errno.ESTALE, errno.EIO, errno.ENOTCONN, errno.ENOENT)
+            QTimer.singleShot(0, lambda: self._on_health_result(path, lost, nfs))
+
+        threading.Thread(target=_stat_worker, daemon=True).start()
+
+    def _on_health_result(self, path: str, lost: bool, nfs: bool):
+        """Delivered back on the main thread after the background stat completes."""
+        if path != self._active_exp_path:
+            return  # experiment changed while stat was in flight
+        if lost:
             self._handle_exp_dir_lost(nfs=nfs)
 
     def _handle_exp_dir_lost(self, nfs: bool):
