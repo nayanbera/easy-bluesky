@@ -306,19 +306,54 @@ class _ESAFHealthWorker(QThread):
         if not self._url:
             self.result.emit("unconfigured", "")
             return
+        import urllib.request as _urq
+        import json as _json
         try:
-            from .esaf import ESAFServerClient
-            client = ESAFServerClient(self._url, self._api_key)
-            data   = client.health()
-            backend = data.get("backend", "unknown")
-            if backend == "mongodb":
-                self.result.emit("ok_mongo", self._url)
-            else:
-                self.result.emit("ok_sqlite", self._url)
+            url = self._url.rstrip("/") + "/api/esafs?limit=1"
+            with _urq.urlopen(url, timeout=8) as resp:
+                _json.loads(resp.read())
+            self.result.emit("ok_sqlite", self._url)
         except Exception as exc:
             self.result.emit("error", str(exc))
 
 
+# ── ESAF list fetcher (aps-esaf-fetcher public API) ───────────────────────────
+
+class _APSESAFFetchWorker(QThread):
+    """Fetch ESAF list from aps-esaf-fetcher /api/esafs endpoint."""
+    done  = pyqtSignal(list)   # list of dicts
+    error = pyqtSignal(str)
+
+    def __init__(self, server_url: str, year=None, status="", search="", parent=None):
+        super().__init__(parent)
+        self._url    = server_url.rstrip("/")
+        self._year   = year
+        self._status = status.strip()
+        self._search = search.strip()
+
+    def run(self):
+        import urllib.request as _urq
+        import urllib.parse as _up
+        import json as _json
+        try:
+            params = {"limit": 500}
+            if self._year:
+                params["year"] = self._year
+            if self._status:
+                params["status"] = self._status
+            if self._search:
+                params["search"] = self._search
+            url = self._url + "/api/esafs?" + _up.urlencode(params)
+            with _urq.urlopen(url, timeout=15) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, list):
+                self.done.emit(data)
+            elif isinstance(data, dict) and "esafs" in data:
+                self.done.emit(data["esafs"])
+            else:
+                self.done.emit([])
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 
 # ── Startup experiment picker ──────────────────────────────────────────────────
@@ -469,23 +504,67 @@ class _NewExperimentDialog(QDialog):
     # ── Tab 1: From ESAF ──────────────────────────────────────────────────────
 
     def _build_esaf_tab(self):
-        from .esaf_dialog import ESAFPickerWidget
-
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
 
-        esaf_grp = QGroupBox("ESAF")
-        eg_lay = QVBoxLayout(esaf_grp)
-        self._esaf_picker = ESAFPickerWidget(self._settings)
-        self._esaf_picker.esaf_selected.connect(self._on_esaf_selected)
-        eg_lay.addWidget(self._esaf_picker)
-        lay.addWidget(esaf_grp)
+        # ── Filter row ────────────────────────────────────────────────────────
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        filter_row.addWidget(QLabel("Year:"))
+        self._esaf_year = QSpinBox()
+        self._esaf_year.setRange(1998, 2099)
+        self._esaf_year.setValue(2026)
+        self._esaf_year.setFixedWidth(64)
+        filter_row.addWidget(self._esaf_year)
+        filter_row.addWidget(QLabel("Status:"))
+        self._esaf_status_combo = QComboBox()
+        self._esaf_status_combo.addItems(["(any)", "Approved", "Active", "Submitted", "Closed"])
+        self._esaf_status_combo.setFixedWidth(90)
+        filter_row.addWidget(self._esaf_status_combo)
+        filter_row.addWidget(QLabel("Search:"))
+        self._esaf_search = QLineEdit()
+        self._esaf_search.setPlaceholderText("PI name, title, ESAF ID…")
+        self._esaf_search.returnPressed.connect(self._fetch_esafs)
+        filter_row.addWidget(self._esaf_search, 1)
+        self._btn_esaf_search = QPushButton("Search")
+        self._btn_esaf_search.clicked.connect(self._fetch_esafs)
+        filter_row.addWidget(self._btn_esaf_search)
+        lay.addLayout(filter_row)
 
-        # Seed _selected_esaf: the picker emits esaf_selected during __init__,
-        # before the signal was connected, so we read it back explicitly here.
-        self._selected_esaf = self._esaf_picker.selected_esaf()
+        # ── ESAF list ─────────────────────────────────────────────────────────
+        self._esaf_list = QListWidget()
+        self._esaf_list.setMaximumHeight(150)
+        self._esaf_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._esaf_list.currentItemChanged.connect(self._on_esaf_list_selection)
+        self._esaf_list.itemDoubleClicked.connect(self._on_accept)
+        lay.addWidget(self._esaf_list)
+        self._esaf_list_status = QLabel("(click Search to load ESAFs from server)")
+        self._esaf_list_status.setStyleSheet("color: #888; font-style: italic; font-size: 10px;")
+        lay.addWidget(self._esaf_list_status)
+
+        # ── Summary panel ─────────────────────────────────────────────────────
+        summary_grp = QGroupBox("Selected ESAF")
+        sg_lay = QFormLayout(summary_grp)
+        sg_lay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        sg_lay.setHorizontalSpacing(8)
+        sg_lay.setVerticalSpacing(2)
+        self._esaf_sum_title    = QLabel("—")
+        self._esaf_sum_dates    = QLabel("—")
+        self._esaf_sum_pi       = QLabel("—")
+        self._esaf_sum_beamline = QLabel("—")
+        self._esaf_sum_status   = QLabel("—")
+        for lbl in (self._esaf_sum_title, self._esaf_sum_dates, self._esaf_sum_pi,
+                    self._esaf_sum_beamline, self._esaf_sum_status):
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("font-size: 10px;")
+        sg_lay.addRow("Title:",    self._esaf_sum_title)
+        sg_lay.addRow("Dates:",    self._esaf_sum_dates)
+        sg_lay.addRow("PI:",       self._esaf_sum_pi)
+        sg_lay.addRow("Beamline:", self._esaf_sum_beamline)
+        sg_lay.addRow("Status:",   self._esaf_sum_status)
+        lay.addWidget(summary_grp)
 
         # ── Existing experiments ───────────────────────────────────────────────
         runs_lbl = QLabel("Existing experiments under this ESAF:")
@@ -493,11 +572,11 @@ class _NewExperimentDialog(QDialog):
         lay.addWidget(runs_lbl)
 
         self._runs_list = QListWidget()
-        self._runs_list.setMaximumHeight(130)
+        self._runs_list.setMaximumHeight(100)
         self._runs_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._runs_list.itemSelectionChanged.connect(self._on_run_selected)
         self._runs_list.itemDoubleClicked.connect(self._on_accept)
-        self._no_runs_lbl = QLabel("  (no experiments yet — select an ESAF above)")
+        self._no_runs_lbl = QLabel("  (select an ESAF above)")
         self._no_runs_lbl.setStyleSheet("color: #888; font-style: italic;")
         lay.addWidget(self._runs_list)
         lay.addWidget(self._no_runs_lbl)
@@ -543,21 +622,96 @@ class _NewExperimentDialog(QDialog):
         self._refresh_runs_list()
         self._update_esaf_paths()
 
+        # Auto-fetch if server is configured
+        if (self._settings.get("esaf_server_url") or "").strip():
+            QTimer.singleShot(150, self._fetch_esafs)
+
     def _esaf_base_path(self) -> str | None:
         """Return the ESAF folder path (pi_slug/ESAF-id_date) or None if no ESAF selected."""
         rec = self._selected_esaf
         if rec is None:
             return None
-        pi_slug = rec.pi_group_slug or "no_pi_group"
-        esaf_folder = f"ESAF-{rec.esaf_id}"
-        if rec.start_date:
-            esaf_folder += f"_{rec.start_date}"
+        pi_slug = re.sub(r"[^\w]", "_", (rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
+        esaf_folder = f"ESAF-{rec['esaf_id']}"
+        start = rec.get("start_date", "")
+        if start:
+            esaf_folder += f"_{start}"
         return "/".join([self._local_data_root, pi_slug, esaf_folder])
 
     def _on_esaf_selected(self, record):
+        """Called when an ESAF dict is selected; updates summary and path preview."""
         self._selected_esaf = record
+        if record:
+            self._esaf_sum_title.setText(record.get("title", "—") or "—")
+            start = record.get("start_date", "")
+            end   = record.get("end_date", "")
+            self._esaf_sum_dates.setText(f"{start} → {end}" if (start or end) else "—")
+            self._esaf_sum_pi.setText(
+                f"{record.get('pi_name', '?')}  ({record.get('pi_institution', '?')})"
+            )
+            self._esaf_sum_beamline.setText(record.get("beamline", "—") or "—")
+            self._esaf_sum_status.setText(record.get("status", "—") or "—")
+        else:
+            for lbl in (self._esaf_sum_title, self._esaf_sum_dates, self._esaf_sum_pi,
+                        self._esaf_sum_beamline, self._esaf_sum_status):
+                lbl.setText("—")
         self._refresh_runs_list()
         self._update_esaf_paths()
+
+    def _fetch_esafs(self):
+        """Fetch ESAF list from aps-esaf-fetcher server with current filters."""
+        url = (self._settings.get("esaf_server_url") or "").strip()
+        if not url:
+            self._esaf_list_status.setText("⚠  No ESAF server URL in connection settings.")
+            self._esaf_list_status.setStyleSheet("color: #cc8800; font-size: 10px;")
+            return
+        self._esaf_list_status.setText("Fetching…")
+        self._esaf_list_status.setStyleSheet("color: #888; font-style: italic; font-size: 10px;")
+        self._btn_esaf_search.setEnabled(False)
+        self._esaf_list.clear()
+
+        year   = self._esaf_year.value()
+        status = self._esaf_status_combo.currentText()
+        if status == "(any)":
+            status = ""
+        search = self._esaf_search.text().strip()
+
+        self._esaf_fetch_worker = _APSESAFFetchWorker(
+            url, year=year, status=status, search=search, parent=self
+        )
+        self._esaf_fetch_worker.done.connect(self._on_esafs_fetched)
+        self._esaf_fetch_worker.error.connect(self._on_esaf_fetch_error)
+        self._esaf_fetch_worker.finished.connect(lambda: self._btn_esaf_search.setEnabled(True))
+        self._esaf_fetch_worker.start()
+
+    def _on_esafs_fetched(self, records: list):
+        self._esaf_list.clear()
+        if not records:
+            self._esaf_list_status.setText("No ESAFs found with the current filters.")
+            self._esaf_list_status.setStyleSheet("color: #888; font-style: italic; font-size: 10px;")
+            return
+        self._esaf_list_status.setText(f"{len(records)} ESAF(s) found.")
+        self._esaf_list_status.setStyleSheet("color: #33aa44; font-size: 10px;")
+        for rec in records:
+            esaf_id = rec.get("esaf_id", "?")
+            title   = (rec.get("title", "") or "(no title)")[:55]
+            pi      = rec.get("pi_name", "?")
+            year    = rec.get("year", "")
+            label   = f"#{esaf_id}  {title}  —  PI: {pi}  [{year}]"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, rec)
+            self._esaf_list.addItem(item)
+
+    def _on_esaf_fetch_error(self, msg: str):
+        self._esaf_list_status.setText(f"✗  {msg}")
+        self._esaf_list_status.setStyleSheet("color: #cc3333; font-size: 10px;")
+
+    def _on_esaf_list_selection(self, current, _prev):
+        if current is None:
+            self._on_esaf_selected(None)
+            return
+        rec = current.data(Qt.ItemDataRole.UserRole)
+        self._on_esaf_selected(rec)
 
     def _refresh_runs_list(self):
         """Scan the ESAF folder on disk and populate the existing-runs list."""
@@ -615,10 +769,8 @@ class _NewExperimentDialog(QDialog):
             self._esaf_remote_lbl.setText("(select an ESAF above)")
             return
 
-        # Determine the run name to preview
         selected_item = self._runs_list.currentItem()
         if selected_item:
-            # Opening existing — show its full path
             existing_path = selected_item.data(Qt.ItemDataRole.UserRole)
             self._esaf_local_lbl.setText(f"Open: {existing_path}")
             self._esaf_remote_lbl.setText("(remote path stored in experiment.json)")
@@ -627,10 +779,11 @@ class _NewExperimentDialog(QDialog):
         run = self._sanitize(self._esaf_run_name.text().strip())
         rec = self._selected_esaf
 
-        pi_slug = rec.pi_group_slug or "no_pi_group"
-        esaf_folder = f"ESAF-{rec.esaf_id}"
-        if rec.start_date:
-            esaf_folder += f"_{rec.start_date}"
+        pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
+        esaf_folder = f"ESAF-{rec['esaf_id']}"
+        start = rec.get("start_date", "")
+        if start:
+            esaf_folder += f"_{start}"
 
         parts_local  = [self._local_data_root, pi_slug, esaf_folder]
         parts_remote = ([self._remote_data_root, pi_slug, esaf_folder]
@@ -776,7 +929,7 @@ class _NewExperimentDialog(QDialog):
     def _accept_esaf(self):
         rec = self._selected_esaf
         if rec is None:
-            QMessageBox.warning(self, "Required", "Select an ESAF or import one first.")
+            QMessageBox.warning(self, "Required", "Search for and select an ESAF first.")
             return
 
         # ── Open existing run ──────────────────────────────────────────────────
@@ -794,10 +947,11 @@ class _NewExperimentDialog(QDialog):
             return
         run = self._sanitize(run_raw)
 
-        pi_slug     = rec.pi_group_slug or "no_pi_group"
-        esaf_folder = f"ESAF-{rec.esaf_id}"
-        if rec.start_date:
-            esaf_folder += f"_{rec.start_date}"
+        pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
+        esaf_folder = f"ESAF-{rec['esaf_id']}"
+        start = rec.get("start_date", "")
+        if start:
+            esaf_folder += f"_{start}"
 
         local_parent = "/".join([self._local_data_root, pi_slug, esaf_folder])
         remote_parts = ([self._remote_data_root, pi_slug, esaf_folder, run]
@@ -807,17 +961,16 @@ class _NewExperimentDialog(QDialog):
         self.local_parent_dir   = local_parent
         self.remote_exp_dir     = "/".join(remote_parts) if remote_parts else ""
         self.open_existing_path = ""
-        from .esaf import PIGroupRegistry
-        pi_group = PIGroupRegistry.get(pi_slug)
         self.esaf_info = {
-            "esaf_id":         rec.esaf_id,
-            "pi_group":        pi_slug,
-            "pi_name":         pi_group.pi_name         if pi_group else "",
-            "pi_institution":  pi_group.pi_institution  if pi_group else "",
-            "proposal_id":     rec.proposal_id,
-            "esaf_start_date": rec.start_date,
-            "title":           rec.title,
-            "beamline":        rec.beamline,
+            "esaf_id":         rec.get("esaf_id", ""),
+            "pi_name":         rec.get("pi_name", ""),
+            "pi_institution":  rec.get("pi_institution", ""),
+            "proposal_id":     rec.get("gup_id", "") or rec.get("local_id", ""),
+            "esaf_start_date": rec.get("start_date", ""),
+            "esaf_end_date":   rec.get("end_date", ""),
+            "title":           rec.get("title", ""),
+            "beamline":        rec.get("beamline", ""),
+            "technique":       rec.get("technique", ""),
         }
         self.accept()
 
@@ -1284,14 +1437,10 @@ class ExperimentsTab(QWidget):
             self._esaf_dot.setStyleSheet("font-size: 12px; color: #888888;")
             self._esaf_status.setText("ESAF server not configured")
             self._esaf_status.setStyleSheet("font-size: 10px; color: #888888;")
-        elif status == "ok_mongo":
+        elif status in ("ok_mongo", "ok_sqlite"):
             self._esaf_dot.setStyleSheet("font-size: 12px; color: #33aa44;")
-            self._esaf_status.setText("Connected · MongoDB")
+            self._esaf_status.setText("ESAF server connected")
             self._esaf_status.setStyleSheet("font-size: 10px; color: #33aa44;")
-        elif status == "ok_sqlite":
-            self._esaf_dot.setStyleSheet("font-size: 12px; color: #cc8800;")
-            self._esaf_status.setText("Connected · SQLite")
-            self._esaf_status.setStyleSheet("font-size: 10px; color: #cc8800;")
         else:
             self._esaf_dot.setStyleSheet("font-size: 12px; color: #cc3333;")
             host = detail.split("/")[2] if "//" in detail else detail
@@ -1345,20 +1494,12 @@ class ExperimentsTab(QWidget):
         # ESAF metadata — injected when an experiment was created from an ESAF
         esaf = getattr(self, "_esaf_info", {})
         for key in ("esaf_id", "pi_name", "pi_institution", "proposal_id",
-                    "esaf_start_date", "pi_group"):
+                    "esaf_start_date", "esaf_end_date"):
             if esaf.get(key):
                 md[key] = esaf[key]
-        for key in ("title", "beamline"):
+        for key in ("title", "beamline", "technique"):
             if esaf.get(key):
                 md[f"esaf_{key}"] = esaf[key]
-        # Backfill pi_name/pi_institution from PIGroupRegistry for older experiments
-        # that only stored the pi_group slug in experiment.json.
-        if md.get("pi_group") and not (md.get("pi_name") and md.get("pi_institution")):
-            from .esaf import PIGroupRegistry
-            g = PIGroupRegistry.get(md["pi_group"])
-            if g:
-                md.setdefault("pi_name", g.pi_name)
-                md.setdefault("pi_institution", g.pi_institution)
         return md
 
     def _inject_metadata(self, result_item: dict):
