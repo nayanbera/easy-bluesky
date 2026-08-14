@@ -1151,6 +1151,10 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
         self._re_state: str    = ""
+        self._watcher_debounce = QTimer()
+        self._watcher_debounce.setSingleShot(True)
+        self._watcher_debounce.setInterval(500)
+        self._watcher_debounce.timeout.connect(self._check_exp_dir_health)
         self._build()
         if worker:
             worker.scan_log_ready.connect(self._on_scan_log_fetched)
@@ -1574,6 +1578,7 @@ class ExperimentsTab(QWidget):
         self._active_profile = profile_name
         if self._fs_watcher.directories():
             self._fs_watcher.removePaths(self._fs_watcher.directories())
+        self._watcher_debounce.stop()
         self._exp_health_timer.stop()
         self._close_console_log()
         self._exp_deleted_warning.setVisible(False)
@@ -2225,9 +2230,6 @@ class ExperimentsTab(QWidget):
         if self._fs_watcher.directories():
             self._fs_watcher.removePaths(self._fs_watcher.directories())
         self._fs_watcher.addPath(path)
-        parent = str(Path(path).parent)
-        if Path(parent).exists():
-            self._fs_watcher.addPath(parent)
         self._exp_health_timer.start()
         self._exp_deleted_warning.setVisible(False)
         self._active_exp_path = path
@@ -2258,27 +2260,13 @@ class ExperimentsTab(QWidget):
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
         self._load_plan_log(path)
 
-    def _on_exp_dir_changed(self, changed_path: str):
-        """Called by QFileSystemWatcher when a watched directory changes."""
+    def _on_exp_dir_changed(self, _changed_path: str):
+        """Called by QFileSystemWatcher when the experiment directory changes.
+        Debounce into the background health check — never calls os.stat() here."""
         if not self._active_exp_path:
             return
-        exp_path = Path(self._active_exp_path)
-
-        # Parent directory fired — check for deletion or recreation
-        if changed_path == str(exp_path.parent):
-            if exp_path.exists():
-                # Folder was recreated — re-watch it and recover silently
-                if self._active_exp_path not in self._fs_watcher.directories():
-                    self._fs_watcher.addPath(self._active_exp_path)
-                    self._exp_health_timer.start()
-                self._exp_deleted_warning.setVisible(False)
-                return
-            # Folder was deleted — fall through
-        elif exp_path.exists():
-            # Experiment dir itself fired but still accessible — ignore
-            return
-
-        self._handle_exp_dir_lost(nfs=False)
+        # Restart the debounce timer; the actual stat runs in a background thread.
+        self._watcher_debounce.start()
 
     def _check_exp_dir_health(self):
         """Periodic NFS fallback: stat the experiment dir in a background thread
@@ -2315,12 +2303,9 @@ class ExperimentsTab(QWidget):
         scan_running = self._re_state == "running"
 
         # Stop watching and health-checking immediately
+        self._watcher_debounce.stop()
         if self._fs_watcher.directories():
             self._fs_watcher.removePaths(self._fs_watcher.directories())
-            # Keep watching the parent so we can detect recreation
-            parent = str(Path(lost_path).parent)
-            if Path(parent).exists():
-                self._fs_watcher.addPath(parent)
         self._exp_health_timer.stop()
 
         # Pause the scan before showing the dialog
