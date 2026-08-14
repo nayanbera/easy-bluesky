@@ -37,6 +37,7 @@ EXPERIMENTS_DIR = os.getenv(
     str(_USER_DIR / "experiments"),
 )
 ACTIVE_EXPERIMENT_FILE = str(_USER_DIR / "data" / "active_experiment.json")
+UI_PREFS_FILE          = str(_USER_DIR / "ui_prefs.json")
 
 # ── UI Colors (semantic — constant across themes) ─────────────────────────────
 ACCENT   = "#1f77b4"

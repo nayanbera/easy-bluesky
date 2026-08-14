@@ -25,7 +25,7 @@ from PyQt6.QtGui import QColor, QFont
 
 from .config import (
     SUCCESS, DANGER, WARNING, ACCENT,
-    EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS,
+    EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS, UI_PREFS_FILE,
 )
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
@@ -36,6 +36,21 @@ from .queue_manager import RunDetailDialog
 # Per-computer — lives in ~/.easy_bluesky/ alongside connection.json.
 
 _RECENT_FILE = Path.home() / ".easy_bluesky" / "recent_experiments.json"
+
+
+def _load_ui_prefs() -> dict:
+    try:
+        return json.loads(Path(UI_PREFS_FILE).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _save_ui_prefs(prefs: dict):
+    try:
+        p = Path(UI_PREFS_FILE)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _load_recent_list() -> list:
@@ -534,6 +549,7 @@ class _NewExperimentDialog(QDialog):
         self._esaf_technique_combo.addItem("(any)")
         self._esaf_technique_combo.setMinimumWidth(110)
         self._esaf_technique_combo.currentTextChanged.connect(self._apply_esaf_filter)
+        self._esaf_technique_combo.currentTextChanged.connect(self._save_esaf_technique_pref)
         regex_row.addWidget(self._esaf_technique_combo)
         regex_row.addWidget(QLabel("Filter (regex):"))
         self._esaf_search = QLineEdit()
@@ -638,6 +654,9 @@ class _NewExperimentDialog(QDialog):
         self._refresh_runs_list()
         self._update_esaf_paths()
 
+        # Restore saved technique preference for this profile
+        self._restore_esaf_technique_pref()
+
         # Auto-fetch if server is configured
         if (self._settings.get("esaf_server_url") or "").strip():
             QTimer.singleShot(150, self._fetch_esafs)
@@ -680,6 +699,19 @@ class _NewExperimentDialog(QDialog):
         self._refresh_runs_list()
         self._update_esaf_paths()
 
+    def _save_esaf_technique_pref(self, technique: str):
+        profile = self._settings.get("name") or "__default__"
+        prefs = _load_ui_prefs()
+        prefs.setdefault(profile, {})["esaf_technique"] = technique
+        _save_ui_prefs(prefs)
+
+    def _restore_esaf_technique_pref(self):
+        profile = self._settings.get("name") or "__default__"
+        saved = _load_ui_prefs().get(profile, {}).get("esaf_technique", "(any)")
+        # The combo only has "(any)" at this point; real techniques arrive after fetch.
+        # Store for use in _on_esafs_fetched which restores the selection.
+        self._saved_esaf_technique = saved
+
     def _fetch_esafs(self):
         """Fetch ESAF list from aps-esaf-fetcher server with current filters."""
         url = (self._settings.get("esaf_server_url") or "").strip()
@@ -713,12 +745,14 @@ class _NewExperimentDialog(QDialog):
             for r in records
             if (r.get("technique") or "").strip()
         })
-        current_tech = self._esaf_technique_combo.currentText()
+        # Prefer saved pref on first load, then the current selection on subsequent refreshes
+        want = getattr(self, "_saved_esaf_technique", None) or self._esaf_technique_combo.currentText()
+        self._saved_esaf_technique = None   # consumed
         self._esaf_technique_combo.blockSignals(True)
         self._esaf_technique_combo.clear()
         self._esaf_technique_combo.addItem("(any)")
         self._esaf_technique_combo.addItems(techniques)
-        idx = self._esaf_technique_combo.findText(current_tech)
+        idx = self._esaf_technique_combo.findText(want)
         self._esaf_technique_combo.setCurrentIndex(max(0, idx))
         self._esaf_technique_combo.blockSignals(False)
         self._apply_esaf_filter()
