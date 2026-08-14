@@ -2050,12 +2050,11 @@ class ConnectionDialog(QDialog):
         QApplication.processEvents()
         try:
             import urllib.request as _ur
-            req = _ur.Request(f"{url.rstrip('/')}/health", method="GET")
+            import json as _json
+            req = _ur.Request(f"{url.rstrip('/')}/api/esafs?limit=1", method="GET")
             with _ur.urlopen(req, timeout=5) as resp:
-                import json as _json
-                data = _json.loads(resp.read())
-            backend = data.get("backend", "?")
-            self._esaf_status.setText(f"✓  Server OK  (backend: {backend})")
+                _json.loads(resp.read())
+            self._esaf_status.setText("✓  aps-esaf-fetcher server reachable")
             self._esaf_status.setStyleSheet("color: #2ca02c;")
         except Exception as exc:
             self._esaf_status.setText(f"✗  {exc}")
@@ -2063,24 +2062,24 @@ class ConnectionDialog(QDialog):
 
     def _start_esaf_server(self):
         settings = self._collect_top_level()
+        url = self._esaf_url.text().strip()
+        port = 8088
+        try:
+            port = int(url.rsplit(":", 1)[-1].split("/")[0])
+        except Exception:
+            pass
         if is_local_host(settings):
             self._esaf_status.setText(
-                "Host is localhost — start the ESAF server manually:\n"
-                "  uvicorn esaf_server.main:app --host 0.0.0.0 --port 8765"
+                f"Host is localhost — start aps-esaf-fetcher manually:\n"
+                f"  cd <aps-esaf-fetcher dir> && bash launch.sh"
             )
             self._esaf_status.setStyleSheet("color: #888;")
             return
-        url = self._esaf_url.text().strip()
-        port = 8765
-        try:
-            port = int(url.rsplit(":", 1)[-1])
-        except Exception:
-            pass
         host = settings.get("host", "localhost")
         conda_env  = settings.get("conda_env", "").strip()
         conda_path = settings.get("conda_path", "~/miniconda3").strip()
 
-        self._esaf_status.setText("Starting ESAF server via SSH…")
+        self._esaf_status.setText("Starting aps-esaf-fetcher via SSH…")
         self._esaf_status.setStyleSheet("color: #888;")
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()
@@ -2092,14 +2091,15 @@ class ConnectionDialog(QDialog):
                 base = conda_path.replace("~", "$HOME")
                 cmd = (f"source {base}/etc/profile.d/conda.sh 2>/dev/null; "
                        f"conda activate {conda_env} 2>/dev/null; ")
-            cmd += (f"nohup uvicorn esaf_server.main:app "
+            cmd += (f"cd ~/aps-esaf-fetcher && "
+                    f"nohup uvicorn app.main:app "
                     f"--host 0.0.0.0 --port {port} "
                     f">> ~/.easy_bluesky/esaf_server.log 2>&1 &")
-            _, stdout, stderr = client.exec_command(cmd, timeout=10)
+            _, stdout, _ = client.exec_command(cmd, timeout=10)
             stdout.channel.recv_exit_status()
             client.close()
             self._esaf_status.setText(
-                f"✓  ESAF server start command sent to {host}:{port}.\n"
+                f"✓  aps-esaf-fetcher start command sent to {host}:{port}.\n"
                 f"   Wait a few seconds then click Test."
             )
             self._esaf_status.setStyleSheet("color: #2ca02c;")
