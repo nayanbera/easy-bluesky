@@ -1213,6 +1213,7 @@ class MainWindow(QMainWindow):
         self.worker.console_updated.connect(self._on_console_line)
         self.worker.connected.connect(self.re_console.on_connected)
         self.worker.disconnected.connect(self.re_console.on_disconnected)
+        self.worker.disconnected.connect(self.devices_plans_tab.on_disconnected)
         self.re_console.diagnose_requested.connect(self._on_console_diagnose)
 
         self.worker.plans_updated.connect(self.experiments_tab.set_plans)

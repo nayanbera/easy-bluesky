@@ -385,6 +385,13 @@ class DevicesPlansTab(QWidget):
 
     # ── Public slots ────────────────────────────────────────────────────────────
 
+    def on_disconnected(self):
+        """Reset the device fingerprint so the next update_devices call does a
+        full rebuild even if the device list is identical to the previous one.
+        Without this, a reconnect after a dropped connection skips CA monitor
+        setup because the fingerprint matches the stale cached value."""
+        self._last_devices_fp = ""
+
     def update_devices(self, devices: dict):
         # Skip full rebuild if the device list is identical (same names + classes).
         # Avoids clearing CA monitors and re-fetching PV names on every poll cycle.
