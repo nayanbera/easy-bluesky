@@ -326,25 +326,22 @@ class _APSESAFFetchWorker(QThread):
     done  = pyqtSignal(list)   # list of dicts
     error = pyqtSignal(str)
 
-    def __init__(self, server_url: str, year=None, status="", search="", parent=None):
+    def __init__(self, server_url: str, year=None, status="", parent=None):
         super().__init__(parent)
         self._url    = server_url.rstrip("/")
         self._year   = year
         self._status = status.strip()
-        self._search = search.strip()
 
     def run(self):
         import urllib.request as _urq
         import urllib.parse as _up
         import json as _json
         try:
-            params = {"limit": 500}
+            params = {"limit": 1000}
             if self._year:
                 params["year"] = self._year
             if self._status:
                 params["status"] = self._status
-            if self._search:
-                params["search"] = self._search
             url = self._url + "/api/esafs?" + _up.urlencode(params)
             with _urq.urlopen(url, timeout=15) as resp:
                 data = _json.loads(resp.read().decode("utf-8"))
@@ -525,24 +522,33 @@ class _NewExperimentDialog(QDialog):
         self._esaf_status_combo.addItems(["(any)", "Approved", "Active", "Submitted", "Closed"])
         self._esaf_status_combo.setFixedWidth(90)
         filter_row.addWidget(self._esaf_status_combo)
-        filter_row.addWidget(QLabel("Search:"))
-        self._esaf_search = QLineEdit()
-        self._esaf_search.setPlaceholderText("PI name, title, ESAF ID…")
-        self._esaf_search.returnPressed.connect(self._fetch_esafs)
-        filter_row.addWidget(self._esaf_search, 1)
-        self._btn_esaf_search = QPushButton("Search")
+        self._btn_esaf_search = QPushButton("Refresh")
         self._btn_esaf_search.clicked.connect(self._fetch_esafs)
         filter_row.addWidget(self._btn_esaf_search)
         lay.addLayout(filter_row)
 
+        regex_row = QHBoxLayout()
+        regex_row.setSpacing(6)
+        regex_row.addWidget(QLabel("Filter (regex):"))
+        self._esaf_search = QLineEdit()
+        self._esaf_search.setPlaceholderText("any field — e.g.  smith|jones  or  (?i)saxs")
+        self._esaf_search.setClearButtonEnabled(True)
+        self._esaf_search.textChanged.connect(self._apply_esaf_filter)
+        regex_row.addWidget(self._esaf_search, 1)
+        self._esaf_regex_status = QLabel("")
+        self._esaf_regex_status.setStyleSheet("font-size: 10px;")
+        regex_row.addWidget(self._esaf_regex_status)
+        lay.addLayout(regex_row)
+
         # ── ESAF list ─────────────────────────────────────────────────────────
+        self._all_esafs: list = []   # full server response; regex filter works on this
         self._esaf_list = QListWidget()
         self._esaf_list.setMaximumHeight(150)
         self._esaf_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._esaf_list.currentItemChanged.connect(self._on_esaf_list_selection)
         self._esaf_list.itemDoubleClicked.connect(self._on_accept)
         lay.addWidget(self._esaf_list)
-        self._esaf_list_status = QLabel("(click Search to load ESAFs from server)")
+        self._esaf_list_status = QLabel("(click Refresh to load ESAFs from server)")
         self._esaf_list_status.setStyleSheet("color: #888; font-style: italic; font-size: 10px;")
         lay.addWidget(self._esaf_list_status)
 
@@ -684,10 +690,9 @@ class _NewExperimentDialog(QDialog):
         status = self._esaf_status_combo.currentText()
         if status == "(any)":
             status = ""
-        search = self._esaf_search.text().strip()
 
         self._esaf_fetch_worker = _APSESAFFetchWorker(
-            url, year=year, status=status, search=search, parent=self
+            url, year=year, status=status, parent=self
         )
         self._esaf_fetch_worker.done.connect(self._on_esafs_fetched)
         self._esaf_fetch_worker.error.connect(self._on_esaf_fetch_error)
@@ -695,19 +700,59 @@ class _NewExperimentDialog(QDialog):
         self._esaf_fetch_worker.start()
 
     def _on_esafs_fetched(self, records: list):
+        self._all_esafs = records
+        self._apply_esaf_filter()
+
+    def _apply_esaf_filter(self):
+        import re as _re
+        pattern = self._esaf_search.text().strip()
         self._esaf_list.clear()
-        if not records:
-            self._esaf_list_status.setText("No ESAFs found with the current filters.")
-            self._esaf_list_status.setStyleSheet("color: #888; font-style: italic; font-size: 10px;")
+
+        if pattern:
+            try:
+                rx = _re.compile(pattern, _re.IGNORECASE)
+                self._esaf_regex_status.setText("")
+            except _re.error as exc:
+                self._esaf_regex_status.setText(f"⚠ {exc}")
+                self._esaf_regex_status.setStyleSheet("font-size: 10px; color: #cc3333;")
+                return
+        else:
+            rx = None
+            self._esaf_regex_status.setText("")
+
+        matched = []
+        for rec in self._all_esafs:
+            if rx is None or any(
+                rx.search(str(v)) for v in rec.values() if v is not None
+            ):
+                matched.append(rec)
+
+        if not matched:
+            if not self._all_esafs:
+                self._esaf_list_status.setText("(click Refresh to load ESAFs from server)")
+                self._esaf_list_status.setStyleSheet("color: #888; font-style: italic; font-size: 10px;")
+            else:
+                self._esaf_list_status.setText("No ESAFs match the filter.")
+                self._esaf_list_status.setStyleSheet("color: #888; font-style: italic; font-size: 10px;")
             return
-        self._esaf_list_status.setText(f"{len(records)} ESAF(s) found.")
+
+        total = len(self._all_esafs)
+        n = len(matched)
+        if rx is not None and n < total:
+            self._esaf_list_status.setText(f"{n} of {total} ESAF(s) matched.")
+        else:
+            self._esaf_list_status.setText(f"{total} ESAF(s) loaded.")
         self._esaf_list_status.setStyleSheet("color: #33aa44; font-size: 10px;")
-        for rec in records:
+
+        for rec in matched:
             esaf_id = rec.get("esaf_id", "?")
             title   = (rec.get("title", "") or "(no title)")[:55]
             pi      = rec.get("pi_name", "?")
             year    = rec.get("year", "")
+            pi_grp  = rec.get("pi_group", "") or ""
             label   = f"#{esaf_id}  {title}  —  PI: {pi}  [{year}]"
+            if pi_grp:
+                label += f"  [{pi_grp}]"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, rec)
             self._esaf_list.addItem(item)
