@@ -634,7 +634,8 @@ class _NewExperimentDialog(QDialog):
         if rec is None:
             return None
         pi_slug = re.sub(r"[^\w]", "_", (rec.get("pi_group") or rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
-        esaf_folder = f"ESAF-{rec['esaf_id']}"
+        start = (rec.get("start_date", "") or "").split("T")[0].split(" ")[0]
+        esaf_folder = f"ESAF-{rec['esaf_id']}" + (f"_{start}" if start else "")
         return "/".join([self._local_data_root, pi_slug, esaf_folder])
 
     def _on_esaf_selected(self, record):
@@ -787,7 +788,8 @@ class _NewExperimentDialog(QDialog):
         rec = self._selected_esaf
 
         pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_group") or rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
-        esaf_folder = f"ESAF-{rec['esaf_id']}"
+        start = (rec.get("start_date", "") or "").split("T")[0].split(" ")[0]
+        esaf_folder = f"ESAF-{rec['esaf_id']}" + (f"_{start}" if start else "")
 
         parts_local  = [self._local_data_root, pi_slug, esaf_folder]
         parts_remote = ([self._remote_data_root, pi_slug, esaf_folder]
@@ -952,7 +954,8 @@ class _NewExperimentDialog(QDialog):
         run = self._sanitize(run_raw)
 
         pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_group") or rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
-        esaf_folder = f"ESAF-{rec['esaf_id']}"
+        start = (rec.get("start_date", "") or "").split("T")[0].split(" ")[0]
+        esaf_folder = f"ESAF-{rec['esaf_id']}" + (f"_{start}" if start else "")
 
         local_parent = "/".join([self._local_data_root, pi_slug, esaf_folder])
         remote_parts = ([self._remote_data_root, pi_slug, esaf_folder, run]
