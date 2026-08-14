@@ -122,20 +122,17 @@ class _RunListFetcher(QThread):
 
             query = {}
             if self._run_uids:
-                # Primary: query by UID — works even when exp_dir was never stored.
-                # Use OR so that any runs logged in plans_log.jsonl are found,
-                # AND any newer runs whose exp_dir matches are also included.
-                import re as _re
-                conditions = [{"uid": {"$in": self._run_uids}}]
-                if self._exp_dir:
-                    folder = _re.escape(Path(self._exp_dir).name)
-                    conditions.append({"exp_dir": {"$regex": folder + r"/?$"}})
-                query = {"$or": conditions}
+                # UIDs from plans_log.jsonl are authoritative — use them exclusively.
+                # A folder-name regex fallback would spuriously match other experiments
+                # that share the same folder name (e.g. multiple "test" directories).
+                query = {"uid": {"$in": self._run_uids}}
             elif self._exp_dir:
-                # Fallback when plan log is empty: match by folder name.
+                # Fallback when plan log is empty (brand-new experiment, no scans yet):
+                # match by the last two path components to narrow the regex.
                 import re as _re
-                folder = _re.escape(Path(self._exp_dir).name)
-                query["exp_dir"] = {"$regex": folder + r"/?$"}
+                parts = Path(self._exp_dir).parts
+                suffix = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+                query["exp_dir"] = {"$regex": _re.escape(suffix) + r"/?$"}
 
             starts = list(
                 db["run_start"].find(query, {
