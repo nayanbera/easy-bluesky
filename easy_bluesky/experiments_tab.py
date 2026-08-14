@@ -555,8 +555,9 @@ class _NewExperimentDialog(QDialog):
         self._esaf_sum_pi       = QLabel("—")
         self._esaf_sum_beamline = QLabel("—")
         self._esaf_sum_status   = QLabel("—")
+        self._esaf_sum_pi_group = QLabel("—")
         for lbl in (self._esaf_sum_title, self._esaf_sum_dates, self._esaf_sum_pi,
-                    self._esaf_sum_beamline, self._esaf_sum_status):
+                    self._esaf_sum_beamline, self._esaf_sum_status, self._esaf_sum_pi_group):
             lbl.setWordWrap(True)
             lbl.setStyleSheet("font-size: 10px;")
         sg_lay.addRow("Title:",    self._esaf_sum_title)
@@ -564,6 +565,7 @@ class _NewExperimentDialog(QDialog):
         sg_lay.addRow("PI:",       self._esaf_sum_pi)
         sg_lay.addRow("Beamline:", self._esaf_sum_beamline)
         sg_lay.addRow("Status:",   self._esaf_sum_status)
+        sg_lay.addRow("PI Group:", self._esaf_sum_pi_group)
         lay.addWidget(summary_grp)
 
         # ── Existing experiments ───────────────────────────────────────────────
@@ -651,10 +653,18 @@ class _NewExperimentDialog(QDialog):
             )
             self._esaf_sum_beamline.setText(record.get("beamline", "—") or "—")
             self._esaf_sum_status.setText(record.get("status", "—") or "—")
+            pi_group = (record.get("pi_group") or "").strip()
+            if pi_group:
+                self._esaf_sum_pi_group.setText(pi_group)
+                self._esaf_sum_pi_group.setStyleSheet("font-size: 10px; color: #33aa44;")
+            else:
+                self._esaf_sum_pi_group.setText("⚠  not set — assign a PI Group in aps-esaf-fetcher first")
+                self._esaf_sum_pi_group.setStyleSheet("font-size: 10px; color: #cc8800;")
         else:
             for lbl in (self._esaf_sum_title, self._esaf_sum_dates, self._esaf_sum_pi,
-                        self._esaf_sum_beamline, self._esaf_sum_status):
+                        self._esaf_sum_beamline, self._esaf_sum_status, self._esaf_sum_pi_group):
                 lbl.setText("—")
+                lbl.setStyleSheet("font-size: 10px;")
         self._refresh_runs_list()
         self._update_esaf_paths()
 
