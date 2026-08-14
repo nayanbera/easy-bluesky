@@ -45,12 +45,29 @@ if os.path.isabs(_devices_file):
     _spec.loader.exec_module(_mod)
     print(f"[re_startup_mongo] {_devices_file} loaded")
 else:
-    # Relative filename — look in the same directory as this startup script
-    sys.path.insert(0, str(Path(__file__).parent))
-    _devices_module = _devices_file[:-3] if _devices_file.endswith(".py") else _devices_file
+    # Relative filename — look in the same directory as this startup script.
+    # Use spec_from_file_location (not importlib.import_module) so the search
+    # is by path rather than by module name; this avoids case-sensitivity issues
+    # on Linux (e.g. env var "devices_aswaxs.py" finding "devices_ASWAXS.py").
+    import importlib.util as _ilu2
+    _scripts_dir = Path(__file__).parent
+    _target = _scripts_dir / _devices_file
+    if not _target.exists():
+        # Case-insensitive fallback: find any .py file with the same stem
+        _stem_lower = Path(_devices_file).stem.lower()
+        _candidates = [p for p in _scripts_dir.glob("*.py")
+                       if p.stem.lower() == _stem_lower]
+        if _candidates:
+            _target = _candidates[0]
     try:
-        _mod = importlib.import_module(_devices_module)
-        print(f"[re_startup_mongo] {_devices_file} loaded")
+        if not _target.exists():
+            raise ImportError(
+                f"No module named '{Path(_devices_file).stem}'"
+            )
+        _spec2 = _ilu2.spec_from_file_location("_easy_bluesky_devices", str(_target))
+        _mod   = _ilu2.module_from_spec(_spec2)
+        _spec2.loader.exec_module(_mod)
+        print(f"[re_startup_mongo] {_target.name} loaded")
     except ImportError as _e:
         print(f"[re_startup_mongo] WARNING: {_devices_file} not found ({_e})")
         _mod = None
