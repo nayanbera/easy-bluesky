@@ -702,10 +702,9 @@ class MongoDataBrowserTab(QWidget):
         self._norm_combo.currentIndexChanged.connect(self._auto_plot)
         ctrl_bar.addWidget(self._norm_combo)
 
-        ctrl_bar.addWidget(_vline())
+        # Log Y / Errors / Deriv live in the bottom bar beside the crosshair label.
         self._log_y_cb = QCheckBox("Log Y")
         self._log_y_cb.stateChanged.connect(self._auto_plot)
-        ctrl_bar.addWidget(self._log_y_cb)
 
         self._err_cb = QCheckBox("± Errors")
         self._err_cb.setToolTip(
@@ -713,7 +712,16 @@ class MongoDataBrowserTab(QWidget):
             "converted to log₁₀ space when Log Y is active)"
         )
         self._err_cb.stateChanged.connect(self._auto_plot)
-        ctrl_bar.addWidget(self._err_cb)
+
+        self._deriv_combo = QComboBox()
+        self._deriv_combo.addItems(["—", "dy/dx", "d²y/dx²"])
+        self._deriv_combo.setFixedHeight(22)
+        self._deriv_combo.setFixedWidth(90)
+        self._deriv_combo.setToolTip(
+            "Derivative transform applied to data and fit curves after normalization.\n"
+            "Uses central differences (np.gradient) — no x-shift, same point count."
+        )
+        self._deriv_combo.currentIndexChanged.connect(self._auto_plot)
 
         ctrl_bar.addWidget(_vline())
         ctrl_bar.addWidget(QLabel("Fit:"))
@@ -824,7 +832,22 @@ class MongoDataBrowserTab(QWidget):
         plot_splitter.setStretchFactor(0, 1)
         plot_splitter.setStretchFactor(1, 0)
         rlayout.addWidget(plot_splitter, 1)
-        rlayout.addWidget(self._coord_label)
+
+        # ── Bottom bar: crosshair coords + display transforms ─────────────────
+        bot_bar = QHBoxLayout()
+        bot_bar.setContentsMargins(0, 2, 0, 0)
+        bot_bar.setSpacing(6)
+        bot_bar.addWidget(self._coord_label, 1)
+        bot_bar.addWidget(_vline())
+        bot_bar.addWidget(self._log_y_cb)
+        bot_bar.addWidget(self._err_cb)
+        bot_bar.addWidget(_vline())
+        lbl_deriv = QLabel("Deriv:")
+        lbl_deriv.setStyleSheet("font-size: 11px;")
+        bot_bar.addWidget(lbl_deriv)
+        bot_bar.addWidget(self._deriv_combo)
+        rlayout.addLayout(bot_bar)
+
         splitter.addWidget(right)
         splitter.setSizes([400, 900])
         root.addWidget(splitter, 1)
@@ -1310,9 +1333,10 @@ class MongoDataBrowserTab(QWidget):
         self._curves     = {}
         self._error_items = {}
 
-        log_y     = self._log_y_cb.isChecked()
-        show_err  = self._err_cb.isChecked()
-        color_idx = 0
+        log_y      = self._log_y_cb.isChecked()
+        show_err   = self._err_cb.isChecked()
+        deriv_mode = self._deriv_combo.currentIndex()   # 0=raw, 1=dy/dx, 2=d²y/dx²
+        color_idx  = 0
         multi_run = len(self._run_data_list) > 1
 
         for rd in self._run_data_list:
@@ -1358,9 +1382,14 @@ class MongoDataBrowserTab(QWidget):
                     with np.errstate(divide="ignore", invalid="ignore"):
                         y = np.where(denom != 0, y / denom, np.nan)
 
-                # Poisson σ in linear space (before log transform)
-                sigma    = _poisson_sigma(y_raw, norm_raw)
-                y_linear = y.copy()   # y after norm, before log — needed for σ conversion
+                # Poisson σ in linear space (before derivative / log transforms)
+                sigma = _poisson_sigma(y_raw, norm_raw)
+
+                # Derivative (applied after normalization, before log)
+                if deriv_mode > 0:
+                    _, y, sigma = self._apply_deriv(x, y, sigma, order=deriv_mode)
+
+                y_linear = y.copy()   # y after norm+deriv, before log — needed for σ conversion
 
                 if log_y:
                     with np.errstate(divide="ignore", invalid="ignore"):
@@ -1404,6 +1433,10 @@ class MongoDataBrowserTab(QWidget):
         y_label = ", ".join(y_fields)
         if norm_field:
             y_label += f"  /  {norm_field}"
+        if deriv_mode == 1:
+            y_label += "  [dy/dx]"
+        elif deriv_mode == 2:
+            y_label += "  [d²y/dx²]"
         if log_y:
             y_label += "  [log₁₀]"
         self._plot_widget.setLabel("left", y_label)
@@ -1439,6 +1472,88 @@ class MongoDataBrowserTab(QWidget):
         """Re-plot whenever axis controls change — guard against no data."""
         if self._run_data_list:
             self._plot()
+
+    # ── Derivative transform ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_deriv(x, y, sigma=None, order=1):
+        """Central-difference derivative of (x, y); returns (x, dy, sigma_dy).
+
+        Uses np.gradient internally so the result has the same length and x
+        positions as the input — no shift.  Error propagation uses the exact
+        formula for the central-difference stencil:
+            σ_dy[i] = √(σ[i+1]² + σ[i−1]²) / (x[i+1] − x[i−1])
+        with one-sided differences at the endpoints.
+        """
+        finite = np.isfinite(x) & np.isfinite(y)
+        if finite.sum() < 3:
+            nan_y = np.full_like(y, np.nan)
+            nan_s = np.full_like(sigma, np.nan) if sigma is not None else None
+            return x, nan_y, nan_s
+
+        xf = x[finite]
+        yf = y[finite]
+
+        dy = np.gradient(yf, xf)
+        if order == 2:
+            dy = np.gradient(dy, xf)
+
+        y_out = np.full_like(y, np.nan)
+        y_out[finite] = dy
+
+        if sigma is None:
+            return x, y_out, None
+
+        sf = sigma[finite]
+        n = len(sf)
+        dsf = np.full(n, np.nan)
+
+        if n >= 3:
+            fin_s = np.isfinite(sf)
+            if fin_s.sum() >= 2:
+                # Interior: central difference error propagation
+                dxc = xf[2:] - xf[:-2]
+                valid = fin_s[2:] & fin_s[:-2] & (dxc != 0)
+                dsf[1:-1] = np.where(
+                    valid,
+                    np.sqrt(np.where(fin_s[2:], sf[2:], 0)**2
+                            + np.where(fin_s[:-2], sf[:-2], 0)**2) / np.where(dxc != 0, dxc, np.nan),
+                    np.nan,
+                )
+                # Endpoints: one-sided
+                dx0 = xf[1] - xf[0]
+                if fin_s[0] and fin_s[1] and dx0 != 0:
+                    dsf[0] = np.sqrt(sf[0]**2 + sf[1]**2) / abs(dx0)
+                dx_n = xf[-1] - xf[-2]
+                if fin_s[-1] and fin_s[-2] and dx_n != 0:
+                    dsf[-1] = np.sqrt(sf[-1]**2 + sf[-2]**2) / abs(dx_n)
+
+            if order == 2:
+                # Approximate 2nd-order propagation by applying the 1st-order
+                # formula again on the already-propagated errors.
+                dsf2 = np.full(n, np.nan)
+                fin2 = np.isfinite(dsf)
+                if fin2.sum() >= 3:
+                    dxc2 = xf[2:] - xf[:-2]
+                    v2 = fin2[2:] & fin2[:-2] & (dxc2 != 0)
+                    dsf2[1:-1] = np.where(
+                        v2,
+                        np.sqrt(np.where(fin2[2:], dsf[2:], 0)**2
+                                + np.where(fin2[:-2], dsf[:-2], 0)**2)
+                        / np.where(dxc2 != 0, dxc2, np.nan),
+                        np.nan,
+                    )
+                    dx0b = xf[1] - xf[0]
+                    if fin2[0] and fin2[1] and dx0b != 0:
+                        dsf2[0] = np.sqrt(dsf[0]**2 + dsf[1]**2) / abs(dx0b)
+                    dx_nb = xf[-1] - xf[-2]
+                    if fin2[-1] and fin2[-2] and dx_nb != 0:
+                        dsf2[-1] = np.sqrt(dsf[-1]**2 + dsf[-2]**2) / abs(dx_nb)
+                dsf = dsf2
+
+        sigma_out = np.full_like(sigma, np.nan)
+        sigma_out[finite] = dsf
+        return x, y_out, sigma_out
 
     # ── Peak fitting ───────────────────────────────────────────────────────────
 
@@ -1503,7 +1618,7 @@ class MongoDataBrowserTab(QWidget):
         mask = np.isfinite(x) & np.isfinite(y)
         return x[mask], y[mask]
 
-    def _add_fit_overlay(self, x_fit, y_fit, info, label, log_y, color_idx):
+    def _add_fit_overlay(self, x_fit, y_fit, info, label, log_y, deriv_mode, color_idx):
         """Draw one fit curve + vertical line at x₀ on the plot."""
         if not PG_AVAILABLE or self._plot_widget is None:
             return
@@ -1511,9 +1626,11 @@ class MongoDataBrowserTab(QWidget):
         pen   = pg.mkPen(color=color, width=2, style=Qt.PenStyle.DashLine)
 
         y_plot = y_fit.copy()
+        if deriv_mode > 0:
+            _, y_plot, _ = self._apply_deriv(x_fit, y_plot, order=deriv_mode)
         if log_y:
             with np.errstate(divide="ignore", invalid="ignore"):
-                y_plot = np.log10(np.where(y_fit > 0, y_fit, np.nan))
+                y_plot = np.log10(np.where(y_plot > 0, y_plot, np.nan))
 
         curve = self._plot_widget.plot(x_fit, y_plot, pen=pen, name=f"fit: {label}")
         self._fit_curves[label] = curve
@@ -1547,6 +1664,7 @@ class MongoDataBrowserTab(QWidget):
         ]
         norm_field = self._norm_combo.currentData()
         log_y      = self._log_y_cb.isChecked()
+        deriv_mode = self._deriv_combo.currentIndex()
         model_name = self._fit_model_combo.currentText()
 
         if not y_fields:
@@ -1588,8 +1706,9 @@ class MongoDataBrowserTab(QWidget):
             QMessageBox.warning(self, "No data", "No plottable data found.")
             return
 
-        self._fit_datasets = datasets   # stored for _on_fit_applied
-        self._fit_log_y    = log_y       # stored for _on_fit_applied
+        self._fit_datasets  = datasets    # stored for _on_fit_applied
+        self._fit_log_y     = log_y       # stored for _on_fit_applied
+        self._fit_deriv_mode = deriv_mode  # stored for _on_fit_applied
 
         # Close any existing fit dialog before opening a new one
         if self._fit_dlg is not None:
@@ -1620,11 +1739,14 @@ class MongoDataBrowserTab(QWidget):
         if not PG_AVAILABLE or self._plot_widget is None:
             return
         try:
-            log_y = getattr(self, "_fit_log_y", False)
+            log_y      = getattr(self, "_fit_log_y", False)
+            deriv_mode = getattr(self, "_fit_deriv_mode", 0)
             y_plot = y_fit.copy()
+            if deriv_mode > 0:
+                _, y_plot, _ = self._apply_deriv(x_fit, y_plot, order=deriv_mode)
             if log_y:
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    y_plot = np.log10(np.where(y_fit > 0, y_fit, np.nan))
+                    y_plot = np.log10(np.where(y_plot > 0, y_plot, np.nan))
             if self._fit_preview_curve is None:
                 pen = pg.mkPen("#ffcc44", width=2, style=Qt.PenStyle.DotLine)
                 self._fit_preview_curve = self._plot_widget.plot(x_fit, y_plot, pen=pen)
@@ -1637,10 +1759,12 @@ class MongoDataBrowserTab(QWidget):
         """Remove preview, draw permanent overlays for all datasets, save state."""
         self._clear_fit_preview()
         self._clear_fit_overlays()
-        log_y = getattr(self, "_fit_log_y", False)
+        log_y      = getattr(self, "_fit_log_y", False)
+        deriv_mode = getattr(self, "_fit_deriv_mode", 0)
         for idx, item in enumerate(fit_items):
             self._add_fit_overlay(
-                item["x_fit"], item["y_fit"], item["info"], item["label"], log_y, idx
+                item["x_fit"], item["y_fit"], item["info"], item["label"],
+                log_y, deriv_mode, idx
             )
         if fit_items:
             self._btn_clear_fit.setEnabled(True)
