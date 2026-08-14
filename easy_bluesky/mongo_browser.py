@@ -545,6 +545,7 @@ class MongoDataBrowserTab(QWidget):
         self._error_items: dict = {}   # pg.ErrorBarItem per curve
         self._fit_curves: dict       = {}   # fit overlay curves {label: PlotDataItem}
         self._fit_texts: list        = []   # pg.TextItem annotations for fit results
+        self._fit_items_cache: list  = []   # raw fit data for redrawing on transform change
         self._fit_preview_curve      = None   # live preview PlotDataItem (dotted)
         self._fit_dlg                = None   # open FitParamsDialog (non-modal ref)
         self._fit_datasets: list     = []     # datasets passed to the open dialog
@@ -1327,6 +1328,15 @@ class MongoDataBrowserTab(QWidget):
                 self._plot_widget.removeItem(item)
             except Exception:
                 pass
+        # Also remove stale fit overlays — they'll be redrawn below with current settings.
+        for fit_item in list(self._fit_curves.values()) + self._fit_texts:
+            try:
+                self._plot_widget.removeItem(fit_item)
+            except Exception:
+                pass
+        self._fit_curves = {}
+        self._fit_texts  = []
+
         pi = self._plot_widget.getPlotItem()
         if pi.legend:
             pi.legend.clear()
@@ -1440,6 +1450,15 @@ class MongoDataBrowserTab(QWidget):
         if log_y:
             y_label += "  [log₁₀]"
         self._plot_widget.setLabel("left", y_label)
+
+        # Redraw cached fit overlays with the current log_y / deriv_mode.
+        for idx, cached in enumerate(self._fit_items_cache):
+            self._add_fit_overlay(
+                cached["x"], cached["y"], cached["info"], cached["label"],
+                log_y, deriv_mode, idx
+            )
+        if self._fit_items_cache:
+            self._btn_clear_fit.setEnabled(True)
 
         rows = self._run_table.selectionModel().selectedRows()
         if rows and rows[0].row() < len(self._runs):
@@ -1571,8 +1590,9 @@ class MongoDataBrowserTab(QWidget):
                 self._plot_widget.removeItem(ti)
             except Exception:
                 pass
-        self._fit_curves = {}
-        self._fit_texts  = []
+        self._fit_curves     = {}
+        self._fit_texts      = []
+        self._fit_items_cache = []
         if hasattr(self, "_btn_clear_fit"):
             self._btn_clear_fit.setEnabled(False)
 
@@ -1758,9 +1778,15 @@ class MongoDataBrowserTab(QWidget):
     def _on_fit_applied(self, fit_items):
         """Remove preview, draw permanent overlays for all datasets, save state."""
         self._clear_fit_preview()
-        self._clear_fit_overlays()
+        self._clear_fit_overlays()   # also resets _fit_items_cache
         log_y      = getattr(self, "_fit_log_y", False)
         deriv_mode = getattr(self, "_fit_deriv_mode", 0)
+        # Cache the raw fit data so _auto_plot can redraw on log/deriv changes.
+        self._fit_items_cache = [
+            {"x": item["x_fit"], "y": item["y_fit"],
+             "info": item["info"], "label": item["label"]}
+            for item in fit_items
+        ]
         for idx, item in enumerate(fit_items):
             self._add_fit_overlay(
                 item["x_fit"], item["y_fit"], item["info"], item["label"],
