@@ -529,6 +529,12 @@ class _NewExperimentDialog(QDialog):
 
         regex_row = QHBoxLayout()
         regex_row.setSpacing(6)
+        regex_row.addWidget(QLabel("Technique:"))
+        self._esaf_technique_combo = QComboBox()
+        self._esaf_technique_combo.addItem("(any)")
+        self._esaf_technique_combo.setMinimumWidth(110)
+        self._esaf_technique_combo.currentTextChanged.connect(self._apply_esaf_filter)
+        regex_row.addWidget(self._esaf_technique_combo)
         regex_row.addWidget(QLabel("Filter (regex):"))
         self._esaf_search = QLineEdit()
         self._esaf_search.setPlaceholderText("any field — e.g.  smith|jones  or  (?i)saxs")
@@ -701,6 +707,20 @@ class _NewExperimentDialog(QDialog):
 
     def _on_esafs_fetched(self, records: list):
         self._all_esafs = records
+        # Repopulate technique combo from fetched data
+        techniques = sorted({
+            str(r.get("technique") or "").strip()
+            for r in records
+            if (r.get("technique") or "").strip()
+        })
+        current_tech = self._esaf_technique_combo.currentText()
+        self._esaf_technique_combo.blockSignals(True)
+        self._esaf_technique_combo.clear()
+        self._esaf_technique_combo.addItem("(any)")
+        self._esaf_technique_combo.addItems(techniques)
+        idx = self._esaf_technique_combo.findText(current_tech)
+        self._esaf_technique_combo.setCurrentIndex(max(0, idx))
+        self._esaf_technique_combo.blockSignals(False)
         self._apply_esaf_filter()
 
     def _apply_esaf_filter(self):
@@ -720,8 +740,14 @@ class _NewExperimentDialog(QDialog):
             rx = None
             self._esaf_regex_status.setText("")
 
+        tech_filter = self._esaf_technique_combo.currentText()
+        if tech_filter == "(any)":
+            tech_filter = ""
+
         matched = []
         for rec in self._all_esafs:
+            if tech_filter and (rec.get("technique") or "").strip() != tech_filter:
+                continue
             if rx is None or any(
                 rx.search(str(v)) for v in rec.values() if v is not None
             ):
@@ -1083,6 +1109,7 @@ class ExperimentsTab(QWidget):
         self._hdf5_exporter    = None
         self._scan_log_exp     = ""    # exp path that triggered the in-flight SFTP fetch
         self.history_widget    = _HistoryWidgetStub()
+        self._console_log      = None   # open file handle for <exp_dir>/console.log
         self._fs_watcher       = QFileSystemWatcher()
         self._fs_watcher.directoryChanged.connect(self._on_exp_dir_changed)
         self._exp_health_timer = QTimer()
@@ -1519,6 +1546,7 @@ class ExperimentsTab(QWidget):
         if self._fs_watcher.directories():
             self._fs_watcher.removePaths(self._fs_watcher.directories())
         self._exp_health_timer.stop()
+        self._close_console_log()
         self._exp_deleted_warning.setVisible(False)
         # Clear current state so history from the old profile is not mixed in.
         self._active_exp_path  = ""
@@ -1700,10 +1728,39 @@ class ExperimentsTab(QWidget):
 
     # ── Console ────────────────────────────────────────────────────────────────
 
+    def _open_console_log(self, exp_path: str):
+        self._close_console_log()
+        try:
+            log_path = Path(exp_path) / "console.log"
+            self._console_log = open(log_path, "a", encoding="utf-8", buffering=1)
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._console_log.write(f"\n=== Session started {ts} ===\n")
+        except OSError:
+            self._console_log = None
+
+    def _close_console_log(self):
+        if self._console_log is not None:
+            try:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._console_log.write(f"=== Session closed {ts} ===\n")
+                self._console_log.close()
+            except OSError:
+                pass
+            self._console_log = None
+
+    def write_console_log(self, text: str):
+        """Write raw console text (from RE Manager) to the experiment log file."""
+        if self._console_log is not None:
+            try:
+                self._console_log.write(text)
+            except OSError:
+                pass
+
     def append_console(self, text: str):
         self.console.appendPlainText(text)
         sb = self.console.verticalScrollBar()
         sb.setValue(sb.maximum())
+        self.write_console_log(text + "\n")
 
     def _log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -2145,6 +2202,7 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.start()
         self._exp_deleted_warning.setVisible(False)
         self._active_exp_path = path
+        self._open_console_log(path)
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
         self._esaf_info       = info.get("esaf", {})
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
@@ -2224,6 +2282,8 @@ class ExperimentsTab(QWidget):
         # Pause the scan before showing the dialog
         if scan_running:
             self.pause_requested.emit()
+
+        self._close_console_log()
 
         # Clear all active-experiment state
         self._active_exp_path = ""

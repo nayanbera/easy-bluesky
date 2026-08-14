@@ -1465,6 +1465,7 @@ class MainWindow(QMainWindow):
     def _on_console_line(self, text: str):
         """Forward console text to the RE Console widget and inject diagnostic hints."""
         self.re_console.append(text)
+        self.experiments_tab.write_console_log(text)
         # Detect the most common mis-configuration: start-re-manager not on PATH
         # because conda_env / conda_path are not set in Connection Settings.
         if "start-re-manager" in text and "not found" in text:
