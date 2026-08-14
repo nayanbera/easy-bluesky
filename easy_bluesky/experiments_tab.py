@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QMainWindow, QLineEdit, QFormLayout, QGroupBox,
     QMenu, QFrame, QCheckBox, QSpinBox,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFont
 
 from .config import (
@@ -1036,6 +1036,8 @@ class ExperimentsTab(QWidget):
         self._hdf5_exporter    = None
         self._scan_log_exp     = ""    # exp path that triggered the in-flight SFTP fetch
         self.history_widget    = _HistoryWidgetStub()
+        self._fs_watcher       = QFileSystemWatcher()
+        self._fs_watcher.directoryChanged.connect(self._on_exp_dir_changed)
         self._build()
         if worker:
             worker.scan_log_ready.connect(self._on_scan_log_fetched)
@@ -1087,6 +1089,12 @@ class ExperimentsTab(QWidget):
         self.exp_date_label.setObjectName("dim_text")
         self.exp_date_label.setStyleSheet("font-size: 10px;")
         vlay.addWidget(self.exp_date_label)
+
+        self._exp_deleted_warning = QLabel("⚠  Experiment folder was deleted — please open or create a new experiment.")
+        self._exp_deleted_warning.setStyleSheet("font-size: 10px; color: #cc4400;")
+        self._exp_deleted_warning.setWordWrap(True)
+        self._exp_deleted_warning.setVisible(False)
+        vlay.addWidget(self._exp_deleted_warning)
 
         # ── ESAF server status ─────────────────────────────────────────────────
         sep = QFrame()
@@ -1457,6 +1465,9 @@ class ExperimentsTab(QWidget):
         if profile_name == self._active_profile:
             return
         self._active_profile = profile_name
+        if self._fs_watcher.directories():
+            self._fs_watcher.removePaths(self._fs_watcher.directories())
+        self._exp_deleted_warning.setVisible(False)
         # Clear current state so history from the old profile is not mixed in.
         self._active_exp_path  = ""
         self._remote_exp_dir   = ""
@@ -2072,6 +2083,10 @@ class ExperimentsTab(QWidget):
 
     def _set_active_experiment(self, path: str, info: dict):
         _add_to_recent_list(path, info)
+        if self._fs_watcher.directories():
+            self._fs_watcher.removePaths(self._fs_watcher.directories())
+        self._fs_watcher.addPath(path)
+        self._exp_deleted_warning.setVisible(False)
         self._active_exp_path = path
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
         self._esaf_info       = info.get("esaf", {})
@@ -2098,6 +2113,25 @@ class ExperimentsTab(QWidget):
             self.exp_remote_label.setText("")
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
         self._load_plan_log(path)
+
+    def _on_exp_dir_changed(self, changed_path: str):
+        """Called by QFileSystemWatcher when the watched experiment directory changes."""
+        if not self._active_exp_path or Path(self._active_exp_path).exists():
+            return
+        # Folder has been deleted — clear state without a blocking dialog
+        self._fs_watcher.removePaths(self._fs_watcher.directories())
+        self._active_exp_path = ""
+        self._remote_exp_dir  = ""
+        self._esaf_info       = {}
+        self._logged_uids     = set()
+        self._suppressed_uids = set()
+        self.exp_name_label.setText("—")
+        self.exp_path_label.setText("")
+        self.exp_remote_label.setText("")
+        self.exp_date_label.setText("")
+        self.plan_log_list.clear()
+        self._exp_deleted_warning.setVisible(True)
+        self.experiment_changed.emit("")
 
     def _load_active_experiment(self):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
