@@ -631,7 +631,7 @@ class _NewExperimentDialog(QDialog):
         rec = self._selected_esaf
         if rec is None:
             return None
-        pi_slug = re.sub(r"[^\w]", "_", (rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
+        pi_slug = re.sub(r"[^\w]", "_", (rec.get("pi_group") or rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
         esaf_folder = f"ESAF-{rec['esaf_id']}"
         start = rec.get("start_date", "")
         if start:
@@ -779,7 +779,7 @@ class _NewExperimentDialog(QDialog):
         run = self._sanitize(self._esaf_run_name.text().strip())
         rec = self._selected_esaf
 
-        pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
+        pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_group") or rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
         esaf_folder = f"ESAF-{rec['esaf_id']}"
         start = rec.get("start_date", "")
         if start:
@@ -947,7 +947,7 @@ class _NewExperimentDialog(QDialog):
             return
         run = self._sanitize(run_raw)
 
-        pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
+        pi_slug     = re.sub(r"[^\w]", "_", (rec.get("pi_group") or rec.get("pi_name") or "").strip().lower()).strip("_") or "no_pi"
         esaf_folder = f"ESAF-{rec['esaf_id']}"
         start = rec.get("start_date", "")
         if start:
