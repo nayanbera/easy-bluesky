@@ -1,6 +1,8 @@
 """experiments_tab.py — Experiments tab: experiment manager, queue, live plot, plan log."""
 
+import errno
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -1038,6 +1040,10 @@ class ExperimentsTab(QWidget):
         self.history_widget    = _HistoryWidgetStub()
         self._fs_watcher       = QFileSystemWatcher()
         self._fs_watcher.directoryChanged.connect(self._on_exp_dir_changed)
+        self._exp_health_timer = QTimer()
+        self._exp_health_timer.setInterval(10_000)
+        self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
+        self._re_state: str    = ""
         self._build()
         if worker:
             worker.scan_log_ready.connect(self._on_scan_log_fetched)
@@ -1467,6 +1473,7 @@ class ExperimentsTab(QWidget):
         self._active_profile = profile_name
         if self._fs_watcher.directories():
             self._fs_watcher.removePaths(self._fs_watcher.directories())
+        self._exp_health_timer.stop()
         self._exp_deleted_warning.setVisible(False)
         # Clear current state so history from the old profile is not mixed in.
         self._active_exp_path  = ""
@@ -1665,6 +1672,7 @@ class ExperimentsTab(QWidget):
         if not env_state:
             env_state = "idle" if status.get("worker_environment_exists") else "closed"
         re_state = status.get("re_state", "")
+        self._re_state = re_state
         env_open = env_state not in ("", "closed")
         running  = re_state == "running"
         paused   = re_state == "paused"
@@ -2086,6 +2094,10 @@ class ExperimentsTab(QWidget):
         if self._fs_watcher.directories():
             self._fs_watcher.removePaths(self._fs_watcher.directories())
         self._fs_watcher.addPath(path)
+        parent = str(Path(path).parent)
+        if Path(parent).exists():
+            self._fs_watcher.addPath(parent)
+        self._exp_health_timer.start()
         self._exp_deleted_warning.setVisible(False)
         self._active_exp_path = path
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
@@ -2115,11 +2127,60 @@ class ExperimentsTab(QWidget):
         self._load_plan_log(path)
 
     def _on_exp_dir_changed(self, changed_path: str):
-        """Called by QFileSystemWatcher when the watched experiment directory changes."""
-        if not self._active_exp_path or Path(self._active_exp_path).exists():
+        """Called by QFileSystemWatcher when a watched directory changes."""
+        if not self._active_exp_path:
             return
-        # Folder has been deleted — clear state without a blocking dialog
-        self._fs_watcher.removePaths(self._fs_watcher.directories())
+        exp_path = Path(self._active_exp_path)
+
+        # Parent directory fired — check for deletion or recreation
+        if changed_path == str(exp_path.parent):
+            if exp_path.exists():
+                # Folder was recreated — re-watch it and recover silently
+                if self._active_exp_path not in self._fs_watcher.directories():
+                    self._fs_watcher.addPath(self._active_exp_path)
+                    self._exp_health_timer.start()
+                self._exp_deleted_warning.setVisible(False)
+                return
+            # Folder was deleted — fall through
+        elif exp_path.exists():
+            # Experiment dir itself fired but still accessible — ignore
+            return
+
+        self._handle_exp_dir_lost(nfs=False)
+
+    def _check_exp_dir_health(self):
+        """Periodic NFS fallback: stat the experiment dir to detect stale mounts."""
+        if not self._active_exp_path:
+            return
+        try:
+            os.stat(self._active_exp_path)
+        except OSError as exc:
+            nfs = getattr(exc, "errno", None) in (
+                errno.ESTALE, errno.EIO, errno.ENOTCONN, errno.ENOENT)
+            self._handle_exp_dir_lost(nfs=nfs)
+
+    def _handle_exp_dir_lost(self, nfs: bool):
+        """Clear active experiment state and notify the user."""
+        if not self._active_exp_path:
+            return  # already handled (guard against double-fire)
+
+        lost_path = self._active_exp_path
+        scan_running = self._re_state == "running"
+
+        # Stop watching and health-checking immediately
+        if self._fs_watcher.directories():
+            self._fs_watcher.removePaths(self._fs_watcher.directories())
+            # Keep watching the parent so we can detect recreation
+            parent = str(Path(lost_path).parent)
+            if Path(parent).exists():
+                self._fs_watcher.addPath(parent)
+        self._exp_health_timer.stop()
+
+        # Pause the scan before showing the dialog
+        if scan_running:
+            self.pause_requested.emit()
+
+        # Clear all active-experiment state
         self._active_exp_path = ""
         self._remote_exp_dir  = ""
         self._esaf_info       = {}
@@ -2130,8 +2191,31 @@ class ExperimentsTab(QWidget):
         self.exp_remote_label.setText("")
         self.exp_date_label.setText("")
         self.plan_log_list.clear()
-        self._exp_deleted_warning.setVisible(True)
         self.experiment_changed.emit("")
+
+        # Build the dialog message
+        if nfs:
+            reason = (
+                "The experiment folder is no longer accessible.\n"
+                "The NFS server may have disconnected or the mount became stale.\n\n"
+                f"Path:  {lost_path}"
+            )
+        else:
+            reason = (
+                "The experiment folder was deleted externally.\n\n"
+                f"Path:  {lost_path}"
+            )
+
+        if scan_running:
+            msg = (
+                f"{reason}\n\n"
+                "The running scan has been paused.\n"
+                "Please resolve the issue, open or recreate the experiment folder,\n"
+                "and then resume the scan manually."
+            )
+            QMessageBox.warning(self, "Experiment Folder Lost — Scan Paused", msg)
+        else:
+            QMessageBox.information(self, "Experiment Folder Lost", reason)
 
     def _load_active_experiment(self):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
