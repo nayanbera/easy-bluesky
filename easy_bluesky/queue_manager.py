@@ -448,6 +448,7 @@ class QueueManager(QWidget):
         self.history_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.history_list.customContextMenuRequested.connect(self._history_context_menu)
         self.history_list.itemDoubleClicked.connect(self._requeue_from_history_dialog)
+        self.history_list.currentItemChanged.connect(self._on_history_selection)
         llay.addWidget(self.history_list)
 
         splitter.addWidget(left)
@@ -812,7 +813,7 @@ class QueueManager(QWidget):
             li.setToolTip(
                 f"Exit: {status}"
                 + ("" if is_cur else "  [other experiment]")
-                + "\nDouble-click to view data  |  Right-click to re-queue"
+                + "\nDouble-click to edit & re-queue  |  Right-click for more options"
             )
             self.history_list.addItem(li)
         self._filter_history(self._history_search.text())
@@ -826,24 +827,57 @@ class QueueManager(QWidget):
         dlg.exec()
 
     def _requeue_from_history_dialog(self, list_item: QListWidgetItem):
-        """Double-click: open PlanDialog pre-populated so user can edit & re-queue."""
+        """Double-click: open PlanDialog pre-populated so user can edit & re-queue.
+        Falls back to a direct re-queue prompt when the plan isn't in the allowed list."""
         item = list_item.data(Qt.ItemDataRole.UserRole)
         if not item:
             return
         base = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
         base.setdefault("item_type", "plan")
-        dlg = PlanDialog(self.plans, self.devices, item=base, parent=self)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-            ok, msg = self.worker.add_item(dlg.result_item)
-            self._log(f"{'✓' if ok else '✗'} Re-queue '{item.get('name', '?')}': {msg}")
+        name = item.get("name", "?")
+        if name in self.plans:
+            dlg = PlanDialog(self.plans, self.devices, item=base, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
+                ok, msg = self.worker.add_item(dlg.result_item)
+                self._log(f"{'✓' if ok else '✗'} Re-queue '{name}': {msg}")
+        else:
+            r = QMessageBox.question(
+                self, "Re-queue",
+                f"Plan '{name}' is not in the current allowed plans list "
+                f"(RE environment may be closed).\n\n"
+                f"Re-queue with original arguments anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if r == QMessageBox.StandardButton.Yes:
+                ok, msg = self.worker.add_item(base)
+                self._log(f"{'✓' if ok else '✗'} Re-queue '{name}': {msg}")
+
+    def _on_history_selection(self, current, _previous):
+        if not current:
+            return
+        item = current.data(Qt.ItemDataRole.UserRole)
+        if item:
+            self.detail_text.setPlainText(json.dumps(item, indent=2, default=str))
+
+    def _direct_requeue(self, list_item: QListWidgetItem):
+        """Re-queue a history item immediately with its original args/kwargs."""
+        item = list_item.data(Qt.ItemDataRole.UserRole)
+        if not item:
+            return
+        base = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
+        base.setdefault("item_type", "plan")
+        ok, msg = self.worker.add_item(base)
+        self._log(f"{'✓' if ok else '✗'} Re-queue '{item.get('name', '?')}': {msg}")
 
     def _history_context_menu(self, pos):
         list_item = self.history_list.itemAt(pos)
         if not list_item:
             return
         menu = QMenu(self)
-        menu.addAction("Edit & Re-queue", lambda: self._requeue_from_history_dialog(list_item))
-        menu.addAction("View Details",    lambda: self._show_run_detail(list_item))
+        menu.addAction("Edit & Re-queue",    lambda: self._requeue_from_history_dialog(list_item))
+        menu.addAction("Re-queue directly",  lambda: self._direct_requeue(list_item))
+        menu.addSeparator()
+        menu.addAction("View Details",       lambda: self._show_run_detail(list_item))
         menu.exec(self.history_list.viewport().mapToGlobal(pos))
 
     def append_console(self, text):
