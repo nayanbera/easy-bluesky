@@ -482,6 +482,47 @@ class _DeviceStatusReader(QThread):
             self.read_error.emit(str(e))
 
 
+class _SimDeviceSetter(QThread):
+    """Background thread: calls set_sim_device() via function_execute and polls for completion."""
+    done  = pyqtSignal(bool, str)   # success, message
+
+    def __init__(self, rm, name: str, value: float, parent=None):
+        super().__init__(parent)
+        self._rm    = rm
+        self._name  = name
+        self._value = value
+
+    def run(self):
+        try:
+            from bluesky_queueserver_api import BFunc
+            r = self._rm.function_execute(
+                item=BFunc("set_sim_device", name=self._name, value=self._value)
+            )
+            if not r.get("success"):
+                self.done.emit(False, r.get("msg", "function_execute failed"))
+                return
+            task_uid = r["task_uid"]
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                time.sleep(0.2)
+                res = self._rm.task_result(task_uid=task_uid)
+                state = res.get("status", "")
+                if state == "completed":
+                    result = res.get("result", {})
+                    if not result.get("success", True):
+                        tb = str(result.get("return_value", "unknown error"))
+                        self.done.emit(False, tb[:200])
+                        return
+                    self.done.emit(True, "")
+                    return
+                if state in ("failed", "aborted", "not_found"):
+                    self.done.emit(False, res.get("msg", f"Task {state}"))
+                    return
+            self.done.emit(False, "set_sim_device timed out (>15 s)")
+        except Exception as e:
+            self.done.emit(False, str(e))
+
+
 class _ScanLogFetcher(QThread):
     """Fetch scans_log.json from the remote RE machine via SFTP."""
     data_ready  = pyqtSignal(bytes)
@@ -517,6 +558,7 @@ class ZMQWorker(QObject):
     device_read_error       = pyqtSignal(str)
     pv_names_ready          = pyqtSignal(dict)
     pv_names_error          = pyqtSignal(str)
+    sim_device_set_done     = pyqtSignal(str, bool, str)  # dev_name, success, msg
     error_occurred          = pyqtSignal(str)
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
@@ -539,6 +581,7 @@ class ZMQWorker(QObject):
         self._doc_writer     = _LocalDocWriter()
         self._device_reader  = None   # strong ref to _DeviceStatusReader
         self._pv_names_reader = None  # strong ref to _PVNamesReader
+        self._sim_device_setter = None  # strong ref to _SimDeviceSetter
         self._ssh_settings   = {}     # saved from start_log_tail for SFTP use
         self._scan_log_fetcher = None  # strong ref to _ScanLogFetcher
         # Set by main thread after script_upload; polled each cycle so
@@ -1032,19 +1075,17 @@ class ZMQWorker(QObject):
         self._device_reader.start()
 
     def set_sim_device(self, name: str, value: float):
-        """Call set_sim_device() in the RE environment (fire-and-forget background thread)."""
+        """Call set_sim_device() in the RE environment via a proper QThread that polls task_result."""
         if self.rm is None:
             return
-        def _run():
-            try:
-                from bluesky_queueserver_api import BFunc
-                self.rm.function_execute(
-                    item=BFunc("set_sim_device", name=name, value=value)
-                )
-            except Exception:
-                pass
-        import threading
-        threading.Thread(target=_run, daemon=True).start()
+        if self._sim_device_setter is not None and self._sim_device_setter.isRunning():
+            # Previous set still in flight — drop this one to avoid stacking requests.
+            return
+        self._sim_device_setter = _SimDeviceSetter(self.rm, name, value)
+        self._sim_device_setter.done.connect(
+            lambda ok, msg: self.sim_device_set_done.emit(name, ok, msg)
+        )
+        self._sim_device_setter.start()
 
     def fetch_scan_log(self, remote_path: str):
         """Fetch scans_log.json from the remote machine via SFTP.

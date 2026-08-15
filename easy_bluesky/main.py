@@ -1210,6 +1210,7 @@ class MainWindow(QMainWindow):
         self.devices_plans_tab.poll_sim_values_requested.connect(self.worker.read_devices_status)
         self.devices_plans_tab.set_sim_device_requested.connect(self.worker.set_sim_device)
         self.worker.device_readings_updated.connect(self.devices_plans_tab.update_sim_values)
+        self.worker.sim_device_set_done.connect(self.devices_plans_tab.on_sim_device_set_done)
 
         self.worker.console_updated.connect(self._on_console_line)
         self.worker.connected.connect(self.re_console.on_connected)

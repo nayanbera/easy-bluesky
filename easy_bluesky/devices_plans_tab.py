@@ -197,8 +197,9 @@ class DevicesPlansTab(QWidget):
         self._device_items: dict  = {}   # dev_name → QTreeWidgetItem
         self._signal_items: dict  = {}   # (dev_name, sig_name) → QTreeWidgetItem
         self._primary_signal: dict = {}  # dev_name → sig_name shown on device row
-        self._readback_values: dict = {}  # dev_name → float (current readback)
+        self._readback_values: dict = {}  # dev_name → float | None (current readback)
         self._tweak_pvnames: dict = {}    # dev_name → user_setpoint pvname (EPICS)
+        self._tweak_buttons: dict = {}    # dev_name → [QPushButton, ...] (for enable/disable)
         self._device_classes: dict = {}   # dev_name → classname (for sim detection)
         self._sim_mode: bool = False
         self._sim_device_names: set = set()   # devices polled via read_devices_status()
@@ -416,6 +417,7 @@ class DevicesPlansTab(QWidget):
         self._primary_signal.clear()
         self._readback_values.clear()
         self._tweak_pvnames.clear()
+        self._tweak_buttons.clear()
         self._device_classes.clear()
         self._epics_monitor.clear()
 
@@ -767,19 +769,43 @@ class DevicesPlansTab(QWidget):
             btn.setFixedHeight(22)
 
         def _move(sign: int):
-            cur = self._readback_values.get(dev_name, 0.0)
+            cur = self._readback_values.get(dev_name)
+            if cur is None:
+                # No CA callback yet — try to read the displayed value from the tree.
+                item = self._device_items.get(dev_name)
+                if item:
+                    try:
+                        cur = float(item.text(2))
+                    except (ValueError, TypeError):
+                        cur = 0.0
+                else:
+                    cur = 0.0
             new_val = cur + sign * step.value()
             if setpoint_pvname is None:
+                # Sim device: disable buttons while the QThread is in flight.
+                btn_minus.setEnabled(False)
+                btn_plus.setEnabled(False)
+                self._status_lbl.setText(
+                    f"↦ Tweaking {dev_name} → {new_val:.6g}…"
+                )
+                self._status_lbl.setStyleSheet("font-size: 11px; color: #e8a44a;")
                 self.set_sim_device_requested.emit(dev_name, new_val)
                 self._readback_values[dev_name] = new_val  # optimistic update
-                # Re-poll soon after set completes so linked signals (e.g.
-                # SynSignal with func reading this motor) update promptly.
-                QTimer.singleShot(400, self.poll_sim_values_requested.emit)
+                # Re-poll after the QThread completes (on_sim_device_set_done does it).
+                # Also poll via the regular timer in case the signal doesn't arrive.
+                QTimer.singleShot(800, self.poll_sim_values_requested.emit)
             else:
                 self._epics_monitor.put_value(setpoint_pvname, new_val)
+                self._status_lbl.setText(
+                    f"↦ caput {setpoint_pvname} → {new_val:.6g}"
+                )
+                self._status_lbl.setStyleSheet("font-size: 11px; color: #e8a44a;")
+                QTimer.singleShot(2000, self._restore_status_label)
 
         btn_minus.clicked.connect(lambda: _move(-1))
         btn_plus.clicked.connect(lambda: _move(+1))
+        # Store button refs so on_sim_device_set_done can re-enable them.
+        self._tweak_buttons.setdefault(dev_name, []).extend([btn_minus, btn_plus])
 
         h.addWidget(btn_minus)
         h.addWidget(step)
@@ -818,6 +844,41 @@ class DevicesPlansTab(QWidget):
                 item.setText(3, meta["units"])
             if meta.get("desc"):
                 item.setText(4, meta["desc"])
+
+    def on_sim_device_set_done(self, dev_name: str, success: bool, msg: str):
+        """Called when _SimDeviceSetter finishes. Re-enable tweak buttons and refresh."""
+        for btn in self._tweak_buttons.get(dev_name, []):
+            try:
+                btn.setEnabled(True)
+            except RuntimeError:
+                pass  # widget already deleted
+        if success:
+            self._restore_status_label()
+            # Poll immediately for the updated value.
+            self.poll_sim_values_requested.emit()
+        else:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
+            self._status_lbl.setText(f"⚠ Tweak {dev_name} failed: {msg[:100]}")
+            QTimer.singleShot(4000, self._restore_status_label)
+
+    def _restore_status_label(self):
+        """Restore the status label to its normal connected/sim state."""
+        if self._sim_mode:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #ff7f0e;")
+            self._status_lbl.setText("● Sim — polling device values…")
+        elif self._sim_device_names:
+            n_epics = sum(
+                1 for d in self._device_items if d not in self._sim_device_names
+            )
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
+            self._status_lbl.setText(
+                f"● Live — {n_epics} PV(s) + {len(self._sim_device_names)} polled"
+            )
+        else:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
+            self._status_lbl.setText(
+                f"● Live — monitoring PVs"
+            )
 
     def _on_install_done(self, success: bool, msg: str):
         if success:
