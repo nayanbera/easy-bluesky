@@ -844,3 +844,64 @@ try:
     print("[re_startup_mongo] scans_log writer subscribed")
 except Exception as _e:
     print(f"[re_startup_mongo] WARNING: scans_log writer not subscribed: {_e}")
+
+# ── Area detector continuous-acquire restore preprocessor ─────────────────────
+# Problem: after a scan, stage_sigs restores acquire=1 immediately after setting
+# image_mode='Continuous', but many IOCs (including Pilatus) silently drop the
+# acquire=1 put if image_mode hasn't fully settled yet.  stage_sigs ordering
+# alone cannot fix this because ophyd fires both puts without delay.
+#
+# Fix: register a RunEngine preprocessor that (a) reads cam.acquire / cam.image_mode
+# BEFORE any staging and (b) after all unstaging is done, explicitly sets image_mode
+# then sleeps 0.2 s before setting acquire.  finalize_wrapper ensures this runs
+# even on abort or exception.
+try:
+    from bluesky.preprocessors import finalize_wrapper as _fw_ad
+    import bluesky.plan_stubs as _bps_ad
+
+    def _ad_continuous_restore(plan):
+        import ophyd as _oph_ad
+
+        # Read detector state before staging (called at plan-start, not import time)
+        _restore_list = []
+        try:
+            for _n, _obj in list(globals().items()):
+                if _n.startswith('_') or not isinstance(_obj, _oph_ad.Device):
+                    continue
+                _cam      = getattr(_obj, 'cam', None)
+                _acq_sig  = getattr(_cam, 'acquire',    None) if _cam else None
+                _mode_sig = getattr(_cam, 'image_mode', None) if _cam else None
+                if _acq_sig is None or _mode_sig is None:
+                    continue
+                try:
+                    _orig_acq  = int(_acq_sig.get())
+                    _orig_mode = _mode_sig.get()
+                except Exception:
+                    continue
+                if _orig_acq:
+                    _restore_list.append((_cam, _orig_mode, int(_orig_acq)))
+        except Exception as _scan_e:
+            print(f"[re_startup_mongo] AD restore: scan error: {_scan_e}")
+
+        if not _restore_list:
+            # No detector was acquiring — run plan unmodified
+            yield from plan
+            return
+
+        def _restore():
+            for _cam_r, _mode_r, _acq_r in _restore_list:
+                try:
+                    yield from _bps_ad.mv(_cam_r.image_mode, _mode_r)
+                    yield from _bps_ad.sleep(0.2)   # let IOC settle before acquire
+                    yield from _bps_ad.mv(_cam_r.acquire, _acq_r)
+                    print(f"[re_startup_mongo] {_cam_r.name}: restored "
+                          f"image_mode={_mode_r!r}, acquire={_acq_r}")
+                except Exception as _re2:
+                    print(f"[re_startup_mongo] AD restore warning ({_cam_r.name}): {_re2}")
+
+        yield from _fw_ad(plan, _restore())
+
+    RE.preprocessors.append(_ad_continuous_restore)
+    print("[re_startup_mongo] AD continuous-acquire restore preprocessor registered")
+except Exception as _e_ad:
+    print(f"[re_startup_mongo] WARNING: AD restore preprocessor not registered: {_e_ad}")
