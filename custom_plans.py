@@ -374,6 +374,7 @@ def count_w_time(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def per_shot(detectors):
         yield from _set_image_mode_single(detectors)
@@ -443,6 +444,7 @@ def scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -513,6 +515,7 @@ def rel_scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -580,6 +583,7 @@ def grid_scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -647,6 +651,7 @@ def rel_grid_scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -714,6 +719,7 @@ def list_scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -781,6 +787,7 @@ def rel_list_scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -848,6 +855,7 @@ def list_grid_scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -915,6 +923,7 @@ def rel_list_grid_scan_w_time_n_delay(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -1003,6 +1012,7 @@ def list_scan_w_time_n_delay_from_csv(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     header, columns = load_multi_motor_csv(csv_file)
     if len(motors) != len(columns):
@@ -1267,6 +1277,7 @@ def aswaxs_energy_scan(
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
     _scan_n = _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     saved = {}
 
