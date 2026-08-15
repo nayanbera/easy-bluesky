@@ -275,21 +275,21 @@ def set_areadetector_hdf(det, exp_dir: str, sample_name: str, scan_num: int):
     ----------
     det         : area detector ophyd object
     exp_dir     : experiment directory on the RE machine (remote_exp_dir preferred)
-    sample_name : sample name used for folder and file naming
+    sample_name : sample name used for file naming
     scan_num    : scan number used to form the filename suffix (_S_NNNN)
     """
     if not sample_name:
         raise ValueError("sample_name must not be empty")
 
     if det.name == "dante":
-        local_path = f"{exp_dir}/{sample_name}/{det.name}/"
+        local_path = f"{exp_dir}/{det.name}/"
         file_path  = f"/local/home/dpuser{local_path.replace('/home/chem_epics/', '/')}"
         os.makedirs(local_path, exist_ok=True)
         det.filename.put(sample_name + f"_S_{scan_num:04d}")
         det.filepath.put(file_path)
 
     elif det.name == "Pil300K":
-        local_path = f"{exp_dir}/{sample_name}/{det.name}/"
+        local_path = f"{exp_dir}/{det.name}/"
         file_path  = local_path.replace("chem_epics", "det")
         os.makedirs(local_path, exist_ok=True)
         yield from mv(det.hdf1.file_path, file_path)
@@ -297,7 +297,7 @@ def set_areadetector_hdf(det, exp_dir: str, sample_name: str, scan_num: int):
 
     else:
         if hasattr(det, "hdf1"):
-            file_path = os.path.join(exp_dir, sample_name, det.name)
+            file_path = os.path.join(exp_dir, det.name)
             os.makedirs(file_path, exist_ok=True)
             yield from mv(det.hdf1.file_path, file_path)
             yield from mv(det.hdf1.file_name, sample_name + f"_S_{scan_num:04d}")

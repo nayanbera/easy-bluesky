@@ -1263,12 +1263,6 @@ class ExperimentsTab(QWidget):
         self.sample_desc_edit.editingFinished.connect(self._on_sample_desc_commit)
         sample_lay.addRow("Desc:", self.sample_desc_edit)
 
-        self.sample_dir_label = QLabel("—")
-        self.sample_dir_label.setObjectName("dim_text")
-        self.sample_dir_label.setStyleSheet("font-size: 10px;")
-        self.sample_dir_label.setWordWrap(True)
-        sample_lay.addRow("Folder:", self.sample_dir_label)
-
         vlay.addWidget(sample_grp)
 
         lbl_log = QLabel("PLAN LOG")
@@ -1865,34 +1859,8 @@ class ExperimentsTab(QWidget):
         name = self.sample_name_edit.text().strip()
         if not name or name == self._sample_name:
             return
-        if not self._active_exp_path:
-            QMessageBox.warning(self, "No Experiment",
-                                "Open or create an experiment first.")
-            self.sample_name_edit.setText(self._sample_name)
-            return
-        safe = re.sub(r"[^\w\-]", "_", name)
-        sample_dir = Path(self._active_exp_path) / "samples" / safe
-        if sample_dir.exists():
-            r = QMessageBox.question(
-                self, "Sample Exists",
-                f"Sample folder '{safe}' already exists.\nUse it?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if r != QMessageBox.StandardButton.Yes:
-                self.sample_name_edit.setText(self._sample_name)
-                return
-        else:
-            try:
-                sample_dir.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                QMessageBox.critical(self, "Error",
-                                     f"Could not create sample folder:\n{e}")
-                self.sample_name_edit.setText(self._sample_name)
-                return
         self._sample_name = name
-        display = str(sample_dir) if len(str(sample_dir)) <= 55 else "…" + str(sample_dir)[-54:]
-        self.sample_dir_label.setText(display)
-        self._log(f"✓ Sample: {safe}")
+        self._log(f"✓ Sample: {name}")
 
     def _on_sample_desc_commit(self):
         self._sample_description = self.sample_desc_edit.text().strip()
@@ -1902,7 +1870,6 @@ class ExperimentsTab(QWidget):
         self._sample_description = ""
         self.sample_name_edit.clear()
         self.sample_desc_edit.clear()
-        self.sample_dir_label.setText("—")
 
     # ── Experiment management ──────────────────────────────────────────────────
 
