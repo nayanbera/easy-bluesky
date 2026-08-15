@@ -16,13 +16,28 @@ from ophyd import EpicsSignal, EpicsSignalRO, Device
 from typing import Optional
 import csv
 
-# Injected by re_startup_mongo after loading — provides RE.md for scan_id lookup
-RE = None
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _scan_num_from_log(exp_dir: str) -> int:
+    """Return the next scan number by counting completed entries in scans_log.json.
+
+    scans_log.json is written by re_startup_mongo after every run stop, so its
+    length at plan-start time equals the number of scans already completed in
+    this experiment — making len + 1 the correct sequential number for the next scan.
+    """
+    import json as _json
+    log_path = os.path.join(exp_dir, "scans_log.json")
+    try:
+        with open(log_path, encoding="utf-8") as _f:
+            entries = _json.load(_f)
+        if isinstance(entries, list):
+            return len(entries) + 1
+    except Exception:
+        pass
+    return 1
+
 
 def _exp_dir_from_md(md: dict) -> str:
     """Return the experiment directory path to use on the RE machine.
@@ -358,7 +373,7 @@ def count_w_time(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def per_shot(detectors):
         yield from _set_image_mode_single(detectors)
@@ -427,7 +442,7 @@ def scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -497,7 +512,7 @@ def rel_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -564,7 +579,7 @@ def grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -631,7 +646,7 @@ def rel_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -698,7 +713,7 @@ def list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -765,7 +780,7 @@ def rel_list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -832,7 +847,7 @@ def list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -899,7 +914,7 @@ def rel_list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -987,7 +1002,7 @@ def list_scan_w_time_n_delay_from_csv(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     header, columns = load_multi_motor_csv(csv_file)
     if len(motors) != len(columns):
@@ -1251,7 +1266,7 @@ def aswaxs_energy_scan(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
+    _scan_n = _scan_num_from_log(_dir)
 
     saved = {}
 

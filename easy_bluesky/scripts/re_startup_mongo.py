@@ -97,8 +97,6 @@ if _plans_dir and os.path.isdir(_plans_dir):
                 if not _dk.startswith('_') and isinstance(_dv, (_oph_pd.Device,
                                                                   _oph_pd.Signal)):
                     vars(_mod_pd)[_dk] = _dv
-            # Inject RE so plan modules can read RE.md for the current scan_id
-            vars(_mod_pd)['RE'] = RE
             print(f"[re_startup_mongo] {_pf.name} loaded")
         except Exception as _e_pd:
             print(f"[re_startup_mongo] WARNING: {_pf.name} failed to load: {_e_pd}")
