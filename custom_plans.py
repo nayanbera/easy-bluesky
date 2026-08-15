@@ -16,6 +16,9 @@ from ophyd import EpicsSignal, EpicsSignalRO, Device
 from typing import Optional
 import csv
 
+# Injected by re_startup_mongo after loading — provides RE.md for scan_id lookup
+RE = None
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -355,7 +358,7 @@ def count_w_time(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def per_shot(detectors):
         yield from _set_image_mode_single(detectors)
@@ -424,7 +427,7 @@ def scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -494,7 +497,7 @@ def rel_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -561,7 +564,7 @@ def grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -628,7 +631,7 @@ def rel_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -695,7 +698,7 @@ def list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -762,7 +765,7 @@ def rel_list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -829,7 +832,7 @@ def list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -896,7 +899,7 @@ def rel_list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
         yield from _set_image_mode_single(detectors)
@@ -984,7 +987,7 @@ def list_scan_w_time_n_delay_from_csv(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     header, columns = load_multi_motor_csv(csv_file)
     if len(motors) != len(columns):
@@ -1248,7 +1251,7 @@ def aswaxs_energy_scan(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_id", 0)
+    _scan_n = RE.md.get('scan_id', 0) + 1 if RE is not None else md.get("scan_id", 0)
 
     saved = {}
 
