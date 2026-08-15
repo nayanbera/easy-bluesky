@@ -172,12 +172,23 @@ class _EPICSMonitor(QObject):
             except RuntimeError:
                 pass
 
-    def put_value(self, pvname: str, value):
+    def put_value(self, pvname: str, value) -> str:
+        """Write *value* to *pvname*.  Returns "" on success, error message on failure."""
         try:
             import epics
-            epics.caput(pvname, value, wait=False)
-        except Exception:
-            pass
+            pv = self._pvs.get(pvname)
+            if pv is not None:
+                # Reuse the already-connected PV object — guaranteed same CA channel
+                # as our subscriptions, so if we can read the PV we can also write it.
+                if not pv.connected:
+                    return f"PV not connected"
+                pv.put(value, wait=False)
+            else:
+                # Setpoint not in monitored set — fall back to a standalone caput.
+                epics.caput(pvname, value, wait=False)
+            return ""
+        except Exception as e:
+            return str(e)
 
 
 # ── Tab widget ──────────────────────────────────────────────────────────────────
@@ -297,6 +308,10 @@ class DevicesPlansTab(QWidget):
         self.devices_tree.setRootIsDecorated(True)
         self.devices_tree.setAlternatingRowColors(True)
         self.devices_tree.setSortingEnabled(False)
+        # resizeColumnToContents() ignores setItemWidget() widths, so column 5
+        # (Tweak) would shrink to the "Tweak" header width (~50 px) and clip the
+        # ◀/step/▶ widget.  Pre-size it; setup_epics_monitors enforces the minimum.
+        self.devices_tree.setColumnWidth(5, 155)
         vlay.addWidget(self.devices_tree, 1)
         return w
 
@@ -458,8 +473,9 @@ class DevicesPlansTab(QWidget):
             self.devices_tree.addTopLevelItem(group_item)
 
         self.devices_tree.expandAll()
-        for i in range(6):
+        for i in range(5):
             self.devices_tree.resizeColumnToContents(i)
+        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 155))
 
         # Auto-start PV monitoring whenever a new device list arrives.
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
@@ -600,8 +616,11 @@ class DevicesPlansTab(QWidget):
 
         self._refresh_btn.setEnabled(True)
         self._refresh_btn.setText("⟳ Reconnect")
-        for i in range(6):
+        for i in range(5):   # columns 0-4 only
             self.devices_tree.resizeColumnToContents(i)
+        # Column 5 (Tweak): resizeColumnToContents ignores setItemWidget sizes,
+        # so enforce a minimum wide enough for ◀ / step / ▶.
+        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 155))
 
     def on_pv_names_error(self, msg: str):
         self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
@@ -795,12 +814,17 @@ class DevicesPlansTab(QWidget):
                 # Also poll via the regular timer in case the signal doesn't arrive.
                 QTimer.singleShot(800, self.poll_sim_values_requested.emit)
             else:
-                self._epics_monitor.put_value(setpoint_pvname, new_val)
-                self._status_lbl.setText(
-                    f"↦ caput {setpoint_pvname} → {new_val:.6g}"
-                )
-                self._status_lbl.setStyleSheet("font-size: 11px; color: #e8a44a;")
-                QTimer.singleShot(2000, self._restore_status_label)
+                err = self._epics_monitor.put_value(setpoint_pvname, new_val)
+                if err:
+                    self._status_lbl.setText(f"⚠ {setpoint_pvname}: {err}")
+                    self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
+                    QTimer.singleShot(4000, self._restore_status_label)
+                else:
+                    self._status_lbl.setText(
+                        f"↦ {setpoint_pvname} → {new_val:.6g}"
+                    )
+                    self._status_lbl.setStyleSheet("font-size: 11px; color: #e8a44a;")
+                    QTimer.singleShot(2000, self._restore_status_label)
 
         btn_minus.clicked.connect(lambda: _move(-1))
         btn_plus.clicked.connect(lambda: _move(+1))
