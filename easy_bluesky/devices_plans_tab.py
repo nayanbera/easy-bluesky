@@ -709,12 +709,16 @@ class DevicesPlansTab(QWidget):
     def _on_pv_changed(self, dev_name: str, sig_name: str, value, units: str):
         # Buffer — tree setText() calls are flushed at 10 Hz by _flush_pv_updates
         self._pending_pv_updates[(dev_name, sig_name)] = (value, units)
-        # Track numeric readback immediately (used for tweak calculations)
+        # Track numeric readback immediately (used for tweak calculations).
+        # Use try/float() rather than isinstance so numpy scalars work regardless
+        # of numpy version (numpy ≥2.0 dropped float subclassing).
         if sig_name in ("user_readback", "readback") or (
             self._primary_signal.get(dev_name) == sig_name
         ):
-            if isinstance(value, (int, float)):
+            try:
                 self._readback_values[dev_name] = float(value)
+            except (TypeError, ValueError):
+                pass
         # Cache units (no Qt tree ops)
         if units:
             self._metadata_cache.setdefault(dev_name, {})["units"] = units
@@ -821,10 +825,10 @@ class DevicesPlansTab(QWidget):
                     QTimer.singleShot(4000, self._restore_status_label)
                 else:
                     self._status_lbl.setText(
-                        f"↦ {setpoint_pvname} → {new_val:.6g}"
+                        f"↦ {setpoint_pvname} → {new_val:.6g}  (from {cur:.6g})"
                     )
                     self._status_lbl.setStyleSheet("font-size: 11px; color: #e8a44a;")
-                    QTimer.singleShot(2000, self._restore_status_label)
+                    QTimer.singleShot(4000, self._restore_status_label)
 
         btn_minus.clicked.connect(lambda: _move(-1))
         btn_plus.clicked.connect(lambda: _move(+1))
@@ -860,8 +864,10 @@ class DevicesPlansTab(QWidget):
                 continue
             item.setText(2, _fmt_value(val))
             item.setForeground(2, QColor("#dddddd"))
-            if isinstance(val, (int, float)):
+            try:
                 self._readback_values[dev_name] = float(val)
+            except (TypeError, ValueError):
+                pass
 
             meta = self._metadata_cache.get(dev_name, {})
             if meta.get("units"):
