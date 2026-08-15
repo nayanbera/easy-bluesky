@@ -185,6 +185,30 @@ in the log and therefore in the RE console widget.
   completed plans to JSONL run files via `_find_run_file_for_entry`, and appends
   entries to `<exp_dir>/plans_log.jsonl`.
 
+## Queue Manager — history list
+
+`queue_manager.py` — `QueueManager`:
+
+- **Single-click** on a history item populates `detail_text` via `_on_history_selection` (same as queue list).
+- **Double-click** (`_requeue_from_history_dialog`): if plan name is in `self.plans` → opens `PlanDialog` for editing; if not (RE environment closed or plan not allowed) → shows a Yes/No prompt and adds the original item directly via `worker.add_item`.
+- **Right-click context menu**: `Edit & Re-queue` (PlanDialog), `Re-queue directly` (`_direct_requeue` — adds original item, no dialog), `View Details` (opens `RunDetailDialog`).
+- `RunDetailDialog` has its own Re-queue button that also opens `PlanDialog`.
+
+## MongoDB Browser — notes
+
+`mongo_browser.py` — `MongoDataBrowserTab`:
+
+### Experiment filter
+- `set_active_experiment(exp_dir)` is called by `main._on_experiment_changed`. It unchecks "All runs" and calls `_fetch_runs`.
+- `_RunListFetcher` query strategy: if `run_uids` (from `plans_log.jsonl`) are non-empty → filter by UID only (no regex, to avoid matching other experiments with the same folder name). Fallback (empty log): `exp_dir` regex on the last two path components.
+
+### Derivative transform
+- Bottom bar (below plot, beside crosshair label): `Log Y | ± Errors | Deriv: [— / dy/dx / d²y/dx²]`
+- Implemented via `np.gradient` (central differences) — result has the same N points at the same x positions, no shift.
+- Applied in `_auto_plot` after normalization and before log transform.
+- Error propagation: exact central-difference formula `σ_dy[i] = √(σ[i+1]² + σ[i−1]²) / (x[i+1] − x[i−1])`; 2nd order iterates the formula.
+- Fit overlays: raw fit data cached in `_fit_items_cache`; `_auto_plot` clears stale fit items from the plot and redraws from cache with the current log/deriv settings on every replot.
+
 ## Known issues / non-obvious decisions
 
 - **`pkill` self-kill**: `pkill -f start-re-manager` matches the bash process running

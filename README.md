@@ -8,7 +8,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Queue Manager** — Add, reorder, and delete plans. Full RE controls (open environment, start, pause, resume, abort, stop).
 - **Plan Builder** — Two-panel interface: a **Visual Composer** for assembling scan sequences from drag-and-drop blocks (no Python required), and a **Code Editor** for full custom plans with syntax highlighting, auto-indent, and templates.
 - **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move, screenshot.
-- **MongoDB Browser** — Browse completed runs stored in MongoDB. Filters automatically to the active experiment; select multiple runs for overlay plotting with common-column intersection; auto-plots when selection or axis choices change; double-click the plot to move the motor; screenshot; HDF5 export.
+- **MongoDB Browser** — Browse completed runs stored in MongoDB. Filters automatically to the active experiment (UID-based, not regex); select multiple runs for overlay plotting with common-column intersection; auto-plots when selection or axis choices change; 1st and 2nd derivative transforms (`np.gradient`, no x-shift) with error propagation applied to data and fit overlays; double-click the plot to move the motor; screenshot; HDF5 export.
 - **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata.
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
 - **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
@@ -1760,6 +1760,17 @@ easy-bluesky/
 ---
 
 ## Changelog
+
+### 2026-08-14 (session 2)
+
+- **Fix: MongoDB Browser shows scans from other experiments** — When `plans_log.jsonl` contained UIDs the filter query used `$or [{uid: …}, {exp_dir: regex}]`, which matched any experiment folder sharing the same name (e.g. every old "test" folder). Fixed: when UIDs are available they are used exclusively; the folder-name regex fallback (empty plan log) now uses the last two path components for a tighter match.
+- **Fix: History list — single-click shows plan detail** — Clicking a history item now populates the PLAN DETAIL panel on the right, the same way clicking a queue item does. Previously nothing happened on single-click.
+- **Fix: Re-queue from history when RE environment is closed** — `_requeue_from_history_dialog` now detects when the plan name is absent from the current allowed-plans list and offers a Yes/No prompt to re-queue with the original arguments directly. Previously the PlanDialog showed a silent "Select a valid plan" error with no escape.
+- **Feat: "Re-queue directly" context menu on history items** — Right-click on any history item shows a "Re-queue directly" option that adds the plan back to the queue immediately with its original args/kwargs, bypassing the edit dialog.
+- **UI: Swap queue button rows in Experiments tab** — `[Add | Remove | Save | Load | Clear]` moved above the queue list; `[Start | Pause | Resume | Abort | Stop]` + Auto-start/Loop moved below. Queue-building actions are now at the top; execution controls follow naturally after the queue is visible.
+- **Feat: Derivative transform in MongoDB Browser** — A `Deriv:` dropdown (`— / dy/dx / d²y/dx²`) added to the bottom bar beside the crosshair label. Uses `np.gradient` (central differences) — no x-shift, same point count as original. Applied after normalization and before log, so `log(dy/dx)` is also available. Error bars propagated using the exact central-difference stencil formula. Fit overlay curves (preview and permanent) receive the same derivative transform so they stay aligned with the data.
+- **UI: Log Y and ± Errors moved to bottom bar** — Both controls relocated from the crowded top control bar to the new bottom bar beside the crosshair X/Y coordinates.
+- **Fix: Fit overlay not updated when derivative changes** — Changing the Deriv dropdown now redraws fit curves with the new transform. Previously the fit stayed in raw space while the data switched to derivative space. Raw fit data is cached in `_fit_items_cache`; `_auto_plot` clears and redraws from cache on every replot.
 
 ### 2026-08-14
 
