@@ -586,6 +586,7 @@ class ADViewerWindow(QMainWindow):
             return
         if lo is not None and hi is not None and lo < hi:
             self._img_view.setLevels(lo, hi)
+            self._img_view.ui.histogram.setHistogramRange(lo, hi)
 
     def _on_auto_levels(self):
         self._img_view.autoLevels()
