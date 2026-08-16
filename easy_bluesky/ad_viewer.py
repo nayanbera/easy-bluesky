@@ -471,20 +471,20 @@ def _block_set(widget, fn):
 def extract_ad_prefix(pv_map_for_device: dict) -> str | None:
     """Given {sig_name: pvname} for one device, return the AD base prefix.
 
-    Looks for any cam1.* signal and strips from 'cam1:' onward.
-    Returns e.g. 'Pil300K:' or None if no cam1 PVs are found.
+    Scans PV addresses (not signal names) for 'cam1:' and strips from there.
+    Returns e.g. 'PS1:' or None if no cam1 PVs are found.
     """
-    for sig, pvname in pv_map_for_device.items():
+    for pvname in pv_map_for_device.values():
         if not pvname:
             continue
-        if 'cam1' in sig.lower() and 'cam1:' in pvname.lower():
-            idx = pvname.lower().find('cam1:')
+        idx = pvname.lower().find('cam1:')
+        if idx >= 0:
             return pvname[:idx]
     return None
 
 
 def is_area_detector(pv_map_for_device: dict, classname: str = "") -> bool:
     """Return True if this device is likely an EPICS area detector."""
-    if any('cam1' in sig.lower() for sig in pv_map_for_device):
+    if any('cam1:' in (pv or '').lower() for pv in pv_map_for_device.values()):
         return True
     return 'detector' in classname.lower()
