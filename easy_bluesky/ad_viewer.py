@@ -588,22 +588,19 @@ class ADViewerWindow(QMainWindow):
     # ── Display helpers ──────────────────────────────────────────────────────────
 
     def _prepare(self, arr: np.ndarray) -> np.ndarray:
-        """Apply bad-pixel mask → log scale → transpose; returns float32."""
-        # Dectris gap (-1) / dead (-2) pixels are signed sentinels stored in unsigned
-        # arrays (PVA delivers uint32: -1→0xFFFFFFFF, -2→0xFFFFFFFE).
-        # Compare in the *original* integer array to avoid float32 precision ambiguity,
-        # then zero those positions in the float output.
+        """Apply sentinel handling → bad-pixel mask → log scale → transpose; returns float32."""
+        # Dectris gap (-1) / dead (-2) sentinels are stored as large uint values
+        # (PVA uint32: 0xFFFFFFFF=-1, 0xFFFFFFFE=-2). Reinterpret bits as signed so
+        # they stay at -1/-2 in the float display — making gap lines visible in the image.
         if arr.dtype.kind == 'u':
-            dtype_max = np.iinfo(arr.dtype).max
-            sentinel_mask = arr >= np.uint64(dtype_max) - 10   # covers signed -1 … -11
-            out = arr.astype(np.float32)
-            out[sentinel_mask] = 0.0
+            signed_dtype = np.dtype(f"int{arr.dtype.itemsize * 8}")
+            out = np.ascontiguousarray(arr).view(signed_dtype).astype(np.float32)
         else:
             out = arr.astype(np.float32)
-            out[out < 0] = 0.0   # signed integer or float source
         if self._mask_enabled and self._mask_threshold is not None:
             out[out > self._mask_threshold] = 0.0
         if self._log_scale:
+            np.clip(out, 0, None, out=out)   # log undefined for negatives; clips sentinels to 0
             out = np.log1p(out)
         return out.T if self._transpose else out
 
@@ -748,18 +745,10 @@ class ADViewerWindow(QMainWindow):
             return
         self._vline.setPos(ix + 0.5)
         self._hline.setPos(iy + 0.5)
-        # Map display coords back to raw array (transpose swaps axes)
-        ri, ci = (iy, ix) if self._transpose else (ix, iy)
-        if 0 <= ri < self._arr.shape[0] and 0 <= ci < self._arr.shape[1]:
-            raw = int(self._arr[ri, ci])
-            if self._arr.dtype.kind == 'u':
-                # Two's-complement: show signed value so gap=-1, dead=-2 etc.
-                bits = self._arr.dtype.itemsize * 8
-                if raw >= (1 << (bits - 1)):
-                    raw -= (1 << bits)
-            self._crosshair_lbl.setText(f"x={ix}  y={iy}  I={raw}")
-        else:
-            self._crosshair_lbl.setText(f"x={ix}  y={iy}")
+        val = disp[ix, iy]
+        # Show integer if value is whole-number (counts), float otherwise (log scale)
+        val_str = str(int(val)) if val == int(val) else f"{val:.4g}"
+        self._crosshair_lbl.setText(f"x={ix}  y={iy}  I={val_str}")
 
     def _set_status(self, msg: str, color: str = "#888888"):
         self._status_lbl.setText(msg)
