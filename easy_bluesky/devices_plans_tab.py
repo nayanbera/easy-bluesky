@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QTreeWidget, QTreeWidgetItem,
     QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit, QComboBox, QMenu,
-    QMessageBox,
+    QMessageBox, QDialog, QFormLayout, QDialogButtonBox,
 )
 from .widgets import NoScrollDoubleSpinBox
 import json
@@ -20,7 +20,80 @@ from .plans_manager import (
 )
 from .plan_builder import PlanFileTreePanel
 
-_METADATA_PATH = Path.home() / ".easy_bluesky" / "device_metadata.json"
+_METADATA_PATH    = Path.home() / ".easy_bluesky" / "device_metadata.json"
+_AD_SETTINGS_PATH = Path.home() / ".easy_bluesky" / "ad_viewer_settings.json"
+
+
+def _load_ad_settings() -> dict:
+    try:
+        if _AD_SETTINGS_PATH.exists():
+            return json.loads(_AD_SETTINGS_PATH.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _save_ad_settings(settings: dict):
+    try:
+        _AD_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _AD_SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
+    except Exception:
+        pass
+
+
+class _ADConfigDialog(QDialog):
+    """Two-field dialog: AD EPICS prefix + beamline host for PVA routing."""
+
+    def __init__(self, device_name: str, default_prefix: str,
+                 default_host: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Configure AD Viewer — {device_name}")
+        self.setMinimumWidth(400)
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        note = QLabel(
+            f"<b>{device_name}</b> — enter the EPICS prefix and beamline host.\n"
+            "Settings are saved to <tt>~/.easy_bluesky/ad_viewer_settings.json</tt>."
+        )
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+
+        self._prefix_edit = QLineEdit(default_prefix)
+        self._prefix_edit.setPlaceholderText("e.g. 15PS1:")
+        self._prefix_edit.setToolTip(
+            "EPICS base prefix for this detector (must end with ':')")
+        form.addRow("AD prefix:", self._prefix_edit)
+
+        self._host_edit = QLineEdit(default_host)
+        self._host_edit.setPlaceholderText("e.g. 164.54.169.50")
+        self._host_edit.setToolTip(
+            "Beamline host IP/hostname for PVAccess unicast routing")
+        form.addRow("Beamline host (PVA):", self._host_edit)
+
+        lay.addLayout(form)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Open Viewer")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    @property
+    def prefix(self) -> str:
+        p = self._prefix_edit.text().strip()
+        return (p if p.endswith(':') else p + ':') if p else ''
+
+    @property
+    def host(self) -> str:
+        return self._host_edit.text().strip()
 
 
 def _device_color(module: str) -> tuple:
@@ -982,26 +1055,20 @@ class DevicesPlansTab(QWidget):
 
         from .ad_viewer import is_area_detector
         if not is_area_detector(pv_map_dev, classname):
-            return  # not an AD — no menu
+            return
 
         menu = QMenu(self)
-        act_viewer = menu.addAction("📺  Open AD Viewer")
+        act_open   = menu.addAction("📺  Open AD Viewer")
+        act_config = menu.addAction("⚙  Configure AD Viewer…")
         action = menu.exec(self.devices_tree.viewport().mapToGlobal(pos))
-        if action == act_viewer:
-            self._open_ad_viewer(dev_name, pv_map_dev)
+        if action == act_open:
+            self._open_ad_viewer(dev_name, pv_map_dev, force_dialog=False)
+        elif action == act_config:
+            self._open_ad_viewer(dev_name, pv_map_dev, force_dialog=True)
 
-    def _open_ad_viewer(self, dev_name: str, pv_map_dev: dict):
+    def _open_ad_viewer(self, dev_name: str, pv_map_dev: dict,
+                        force_dialog: bool = False):
         from .ad_viewer import ADViewerWindow, extract_ad_prefix, _HAS_P4P
-
-        # Bring existing window to front rather than open a second one
-        existing = self._ad_viewers.get(dev_name)
-        if existing is not None:
-            try:
-                existing.raise_()
-                existing.activateWindow()
-                return
-            except RuntimeError:
-                pass   # C++ object already deleted
 
         if not _HAS_P4P:
             QMessageBox.warning(
@@ -1011,30 +1078,45 @@ class DevicesPlansTab(QWidget):
             )
             return
 
-        prefix = extract_ad_prefix(pv_map_dev)
-        if prefix is None:
-            from PyQt6.QtWidgets import QInputDialog
-            if not pv_map_dev:
-                hint = (
-                    f"PV names for '{dev_name}' have not been fetched yet "
-                    f"(the Devices panel may still be loading).\n\n"
-                    f"Enter the EPICS base prefix to open the viewer anyway:"
-                )
-            else:
-                hint = (
-                    f"Could not detect 'cam1:' in any PV address for '{dev_name}'.\n\n"
-                    f"Enter the EPICS base prefix manually:"
-                )
-            prefix, ok = QInputDialog.getText(
-                self, "Enter AD prefix", hint, text=f"{dev_name}:",
-            )
-            if not ok or not prefix.strip():
-                return
-            prefix = prefix.strip()
-            if not prefix.endswith(':'):
-                prefix += ':'
+        # Load saved per-device settings
+        ad_settings = _load_ad_settings()
+        saved       = ad_settings.get(dev_name, {})
 
-        pva_host = self._conn_settings.get('host', '')
+        # Auto-detect prefix; fall back to saved value
+        auto_prefix = extract_ad_prefix(pv_map_dev)
+        prefix      = auto_prefix or saved.get('prefix', '')
+
+        # Host: saved override first, then active profile host
+        profile_host = self._conn_settings.get('host', '')
+        pva_host     = saved.get('pva_host', '') or profile_host
+
+        # Show config dialog when forced, prefix unknown, or host not yet saved
+        if force_dialog or not prefix or not pva_host:
+            dlg = _ADConfigDialog(
+                dev_name,
+                prefix or f"{dev_name}:",
+                pva_host,
+                parent=self,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            prefix   = dlg.prefix
+            pva_host = dlg.host
+
+        # Persist settings for this device
+        ad_settings[dev_name] = {'prefix': prefix, 'pva_host': pva_host}
+        _save_ad_settings(ad_settings)
+
+        # Bring existing window to front rather than open a second one
+        existing = self._ad_viewers.get(dev_name)
+        if existing is not None:
+            try:
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                pass
+
         viewer = ADViewerWindow(dev_name, prefix, pv_map_dev,
                                 pva_host=pva_host, parent=None)
         self._ad_viewers[dev_name] = viewer
