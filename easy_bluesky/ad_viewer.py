@@ -354,9 +354,10 @@ class ADViewerWindow(QMainWindow):
             r.addWidget(ed)
             g2l.addLayout(r)
 
-        btn_auto = QPushButton("Auto Levels")
-        btn_auto.clicked.connect(self._on_auto_levels)
-        g2l.addWidget(btn_auto)
+        self._chk_auto_levels = QCheckBox("Auto Levels")
+        self._chk_auto_levels.setChecked(True)
+        self._chk_auto_levels.toggled.connect(self._on_auto_levels_toggled)
+        g2l.addWidget(self._chk_auto_levels)
 
         btn_zoom = QPushButton("Reset Zoom")
         btn_zoom.clicked.connect(lambda: self._plot_item.getViewBox().autoRange())
@@ -483,9 +484,9 @@ class ADViewerWindow(QMainWindow):
             self._fps = 0.8 * self._fps + 0.2 / dt
         self._t_last = now
 
-        self._img_view.setImage(self._prepare(arr), autoRange=False,
-                                autoLevels=first_frame)
-        if first_frame:
+        auto = self._chk_auto_levels.isChecked()
+        self._img_view.setImage(self._prepare(arr), autoRange=False, autoLevels=auto)
+        if auto:
             QTimer.singleShot(80, self._sync_level_edits)
         if self._roi_on:
             self._update_roi_stats()
@@ -514,8 +515,11 @@ class ADViewerWindow(QMainWindow):
 
     def _refresh_display(self):
         if self._arr is not None:
+            auto = self._chk_auto_levels.isChecked()
             self._img_view.setImage(self._prepare(self._arr),
-                                    autoRange=False, autoLevels=False)
+                                    autoRange=False, autoLevels=auto)
+            if auto:
+                QTimer.singleShot(80, self._sync_level_edits)
             if self._roi_on:
                 self._update_roi_stats()
 
@@ -585,12 +589,16 @@ class ADViewerWindow(QMainWindow):
         except ValueError:
             return
         if lo is not None and hi is not None and lo < hi:
+            self._chk_auto_levels.blockSignals(True)
+            self._chk_auto_levels.setChecked(False)
+            self._chk_auto_levels.blockSignals(False)
             self._img_view.setLevels(lo, hi)
             self._img_view.ui.histogram.setHistogramRange(lo, hi)
 
-    def _on_auto_levels(self):
-        self._img_view.autoLevels()
-        QTimer.singleShot(80, self._sync_level_edits)
+    def _on_auto_levels_toggled(self, checked: bool):
+        if checked and self._arr is not None:
+            self._img_view.autoLevels()
+            QTimer.singleShot(80, self._sync_level_edits)
 
     def _sync_level_edits(self):
         try:
