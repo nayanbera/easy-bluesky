@@ -404,6 +404,7 @@ class ADViewerWindow(QMainWindow):
         self._edit_mask_thresh.setToolTip(
             "Pixels with intensity above this value are set to 0 before display")
         self._edit_mask_thresh.returnPressed.connect(self._on_mask_threshold_changed)
+        self._edit_mask_thresh.editingFinished.connect(self._on_mask_threshold_changed)
         mr.addWidget(self._edit_mask_thresh)
         g4l.addLayout(mr)
         lay.addWidget(g4)
@@ -586,12 +587,15 @@ class ADViewerWindow(QMainWindow):
 
     def _prepare(self, arr: np.ndarray) -> np.ndarray:
         """Apply bad-pixel mask → log scale → transpose; returns float32."""
-        # PVA delivers Dectris/EPICS arrays as uint32, but gap/dead pixels use the
-        # signed sentinel convention (-1 = gap, -2 = dead).  Re-interpret unsigned
-        # arrays as signed before conversion so 0xFFFFFFFE stays -2 not 4.295e9.
+        # Dectris gap (-1) / dead (-2) pixels are signed sentinels. PVA often delivers
+        # the array as uint32, so they appear as 0xFFFFFFFF/0xFFFFFFFE ≈ 4.295e9.
+        # Use astype with unsafe casting (two's-complement reinterpretation) to restore
+        # the negative sign, then zero all negatives. view() can silently misbehave on
+        # some numpy builds; astype is the safe alternative.
         if arr.dtype.kind == 'u':
-            arr = arr.view(np.dtype(f'i{arr.dtype.itemsize}'))
-        out = arr.astype(np.float32)
+            out = arr.astype(np.dtype(f'i{arr.dtype.itemsize}'), casting='unsafe').astype(np.float32)
+        else:
+            out = arr.astype(np.float32)
         out[out < 0] = 0.0   # gap / dead-pixel sentinels → 0
         if self._mask_enabled and self._mask_threshold is not None:
             out[out > self._mask_threshold] = 0.0
@@ -600,6 +604,7 @@ class ADViewerWindow(QMainWindow):
         return out.T if self._transpose else out
 
     def _on_mask_toggled(self, checked: bool):
+        self._on_mask_threshold_changed()   # parse the field now in case Enter was never pressed
         self._mask_enabled = checked
         self._refresh_display()
 
