@@ -413,12 +413,14 @@ class ADViewerWindow(QMainWindow):
             self._no_frame_timer.stop()
         self._arr = arr
         self._frame_cnt += 1
+        first_frame = self._frame_cnt == 1
         now = time.monotonic()
         if self._t_last > 0 and (dt := now - self._t_last) > 0:
             self._fps = 0.8 * self._fps + 0.2 / dt
         self._t_last = now
 
-        self._img_view.setImage(self._prepare(arr), autoRange=False, autoLevels=False)
+        self._img_view.setImage(self._prepare(arr), autoRange=False,
+                                autoLevels=first_frame)
         if self._roi_on:
             self._update_roi_stats()
 
@@ -460,12 +462,19 @@ class ADViewerWindow(QMainWindow):
         self._refresh_display()
 
     def _apply_colormap(self, name: str):
-        try:
-            cmap = pg.colormap.get(name)
-            if cmap is not None:
-                self._img_view.setColorMap(cmap)
-        except Exception:
-            pass
+        if name.lower() in ('gray', 'grey'):
+            # Build grayscale directly — pg.colormap.get('gray') needs matplotlib
+            cmap = pg.ColorMap(
+                pos=np.array([0.0, 1.0]),
+                color=np.array([[0, 0, 0, 255], [255, 255, 255, 255]], dtype=np.ubyte),
+            )
+        else:
+            try:
+                cmap = pg.colormap.get(name)
+            except Exception:
+                return
+        if cmap is not None:
+            self._img_view.setColorMap(cmap)
 
     def _on_roi_toggled(self, checked: bool):
         self._roi_on = checked
