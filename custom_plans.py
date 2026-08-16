@@ -23,26 +23,29 @@ import csv
 def _scan_num_from_log(exp_dir: str) -> int:
     """Return the next scan number.
 
-    Prefers RE.md["scan_id"] + 1 (the global RE counter, always aligned with
-    the actual bluesky scan_id the running plan will receive).  Falls back to
-    reading the per-experiment scans_log.json when RE is not available (e.g.
-    standalone testing), and finally returns 1 for a brand-new experiment.
+    Uses the maximum of two sources so the result is correct in all cases:
+    - scans_log.json: the last scan_id recorded in this experiment.  Correct
+      after RE Manager restart (RE.md resets to 0 but the file remembers).
+    - RE.md["scan_id"]: the live RE counter.  Correct mid-session when scans
+      from other experiments have advanced the global counter past the file.
+    Returns 1 for a brand-new experiment where neither source has data.
     """
-    try:
-        return RE.md.get("scan_id", 0) + 1  # RE injected by re_startup_mongo
-    except NameError:
-        pass
     import json as _json
+    file_val = 0
     log_path = os.path.join(exp_dir, "scans_log.json")
     try:
         with open(log_path, encoding="utf-8") as _f:
             entries = _json.load(_f)
         if isinstance(entries, list) and entries:
-            last = entries[-1]
-            return last.get("scan_id", len(entries)) + 1
+            file_val = entries[-1].get("scan_id", 0)
     except Exception:
         pass
-    return 1
+    re_val = 0
+    try:
+        re_val = RE.md.get("scan_id", 0)  # RE injected by re_startup_mongo
+    except NameError:
+        pass
+    return max(file_val, re_val) + 1
 
 
 def _exp_dir_from_md(md: dict) -> str:
