@@ -2704,6 +2704,7 @@ class ExperimentsTab(QWidget):
                 if e.get("run_uids"):
                     scan_counter += 1
             self._next_scan_num = scan_counter  # next unused number
+            self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
 
             if file_changed:
                 try:
