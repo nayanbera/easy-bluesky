@@ -1133,7 +1133,8 @@ class ExperimentsTab(QWidget):
         self._shown_error_uids: set = set()
         self._exp_created_at: float = 0.0
         self._exp_end_time: float   = 0.0
-        self._next_scan_num: int    = 1
+        self._next_scan_num: int      = 1
+        self._base_next_scan_num: int = 1
         self._detached_win     = None
         self._plot_placeholder = None
         self._sample_name: str = ""
