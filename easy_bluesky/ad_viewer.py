@@ -746,21 +746,10 @@ class ADViewerWindow(QMainWindow):
         if not (0 <= ix < disp.shape[0] and 0 <= iy < disp.shape[1]):
             self._crosshair_lbl.setText("")
             return
-        # Map display indices back to raw array: _prepare returns arr.T when transposed
-        if self._transpose:
-            # disp[ix, iy] == arr.T[ix, iy] == arr[iy, ix]
-            ri, ci = iy, ix
-        else:
-            ri, ci = ix, iy
-        raw_val = self._arr[ri, ci] if (
-            0 <= ri < self._arr.shape[0] and 0 <= ci < self._arr.shape[1]
-        ) else None
         self._vline.setPos(ix + 0.5)
         self._hline.setPos(iy + 0.5)
-        if raw_val is not None:
-            self._crosshair_lbl.setText(f"x={ix}  y={iy}  I={float(raw_val):.6g}")
-        else:
-            self._crosshair_lbl.setText(f"x={ix}  y={iy}")
+        val = disp[ix, iy]
+        self._crosshair_lbl.setText(f"x={ix}  y={iy}  I={float(val):.6g}")
 
     def _set_status(self, msg: str, color: str = "#888888"):
         self._status_lbl.setText(msg)
