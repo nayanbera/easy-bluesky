@@ -1148,6 +1148,7 @@ class ExperimentsTab(QWidget):
         self._fs_watcher       = QFileSystemWatcher()
         self._fs_watcher.directoryChanged.connect(self._on_exp_dir_changed)
         self._fs_watcher.directoryChanged.connect(self._update_next_scan_label)
+        self._fs_watcher.fileChanged.connect(self._on_scan_log_file_changed)
         self._exp_health_timer = QTimer()
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
@@ -1921,6 +1922,14 @@ class ExperimentsTab(QWidget):
                 updated += 1
         self._log(f"✓ Updated sample_name in {updated}/{n} queued plan(s)")
 
+    def _on_scan_log_file_changed(self, path: str):
+        """fileChanged fires when scans_log.json is modified (not just created)."""
+        # Re-add the path: some writers atomically replace the file, dropping it
+        # from the watcher after the first change notification.
+        if Path(path).exists():
+            self._fs_watcher.addPath(path)
+        self._update_next_scan_label()
+
     def _update_next_scan_label(self, _path: str = ""):
         if not self._active_exp_path:
             self._next_scan_label.setText("Next scan: —")
@@ -1929,6 +1938,10 @@ class ExperimentsTab(QWidget):
         try:
             entries = json.loads(log_path.read_text(encoding="utf-8"))
             if isinstance(entries, list):
+                # Watch the file directly so modifications trigger updates.
+                _p = str(log_path)
+                if _p not in self._fs_watcher.files():
+                    self._fs_watcher.addPath(_p)
                 self._next_scan_label.setText(f"Next scan: #{len(entries) + 1}")
                 return
         except Exception:
@@ -2271,6 +2284,8 @@ class ExperimentsTab(QWidget):
         _add_to_recent_list(path, info)
         if self._fs_watcher.directories():
             self._fs_watcher.removePaths(self._fs_watcher.directories())
+        if self._fs_watcher.files():
+            self._fs_watcher.removePaths(self._fs_watcher.files())
         self._fs_watcher.addPath(path)
         self._exp_health_timer.start()
         self._exp_deleted_warning.setVisible(False)
