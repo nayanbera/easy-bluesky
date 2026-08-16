@@ -571,8 +571,10 @@ class ADViewerWindow(QMainWindow):
 
         uid  = meta.get('unique_id', self._frame_cnt)
         h, w = arr.shape[:2]
+        raw_min, raw_max = arr.min(), arr.max()
         self._set_status(
-            f"● Connected  frame #{uid}  |  {w}×{h}  {meta.get('dtype', '')}", "#2ca02c")
+            f"● Connected  frame #{uid}  |  {w}×{h}  {meta.get('dtype', '')}  "
+            f"raw:[{raw_min}, {raw_max}]", "#2ca02c")
         self._fps_lbl.setText(f"{self._fps:.1f} fps")
 
     def _on_pva_connected(self, ok: bool):
