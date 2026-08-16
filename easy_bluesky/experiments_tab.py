@@ -1651,6 +1651,12 @@ class ExperimentsTab(QWidget):
             return result_item
         existing_md = result_item.get("kwargs", {}).get("md", {}) or {}
         merged = {**auto_md, **existing_md}   # user-supplied md wins
+        # Lock in scan_num at queue time so custom_plans.py doesn't need to
+        # read scans_log.json at execution time (avoids stale-file off-by-one).
+        if "scan_num" not in existing_md:
+            merged["scan_num"] = self._next_scan_num
+            self._next_scan_num += 1
+            self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
         result_item.setdefault("kwargs", {})["md"] = merged
         return result_item
 
