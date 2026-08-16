@@ -3,7 +3,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QTreeWidget, QTreeWidgetItem,
-    QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit, QComboBox,
+    QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit, QComboBox, QMenu,
+    QMessageBox,
 )
 from .widgets import NoScrollDoubleSpinBox
 import json
@@ -233,6 +234,8 @@ class DevicesPlansTab(QWidget):
         self._pending_pv_map: dict = {}
         self._installer: _EpicsInstaller | None = None
         self._plan_catalog: PlanCatalog | None = None
+        self._pv_map_cache: dict = {}   # dev_name → {sig_name: pvname}
+        self._ad_viewers:   dict = {}   # dev_name → ADViewerWindow
         # Coalesce CA value/desc callbacks — apply at most 10x/sec to avoid
         # flooding the tree widget with setText() calls during scans.
         self._pending_pv_updates: dict = {}    # (dev, sig) → (value, units)
@@ -312,6 +315,8 @@ class DevicesPlansTab(QWidget):
         # (Tweak) would shrink to the "Tweak" header width (~50 px) and clip the
         # ◀/step/▶ widget.  Pre-size it; setup_epics_monitors enforces the minimum.
         self.devices_tree.setColumnWidth(5, 155)
+        self.devices_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.devices_tree.customContextMenuRequested.connect(self._on_device_context_menu)
         vlay.addWidget(self.devices_tree, 1)
         return w
 
@@ -514,6 +519,7 @@ class DevicesPlansTab(QWidget):
 
         Both groups can coexist (mixed beamline).
         """
+        self._pv_map_cache = {dev: dict(sigs) for dev, sigs in pv_map.items()}
         try:
             import epics  # noqa: F401
         except ImportError:
@@ -958,6 +964,68 @@ class DevicesPlansTab(QWidget):
     def set_plan_catalog(self, catalog: PlanCatalog) -> None:
         """Set the PlanCatalog used for type classification and source lookup."""
         self._plan_catalog = catalog
+
+    # ── AD Viewer context menu ───────────────────────────────────────────────────
+
+    def _on_device_context_menu(self, pos):
+        item = self.devices_tree.itemAt(pos)
+        if item is None:
+            return
+        dev_name = item.text(0).strip()
+        if dev_name not in self._device_items:
+            return  # group header or signal sub-row — skip
+
+        pv_map_dev = self._pv_map_cache.get(dev_name, {})
+        classname  = self._device_classes.get(dev_name, "")
+
+        from .ad_viewer import is_area_detector
+        if not is_area_detector(pv_map_dev, classname):
+            return  # not an AD — no menu
+
+        menu = QMenu(self)
+        act_viewer = menu.addAction("📺  Open AD Viewer")
+        action = menu.exec(self.devices_tree.viewport().mapToGlobal(pos))
+        if action == act_viewer:
+            self._open_ad_viewer(dev_name, pv_map_dev)
+
+    def _open_ad_viewer(self, dev_name: str, pv_map_dev: dict):
+        from .ad_viewer import ADViewerWindow, extract_ad_prefix, _HAS_P4P
+
+        # Bring existing window to front rather than open a second one
+        existing = self._ad_viewers.get(dev_name)
+        if existing is not None:
+            try:
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                pass   # C++ object already deleted
+
+        if not _HAS_P4P:
+            QMessageBox.warning(
+                self, "p4p not installed",
+                "The p4p package is required for PVA image streaming.\n\n"
+                "Install it with:\n    pip install p4p",
+            )
+            return
+
+        prefix = extract_ad_prefix(pv_map_dev)
+        if prefix is None:
+            QMessageBox.warning(
+                self, "Cannot determine AD prefix",
+                f"No cam1 PVs found in the pv_map for '{dev_name}'.\n\n"
+                "The AD Viewer requires the cam1 plugin PVs to be present.\n"
+                "Check that the RE environment loaded the device correctly.",
+            )
+            return
+
+        viewer = ADViewerWindow(dev_name, prefix, pv_map_dev, parent=None)
+        self._ad_viewers[dev_name] = viewer
+        viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        viewer.destroyed.connect(lambda _, n=dev_name: self._ad_viewers.pop(n, None))
+        viewer.show()
+
+    # ── Plan filter ──────────────────────────────────────────────────────────────
 
     def _apply_plan_filter(self) -> None:
         """Show/hide plan rows based on text search and type-filter combo."""

@@ -44,6 +44,7 @@ dependencies = [
 [project.optional-dependencies]
 epics = [
     "pyepics>=3.5",
+    "p4p>=3.5",
 ]
 editor = [
     "jedi>=0.19",
@@ -63,6 +64,7 @@ dev = [
 ]
 all = [
     "pyepics>=3.5",
+    "p4p>=3.5",
     "jedi>=0.19",
     "pyflakes>=3.0",
     "databroker>=1.2",
