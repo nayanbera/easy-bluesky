@@ -1879,8 +1879,40 @@ class ExperimentsTab(QWidget):
                 if r != QMessageBox.StandardButton.Yes:
                     self.sample_name_edit.setText(self._sample_name)
                     return
+        old_name = self._sample_name
         self._sample_name = name
         self._log(f"✓ Sample: {name}")
+        self._offer_queue_sample_update(old_name, name)
+
+    def _offer_queue_sample_update(self, old_name: str, new_name: str):
+        """Ask whether to patch sample_name in already-queued plans."""
+        if not self.worker:
+            return
+        items_to_update = []
+        for i in range(self.queue_compact.count()):
+            item = self.queue_compact.item(i).data(Qt.ItemDataRole.UserRole + 1)
+            if item and item.get("kwargs", {}).get("md", {}).get("sample_name"):
+                items_to_update.append(item)
+        if not items_to_update:
+            return
+        n = len(items_to_update)
+        old_label = f"'{old_name}'" if old_name else "a previous sample"
+        r = QMessageBox.question(
+            self, "Update Queued Plans",
+            f"{n} plan(s) in the queue still use {old_label}.\n"
+            f"Update them to use '{new_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        updated = 0
+        for item in items_to_update:
+            patched = json.loads(json.dumps(item))
+            patched["kwargs"]["md"]["sample_name"] = new_name
+            ok, _ = self.worker.update_item(patched)
+            if ok:
+                updated += 1
+        self._log(f"✓ Updated sample_name in {updated}/{n} queued plan(s)")
 
     def _on_sample_desc_commit(self):
         self._sample_description = self.sample_desc_edit.text().strip()
