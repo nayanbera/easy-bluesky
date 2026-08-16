@@ -549,7 +549,8 @@ class MongoDataBrowserTab(QWidget):
         self._fit_preview_curve      = None   # live preview PlotDataItem (dotted)
         self._fit_dlg                = None   # open FitParamsDialog (non-modal ref)
         self._fit_datasets: list     = []     # datasets passed to the open dialog
-        self._saved_fit_state: dict  = None   # {model_name, bg_name, params} — persists
+        self._fit_key: str           = ""     # key identifying current dataset selection
+        self._saved_fit_states: dict = {}     # {fit_key: {model_name, bg_name, params}}
         self._active_exp_dir = ""       # current experiment filter
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
@@ -1726,9 +1727,14 @@ class MongoDataBrowserTab(QWidget):
             QMessageBox.warning(self, "No data", "No plottable data found.")
             return
 
-        self._fit_datasets  = datasets    # stored for _on_fit_applied
-        self._fit_log_y     = log_y       # stored for _on_fit_applied
+        self._fit_datasets   = datasets    # stored for _on_fit_applied
+        self._fit_log_y      = log_y       # stored for _on_fit_applied
         self._fit_deriv_mode = deriv_mode  # stored for _on_fit_applied
+
+        # Compute a key that identifies this exact dataset selection.
+        uids      = tuple(sorted(rd.get("uid", "") for rd in self._run_data_list))
+        fit_key   = f"{uids}|{stream}|{x_field}|{tuple(sorted(y_fields))}"
+        self._fit_key = fit_key
 
         # Close any existing fit dialog before opening a new one
         if self._fit_dlg is not None:
@@ -1739,10 +1745,11 @@ class MongoDataBrowserTab(QWidget):
 
         initial_bg_name = self._fit_bg_combo.currentText()
         initial_params  = None
-        if self._saved_fit_state:
-            model_name      = self._saved_fit_state.get("model_name", model_name)
-            initial_bg_name = self._saved_fit_state.get("bg_name", initial_bg_name)
-            initial_params  = self._saved_fit_state.get("params")
+        saved = self._saved_fit_states.get(fit_key)
+        if saved:
+            model_name      = saved.get("model_name", model_name)
+            initial_bg_name = saved.get("bg_name", initial_bg_name)
+            initial_params  = saved.get("params")
 
         self._fit_dlg = _FitParamsDialog(
             datasets, model_name, initial_bg_name, initial_params, parent=self
@@ -1795,7 +1802,7 @@ class MongoDataBrowserTab(QWidget):
         if fit_items:
             self._btn_clear_fit.setEnabled(True)
             info0 = fit_items[0]["info"]
-            self._saved_fit_state = {
+            self._saved_fit_states[self._fit_key] = {
                 "model_name": fit_items[0]["model_name"],
                 "bg_name":    fit_items[0]["bg_name"],
                 "params":     info0["result"].params,
