@@ -1147,6 +1147,7 @@ class ExperimentsTab(QWidget):
         self._console_log      = None   # open file handle for <exp_dir>/console.log
         self._fs_watcher       = QFileSystemWatcher()
         self._fs_watcher.directoryChanged.connect(self._on_exp_dir_changed)
+        self._fs_watcher.directoryChanged.connect(self._update_next_scan_label)
         self._exp_health_timer = QTimer()
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
@@ -1265,9 +1266,15 @@ class ExperimentsTab(QWidget):
 
         vlay.addWidget(sample_grp)
 
+        log_header = QHBoxLayout()
         lbl_log = QLabel("PLAN LOG")
         lbl_log.setObjectName("section_title")
-        vlay.addWidget(lbl_log)
+        log_header.addWidget(lbl_log)
+        log_header.addStretch()
+        self._next_scan_label = QLabel("Next scan: —")
+        self._next_scan_label.setStyleSheet("color: gray; font-size: 11px;")
+        log_header.addWidget(self._next_scan_label)
+        vlay.addLayout(log_header)
 
         self._plan_log_search = QLineEdit()
         self._plan_log_search.setPlaceholderText("🔍  Search plan log…")
@@ -1914,6 +1921,21 @@ class ExperimentsTab(QWidget):
                 updated += 1
         self._log(f"✓ Updated sample_name in {updated}/{n} queued plan(s)")
 
+    def _update_next_scan_label(self, _path: str = ""):
+        if not self._active_exp_path:
+            self._next_scan_label.setText("Next scan: —")
+            return
+        log_path = Path(self._active_exp_path) / "scans_log.json"
+        try:
+            entries = json.loads(log_path.read_text(encoding="utf-8"))
+            if isinstance(entries, list) and entries:
+                next_n = entries[-1].get("scan_id", len(entries)) + 1
+                self._next_scan_label.setText(f"Next scan: #{next_n}")
+                return
+        except Exception:
+            pass
+        self._next_scan_label.setText("Next scan: #1")
+
     def _on_sample_desc_commit(self):
         self._sample_description = self.sample_desc_edit.text().strip()
 
@@ -2254,6 +2276,7 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.start()
         self._exp_deleted_warning.setVisible(False)
         self._active_exp_path = path
+        self._update_next_scan_label()
         self._open_console_log(path)
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
         self._esaf_info       = info.get("esaf", {})
@@ -2337,6 +2360,7 @@ class ExperimentsTab(QWidget):
 
         # Clear all active-experiment state
         self._active_exp_path = ""
+        self._next_scan_label.setText("Next scan: —")
         self._remote_exp_dir  = ""
         self._esaf_info       = {}
         self._logged_uids     = set()
