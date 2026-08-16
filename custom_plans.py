@@ -373,7 +373,7 @@ def count_w_time(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def per_shot(detectors):
@@ -443,7 +443,7 @@ def scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -514,7 +514,7 @@ def rel_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -582,7 +582,7 @@ def grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -650,7 +650,7 @@ def rel_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -718,7 +718,7 @@ def list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -786,7 +786,7 @@ def rel_list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -854,7 +854,7 @@ def list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -922,7 +922,7 @@ def rel_list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     def one_nd_step_with_delay(detectors, step, pos_cache):
@@ -1011,7 +1011,7 @@ def list_scan_w_time_n_delay_from_csv(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     header, columns = load_multi_motor_csv(csv_file)
@@ -1276,7 +1276,7 @@ def aswaxs_energy_scan(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = _scan_num_from_log(_dir)
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
     saved = {}
