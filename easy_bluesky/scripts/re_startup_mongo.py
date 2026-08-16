@@ -32,15 +32,7 @@ from pathlib import Path
 
 # ── Run Engine ─────────────────────────────────────────────────────────────────
 from bluesky import RunEngine
-try:
-    from bluesky.utils import PersistentDict as _PD
-    _re_md_dir = Path.home() / ".easy_bluesky" / "re_md"
-    _re_md_dir.mkdir(parents=True, exist_ok=True)
-    RE = RunEngine(_PD(str(_re_md_dir)))
-    print(f"[re_startup_mongo] RE scan_id persists in {_re_md_dir}")
-except Exception as _e_pd:
-    print(f"[re_startup_mongo] PersistentDict unavailable ({_e_pd}), scan_id will reset on restart")
-    RE = RunEngine({})
+RE = RunEngine({})
 
 # ── Hardware devices (from the profile's devices file) ─────────────────────────
 _devices_file = os.getenv("EASY_BLUESKY_DEVICES_FILE", "devices.py")
@@ -105,8 +97,6 @@ if _plans_dir and os.path.isdir(_plans_dir):
                 if not _dk.startswith('_') and isinstance(_dv, (_oph_pd.Device,
                                                                   _oph_pd.Signal)):
                     vars(_mod_pd)[_dk] = _dv
-            # Inject RE so plan helpers can read RE.md["scan_id"].
-            vars(_mod_pd)['RE'] = RE
             print(f"[re_startup_mongo] {_pf.name} loaded")
         except Exception as _e_pd:
             print(f"[re_startup_mongo] WARNING: {_pf.name} failed to load: {_e_pd}")
@@ -122,7 +112,6 @@ else:
             _spec_up.loader.exec_module(_mod_up)
             globals().update({k: v for k, v in vars(_mod_up).items()
                               if not k.startswith('_')})
-            vars(_mod_up)['RE'] = RE
             print("[re_startup_mongo] user_plans.py loaded (legacy)")
         except Exception as _e_up:
             print(f"[re_startup_mongo] WARNING: user_plans.py failed to load: {_e_up}")
