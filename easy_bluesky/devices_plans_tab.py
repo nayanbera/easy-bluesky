@@ -1011,18 +1011,26 @@ class DevicesPlansTab(QWidget):
 
         prefix = extract_ad_prefix(pv_map_dev)
         if prefix is None:
-            # Show actual PV map so the naming scheme can be diagnosed
-            sample = "\n".join(
-                f"  {sig}: {pv}" for sig, pv in list(pv_map_dev.items())[:20]
-            ) or "  (empty — PV names not yet fetched)"
-            QMessageBox.warning(
-                self, "Cannot determine AD prefix",
-                f"No 'cam1:' found in any PV address for '{dev_name}'.\n\n"
-                f"Signals in pv_map:\n{sample}\n\n"
-                "If the cam plugin uses a different name (e.g. 'cam:'), "
-                "please report this so the viewer can be updated.",
+            from PyQt6.QtWidgets import QInputDialog
+            if not pv_map_dev:
+                hint = (
+                    f"PV names for '{dev_name}' have not been fetched yet "
+                    f"(the Devices panel may still be loading).\n\n"
+                    f"Enter the EPICS base prefix to open the viewer anyway:"
+                )
+            else:
+                hint = (
+                    f"Could not detect 'cam1:' in any PV address for '{dev_name}'.\n\n"
+                    f"Enter the EPICS base prefix manually:"
+                )
+            prefix, ok = QInputDialog.getText(
+                self, "Enter AD prefix", hint, text=f"{dev_name}:",
             )
-            return
+            if not ok or not prefix.strip():
+                return
+            prefix = prefix.strip()
+            if not prefix.endswith(':'):
+                prefix += ':'
 
         viewer = ADViewerWindow(dev_name, prefix, pv_map_dev, parent=None)
         self._ad_viewers[dev_name] = viewer
