@@ -44,8 +44,21 @@ class _PVAMonitorThread(QThread):
         self._last_emit = 0.0
 
     def run(self):
+        import os
         from p4p.client.thread import Context
-        ctx = Context('pva')
+
+        # Build PVA address config mirroring the CA addr list that apply_epics_env()
+        # already placed in the process environment.  Without this, p4p relies on
+        # multicast discovery which doesn't cross subnets to the beamline host.
+        conf = {}
+        pva_addr = os.environ.get('EPICS_PVA_ADDR_LIST', '').strip()
+        ca_addr  = os.environ.get('EPICS_CA_ADDR_LIST',  '').strip()
+        addr = pva_addr or ca_addr
+        if addr:
+            conf['EPICS_PVA_ADDR_LIST']      = addr
+            conf['EPICS_PVA_AUTO_ADDR_LIST'] = 'NO'
+
+        ctx = Context('pva', conf=conf) if conf else Context('pva')
         try:
             sub = ctx.monitor(self._pva_pv, self._on_value, notify_disconnect=True)
             try:
