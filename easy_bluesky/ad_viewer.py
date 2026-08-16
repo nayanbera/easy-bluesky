@@ -344,8 +344,18 @@ class ADViewerWindow(QMainWindow):
         crow.addWidget(self._cmb_cmap)
         g2l.addLayout(crow)
 
+        for lbl_txt, attr in [("Min:", "_edit_lev_min"), ("Max:", "_edit_lev_max")]:
+            r = QHBoxLayout()
+            r.addWidget(QLabel(lbl_txt))
+            ed = QLineEdit()
+            ed.setPlaceholderText("auto")
+            ed.returnPressed.connect(self._on_levels_changed)
+            setattr(self, attr, ed)
+            r.addWidget(ed)
+            g2l.addLayout(r)
+
         btn_auto = QPushButton("Auto Levels")
-        btn_auto.clicked.connect(lambda: self._img_view.autoLevels())
+        btn_auto.clicked.connect(self._on_auto_levels)
         g2l.addWidget(btn_auto)
 
         btn_zoom = QPushButton("Reset Zoom")
@@ -475,6 +485,8 @@ class ADViewerWindow(QMainWindow):
 
         self._img_view.setImage(self._prepare(arr), autoRange=False,
                                 autoLevels=first_frame)
+        if first_frame:
+            QTimer.singleShot(80, self._sync_level_edits)
         if self._roi_on:
             self._update_roi_stats()
 
@@ -559,6 +571,31 @@ class ADViewerWindow(QMainWindow):
                 f"Std:  {region.std():.4g}\n"
                 f"Size: {w_px}×{h_px} px"
             )
+        except Exception:
+            pass
+
+    # ── Manual levels ────────────────────────────────────────────────────────────
+
+    def _on_levels_changed(self):
+        try:
+            lo_txt = self._edit_lev_min.text().strip()
+            hi_txt = self._edit_lev_max.text().strip()
+            lo = float(lo_txt) if lo_txt else None
+            hi = float(hi_txt) if hi_txt else None
+        except ValueError:
+            return
+        if lo is not None and hi is not None and lo < hi:
+            self._img_view.setLevels(lo, hi)
+
+    def _on_auto_levels(self):
+        self._img_view.autoLevels()
+        QTimer.singleShot(80, self._sync_level_edits)
+
+    def _sync_level_edits(self):
+        try:
+            lo, hi = self._img_view.getLevels()
+            self._edit_lev_min.setText(f"{lo:.6g}")
+            self._edit_lev_max.setText(f"{hi:.6g}")
         except Exception:
             pass
 
