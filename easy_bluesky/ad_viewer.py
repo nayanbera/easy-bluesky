@@ -227,7 +227,7 @@ class ADViewerWindow(QMainWindow):
         self._vline.setVisible(False)
         self._hline.setVisible(False)
         self._mouse_proxy = pg.SignalProxy(
-            self._img_view.scene().sigMouseMoved,
+            self._img_view.scene.sigMouseMoved,
             rateLimit=60,
             slot=self._on_mouse_moved,
         )
