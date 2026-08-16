@@ -82,8 +82,9 @@ class _PVAMonitorThread(QThread):
         if now - self._last_emit < _MIN_INTERVAL:
             return
         self._last_emit = now
-        arr = _extract_ndarray(value)
+        arr, err = _extract_ndarray(value)
         if arr is None:
+            self.error_occurred.emit(f"Frame decode: {err}  (type={type(value).__name__})")
             return
         uid = 0
         try:
@@ -94,21 +95,37 @@ class _PVAMonitorThread(QThread):
         self.new_frame.emit(arr, {'unique_id': uid, 'shape': arr.shape, 'dtype': str(arr.dtype)})
 
 
-def _extract_ndarray(value) -> np.ndarray | None:
-    """Reshape a p4p NTNDArray Value into a 2-D numpy array (height × width)."""
+def _extract_ndarray(value) -> tuple:
+    """Return (np.ndarray, "") on success or (None, error_str) on failure.
+
+    Tries two strategies:
+    1. np.asarray(value) — works when p4p already wraps NTNDArray as ntndarray
+       (the case for both get() and monitor() with nt=True in recent p4p versions).
+    2. Field access value['value'] / value['dimension'] — raw p4p Value fallback.
+    """
+    # Strategy 1: value is already array-like (ntndarray)
     try:
-        data = value['value']
+        arr = np.asarray(value)
+        if arr.ndim >= 2 and arr.size > 0:
+            return arr.copy(), ""
+    except Exception:
+        pass
+
+    # Strategy 2: raw p4p Value with explicit NTNDArray field access
+    try:
         dims = value['dimension']
-        if data is None or len(dims) == 0:
-            return None
+        if not dims or len(dims) < 1:
+            return None, f"no dimension field (dims={dims!r})"
         nx = int(dims[0]['size'])
         ny = int(dims[1]['size']) if len(dims) > 1 else 1
         if nx == 0 or ny == 0:
-            return None
-        # AD stores data row-major: reshape to (height, width) = C order
-        return data.reshape(ny, nx).copy()
-    except Exception:
-        return None
+            return None, f"zero dimension nx={nx} ny={ny}"
+        data = np.asarray(value['value']).ravel()
+        if data.size < nx * ny:
+            return None, f"data size {data.size} < expected {nx*ny}"
+        return data[: nx * ny].reshape(ny, nx).copy(), ""
+    except Exception as exc:
+        return None, str(exc)
 
 
 # ── Main viewer window ───────────────────────────────────────────────────────────
