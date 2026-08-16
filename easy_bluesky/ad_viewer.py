@@ -188,6 +188,10 @@ class ADViewerWindow(QMainWindow):
         self._thread: _PVAMonitorThread | None = None
         self._crosshair_on = False
 
+        # Resolve actual cam1 PV addresses from the ophyd signal map before
+        # building the UI so mode label and controls are detector-specific.
+        self._cam1_pvs = _resolve_cam1_pvs(pv_map)
+
         self._build_ui()
         self._restore_display_settings()   # apply saved colormap/log/transpose
         self._connect_ca_pvs()
@@ -303,10 +307,19 @@ class ADViewerWindow(QMainWindow):
         row.addWidget(self._btn_stop)
         gl.addLayout(row)
 
-        gl.addWidget(QLabel("Image Mode:"))
+        # Label adapts to detector: "Image Mode:" or "Trigger Mode:" etc.
+        r = self._cam1_pvs
+        if 'trigger_mode' in r and 'image_mode' not in r:
+            mode_lbl = "Trigger Mode:"
+        elif 'image_mode' in r:
+            mode_lbl = "Image Mode:"
+        else:
+            mode_lbl = "Image Mode:"   # fallback default
+        gl.addWidget(QLabel(mode_lbl))
         self._cmb_mode = QComboBox()
-        self._cmb_mode.addItems(["Single", "Multiple", "Continuous"])
-        self._cmb_mode.setCurrentText("Continuous")
+        # Enum strings populated from PV after connection; placeholder shown until then
+        self._cmb_mode.addItems(["(connecting…)"])
+        self._cmb_mode.setEnabled(False)
         self._cmb_mode.currentIndexChanged.connect(self._on_mode_changed)
         gl.addWidget(self._cmb_mode)
 
@@ -391,18 +404,33 @@ class ADViewerWindow(QMainWindow):
         except ImportError:
             return
         p = self._cam_pfx
+        r = self._cam1_pvs
+
+        def _pv(role: str, fallback: str) -> str:
+            return r.get(role, f"{p}{fallback}")
+
+        # 'image_mode' covers ImageMode-style detectors; 'trigger_mode' covers
+        # Eiger and similar.  Whichever was found in pv_map is used; both share
+        # the same internal key 'image_mode' so the rest of the code is uniform.
+        if 'trigger_mode' in r and 'image_mode' not in r:
+            mode_pv     = r['trigger_mode']
+            mode_pv_rbv = r.get('trigger_mode_rbv', mode_pv + '_RBV')
+        else:
+            mode_pv     = _pv('image_mode', 'ImageMode')
+            mode_pv_rbv = _pv('image_mode', 'ImageMode') + '_RBV'
+
         for key, pvname in {
-            'acquire':            f"{p}Acquire",
-            'acquire_rbv':        f"{p}Acquire_RBV",
-            'acquire_time':       f"{p}AcquireTime",
-            'acquire_time_rbv':   f"{p}AcquireTime_RBV",
-            'acquire_period':     f"{p}AcquirePeriod",
-            'acquire_period_rbv': f"{p}AcquirePeriod_RBV",
-            'image_mode':         f"{p}ImageMode",
-            'image_mode_rbv':     f"{p}ImageMode_RBV",
+            'acquire':            _pv('acquire',        'Acquire'),
+            'acquire_rbv':        _pv('acquire',        'Acquire') + '_RBV',
+            'acquire_time':       _pv('acquire_time',   'AcquireTime'),
+            'acquire_time_rbv':   _pv('acquire_time',   'AcquireTime') + '_RBV',
+            'acquire_period':     _pv('acquire_period', 'AcquirePeriod'),
+            'acquire_period_rbv': _pv('acquire_period', 'AcquirePeriod') + '_RBV',
+            'image_mode':         mode_pv,
+            'image_mode_rbv':     mode_pv_rbv,
         }.items():
             self._ca_pvs[key] = epics.PV(pvname)
-        QTimer.singleShot(700, self._read_ca_initial)
+        QTimer.singleShot(1200, self._read_ca_initial)
 
     def _read_ca_initial(self):
         c = self._ca_pvs
@@ -414,9 +442,25 @@ class ADViewerWindow(QMainWindow):
             if val is not None:
                 _block_set(widget, lambda w=widget, v=float(val): w.setValue(v))
 
-        mode = _pv_get(c.get('image_mode_rbv'), as_string=True)
-        if mode:
-            idx = self._cmb_mode.findText(mode)
+        # Populate mode combo from the PV's actual enum strings so any detector
+        # (ImageMode, TriggerMode, …) shows its real options with correct labels.
+        mode_pv = c.get('image_mode')
+        if mode_pv is not None:
+            enum_strs = getattr(mode_pv, 'enum_strs', None)
+            if enum_strs:
+                self._cmb_mode.blockSignals(True)
+                self._cmb_mode.clear()
+                self._cmb_mode.addItems(list(enum_strs))
+                self._cmb_mode.setEnabled(True)
+                self._cmb_mode.blockSignals(False)
+            else:
+                # PV not yet fully connected — retry once more after 1 s
+                QTimer.singleShot(1000, self._read_ca_initial)
+                return
+
+        current = _pv_get(c.get('image_mode_rbv'), as_string=True)
+        if current:
+            idx = self._cmb_mode.findText(current)
             if idx >= 0:
                 _block_set(self._cmb_mode,
                            lambda i=idx: self._cmb_mode.setCurrentIndex(i))
@@ -747,6 +791,38 @@ def _block_set(widget, fn):
 
 
 # ── Public helpers used by DevicesPlansTab ───────────────────────────────────────
+
+# (role, candidate cam1 PV suffixes to match in PV address values)
+_CAM1_ROLE_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    ('acquire',        ('cam1:Acquire',)),
+    ('image_mode',     ('cam1:ImageMode',)),
+    ('trigger_mode',   ('cam1:TriggerMode',)),
+    ('acquire_time',   ('cam1:AcquireTime',)),
+    ('acquire_period', ('cam1:AcquirePeriod',)),
+    ('num_images',     ('cam1:NumImages', 'cam1:NumExposures')),
+]
+
+
+def _resolve_cam1_pvs(pv_map: dict) -> dict:
+    """Scan PV address values in *pv_map* for known cam1 suffixes.
+
+    Returns {role: pvname} for each matched role, skipping _RBV readbacks.
+    Works for any ophyd-wrapped AD detector regardless of signal naming
+    conventions — detection is done on PV addresses, not signal name keys.
+    """
+    resolved: dict = {}
+    for role, patterns in _CAM1_ROLE_PATTERNS:
+        for pvname in pv_map.values():
+            if not pvname or '_RBV' in pvname:
+                continue
+            for pat in patterns:
+                if pat.lower() in pvname.lower():
+                    resolved[role] = pvname
+                    break
+            if role in resolved:
+                break
+    return resolved
+
 
 def extract_ad_prefix(pv_map_for_device: dict) -> str | None:
     """Given {sig_name: pvname} for one device, return the AD base prefix.
