@@ -1828,12 +1828,14 @@ class ExperimentsTab(QWidget):
         env_state = status.get("worker_environment_state", "")
         if not env_state:
             env_state = "idle" if status.get("worker_environment_exists") else "closed"
-        re_state = status.get("re_state", "")
+        re_state      = status.get("re_state", "")
+        manager_state = status.get("manager_state", "idle")
         self._re_state = re_state
         env_open = env_state not in ("", "closed")
         running  = re_state == "running"
         paused   = re_state == "paused"
-        idle     = re_state in ("", "idle") and env_open
+        manager_idle = manager_state == "idle"
+        idle     = re_state in ("", "idle") and env_open and manager_idle
         self.btn_q_start.setEnabled(idle)
         self.btn_q_pause.setEnabled(running)
         self.btn_q_resume.setEnabled(paused)
