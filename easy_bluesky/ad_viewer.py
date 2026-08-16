@@ -188,6 +188,8 @@ class ADViewerWindow(QMainWindow):
         self._thread: _PVAMonitorThread | None = None
         self._crosshair_on = False
         self._active_mode_key = 'image_mode'   # updated in _read_ca_initial
+        self._mask_enabled   = False
+        self._mask_threshold: float | None = None
 
         self._cam1_pvs = _resolve_cam1_pvs(pv_map)
 
@@ -386,6 +388,26 @@ class ADViewerWindow(QMainWindow):
         g3l.addWidget(self._roi_lbl)
         lay.addWidget(g3)
 
+        # ── Bad Pixel Mask ────────────────────────────────────────────
+        g4 = QGroupBox("Bad Pixel Mask")
+        g4l = QVBoxLayout(g4)
+        g4l.setSpacing(4)
+
+        self._chk_mask = QCheckBox("Enable")
+        self._chk_mask.toggled.connect(self._on_mask_toggled)
+        g4l.addWidget(self._chk_mask)
+
+        mr = QHBoxLayout()
+        mr.addWidget(QLabel("Max value:"))
+        self._edit_mask_thresh = QLineEdit()
+        self._edit_mask_thresh.setPlaceholderText("e.g. 1e6")
+        self._edit_mask_thresh.setToolTip(
+            "Pixels with intensity above this value are set to 0 before display")
+        self._edit_mask_thresh.returnPressed.connect(self._on_mask_threshold_changed)
+        mr.addWidget(self._edit_mask_thresh)
+        g4l.addLayout(mr)
+        lay.addWidget(g4)
+
         lay.addStretch()
         return panel
 
@@ -563,10 +585,26 @@ class ADViewerWindow(QMainWindow):
     # ── Display helpers ──────────────────────────────────────────────────────────
 
     def _prepare(self, arr: np.ndarray) -> np.ndarray:
-        """Apply log / transpose for display; always returns float32."""
-        out = np.log1p(arr.astype(np.float32)) if self._log_scale \
-              else arr.astype(np.float32)
+        """Apply bad-pixel mask → log scale → transpose; returns float32."""
+        out = arr.astype(np.float32)
+        if self._mask_enabled and self._mask_threshold is not None:
+            out[out > self._mask_threshold] = 0.0
+        if self._log_scale:
+            out = np.log1p(out)
         return out.T if self._transpose else out
+
+    def _on_mask_toggled(self, checked: bool):
+        self._mask_enabled = checked
+        self._refresh_display()
+
+    def _on_mask_threshold_changed(self):
+        text = self._edit_mask_thresh.text().strip()
+        try:
+            self._mask_threshold = float(text) if text else None
+        except ValueError:
+            return
+        if self._mask_enabled:
+            self._refresh_display()
 
     def _refresh_display(self):
         if self._arr is not None:
@@ -727,18 +765,30 @@ class ADViewerWindow(QMainWindow):
         self._apply_colormap(cmap)
 
         if saved.get('log_scale', False):
-            self._chk_log.setChecked(True)   # triggers _on_log_toggled
+            self._chk_log.setChecked(True)
 
         if saved.get('transpose', False):
-            self._chk_xps.setChecked(True)   # triggers _on_transpose_toggled
+            self._chk_xps.setChecked(True)
+
+        thresh = saved.get('mask_threshold', '')
+        if thresh:
+            self._edit_mask_thresh.setText(str(thresh))
+            try:
+                self._mask_threshold = float(thresh)
+            except ValueError:
+                pass
+        if saved.get('mask_enabled', False):
+            self._chk_mask.setChecked(True)   # triggers _on_mask_toggled
 
     def _save_display_settings(self):
         """Persist display settings for this device to disk."""
         settings = load_ad_settings()
         dev = settings.setdefault(self._device_name, {})
-        dev['colormap']   = self._cmb_cmap.currentText()
-        dev['log_scale']  = self._chk_log.isChecked()
-        dev['transpose']  = self._chk_xps.isChecked()
+        dev['colormap']       = self._cmb_cmap.currentText()
+        dev['log_scale']      = self._chk_log.isChecked()
+        dev['transpose']      = self._chk_xps.isChecked()
+        dev['mask_enabled']   = self._chk_mask.isChecked()
+        dev['mask_threshold'] = self._edit_mask_thresh.text().strip()
         save_ad_settings(settings)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────────
