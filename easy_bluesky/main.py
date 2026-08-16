@@ -1125,6 +1125,12 @@ class MainWindow(QMainWindow):
             group.addAction(act)
             self._theme_actions[name] = act
 
+        tools_menu = menubar.addMenu("Tools")
+        act_ad  = tools_menu.addAction("AD Viewer…")
+        act_xrf = tools_menu.addAction("XRF Viewer (PyMCA)…")
+        act_ad.triggered.connect(self._on_tools_ad_viewer)
+        act_xrf.triggered.connect(self._on_tools_xrf_viewer)
+
         self._help_dialog = None
 
         help_menu = menubar.addMenu("Help")
@@ -1145,6 +1151,12 @@ class MainWindow(QMainWindow):
         if self._help_dialog is None:
             self._help_dialog = _HelpDialog(self)
         self._help_dialog.show_tab(tab)
+
+    def _on_tools_ad_viewer(self):
+        self.devices_plans_tab.open_ad_viewer_from_menu()
+
+    def _on_tools_xrf_viewer(self):
+        self.devices_plans_tab.open_xrf_viewer_from_menu()
 
     def _refresh_recent_menu(self):
         self._recent_menu.clear()

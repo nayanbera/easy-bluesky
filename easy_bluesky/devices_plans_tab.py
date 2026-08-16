@@ -78,6 +78,48 @@ class _ADConfigDialog(QDialog):
         return self._host_edit.text().strip()
 
 
+class _XRFConfigDialog(QDialog):
+    """Single-field dialog: spectrum array PV for the XRF Viewer."""
+
+    def __init__(self, device_name: str, default_pv: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Configure XRF Viewer — {device_name}")
+        self.setMinimumWidth(400)
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        note = QLabel(
+            f"<b>{device_name}</b> — enter the EPICS PV for the MCA spectrum array.\n"
+            "Settings are saved to <tt>~/.easy_bluesky/xrf_viewer_settings.json</tt>."
+        )
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+
+        self._pv_edit = QLineEdit(default_pv)
+        self._pv_edit.setPlaceholderText("e.g. IOC:MCA:.VAL  or  IOC:XSP3:MCA1:ArrayData")
+        self._pv_edit.setToolTip("EPICS waveform PV holding the MCA spectrum array")
+        form.addRow("Spectrum PV:", self._pv_edit)
+
+        lay.addLayout(form)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Open Viewer")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    @property
+    def spectrum_pv(self) -> str:
+        return self._pv_edit.text().strip()
+
+
 def _device_color(module: str) -> tuple:
     m = (module or "").lower()
     if "sim" in m:
@@ -291,6 +333,7 @@ class DevicesPlansTab(QWidget):
         self._plan_catalog: PlanCatalog | None = None
         self._pv_map_cache:  dict = {}   # dev_name → {sig_name: pvname}
         self._ad_viewers:    dict = {}   # dev_name → ADViewerWindow
+        self._xrf_viewers:   dict = {}   # dev_name → XRFViewerWindow
         self._conn_settings: dict = {}   # active connection profile
         # Coalesce CA value/desc callbacks — apply at most 10x/sec to avoid
         # flooding the tree widget with setText() calls during scans.
@@ -1022,7 +1065,7 @@ class DevicesPlansTab(QWidget):
         """Set the PlanCatalog used for type classification and source lookup."""
         self._plan_catalog = catalog
 
-    # ── AD Viewer context menu ───────────────────────────────────────────────────
+    # ── Device context menu (AD Viewer + XRF Viewer) ────────────────────────────
 
     def _on_device_context_menu(self, pos):
         item = self.devices_tree.itemAt(pos)
@@ -1035,18 +1078,33 @@ class DevicesPlansTab(QWidget):
         pv_map_dev = self._pv_map_cache.get(dev_name, {})
         classname  = self._device_classes.get(dev_name, "")
 
-        from .ad_viewer import is_area_detector
-        if not is_area_detector(pv_map_dev, classname):
+        from .ad_viewer  import is_area_detector
+        from .xrf_viewer import is_xrf_detector
+        is_ad  = is_area_detector(pv_map_dev, classname)
+        is_xrf = is_xrf_detector(pv_map_dev, classname)
+        if not is_ad and not is_xrf:
             return
 
         menu = QMenu(self)
-        act_open   = menu.addAction("📺  Open AD Viewer")
-        act_config = menu.addAction("⚙  Configure AD Viewer…")
+        acts: dict = {}
+        if is_ad:
+            acts['ad_open'] = menu.addAction("📺  Open AD Viewer")
+            acts['ad_cfg']  = menu.addAction("⚙  Configure AD Viewer…")
+        if is_xrf:
+            if is_ad:
+                menu.addSeparator()
+            acts['xrf_open'] = menu.addAction("📊  Open XRF Viewer")
+            acts['xrf_cfg']  = menu.addAction("⚙  Configure XRF Viewer…")
+
         action = menu.exec(self.devices_tree.viewport().mapToGlobal(pos))
-        if action == act_open:
+        if action == acts.get('ad_open'):
             self._open_ad_viewer(dev_name, pv_map_dev, force_dialog=False)
-        elif action == act_config:
+        elif action == acts.get('ad_cfg'):
             self._open_ad_viewer(dev_name, pv_map_dev, force_dialog=True)
+        elif action == acts.get('xrf_open'):
+            self._open_xrf_viewer(dev_name, pv_map_dev, force_dialog=False)
+        elif action == acts.get('xrf_cfg'):
+            self._open_xrf_viewer(dev_name, pv_map_dev, force_dialog=True)
 
     def _open_ad_viewer(self, dev_name: str, pv_map_dev: dict,
                         force_dialog: bool = False):
@@ -1105,6 +1163,92 @@ class DevicesPlansTab(QWidget):
         viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         viewer.destroyed.connect(lambda _, n=dev_name: self._ad_viewers.pop(n, None))
         viewer.show()
+
+    # ── XRF Viewer ───────────────────────────────────────────────────────────────
+
+    def _open_xrf_viewer(self, dev_name: str, pv_map_dev: dict,
+                         force_dialog: bool = False):
+        from .xrf_viewer import (XRFViewerWindow, extract_xrf_spectrum_pv,
+                                  load_xrf_settings, save_xrf_settings)
+
+        saved       = load_xrf_settings().get(dev_name, {})
+        auto_pv     = extract_xrf_spectrum_pv(pv_map_dev)
+        spectrum_pv = auto_pv or saved.get('spectrum_pv', '')
+
+        if force_dialog or not spectrum_pv:
+            dlg = _XRFConfigDialog(
+                dev_name,
+                spectrum_pv or f"{dev_name}:mca1.VAL",
+                parent=self,
+            )
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            spectrum_pv = dlg.spectrum_pv
+
+        load_xrf_settings()  # re-read fresh
+        xrf_settings = load_xrf_settings()
+        xrf_settings.setdefault(dev_name, {}).update({'spectrum_pv': spectrum_pv})
+        save_xrf_settings(xrf_settings)
+
+        existing = self._xrf_viewers.get(dev_name)
+        if existing is not None:
+            try:
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                pass
+
+        viewer = XRFViewerWindow(dev_name, spectrum_pv, pv_map_dev, parent=None)
+        self._xrf_viewers[dev_name] = viewer
+        viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        viewer.destroyed.connect(lambda _, n=dev_name: self._xrf_viewers.pop(n, None))
+        viewer.show()
+
+    # ── Public launchers for Tools menu ─────────────────────────────────────────
+
+    def open_ad_viewer_from_menu(self):
+        """Show a device picker (or config dialog) and open an AD Viewer."""
+        from .ad_viewer import is_area_detector
+        ad_devices = [
+            dev for dev, pvm in self._pv_map_cache.items()
+            if is_area_detector(pvm, self._device_classes.get(dev, ''))
+        ]
+        if not ad_devices:
+            # No devices loaded — open config dialog with blank fields
+            self._open_ad_viewer("", {}, force_dialog=True)
+            return
+        if len(ad_devices) == 1:
+            self._open_ad_viewer(ad_devices[0],
+                                  self._pv_map_cache[ad_devices[0]],
+                                  force_dialog=False)
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getItem(
+            self, "Open AD Viewer", "Select area detector:", ad_devices, 0, False)
+        if ok and name:
+            self._open_ad_viewer(name, self._pv_map_cache[name], force_dialog=False)
+
+    def open_xrf_viewer_from_menu(self):
+        """Show a device picker (or config dialog) and open an XRF Viewer."""
+        from .xrf_viewer import is_xrf_detector
+        xrf_devices = [
+            dev for dev, pvm in self._pv_map_cache.items()
+            if is_xrf_detector(pvm, self._device_classes.get(dev, ''))
+        ]
+        if not xrf_devices:
+            self._open_xrf_viewer("", {}, force_dialog=True)
+            return
+        if len(xrf_devices) == 1:
+            self._open_xrf_viewer(xrf_devices[0],
+                                   self._pv_map_cache[xrf_devices[0]],
+                                   force_dialog=False)
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getItem(
+            self, "Open XRF Viewer", "Select XRF detector:", xrf_devices, 0, False)
+        if ok and name:
+            self._open_xrf_viewer(name, self._pv_map_cache[name], force_dialog=False)
 
     # ── Plan filter ──────────────────────────────────────────────────────────────
 
