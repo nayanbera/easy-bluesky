@@ -1011,11 +1011,16 @@ class DevicesPlansTab(QWidget):
 
         prefix = extract_ad_prefix(pv_map_dev)
         if prefix is None:
+            # Show actual PV map so the naming scheme can be diagnosed
+            sample = "\n".join(
+                f"  {sig}: {pv}" for sig, pv in list(pv_map_dev.items())[:20]
+            ) or "  (empty — PV names not yet fetched)"
             QMessageBox.warning(
                 self, "Cannot determine AD prefix",
-                f"No cam1 PVs found in the pv_map for '{dev_name}'.\n\n"
-                "The AD Viewer requires the cam1 plugin PVs to be present.\n"
-                "Check that the RE environment loaded the device correctly.",
+                f"No 'cam1:' found in any PV address for '{dev_name}'.\n\n"
+                f"Signals in pv_map:\n{sample}\n\n"
+                "If the cam plugin uses a different name (e.g. 'cam:'), "
+                "please report this so the viewer can be updated.",
             )
             return
 
