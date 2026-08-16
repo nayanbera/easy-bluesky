@@ -353,7 +353,11 @@ class ADViewerWindow(QMainWindow):
             self._start_pva()
 
     def _start_pva(self):
-        self._set_status(f"● Subscribing to {self._pva_pv} …", "#888888")
+        import os
+        pva_addr = (os.environ.get('EPICS_PVA_ADDR_LIST') or
+                    os.environ.get('EPICS_CA_ADDR_LIST') or '').strip()
+        addr_info = f" via {pva_addr}" if pva_addr else " (broadcast — no addr list set)"
+        self._set_status(f"● Subscribing to {self._pva_pv}{addr_info} …", "#888888")
         self._thread = _PVAMonitorThread(self._pva_pv, self)
         self._thread.new_frame.connect(self._on_new_frame)
         self._thread.connection_changed.connect(self._on_pva_connected)
