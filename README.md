@@ -1676,7 +1676,6 @@ New fields added by the ESAF integration:
 | `esaf_server_url` | top-level | Base URL of the ESAF REST server (empty = server disabled) |
 | `esaf_api_key` | top-level | Shared secret for ESAF server write operations |
 | `remote_data_root` | per-profile | Root path on the RE machine for detector / experiment data |
-```
 
 Environment variable overrides:
 
