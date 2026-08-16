@@ -32,7 +32,15 @@ from pathlib import Path
 
 # ── Run Engine ─────────────────────────────────────────────────────────────────
 from bluesky import RunEngine
-RE = RunEngine({})
+try:
+    from bluesky.utils import PersistentDict as _PD
+    _re_md_dir = Path.home() / ".easy_bluesky" / "re_md"
+    _re_md_dir.mkdir(parents=True, exist_ok=True)
+    RE = RunEngine(_PD(str(_re_md_dir)))
+    print(f"[re_startup_mongo] RE scan_id persists in {_re_md_dir}")
+except Exception as _e_pd:
+    print(f"[re_startup_mongo] PersistentDict unavailable ({_e_pd}), scan_id will reset on restart")
+    RE = RunEngine({})
 
 # ── Hardware devices (from the profile's devices file) ─────────────────────────
 _devices_file = os.getenv("EASY_BLUESKY_DEVICES_FILE", "devices.py")
