@@ -2899,6 +2899,16 @@ class ExperimentsTab(QWidget):
         n = len(items)
         self.queue_count_label.setText(f"{n} item{'s' if n != 1 else ''}")
 
+        # Advance _next_scan_num past any scan numbers already assigned to queued plans.
+        # Needed after app restart when the queue already contains plans from a prior session.
+        max_queued = max(
+            (item.get("kwargs", {}).get("md", {}).get("scan_num") or 0 for item in items),
+            default=0,
+        )
+        if max_queued >= self._next_scan_num:
+            self._next_scan_num = max_queued + 1
+            self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+
     # ── Internal slots ─────────────────────────────────────────────────────────
 
     def _on_plan_log_selection_changed(self):
