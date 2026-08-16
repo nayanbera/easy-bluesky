@@ -239,7 +239,7 @@ class ADViewerWindow(QMainWindow):
         g2l.addLayout(crow)
 
         btn_auto = QPushButton("Auto Levels")
-        btn_auto.clicked.connect(self._img_view.autoLevels)
+        btn_auto.clicked.connect(lambda: self._img_view.autoLevels())
         g2l.addWidget(btn_auto)
         lay.addWidget(g2)
 
