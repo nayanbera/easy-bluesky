@@ -20,25 +20,7 @@ from .plans_manager import (
 )
 from .plan_builder import PlanFileTreePanel
 
-_METADATA_PATH    = Path.home() / ".easy_bluesky" / "device_metadata.json"
-_AD_SETTINGS_PATH = Path.home() / ".easy_bluesky" / "ad_viewer_settings.json"
-
-
-def _load_ad_settings() -> dict:
-    try:
-        if _AD_SETTINGS_PATH.exists():
-            return json.loads(_AD_SETTINGS_PATH.read_text())
-    except Exception:
-        pass
-    return {}
-
-
-def _save_ad_settings(settings: dict):
-    try:
-        _AD_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _AD_SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
-    except Exception:
-        pass
+_METADATA_PATH = Path.home() / ".easy_bluesky" / "device_metadata.json"
 
 
 class _ADConfigDialog(QDialog):
@@ -1068,7 +1050,7 @@ class DevicesPlansTab(QWidget):
 
     def _open_ad_viewer(self, dev_name: str, pv_map_dev: dict,
                         force_dialog: bool = False):
-        from .ad_viewer import ADViewerWindow, extract_ad_prefix, _HAS_P4P
+        from .ad_viewer import ADViewerWindow, extract_ad_prefix, _HAS_P4P, load_ad_settings, save_ad_settings
 
         if not _HAS_P4P:
             QMessageBox.warning(
@@ -1079,7 +1061,7 @@ class DevicesPlansTab(QWidget):
             return
 
         # Load saved per-device settings
-        ad_settings = _load_ad_settings()
+        ad_settings = load_ad_settings()
         saved       = ad_settings.get(dev_name, {})
 
         # Auto-detect prefix; fall back to saved value
@@ -1105,7 +1087,7 @@ class DevicesPlansTab(QWidget):
 
         # Persist settings for this device
         ad_settings[dev_name] = {'prefix': prefix, 'pva_host': pva_host}
-        _save_ad_settings(ad_settings)
+        save_ad_settings(ad_settings)
 
         # Bring existing window to front rather than open a second one
         existing = self._ad_viewers.get(dev_name)

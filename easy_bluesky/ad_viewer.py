@@ -1,9 +1,34 @@
 """ad_viewer.py — Live area-detector image viewer via PVAccess + pyqtgraph."""
 
+import json
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
+
+# ── Per-device persistent settings ──────────────────────────────────────────────
+
+_AD_SETTINGS_PATH = Path.home() / ".easy_bluesky" / "ad_viewer_settings.json"
+
+
+def load_ad_settings() -> dict:
+    """Return the full settings dict from disk, or {} on any error."""
+    try:
+        if _AD_SETTINGS_PATH.exists():
+            return json.loads(_AD_SETTINGS_PATH.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def save_ad_settings(settings: dict):
+    """Write the full settings dict to disk atomically."""
+    try:
+        _AD_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _AD_SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
+    except Exception:
+        pass
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
@@ -163,7 +188,7 @@ class ADViewerWindow(QMainWindow):
         self._thread: _PVAMonitorThread | None = None
 
         self._build_ui()
-        self._apply_colormap("viridis")
+        self._restore_display_settings()   # apply saved colormap/log/transpose
         self._connect_ca_pvs()
 
         if _HAS_P4P:
@@ -512,9 +537,38 @@ class ADViewerWindow(QMainWindow):
         self._status_lbl.setText(msg)
         self._status_lbl.setStyleSheet(f"color:{color};")
 
+    # ── Persistent display settings ──────────────────────────────────────────────
+
+    def _restore_display_settings(self):
+        """Apply saved colormap / log-scale / transpose for this device."""
+        saved = load_ad_settings().get(self._device_name, {})
+        cmap = saved.get('colormap', 'viridis')
+        idx = self._cmb_cmap.findText(cmap)
+        if idx >= 0:
+            self._cmb_cmap.blockSignals(True)
+            self._cmb_cmap.setCurrentIndex(idx)
+            self._cmb_cmap.blockSignals(False)
+        self._apply_colormap(cmap)
+
+        if saved.get('log_scale', False):
+            self._chk_log.setChecked(True)   # triggers _on_log_toggled
+
+        if saved.get('transpose', False):
+            self._chk_xps.setChecked(True)   # triggers _on_transpose_toggled
+
+    def _save_display_settings(self):
+        """Persist display settings for this device to disk."""
+        settings = load_ad_settings()
+        dev = settings.setdefault(self._device_name, {})
+        dev['colormap']   = self._cmb_cmap.currentText()
+        dev['log_scale']  = self._chk_log.isChecked()
+        dev['transpose']  = self._chk_xps.isChecked()
+        save_ad_settings(settings)
+
     # ── Lifecycle ────────────────────────────────────────────────────────────────
 
     def closeEvent(self, event: QCloseEvent):
+        self._save_display_settings()
         if self._thread and self._thread.isRunning():
             self._thread.stop_monitor()
         for pv in self._ca_pvs.values():
