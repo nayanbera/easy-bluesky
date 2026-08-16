@@ -1606,7 +1606,8 @@ class ExperimentsTab(QWidget):
         self._shown_error_uids = set()
         self._exp_created_at   = 0.0
         self._exp_end_time     = 0.0
-        self._next_scan_num    = 1
+        self._next_scan_num      = 1
+        self._base_next_scan_num = 1   # from plans_log.jsonl; floor for queue recalculation
         self._clear_sample()
         # Reset display labels — _set_active_experiment will re-populate them
         # if a saved experiment exists for this profile.
@@ -2745,7 +2746,8 @@ class ExperimentsTab(QWidget):
                     file_changed = True
                 if e.get("run_uids"):
                     scan_counter += 1
-            self._next_scan_num = scan_counter  # next unused number
+            self._next_scan_num      = scan_counter  # next unused number
+            self._base_next_scan_num = scan_counter
             self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
 
             if file_changed:
@@ -2899,14 +2901,15 @@ class ExperimentsTab(QWidget):
         n = len(items)
         self.queue_count_label.setText(f"{n} item{'s' if n != 1 else ''}")
 
-        # Advance _next_scan_num past any scan numbers already assigned to queued plans.
-        # Needed after app restart when the queue already contains plans from a prior session.
+        # Always recalculate next_scan_num from the queue so additions and removals
+        # are both reflected immediately.  Floor is _base_next_scan_num (completed scans + 1).
         max_queued = max(
             (item.get("kwargs", {}).get("md", {}).get("scan_num") or 0 for item in items),
             default=0,
         )
-        if max_queued >= self._next_scan_num:
-            self._next_scan_num = max_queued + 1
+        new_next = max(self._base_next_scan_num, max_queued + 1) if max_queued else self._base_next_scan_num
+        if new_next != self._next_scan_num:
+            self._next_scan_num = new_next
             self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
 
     # ── Internal slots ─────────────────────────────────────────────────────────
