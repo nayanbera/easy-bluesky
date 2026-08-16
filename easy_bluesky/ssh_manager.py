@@ -225,7 +225,8 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             except Exception:
                 pass  # non-fatal
 
-        # Ensure the profile plans directory exists on the remote
+        # Ensure the profile plans directory exists on the remote, then upload
+        # bundled custom_plans.py so the remote always runs the latest version.
         if _remote_scripts_dir:
             _slug = profile_slug(profile_name)
             _remote_plans_dir = f"{_remote_scripts_dir}/{_slug}_plans"
@@ -233,6 +234,12 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
                 sftp.mkdir(_remote_plans_dir)
             except OSError:
                 pass  # already exists
+            _custom_local = _scripts_pkg / "custom_plans.py"
+            if _custom_local.exists():
+                try:
+                    sftp.put(str(_custom_local), f"{_remote_plans_dir}/custom_plans.py")
+                except Exception:
+                    pass  # non-fatal
 
         sftp.close()
 
