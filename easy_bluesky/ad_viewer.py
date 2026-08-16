@@ -186,6 +186,7 @@ class ADViewerWindow(QMainWindow):
         self._pva_host = pva_host.strip()
         self._ca_pvs: dict                     = {}
         self._thread: _PVAMonitorThread | None = None
+        self._crosshair_on = False
 
         self._build_ui()
         self._restore_display_settings()   # apply saved colormap/log/transpose
@@ -217,6 +218,20 @@ class ADViewerWindow(QMainWindow):
         self._img_view.ui.menuBtn.setVisible(False)
         root.addWidget(self._img_view, stretch=1)
 
+        # Crosshair overlay
+        _ch_pen = pg.mkPen('y', width=1, style=Qt.PenStyle.DashLine)
+        self._vline = pg.InfiniteLine(angle=90, movable=False, pen=_ch_pen)
+        self._hline = pg.InfiniteLine(angle=0,  movable=False, pen=_ch_pen)
+        self._img_view.addItem(self._vline)
+        self._img_view.addItem(self._hline)
+        self._vline.setVisible(False)
+        self._hline.setVisible(False)
+        self._mouse_proxy = pg.SignalProxy(
+            self._img_view.scene().sigMouseMoved,
+            rateLimit=60,
+            slot=self._on_mouse_moved,
+        )
+
         # Draggable rectangular ROI (hidden by default)
         self._roi = pg.RectROI(
             [50, 50], [100, 100],
@@ -233,6 +248,10 @@ class ADViewerWindow(QMainWindow):
 
         self._status_lbl = QLabel("● Connecting…")
         self.statusBar().addWidget(self._status_lbl, 1)
+        self._crosshair_lbl = QLabel("")
+        self._crosshair_lbl.setStyleSheet(
+            "font-family:monospace; color:#dddd00; min-width:180px;")
+        self.statusBar().addPermanentWidget(self._crosshair_lbl)
         self._fps_lbl = QLabel("—")
         self.statusBar().addPermanentWidget(self._fps_lbl)
 
@@ -304,12 +323,15 @@ class ADViewerWindow(QMainWindow):
         g2l = QVBoxLayout(g2)
         g2l.setSpacing(5)
 
-        self._chk_log = QCheckBox("Log scale  (log₁₊ₓ)")
-        self._chk_xps = QCheckBox("Transpose image")
+        self._chk_log   = QCheckBox("Log scale  (log₁₊ₓ)")
+        self._chk_xps   = QCheckBox("Transpose image")
+        self._chk_xhair = QCheckBox("Crosshair")
         self._chk_log.toggled.connect(self._on_log_toggled)
         self._chk_xps.toggled.connect(self._on_transpose_toggled)
+        self._chk_xhair.toggled.connect(self._on_crosshair_toggled)
         g2l.addWidget(self._chk_log)
         g2l.addWidget(self._chk_xps)
+        g2l.addWidget(self._chk_xhair)
 
         crow = QHBoxLayout()
         crow.addWidget(QLabel("Colormap:"))
@@ -532,6 +554,51 @@ class ADViewerWindow(QMainWindow):
             )
         except Exception:
             pass
+
+    # ── Crosshair ────────────────────────────────────────────────────────────────
+
+    def _on_crosshair_toggled(self, checked: bool):
+        self._crosshair_on = checked
+        self._vline.setVisible(checked)
+        self._hline.setVisible(checked)
+        if not checked:
+            self._crosshair_lbl.setText("")
+
+    def _on_mouse_moved(self, evt):
+        if not self._crosshair_on:
+            return
+        pos = evt[0]
+        img_item = self._img_view.getImageItem()
+        if not img_item.sceneBoundingRect().contains(pos):
+            self._vline.setVisible(False)
+            self._hline.setVisible(False)
+            return
+        self._vline.setVisible(True)
+        self._hline.setVisible(True)
+        pt = img_item.mapFromScene(pos)
+        ix = int(pt.x())
+        iy = int(pt.y())
+        if self._arr is None:
+            return
+        disp = self._prepare(self._arr)
+        if not (0 <= ix < disp.shape[0] and 0 <= iy < disp.shape[1]):
+            self._crosshair_lbl.setText("")
+            return
+        # Map display indices back to raw array: _prepare returns arr.T when transposed
+        if self._transpose:
+            # disp[ix, iy] == arr.T[ix, iy] == arr[iy, ix]
+            ri, ci = iy, ix
+        else:
+            ri, ci = ix, iy
+        raw_val = self._arr[ri, ci] if (
+            0 <= ri < self._arr.shape[0] and 0 <= ci < self._arr.shape[1]
+        ) else None
+        self._vline.setPos(ix + 0.5)
+        self._hline.setPos(iy + 0.5)
+        if raw_val is not None:
+            self._crosshair_lbl.setText(f"x={ix}  y={iy}  I={float(raw_val):.6g}")
+        else:
+            self._crosshair_lbl.setText(f"x={ix}  y={iy}")
 
     def _set_status(self, msg: str, color: str = "#888888"):
         self._status_lbl.setText(msg)
