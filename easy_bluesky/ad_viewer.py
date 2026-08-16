@@ -589,16 +589,18 @@ class ADViewerWindow(QMainWindow):
 
     def _prepare(self, arr: np.ndarray) -> np.ndarray:
         """Apply bad-pixel mask → log scale → transpose; returns float32."""
-        # Dectris gap (-1) / dead (-2) pixels are signed sentinels. PVA often delivers
-        # the array as uint32, so they appear as 0xFFFFFFFF/0xFFFFFFFE ≈ 4.295e9.
-        # Use astype with unsafe casting (two's-complement reinterpretation) to restore
-        # the negative sign, then zero all negatives. view() can silently misbehave on
-        # some numpy builds; astype is the safe alternative.
+        # Dectris gap (-1) / dead (-2) pixels are signed sentinels stored in unsigned
+        # arrays (PVA delivers uint32: -1→0xFFFFFFFF, -2→0xFFFFFFFE).
+        # Compare in the *original* integer array to avoid float32 precision ambiguity,
+        # then zero those positions in the float output.
         if arr.dtype.kind == 'u':
-            out = arr.astype(np.dtype(f'i{arr.dtype.itemsize}'), casting='unsafe').astype(np.float32)
+            dtype_max = np.iinfo(arr.dtype).max
+            sentinel_mask = arr >= np.uint64(dtype_max) - 10   # covers signed -1 … -11
+            out = arr.astype(np.float32)
+            out[sentinel_mask] = 0.0
         else:
             out = arr.astype(np.float32)
-        out[out < 0] = 0.0   # gap / dead-pixel sentinels → 0
+            out[out < 0] = 0.0   # signed integer or float source
         if self._mask_enabled and self._mask_threshold is not None:
             out[out > self._mask_threshold] = 0.0
         if self._log_scale:
