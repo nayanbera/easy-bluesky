@@ -2886,8 +2886,11 @@ class ExperimentsTab(QWidget):
             args    = item.get("args", []) or []
             kwargs  = item.get("kwargs", {}) or {}
             uid     = item.get("item_uid", "")
-            summary = self._plan_summary(name, kwargs, args)
-            li = QListWidgetItem(f"{i + 1}.  {name}{summary}")
+            summary  = self._plan_summary(name, kwargs, args)
+            md       = kwargs.get("md", {}) or {}
+            scan_num = md.get("scan_num")
+            prefix   = f"#{scan_num}" if scan_num is not None else f"{i + 1}."
+            li = QListWidgetItem(f"{prefix}  {name}{summary}")
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
             self.queue_compact.addItem(li)
