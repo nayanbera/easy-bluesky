@@ -201,17 +201,27 @@ class ADViewerWindow(QMainWindow):
         lay.setContentsMargins(2, 4, 4, 4)
         lay.setSpacing(8)
 
-        # ── PVA stream PV ─────────────────────────────────────────────────
-        gp = QGroupBox("PVA Image PV")
+        # ── PVA stream PV + detector host ─────────────────────────────────
+        gp = QGroupBox("PVA Connection")
         gpl = QVBoxLayout(gp)
         gpl.setSpacing(4)
+
+        gpl.addWidget(QLabel("Image PV:"))
         self._pv_edit = QLineEdit(self._pva_pv)
         self._pv_edit.setPlaceholderText("e.g. 15PS1:Pva1:Image")
-        self._pv_edit.setToolTip("PVAccess PV for the image stream (press Enter or click Connect)")
+        self._pv_edit.setToolTip("PVAccess PV for the image stream")
+        self._pv_edit.returnPressed.connect(self._on_pva_reconnect)
         gpl.addWidget(self._pv_edit)
+
+        gpl.addWidget(QLabel("Detector host:"))
+        self._host_edit = QLineEdit(self._pva_host)
+        self._host_edit.setPlaceholderText("e.g. 164.54.169.50")
+        self._host_edit.setToolTip("Host IP/hostname for PVAccess unicast routing")
+        self._host_edit.returnPressed.connect(self._on_pva_reconnect)
+        gpl.addWidget(self._host_edit)
+
         btn_connect = QPushButton("Connect")
         btn_connect.clicked.connect(self._on_pva_reconnect)
-        self._pv_edit.returnPressed.connect(self._on_pva_reconnect)
         gpl.addWidget(btn_connect)
         lay.addWidget(gp)
 
@@ -338,18 +348,18 @@ class ADViewerWindow(QMainWindow):
     # ── PVA image feed ───────────────────────────────────────────────────────────
 
     def _on_pva_reconnect(self):
-        new_pv = self._pv_edit.text().strip()
-        if not new_pv or new_pv == self._pva_pv and (
-            self._thread and self._thread.isRunning()
-        ):
+        new_pv   = self._pv_edit.text().strip()
+        new_host = self._host_edit.text().strip()
+        if not new_pv:
             return
         if self._thread and self._thread.isRunning():
             self._thread.stop_monitor()
             self._thread = None
-        self._pva_pv  = new_pv
-        self._arr     = None
-        self._fps     = 0.0
-        self._t_last  = 0.0
+        self._pva_pv   = new_pv
+        self._pva_host = new_host
+        self._arr      = None
+        self._fps      = 0.0
+        self._t_last   = 0.0
         self._frame_cnt = 0
         if _HAS_P4P:
             self._start_pva()
@@ -358,8 +368,9 @@ class ADViewerWindow(QMainWindow):
         import os
         addr = (self._pva_host
                 or os.environ.get('EPICS_PVA_ADDR_LIST', '').strip())
-        addr_info = f" via {addr}" if addr else " (broadcast — no addr configured)"
-        self._set_status(f"● Subscribing to {self._pva_pv}{addr_info} …", "#888888")
+        host_info = f"  host: {addr}" if addr else "  host: (broadcast)"
+        self._set_status(
+            f"● Subscribing to {self._pva_pv}{host_info} …", "#888888")
         self._thread = _PVAMonitorThread(self._pva_pv, self._pva_host, self)
         self._thread.new_frame.connect(self._on_new_frame)
         self._thread.connection_changed.connect(self._on_pva_connected)

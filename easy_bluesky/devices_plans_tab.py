@@ -72,8 +72,8 @@ class _ADConfigDialog(QDialog):
         self._host_edit = QLineEdit(default_host)
         self._host_edit.setPlaceholderText("e.g. 164.54.169.50")
         self._host_edit.setToolTip(
-            "Beamline host IP/hostname for PVAccess unicast routing")
-        form.addRow("Beamline host (PVA):", self._host_edit)
+            "Detector host IP/hostname for PVAccess unicast routing")
+        form.addRow("Detector host:", self._host_edit)
 
         lay.addLayout(form)
 
