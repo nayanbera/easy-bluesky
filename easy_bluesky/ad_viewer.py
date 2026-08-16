@@ -592,10 +592,13 @@ class ADViewerWindow(QMainWindow):
         # Dectris gap (-1) / dead (-2) sentinels are stored as large uint values
         # (PVA uint32: 0xFFFFFFFF=-1, 0xFFFFFFFE=-2). Reinterpret bits as signed so
         # they stay at -1/-2 in the float display — making gap lines visible in the image.
-        if arr.dtype.kind == 'u':
+        if arr.dtype.kind == 'u' and arr.dtype.itemsize >= 4:
+            # Dectris sentinel convention (uint32/uint64 only): 0xFFFFFFFF=-1 (gap), 0xFFFFFFFE=-2 (dead).
+            # Reinterpret bits as signed so gap lines stay at -1 in the float display.
             signed_dtype = np.dtype(f"int{arr.dtype.itemsize * 8}")
             out = np.ascontiguousarray(arr).view(signed_dtype).astype(np.float32)
         else:
+            # uint8 / uint16 (Mono8, Mono16, RGB cameras): plain unsigned, no sentinels.
             out = arr.astype(np.float32)
         if self._mask_enabled and self._mask_threshold is not None:
             out[out > self._mask_threshold] = 0.0
