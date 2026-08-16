@@ -586,7 +586,13 @@ class ADViewerWindow(QMainWindow):
 
     def _prepare(self, arr: np.ndarray) -> np.ndarray:
         """Apply bad-pixel mask → log scale → transpose; returns float32."""
+        # PVA delivers Dectris/EPICS arrays as uint32, but gap/dead pixels use the
+        # signed sentinel convention (-1 = gap, -2 = dead).  Re-interpret unsigned
+        # arrays as signed before conversion so 0xFFFFFFFE stays -2 not 4.295e9.
+        if arr.dtype.kind == 'u':
+            arr = arr.view(np.dtype(f'i{arr.dtype.itemsize}'))
         out = arr.astype(np.float32)
+        out[out < 0] = 0.0   # gap / dead-pixel sentinels → 0
         if self._mask_enabled and self._mask_threshold is not None:
             out[out > self._mask_threshold] = 0.0
         if self._log_scale:
