@@ -748,8 +748,18 @@ class ADViewerWindow(QMainWindow):
             return
         self._vline.setPos(ix + 0.5)
         self._hline.setPos(iy + 0.5)
-        val = disp[ix, iy]
-        self._crosshair_lbl.setText(f"x={ix}  y={iy}  I={float(val):.6g}")
+        # Map display coords back to raw array (transpose swaps axes)
+        ri, ci = (iy, ix) if self._transpose else (ix, iy)
+        if 0 <= ri < self._arr.shape[0] and 0 <= ci < self._arr.shape[1]:
+            raw = int(self._arr[ri, ci])
+            if self._arr.dtype.kind == 'u':
+                # Two's-complement: show signed value so gap=-1, dead=-2 etc.
+                bits = self._arr.dtype.itemsize * 8
+                if raw >= (1 << (bits - 1)):
+                    raw -= (1 << bits)
+            self._crosshair_lbl.setText(f"x={ix}  y={iy}  I={raw}")
+        else:
+            self._crosshair_lbl.setText(f"x={ix}  y={iy}")
 
     def _set_status(self, msg: str, color: str = "#888888"):
         self._status_lbl.setText(msg)
