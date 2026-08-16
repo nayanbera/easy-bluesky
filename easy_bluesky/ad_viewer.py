@@ -309,13 +309,30 @@ class ADViewerWindow(QMainWindow):
     # ── PVA image feed ───────────────────────────────────────────────────────────
 
     def _start_pva(self):
+        self._set_status(f"● Subscribing to {self._pva_pv} …", "#888888")
         self._thread = _PVAMonitorThread(self._pva_pv, self)
         self._thread.new_frame.connect(self._on_new_frame)
         self._thread.connection_changed.connect(self._on_pva_connected)
         self._thread.error_occurred.connect(self._on_pva_error)
         self._thread.start()
+        # Warn if no frame arrives within 6 s (PVA not reachable / plugin not enabled)
+        self._no_frame_timer = QTimer(self)
+        self._no_frame_timer.setSingleShot(True)
+        self._no_frame_timer.setInterval(6000)
+        self._no_frame_timer.timeout.connect(self._on_no_frame_timeout)
+        self._no_frame_timer.start()
+
+    def _on_no_frame_timeout(self):
+        if self._arr is None:
+            self._set_status(
+                f"⚠ No frames received from {self._pva_pv} — "
+                "check that the Pva1 plugin is enabled and the detector is acquiring.",
+                "#e8a44a",
+            )
 
     def _on_new_frame(self, arr: np.ndarray, meta: dict):
+        if hasattr(self, '_no_frame_timer'):
+            self._no_frame_timer.stop()
         self._arr = arr
         self._frame_cnt += 1
         now = time.monotonic()
