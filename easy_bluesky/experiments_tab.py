@@ -2617,6 +2617,7 @@ class ExperimentsTab(QWidget):
             if not motion:
                 scan_counter += 1
 
+        self._next_scan_label.setText(f"Next scan: #{scan_counter}")
         self._filter_plan_log(self._plan_log_search.text())
 
     def _suppressed_file(self, exp_path: str) -> Path:
