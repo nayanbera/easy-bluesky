@@ -212,8 +212,11 @@ class ADViewerWindow(QMainWindow):
 
         root.addWidget(self._build_ctrl())
 
-        # Image view (histogram panel on right side, built-in)
-        self._img_view = pg.ImageView()
+        # Image view with x/y pixel axes
+        self._plot_item = pg.PlotItem()
+        self._plot_item.setLabel('bottom', 'x (px)')
+        self._plot_item.setLabel('left', 'y (px)')
+        self._img_view = pg.ImageView(view=self._plot_item)
         self._img_view.ui.roiBtn.setVisible(False)
         self._img_view.ui.menuBtn.setVisible(False)
         root.addWidget(self._img_view, stretch=1)
@@ -250,7 +253,7 @@ class ADViewerWindow(QMainWindow):
         self.statusBar().addWidget(self._status_lbl, 1)
         self._crosshair_lbl = QLabel("")
         self._crosshair_lbl.setStyleSheet(
-            "font-family:monospace; color:#dddd00; min-width:180px;")
+            "font-family:monospace; color:#1a1a1a; min-width:180px;")
         self.statusBar().addPermanentWidget(self._crosshair_lbl)
         self._fps_lbl = QLabel("—")
         self.statusBar().addPermanentWidget(self._fps_lbl)
@@ -344,6 +347,10 @@ class ADViewerWindow(QMainWindow):
         btn_auto = QPushButton("Auto Levels")
         btn_auto.clicked.connect(lambda: self._img_view.autoLevels())
         g2l.addWidget(btn_auto)
+
+        btn_zoom = QPushButton("Reset Zoom")
+        btn_zoom.clicked.connect(lambda: self._plot_item.getViewBox().autoRange())
+        g2l.addWidget(btn_zoom)
         lay.addWidget(g2)
 
         # ── ROI ──────────────────────────────────────────────────────────
