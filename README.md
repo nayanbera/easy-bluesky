@@ -4,8 +4,8 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 
 ## Features
 
-- **Experiments** — Create and manage experiments with sample metadata and plan log. Supports ESAF-based folder structure (`PI group / ESAF / run`) or free-form manual paths. A live ESAF server health indicator (coloured dot) shows connection status at a glance.
-- **Queue Manager** — Add, reorder, and delete plans. Full RE controls (open environment, start, pause, resume, abort, stop).
+- **Experiments** — Create and manage experiments with sample metadata and plan log. Supports ESAF-based folder structure (`PI group / ESAF / run`) or free-form manual paths. A live ESAF server health indicator (coloured dot) shows connection status at a glance. The Plan Log header shows a **Next scan: #N** label (recalculates on every queue change). A **"Now Running" banner** (green, above the Plan Log) shows the active plan name, scan number, and sample name while a scan is executing. Changing the sample name offers to update all already-queued plans in one step. scan_num is locked into each plan's metadata at queue time so HDF filenames and MongoDB scan numbers are always consistent.
+- **Queue Manager** — Add, reorder, and delete plans (with confirmation). Each queued plan shows its assigned scan number (`#N`) instead of a queue position. Full RE controls (open environment, start, pause, resume, abort, stop). The Start button is disabled whenever the RE Manager is busy (`manager_state ≠ idle`).
 - **Plan Builder** — Two-panel interface: a **Visual Composer** for assembling scan sequences from drag-and-drop blocks (no Python required), and a **Code Editor** for full custom plans with syntax highlighting, auto-indent, and templates.
 - **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move, screenshot.
 - **MongoDB Browser** — Browse completed runs stored in MongoDB. Filters automatically to the active experiment (UID-based, not regex); select multiple runs for overlay plotting with common-column intersection; auto-plots when selection or axis choices change; 1st and 2nd derivative transforms (`np.gradient`, no x-shift) with error propagation applied to data and fit overlays; double-click the plot to move the motor; screenshot; HDF5 export.
@@ -18,7 +18,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Sim Device Monitor** — In simulation mode, device values are polled from the RE environment every 2 seconds via `read_devices_status()`. Tweak widgets on motor rows allow nudging simulated motors without running a full plan.
 - **Custom Scan Plans** — A library of beamline-optimised scan plans (`custom_plans.py`) that ship with the app. Every plan guarantees `image_mode='Single'` at each detector step, saves and restores `acquire_time` (even on abort), and accepts `hdf_autosave=False` to suppress HDF file writing for alignment scans without permanently changing detector configuration.
 - **Smart Legend Positioning** — After each plot update in the Live Viewer, MongoDB Browser, and HDF5 Viewer, the legend automatically moves to the emptiest quadrant of the view. Legends are also draggable — click and drag to pin them anywhere on the plot.
-- **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. The non-modal Curve Fit dialog displays a live preview curve on the plot the moment it opens, and the preview updates in real time as you edit parameters. Run Fit refines the model and updates the table with fitted values. Choose from 5 peak models, 4 step/interface models, 4 polynomial background terms, and 6 minimisation algorithms. Fit parameters are saved automatically so re-opening the dialog pre-populates it with the previous result. Export fitted parameters and curves to CSV, or copy the results text to the clipboard.
+- **Curve Fitting** — Interactive lmfit-powered curve fitting in both the HDF5 Viewer and MongoDB Browser. The non-modal Curve Fit dialog displays a live preview curve on the plot the moment it opens, and the preview updates in real time as you edit parameters. Run Fit refines the model and updates the table with fitted values. Choose from 5 peak models, 4 step/interface models, 4 polynomial background terms, and 6 minimisation algorithms. Fit parameters are saved **per dataset** (keyed by run UIDs + x/y fields) — re-opening the dialog for the same data automatically restores the last fit and shows the full results table without clicking Fit again. Export fitted parameters and curves to CSV, or copy the results text to the clipboard.
 - **Find / Replace** — Floating find bar (Ctrl+F) in the Plan Builder Code Editor, Devices Editor, and RE Console. Ctrl+R opens find-and-replace in editable editors.
 - **ESAF Integration** — Import Experiment Safety Assessment Forms (ESAFs) from a local PDF, a REST server, or manual entry. Auto-generates the beamline folder structure and injects ESAF metadata into every plan. The picker includes a **technique dropdown** to filter ESAFs by technique (selection is persisted per profile across sessions) and a **client-side regex search** that matches any field — PI name, title, ESAF ID, users, and more. Attach arbitrary **extra fields** (custom key-value pairs) to any ESAF — empty for older entries, editable from the picker or via the REST API. Includes a standalone FastAPI admin server with MongoDB or SQLite backend.
 - **Remote Data Root** — Per-profile setting for the Linux RE machine's data root directory. Automatically propagated to every plan as `remote_exp_dir` so area detectors can write HDF files to the correct network path without manual entry each run.
@@ -736,6 +736,8 @@ Click **Export Exp…** (next to the run-count label) to export **all runs belon
 ### Curve fitting
 
 Select one or more runs, choose signals and axes, then click **Fit**. The **Curve Fit** dialog opens (see [Curve Fitting](#curve-fitting) for full details).
+
+Fit parameters are remembered **per dataset** (keyed by run UIDs, stream, x-field, and y-fields). Re-opening the dialog for the same data restores the last fit state immediately — the parameter table is pre-filled with the previous fitted values and the fit is re-run automatically so the results table (Center, FWHM, R², Amplitude) and curve overlay appear without any extra clicks. Switching to a different run or different x/y fields opens a fresh dialog with auto-guessed initial parameters.
 
 ### Run table columns
 
@@ -1760,6 +1762,19 @@ easy-bluesky/
 ---
 
 ## Changelog
+
+### 2026-08-15 / 2026-08-16
+
+- **Feat: "Next scan: #N" label in Plan Log header** — Displays the next sequential scan number beside the PLAN LOG heading. Recomputed from `plans_log.jsonl` on experiment open and recalculates on every queue add or remove. After app restart it automatically advances past any scan numbers already assigned to plans sitting in the queue.
+- **Feat: Scan number locked in at queue time** — Each plan's `md["scan_num"]` is set when the plan is added to the queue (using the current `_next_scan_num`) rather than being computed at execution time from `scans_log.json`. Eliminates HDF filename off-by-one errors caused by stale local `scans_log.json` reads. `custom_plans.py` prefers `md.get("scan_num")` and falls back to `_scan_num_from_log` only if the app did not inject one.
+- **Feat: Scan number shown in queue list** — Each queued plan displays `#28  rel_scan_w_time_n_delay  …` instead of a position number. Motion-only plans (`mv`, `sleep`) without a `scan_num` continue to show their position.
+- **Feat: "Now Running" banner** — A green `▶ Running: <plan>  [scan #N, sample]` banner appears above the Plan Log while a scan is executing. Disappears automatically on idle, abort, or disconnect. Driven by a new `running_item_updated` signal on `ZMQWorker` that emits `queue["running_item"]` each poll cycle.
+- **Fix: Start queue button disabled when RE Manager busy** — `update_re_status` now checks `manager_state` in addition to `re_state`. The Start button is disabled when `manager_state != "idle"` (e.g. during environment open/close), preventing the "RE Manager is busy" rejection error.
+- **Fix: "Next scan" label stale on app startup** — `_load_plan_log` (which reads the authoritative `plans_log.jsonl`) now updates `_next_scan_label` immediately after computing `_next_scan_num`. Removed the `directoryChanged → _update_next_scan_label` connection that was resetting the label to the stale `scans_log.json` count after `_load_plan_log` rewrote `plans_log.jsonl`.
+- **Feat: Confirmation dialog before removing plans from queue** — Single-item removal shows the plan name; multi-item removal shows the count.
+- **Feat: Sample name "already exists" warning** — Committing a sample name whose folder already exists in the experiment directory now shows a Yes/No prompt.
+- **Feat: Offer to update sample_name in queued plans** — When the sample name changes, a dialog prompts to patch `md["sample_name"]` in all already-queued plans via `worker.update_item`.
+- **Feat: Curve fit parameters remembered per dataset (MongoDB Browser)** — `_saved_fit_states` (keyed by run UIDs + stream + x/y fields) replaces the single `_saved_fit_state`. Re-opening the Fit dialog for the same data auto-runs the fit and shows the full results table (Center, FWHM, R², Amplitude) immediately. Switching data opens a fresh dialog.
 
 ### 2026-08-14 (session 2)
 

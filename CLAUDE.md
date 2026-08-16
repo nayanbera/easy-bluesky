@@ -209,6 +209,33 @@ in the log and therefore in the RE console widget.
 - Error propagation: exact central-difference formula `σ_dy[i] = √(σ[i+1]² + σ[i−1]²) / (x[i+1] − x[i−1])`; 2nd order iterates the formula.
 - Fit overlays: raw fit data cached in `_fit_items_cache`; `_auto_plot` clears stale fit items from the plot and redraws from cache with the current log/deriv settings on every replot.
 
+## Experiments tab — scan numbering
+
+- **`_next_scan_num` / `_base_next_scan_num`**: `_load_plan_log` sets both from
+  `plans_log.jsonl` entry count (`scan_counter`). `_base_next_scan_num` is the floor
+  (completed scans + 1) and never changes during a session. `_next_scan_num` is
+  advanced past queued plan scan numbers in `update_compact_queue` every poll.
+- **scan_num injection**: `_inject_metadata` locks `scan_num = _next_scan_num` into
+  each plan's `md` at queue time, then increments `_next_scan_num` and updates the
+  label. `custom_plans.py` uses `md.get("scan_num") or _scan_num_from_log(_dir)`.
+- **"Now Running" banner**: `ZMQWorker.running_item_updated(dict)` emits
+  `queue["running_item"]` each poll. `ExperimentsTab.update_running_item` shows/hides
+  the green banner. `update_re_status` hides it when `re_state` is not running/paused.
+- **Start queue guard**: `update_re_status` checks `manager_state == "idle"` in
+  addition to `re_state` before enabling `btn_q_start`.
+- **directoryChanged NOT connected to `_update_next_scan_label`**: removed because
+  `_load_plan_log` rewrites `plans_log.jsonl`, triggering `directoryChanged` which was
+  resetting the label to the stale `scans_log.json` count.
+- **`custom_plans.py` is uploaded manually** — never auto-deploy it; the user uploads
+  it to the remote machine themselves.
+
+## MongoDB Browser — curve fitting
+
+- **Per-dataset fit memory**: `_saved_fit_states: dict` maps
+  `fit_key → {model_name, bg_name, params}`. Key = `(sorted UIDs, stream, x_field,
+  sorted y_fields)`. On dialog open with saved state, `QTimer.singleShot(0, _run_fit)`
+  auto-runs the fit to restore the full results table and curve overlay.
+
 ## Known issues / non-obvious decisions
 
 - **`pkill` self-kill**: `pkill -f start-re-manager` matches the bash process running
