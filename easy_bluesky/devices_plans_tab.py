@@ -1085,8 +1085,8 @@ class DevicesPlansTab(QWidget):
             prefix   = dlg.prefix
             pva_host = dlg.host
 
-        # Persist settings for this device
-        ad_settings[dev_name] = {'prefix': prefix, 'pva_host': pva_host}
+        # Persist prefix/host without overwriting other saved keys (colormap etc.)
+        ad_settings.setdefault(dev_name, {}).update({'prefix': prefix, 'pva_host': pva_host})
         save_ad_settings(ad_settings)
 
         # Bring existing window to front rather than open a second one
