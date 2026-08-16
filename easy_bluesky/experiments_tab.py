@@ -1928,9 +1928,8 @@ class ExperimentsTab(QWidget):
         log_path = Path(self._active_exp_path) / "scans_log.json"
         try:
             entries = json.loads(log_path.read_text(encoding="utf-8"))
-            if isinstance(entries, list) and entries:
-                next_n = entries[-1].get("scan_id", len(entries)) + 1
-                self._next_scan_label.setText(f"Next scan: #{next_n}")
+            if isinstance(entries, list):
+                self._next_scan_label.setText(f"Next scan: #{len(entries) + 1}")
                 return
         except Exception:
             pass

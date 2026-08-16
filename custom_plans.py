@@ -32,8 +32,8 @@ def _scan_num_from_log(exp_dir: str) -> int:
     try:
         with open(log_path, encoding="utf-8") as _f:
             entries = _json.load(_f)
-        if isinstance(entries, list) and entries:
-            return entries[-1].get("scan_id", len(entries)) + 1
+        if isinstance(entries, list):
+            return len(entries) + 1
     except Exception:
         pass
     return 1
