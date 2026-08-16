@@ -1315,9 +1315,12 @@ class ExperimentsTab(QWidget):
         # ── Queue management buttons (Add / Remove / Save / Load / Clear) ─────────
         q_btns = QHBoxLayout()
         q_btns.setSpacing(4)
-        btn_add = QPushButton("＋ Add")
-        btn_add.setObjectName("btn_primary")
-        btn_add.clicked.connect(self._add_plan)
+        self.btn_add = QPushButton("＋ Add")
+        self.btn_add.setObjectName("btn_primary")
+        self.btn_add.setEnabled(False)
+        self.btn_add.setToolTip("Waiting for RE Manager to load plans…")
+        self.btn_add.clicked.connect(self._add_plan)
+        btn_add = self.btn_add
         btn_rem = QPushButton("Remove")
         btn_rem.clicked.connect(self._remove_plan)
         btn_save = QPushButton("💾 Save…")
@@ -1645,7 +1648,7 @@ class ExperimentsTab(QWidget):
         return result_item
 
     def _add_plan(self):
-        if not self.worker:
+        if not self.worker or not self._plans:
             return
         dlg = PlanDialog(self._plans, self._devices, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
@@ -1819,6 +1822,8 @@ class ExperimentsTab(QWidget):
         for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
                   self.btn_q_abort, self.btn_q_stop):
             b.setEnabled(False)
+        self.btn_add.setEnabled(False)
+        self.btn_add.setToolTip("Waiting for RE Manager to load plans…")
 
     def _on_loop_checkbox(self, checked: bool) -> None:
         self.spin_loop.setEnabled(checked)
@@ -1849,6 +1854,9 @@ class ExperimentsTab(QWidget):
 
     def set_plans(self, plans: dict):
         self._plans = plans
+        ready = bool(plans)
+        self.btn_add.setEnabled(ready)
+        self.btn_add.setToolTip("" if ready else "Waiting for RE Manager to load plans…")
 
     def set_devices(self, devices: dict):
         self._devices = devices
