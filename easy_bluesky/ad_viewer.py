@@ -37,9 +37,10 @@ class _PVAMonitorThread(QThread):
     connection_changed = pyqtSignal(bool)
     error_occurred     = pyqtSignal(str)
 
-    def __init__(self, pva_pv: str, parent=None):
+    def __init__(self, pva_pv: str, pva_host: str = "", parent=None):
         super().__init__(parent)
         self._pva_pv    = pva_pv
+        self._pva_host  = pva_host.strip()
         self._stop_evt  = threading.Event()
         self._last_emit = 0.0
 
@@ -47,13 +48,12 @@ class _PVAMonitorThread(QThread):
         import os
         from p4p.client.thread import Context
 
-        # Build PVA address config mirroring the CA addr list that apply_epics_env()
-        # already placed in the process environment.  Without this, p4p relies on
-        # multicast discovery which doesn't cross subnets to the beamline host.
+        # Prefer the explicit beamline host (from connection profile) for PVA
+        # unicast routing.  CA uses broadcast (.255) addresses that p4p rejects;
+        # the profile's 'host' field is the real unicast IP we need.
         conf = {}
-        pva_addr = os.environ.get('EPICS_PVA_ADDR_LIST', '').strip()
-        ca_addr  = os.environ.get('EPICS_CA_ADDR_LIST',  '').strip()
-        addr = pva_addr or ca_addr
+        addr = (self._pva_host
+                or os.environ.get('EPICS_PVA_ADDR_LIST', '').strip())
         if addr:
             conf['EPICS_PVA_ADDR_LIST']      = addr
             conf['EPICS_PVA_AUTO_ADDR_LIST'] = 'NO'
@@ -119,8 +119,9 @@ class ADViewerWindow(QMainWindow):
     def __init__(
         self,
         device_name: str,
-        prefix: str,       # e.g. "Pil300K:" — must include trailing colon
+        prefix: str,       # e.g. "15PS1:" — must include trailing colon
         pv_map: dict,      # {sig_name: pvname} for this device (informational)
+        pva_host: str = "",  # beamline unicast host for PVA routing (profile 'host')
         parent=None,
     ):
         super().__init__(parent)
@@ -140,6 +141,7 @@ class ADViewerWindow(QMainWindow):
         self._t_last    = 0.0
         self._frame_cnt = 0
 
+        self._pva_host = pva_host.strip()
         self._ca_pvs: dict                     = {}
         self._thread: _PVAMonitorThread | None = None
 
@@ -354,11 +356,11 @@ class ADViewerWindow(QMainWindow):
 
     def _start_pva(self):
         import os
-        pva_addr = (os.environ.get('EPICS_PVA_ADDR_LIST') or
-                    os.environ.get('EPICS_CA_ADDR_LIST') or '').strip()
-        addr_info = f" via {pva_addr}" if pva_addr else " (broadcast — no addr list set)"
+        addr = (self._pva_host
+                or os.environ.get('EPICS_PVA_ADDR_LIST', '').strip())
+        addr_info = f" via {addr}" if addr else " (broadcast — no addr configured)"
         self._set_status(f"● Subscribing to {self._pva_pv}{addr_info} …", "#888888")
-        self._thread = _PVAMonitorThread(self._pva_pv, self)
+        self._thread = _PVAMonitorThread(self._pva_pv, self._pva_host, self)
         self._thread.new_frame.connect(self._on_new_frame)
         self._thread.connection_changed.connect(self._on_pva_connected)
         self._thread.error_occurred.connect(self._on_pva_error)

@@ -234,8 +234,9 @@ class DevicesPlansTab(QWidget):
         self._pending_pv_map: dict = {}
         self._installer: _EpicsInstaller | None = None
         self._plan_catalog: PlanCatalog | None = None
-        self._pv_map_cache: dict = {}   # dev_name → {sig_name: pvname}
-        self._ad_viewers:   dict = {}   # dev_name → ADViewerWindow
+        self._pv_map_cache:  dict = {}   # dev_name → {sig_name: pvname}
+        self._ad_viewers:    dict = {}   # dev_name → ADViewerWindow
+        self._conn_settings: dict = {}   # active connection profile
         # Coalesce CA value/desc callbacks — apply at most 10x/sec to avoid
         # flooding the tree widget with setText() calls during scans.
         self._pending_pv_updates: dict = {}    # (dev, sig) → (value, units)
@@ -403,6 +404,7 @@ class DevicesPlansTab(QWidget):
 
     def set_profile(self, conn_settings: dict) -> None:
         """Called by MainWindow on connect to populate the plan file tree."""
+        self._conn_settings = conn_settings or {}
         self._plan_file_panel.set_profile(conn_settings)
 
     # ── Public slots ────────────────────────────────────────────────────────────
@@ -1032,7 +1034,9 @@ class DevicesPlansTab(QWidget):
             if not prefix.endswith(':'):
                 prefix += ':'
 
-        viewer = ADViewerWindow(dev_name, prefix, pv_map_dev, parent=None)
+        pva_host = self._conn_settings.get('host', '')
+        viewer = ADViewerWindow(dev_name, prefix, pv_map_dev,
+                                pva_host=pva_host, parent=None)
         self._ad_viewers[dev_name] = viewer
         viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         viewer.destroyed.connect(lambda _, n=dev_name: self._ad_viewers.pop(n, None))
