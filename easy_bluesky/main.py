@@ -1273,6 +1273,7 @@ class MainWindow(QMainWindow):
 
         self.worker.status_updated.connect(self.queue_mgr.update_re_status)
         self.worker.status_updated.connect(self.experiments_tab.update_re_status)
+        self.worker.running_item_updated.connect(self.experiments_tab.update_running_item)
         self.worker.disconnected.connect(self.queue_mgr.on_disconnected)
         self.worker.disconnected.connect(self.experiments_tab.on_disconnected)
 

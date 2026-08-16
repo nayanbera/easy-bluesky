@@ -549,9 +549,10 @@ class _ScanLogFetcher(QThread):
 
 
 class ZMQWorker(QObject):
-    status_updated  = pyqtSignal(dict)
-    queue_updated   = pyqtSignal(list)
-    history_updated = pyqtSignal(list)
+    status_updated       = pyqtSignal(dict)
+    queue_updated        = pyqtSignal(list)
+    running_item_updated = pyqtSignal(dict)   # {} when idle, plan item dict when running
+    history_updated      = pyqtSignal(list)
     plans_updated   = pyqtSignal(dict)
     devices_updated         = pyqtSignal(dict)
     device_readings_updated = pyqtSignal(dict)
@@ -849,6 +850,7 @@ class ZMQWorker(QObject):
                     queue   = self.rm.queue_get()
                     history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
+                    self.running_item_updated.emit(queue.get("running_item") or {})
                     self.history_updated.emit(history.get("items", []))
 
                     env_state = status.get("worker_environment_state", "")

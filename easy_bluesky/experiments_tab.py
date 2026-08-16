@@ -1276,6 +1276,15 @@ class ExperimentsTab(QWidget):
         log_header.addWidget(self._next_scan_label)
         vlay.addLayout(log_header)
 
+        self._running_banner = QLabel("")
+        self._running_banner.setWordWrap(False)
+        self._running_banner.setStyleSheet(
+            "background: #1a3a1a; color: #6ddc6d; font-size: 11px;"
+            "padding: 3px 6px; border-radius: 3px;"
+        )
+        self._running_banner.setVisible(False)
+        vlay.addWidget(self._running_banner)
+
         self._plan_log_search = QLineEdit()
         self._plan_log_search.setPlaceholderText("🔍  Search plan log…")
         self._plan_log_search.setClearButtonEnabled(True)
@@ -1830,6 +1839,31 @@ class ExperimentsTab(QWidget):
         self.btn_q_resume.setEnabled(paused)
         self.btn_q_abort.setEnabled(running or paused)
         self.btn_q_stop.setEnabled(running or paused)
+        if not (running or paused):
+            self._running_banner.setVisible(False)
+
+    def update_running_item(self, item: dict) -> None:
+        """Show/hide the 'now running' banner above the Plan Log."""
+        if not item:
+            self._running_banner.setVisible(False)
+            return
+        name   = item.get("name", "?")
+        kwargs = item.get("kwargs", {}) or {}
+        args   = item.get("args",   []) or []
+        md     = kwargs.get("md", {}) or {}
+        scan_n = md.get("scan_num")
+        parts  = []
+        if scan_n is not None:
+            parts.append(f"scan #{scan_n}")
+        sample = md.get("sample_name", "")
+        if sample:
+            parts.append(sample)
+        # Append any positional args (motor positions, num, etc.) briefly
+        if args:
+            parts.append(", ".join(str(a) for a in args[:3]))
+        detail = f"  [{', '.join(parts)}]" if parts else ""
+        self._running_banner.setText(f"▶  Running: {name}{detail}")
+        self._running_banner.setVisible(True)
 
     def on_disconnected(self) -> None:
         for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
@@ -1837,6 +1871,7 @@ class ExperimentsTab(QWidget):
             b.setEnabled(False)
         self.btn_add.setEnabled(False)
         self.btn_add.setToolTip("Waiting for RE Manager to load plans…")
+        self._running_banner.setVisible(False)
 
     def _on_loop_checkbox(self, checked: bool) -> None:
         self.spin_loop.setEnabled(checked)
