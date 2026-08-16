@@ -59,8 +59,9 @@ class FitParamsDialog(QDialog):
         )
         self.method = "leastsq"
 
-        self._pending_params = initial_params   # used once on first _update_param_table
-        self._last_fits      = None             # list of (x, y, lbl, x_fit, y_fit, info)
+        self._pending_params   = initial_params   # used once on first _update_param_table
+        self._restore_fit      = initial_params is not None  # auto-run fit on open
+        self._last_fits        = None             # list of (x, y, lbl, x_fit, y_fit, info)
 
         # Debounce timer: preview fires 400 ms after last table edit
         self._preview_timer = QTimer(self)
@@ -74,6 +75,10 @@ class FitParamsDialog(QDialog):
 
         self._build()
         self._update_param_table()
+        # If restoring a previous fit, re-run immediately so results table and
+        # curve overlay are visible without the user having to click Fit again.
+        if self._restore_fit:
+            QTimer.singleShot(0, self._run_fit)
 
     # ── UI construction ────────────────────────────────────────────────────────
 
