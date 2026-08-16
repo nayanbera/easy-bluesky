@@ -485,7 +485,8 @@ class ADViewerWindow(QMainWindow):
         self._t_last = now
 
         auto = self._chk_auto_levels.isChecked()
-        self._img_view.setImage(self._prepare(arr), autoRange=False, autoLevels=auto)
+        self._img_view.setImage(self._prepare(arr), autoRange=False,
+                                autoLevels=auto, autoHistogramRange=auto)
         if auto:
             QTimer.singleShot(80, self._sync_level_edits)
         if self._roi_on:
@@ -517,7 +518,8 @@ class ADViewerWindow(QMainWindow):
         if self._arr is not None:
             auto = self._chk_auto_levels.isChecked()
             self._img_view.setImage(self._prepare(self._arr),
-                                    autoRange=False, autoLevels=auto)
+                                    autoRange=False, autoLevels=auto,
+                                    autoHistogramRange=auto)
             if auto:
                 QTimer.singleShot(80, self._sync_level_edits)
             if self._roi_on:
