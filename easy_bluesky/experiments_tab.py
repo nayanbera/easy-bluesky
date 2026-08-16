@@ -1147,7 +1147,6 @@ class ExperimentsTab(QWidget):
         self._console_log      = None   # open file handle for <exp_dir>/console.log
         self._fs_watcher       = QFileSystemWatcher()
         self._fs_watcher.directoryChanged.connect(self._on_exp_dir_changed)
-        self._fs_watcher.directoryChanged.connect(self._update_next_scan_label)
         self._fs_watcher.fileChanged.connect(self._on_scan_log_file_changed)
         self._exp_health_timer = QTimer()
         self._exp_health_timer.setInterval(10_000)
