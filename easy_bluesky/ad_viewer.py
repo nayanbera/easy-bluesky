@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
-    QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QMainWindow, QPushButton, QVBoxLayout, QWidget,
 )
 
 try:
@@ -186,6 +186,20 @@ class ADViewerWindow(QMainWindow):
         lay.setContentsMargins(2, 4, 4, 4)
         lay.setSpacing(8)
 
+        # ── PVA stream PV ─────────────────────────────────────────────────
+        gp = QGroupBox("PVA Image PV")
+        gpl = QVBoxLayout(gp)
+        gpl.setSpacing(4)
+        self._pv_edit = QLineEdit(self._pva_pv)
+        self._pv_edit.setPlaceholderText("e.g. 15PS1:Pva1:Image")
+        self._pv_edit.setToolTip("PVAccess PV for the image stream (press Enter or click Connect)")
+        gpl.addWidget(self._pv_edit)
+        btn_connect = QPushButton("Connect")
+        btn_connect.clicked.connect(self._on_pva_reconnect)
+        self._pv_edit.returnPressed.connect(self._on_pva_reconnect)
+        gpl.addWidget(btn_connect)
+        lay.addWidget(gp)
+
         # ── Acquire ──────────────────────────────────────────────────────
         g = QGroupBox("Acquire")
         gl = QVBoxLayout(g)
@@ -307,6 +321,23 @@ class ADViewerWindow(QMainWindow):
     def _on_per_changed(self):  _pv_put(self._ca_pvs.get('acquire_period'), self._spin_per.value())
 
     # ── PVA image feed ───────────────────────────────────────────────────────────
+
+    def _on_pva_reconnect(self):
+        new_pv = self._pv_edit.text().strip()
+        if not new_pv or new_pv == self._pva_pv and (
+            self._thread and self._thread.isRunning()
+        ):
+            return
+        if self._thread and self._thread.isRunning():
+            self._thread.stop_monitor()
+            self._thread = None
+        self._pva_pv  = new_pv
+        self._arr     = None
+        self._fps     = 0.0
+        self._t_last  = 0.0
+        self._frame_cnt = 0
+        if _HAS_P4P:
+            self._start_pva()
 
     def _start_pva(self):
         self._set_status(f"● Subscribing to {self._pva_pv} …", "#888888")
