@@ -21,13 +21,17 @@ import csv
 # ---------------------------------------------------------------------------
 
 def _scan_num_from_log(exp_dir: str) -> int:
-    """Return the next scan number from scans_log.json.
+    """Return the next scan number.
 
-    Uses last_entry["scan_id"] + 1 rather than len(entries) + 1 so that gaps
-    (scans run without an exp_dir, aborted scans not recorded, etc.) do not
-    cause the counter to fall behind the RE's actual scan_id sequence.
-    Falls back to 1 when the log is missing or empty (new experiment).
+    Prefers RE.md["scan_id"] + 1 (the global RE counter, always aligned with
+    the actual bluesky scan_id the running plan will receive).  Falls back to
+    reading the per-experiment scans_log.json when RE is not available (e.g.
+    standalone testing), and finally returns 1 for a brand-new experiment.
     """
+    try:
+        return RE.md.get("scan_id", 0) + 1  # RE injected by re_startup_mongo
+    except NameError:
+        pass
     import json as _json
     log_path = os.path.join(exp_dir, "scans_log.json")
     try:
