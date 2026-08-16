@@ -21,19 +21,21 @@ import csv
 # ---------------------------------------------------------------------------
 
 def _scan_num_from_log(exp_dir: str) -> int:
-    """Return the next scan number by counting completed entries in scans_log.json.
+    """Return the next scan number from scans_log.json.
 
-    scans_log.json is written by re_startup_mongo after every run stop, so its
-    length at plan-start time equals the number of scans already completed in
-    this experiment — making len + 1 the correct sequential number for the next scan.
+    Uses last_entry["scan_id"] + 1 rather than len(entries) + 1 so that gaps
+    (scans run without an exp_dir, aborted scans not recorded, etc.) do not
+    cause the counter to fall behind the RE's actual scan_id sequence.
+    Falls back to 1 when the log is missing or empty (new experiment).
     """
     import json as _json
     log_path = os.path.join(exp_dir, "scans_log.json")
     try:
         with open(log_path, encoding="utf-8") as _f:
             entries = _json.load(_f)
-        if isinstance(entries, list):
-            return len(entries) + 1
+        if isinstance(entries, list) and entries:
+            last = entries[-1]
+            return last.get("scan_id", len(entries)) + 1
     except Exception:
         pass
     return 1
