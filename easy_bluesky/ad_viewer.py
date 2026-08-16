@@ -187,9 +187,8 @@ class ADViewerWindow(QMainWindow):
         self._ca_pvs: dict                     = {}
         self._thread: _PVAMonitorThread | None = None
         self._crosshair_on = False
+        self._active_mode_key = 'image_mode'   # updated in _read_ca_initial
 
-        # Resolve actual cam1 PV addresses from the ophyd signal map before
-        # building the UI so mode label and controls are detector-specific.
         self._cam1_pvs = _resolve_cam1_pvs(pv_map)
 
         self._build_ui()
@@ -307,17 +306,11 @@ class ADViewerWindow(QMainWindow):
         row.addWidget(self._btn_stop)
         gl.addLayout(row)
 
-        # Label adapts to detector: "Image Mode:" or "Trigger Mode:" etc.
-        r = self._cam1_pvs
-        if 'trigger_mode' in r and 'image_mode' not in r:
-            mode_lbl = "Trigger Mode:"
-        elif 'image_mode' in r:
-            mode_lbl = "Image Mode:"
-        else:
-            mode_lbl = "Image Mode:"   # fallback default
-        gl.addWidget(QLabel(mode_lbl))
+        # Label and enum strings are set dynamically in _read_ca_initial after
+        # determining which mode PV (ImageMode vs TriggerMode) actually connects.
+        self._mode_lbl_widget = QLabel("Mode:")
+        gl.addWidget(self._mode_lbl_widget)
         self._cmb_mode = QComboBox()
-        # Enum strings populated from PV after connection; placeholder shown until then
         self._cmb_mode.addItems(["(connecting…)"])
         self._cmb_mode.setEnabled(False)
         self._cmb_mode.currentIndexChanged.connect(self._on_mode_changed)
@@ -409,16 +402,8 @@ class ADViewerWindow(QMainWindow):
         def _pv(role: str, fallback: str) -> str:
             return r.get(role, f"{p}{fallback}")
 
-        # 'image_mode' covers ImageMode-style detectors; 'trigger_mode' covers
-        # Eiger and similar.  Whichever was found in pv_map is used; both share
-        # the same internal key 'image_mode' so the rest of the code is uniform.
-        if 'trigger_mode' in r and 'image_mode' not in r:
-            mode_pv     = r['trigger_mode']
-            mode_pv_rbv = r.get('trigger_mode_rbv', mode_pv + '_RBV')
-        else:
-            mode_pv     = _pv('image_mode', 'ImageMode')
-            mode_pv_rbv = _pv('image_mode', 'ImageMode') + '_RBV'
-
+        # Connect to BOTH TriggerMode and ImageMode — _read_ca_initial will probe
+        # which one has valid enum strings and use that as the active mode control.
         for key, pvname in {
             'acquire':            _pv('acquire',        'Acquire'),
             'acquire_rbv':        _pv('acquire',        'Acquire') + '_RBV',
@@ -426,11 +411,13 @@ class ADViewerWindow(QMainWindow):
             'acquire_time_rbv':   _pv('acquire_time',   'AcquireTime') + '_RBV',
             'acquire_period':     _pv('acquire_period', 'AcquirePeriod'),
             'acquire_period_rbv': _pv('acquire_period', 'AcquirePeriod') + '_RBV',
-            'image_mode':         mode_pv,
-            'image_mode_rbv':     mode_pv_rbv,
+            'trigger_mode':       _pv('trigger_mode',   'TriggerMode'),
+            'trigger_mode_rbv':   _pv('trigger_mode',   'TriggerMode') + '_RBV',
+            'image_mode':         _pv('image_mode',     'ImageMode'),
+            'image_mode_rbv':     _pv('image_mode',     'ImageMode') + '_RBV',
         }.items():
             self._ca_pvs[key] = epics.PV(pvname)
-        QTimer.singleShot(1200, self._read_ca_initial)
+        QTimer.singleShot(1500, self._read_ca_initial)
 
     def _read_ca_initial(self):
         c = self._ca_pvs
@@ -442,32 +429,45 @@ class ADViewerWindow(QMainWindow):
             if val is not None:
                 _block_set(widget, lambda w=widget, v=float(val): w.setValue(v))
 
-        # Populate mode combo from the PV's actual enum strings so any detector
-        # (ImageMode, TriggerMode, …) shows its real options with correct labels.
-        mode_pv = c.get('image_mode')
-        if mode_pv is not None:
-            enum_strs = getattr(mode_pv, 'enum_strs', None)
-            if enum_strs:
-                self._cmb_mode.blockSignals(True)
-                self._cmb_mode.clear()
-                self._cmb_mode.addItems(list(enum_strs))
-                self._cmb_mode.setEnabled(True)
-                self._cmb_mode.blockSignals(False)
-            else:
-                # PV not yet fully connected — retry once more after 1 s
-                QTimer.singleShot(1000, self._read_ca_initial)
-                return
+        # Try TriggerMode first (Eiger, external-trigger detectors), then
+        # ImageMode (Pilatus, most standard CCD/sCMOS detectors).
+        # Whichever has non-empty enum_strs after connection wins.
+        _MODE_CANDIDATES = [
+            ('trigger_mode', 'trigger_mode_rbv', 'Trigger Mode:'),
+            ('image_mode',   'image_mode_rbv',   'Image Mode:'),
+        ]
+        resolved = False
+        for key, rbv_key, lbl in _MODE_CANDIDATES:
+            pv = c.get(key)
+            if pv is None:
+                continue
+            enum_strs = getattr(pv, 'enum_strs', None) or []
+            if not enum_strs:
+                continue
+            # This PV is connected and has enum strings — use it
+            self._active_mode_key = key
+            self._mode_lbl_widget.setText(lbl)
+            self._cmb_mode.blockSignals(True)
+            self._cmb_mode.clear()
+            self._cmb_mode.addItems(list(enum_strs))
+            self._cmb_mode.setEnabled(True)
+            self._cmb_mode.blockSignals(False)
+            current = _pv_get(c.get(rbv_key), as_string=True)
+            if current:
+                idx = self._cmb_mode.findText(current)
+                if idx >= 0:
+                    _block_set(self._cmb_mode,
+                               lambda i=idx: self._cmb_mode.setCurrentIndex(i))
+            resolved = True
+            break
 
-        current = _pv_get(c.get('image_mode_rbv'), as_string=True)
-        if current:
-            idx = self._cmb_mode.findText(current)
-            if idx >= 0:
-                _block_set(self._cmb_mode,
-                           lambda i=idx: self._cmb_mode.setCurrentIndex(i))
+        if not resolved:
+            # Neither PV has connected yet — retry in 1 s
+            QTimer.singleShot(1000, self._read_ca_initial)
 
     def _on_acquire(self):      _pv_put(self._ca_pvs.get('acquire'), 1)
     def _on_stop(self):         _pv_put(self._ca_pvs.get('acquire'), 0)
-    def _on_mode_changed(self, idx): _pv_put(self._ca_pvs.get('image_mode'), idx)
+    def _on_mode_changed(self, idx): _pv_put(self._ca_pvs.get(self._active_mode_key), idx)
     def _on_exp_changed(self):  _pv_put(self._ca_pvs.get('acquire_time'), self._spin_exp.value())
     def _on_per_changed(self):  _pv_put(self._ca_pvs.get('acquire_period'), self._spin_per.value())
 
