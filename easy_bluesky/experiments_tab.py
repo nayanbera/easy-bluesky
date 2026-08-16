@@ -1859,6 +1859,18 @@ class ExperimentsTab(QWidget):
         name = self.sample_name_edit.text().strip()
         if not name or name == self._sample_name:
             return
+        if self._active_exp_path:
+            safe = re.sub(r"[^\w\-]", "_", name)
+            sample_dir = Path(self._active_exp_path) / safe
+            if sample_dir.exists():
+                r = QMessageBox.question(
+                    self, "Sample Exists",
+                    f"A folder for sample '{safe}' already exists in this experiment.\nUse it anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if r != QMessageBox.StandardButton.Yes:
+                    self.sample_name_edit.setText(self._sample_name)
+                    return
         self._sample_name = name
         self._log(f"✓ Sample: {name}")
 
