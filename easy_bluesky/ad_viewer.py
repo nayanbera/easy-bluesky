@@ -68,6 +68,7 @@ class _PVAMonitorThread(QThread):
         self._pva_host  = pva_host.strip()
         self._stop_evt  = threading.Event()
         self._last_emit = 0.0
+        self._fps       = 0.0
 
     def run(self):
         import os
@@ -106,6 +107,9 @@ class _PVAMonitorThread(QThread):
         now = time.monotonic()
         if now - self._last_emit < _MIN_INTERVAL:
             return
+        dt = now - self._last_emit
+        if self._last_emit > 0 and dt > 0:
+            self._fps = 0.8 * self._fps + 0.2 / dt
         self._last_emit = now
         arr, err = _extract_ndarray(value)
         if arr is None:
@@ -117,7 +121,8 @@ class _PVAMonitorThread(QThread):
         except Exception:
             pass
         self.connection_changed.emit(True)
-        self.new_frame.emit(arr, {'unique_id': uid, 'shape': arr.shape, 'dtype': str(arr.dtype)})
+        self.new_frame.emit(arr, {'unique_id': uid, 'shape': arr.shape,
+                                  'dtype': str(arr.dtype), 'fps': self._fps})
 
 
 def _extract_ndarray(value) -> tuple:
@@ -179,8 +184,6 @@ class ADViewerWindow(QMainWindow):
         self._log_scale = False
         self._transpose = False
         self._roi_on    = False
-        self._fps       = 0.0
-        self._t_last    = 0.0
         self._frame_cnt = 0
 
         self._pva_host = pva_host.strip()
@@ -517,8 +520,6 @@ class ADViewerWindow(QMainWindow):
         self._pva_pv   = new_pv
         self._pva_host = new_host
         self._arr      = None
-        self._fps      = 0.0
-        self._t_last   = 0.0
         self._frame_cnt = 0
         if _HAS_P4P:
             self._start_pva()
@@ -556,10 +557,6 @@ class ADViewerWindow(QMainWindow):
         self._arr = arr
         self._frame_cnt += 1
         first_frame = self._frame_cnt == 1
-        now = time.monotonic()
-        if self._t_last > 0 and (dt := now - self._t_last) > 0:
-            self._fps = 0.8 * self._fps + 0.2 / dt
-        self._t_last = now
 
         auto = self._chk_auto_levels.isChecked()
         self._img_view.setImage(self._prepare(arr), autoRange=False,
@@ -575,7 +572,8 @@ class ADViewerWindow(QMainWindow):
         self._set_status(
             f"● Connected  frame #{uid}  |  {w}×{h}  {meta.get('dtype', '')}  "
             f"raw:[{raw_min}, {raw_max}]", "#2ca02c")
-        self._fps_lbl.setText(f"{self._fps:.1f} fps")
+        fps = meta.get('fps', 0.0)
+        self._fps_lbl.setText(f"{fps:.1f} fps" if fps > 0 else "—")
 
     def _on_pva_connected(self, ok: bool):
         if not ok:
