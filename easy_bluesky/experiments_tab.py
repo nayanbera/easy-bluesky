@@ -1843,7 +1843,11 @@ class ExperimentsTab(QWidget):
         env_open = env_state not in ("", "closed")
         running  = re_state == "running"
         paused   = re_state == "paused"
-        manager_idle = manager_state == "idle"
+        # Only block Start for queue-lifecycle states; function_execute sets
+        # "executing_task" which is unrelated to queue readiness.
+        _QUEUE_BUSY = {"starting_queue", "executing_queue", "closing_environment",
+                       "opening_environment", "destroying_environment"}
+        manager_idle = manager_state not in _QUEUE_BUSY
         idle     = re_state in ("", "idle") and env_open and manager_idle
         self.btn_q_start.setEnabled(idle)
         self.btn_q_pause.setEnabled(running)
