@@ -1640,7 +1640,7 @@ class MongoDataBrowserTab(QWidget):
         return x[mask], y[mask]
 
     def _add_fit_overlay(self, x_fit, y_fit, info, label, log_y, deriv_mode, color_idx):
-        """Draw one fit curve + vertical line at x₀ on the plot."""
+        """Draw one fit curve + vertical line(s) at peak center(s) on the plot."""
         if not PG_AVAILABLE or self._plot_widget is None:
             return
         color = self.COLORS[color_idx % len(self.COLORS)]
@@ -1656,13 +1656,27 @@ class MongoDataBrowserTab(QWidget):
         curve = self._plot_widget.plot(x_fit, y_plot, pen=pen, name=f"fit: {label}")
         self._fit_curves[label] = curve
 
-        # Thin vertical line at x₀ — avoids text overlap when multiple datasets
-        vline = pg.InfiniteLine(
-            pos=float(info["x0"]), angle=90,
-            pen=pg.mkPen(color=color, width=1, style=Qt.PenStyle.DashLine),
-        )
-        self._plot_widget.addItem(vline)
-        self._fit_texts.append(vline)
+        # Vertical line(s) at peak center(s) — one per peak for multi-peak fits
+        peaks = info.get("peaks")
+        if peaks and len(peaks) > 1:
+            for pk_idx, pk in enumerate(peaks):
+                pk_color = self.COLORS[pk_idx % len(self.COLORS)]
+                vline = pg.InfiniteLine(
+                    pos=float(pk["center"]), angle=90,
+                    pen=pg.mkPen(color=pk_color, width=1, style=Qt.PenStyle.DotLine),
+                    label=f"p{pk_idx + 1}",
+                    labelOpts={"position": 0.92, "color": pk_color,
+                               "fill": (0, 0, 0, 0), "movable": False},
+                )
+                self._plot_widget.addItem(vline)
+                self._fit_texts.append(vline)
+        else:
+            vline = pg.InfiniteLine(
+                pos=float(info["x0"]), angle=90,
+                pen=pg.mkPen(color=color, width=1, style=Qt.PenStyle.DashLine),
+            )
+            self._plot_widget.addItem(vline)
+            self._fit_texts.append(vline)
 
     def _fit_peak(self):
         """Fit a peak or step to the currently plotted data."""
