@@ -1751,8 +1751,10 @@ class MongoDataBrowserTab(QWidget):
             initial_bg_name = saved.get("bg_name", initial_bg_name)
             initial_params  = saved.get("params")
 
+        initial_n_peaks = saved.get("n_peaks", 1) if saved else 1
         self._fit_dlg = _FitParamsDialog(
-            datasets, model_name, initial_bg_name, initial_params, parent=self
+            datasets, model_name, initial_bg_name, initial_params,
+            initial_n_peaks=initial_n_peaks, parent=self
         )
         self._fit_dlg.preview_changed.connect(self._on_fit_preview)
         self._fit_dlg.fit_applied.connect(self._on_fit_applied)
@@ -1805,6 +1807,7 @@ class MongoDataBrowserTab(QWidget):
             self._saved_fit_states[self._fit_key] = {
                 "model_name": fit_items[0]["model_name"],
                 "bg_name":    fit_items[0]["bg_name"],
+                "n_peaks":    fit_items[0].get("n_peaks", 1),
                 "params":     info0["result"].params,
             }
 

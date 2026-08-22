@@ -5,9 +5,10 @@ from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QTableWidget, QTableWidgetItem, QTextEdit, QCheckBox, QWidget,
     QHeaderView, QAbstractItemView, QFrame, QSizePolicy, QFileDialog, QMessageBox,
+    QSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 
 from . import peak_fit as _pf
 
@@ -35,6 +36,7 @@ class FitParamsDialog(QDialog):
         initial_model: str = "Gaussian",
         initial_bg_name: str = "None",
         initial_params=None,   # lmfit.Parameters from previous fit, or None → auto_guess
+        initial_n_peaks: int = 1,
         parent=None,
     ):
         super().__init__(parent)
@@ -58,10 +60,12 @@ class FitParamsDialog(QDialog):
             initial_bg_name if initial_bg_name in _pf.BACKGROUND_MODELS else "None"
         )
         self.method = "leastsq"
+        self._n_peaks = max(1, min(10, initial_n_peaks))
 
         self._pending_params   = initial_params   # used once on first _update_param_table
         self._restore_fit      = initial_params is not None  # auto-run fit on open
         self._last_fits        = None             # list of (x, y, lbl, x_fit, y_fit, info)
+        self._result_row_data  = []               # parallel to results table: (ds_idx, pk_idx|None)
 
         # Debounce timer: preview fires 400 ms after last table edit
         self._preview_timer = QTimer(self)
@@ -87,7 +91,7 @@ class FitParamsDialog(QDialog):
         vlay.setSpacing(8)
         vlay.setContentsMargins(12, 12, 12, 12)
 
-        # ── Row 1: Model + Algorithm ──────────────────────────────────────────
+        # ── Row 1: Model + Peaks + Algorithm ─────────────────────────────────
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Model:"))
 
@@ -102,6 +106,15 @@ class FitParamsDialog(QDialog):
             self._model_combo.addItem(m)
         self._model_combo.setCurrentText(self.model_name)
         row1.addWidget(self._model_combo)
+
+        row1.addSpacing(8)
+        row1.addWidget(QLabel("Peaks:"))
+        self._peaks_spin = QSpinBox()
+        self._peaks_spin.setRange(1, 10)
+        self._peaks_spin.setValue(self._n_peaks)
+        self._peaks_spin.setFixedWidth(52)
+        self._peaks_spin.setToolTip("Number of peaks (1–10). Disabled for step models.")
+        row1.addWidget(self._peaks_spin)
 
         row1.addSpacing(8)
         row1.addWidget(QLabel("Algorithm:"))
@@ -227,6 +240,7 @@ class FitParamsDialog(QDialog):
         # ── Signals ───────────────────────────────────────────────────────────
         self._model_combo.currentTextChanged.connect(self._on_model_changed)
         self._bg_combo.currentTextChanged.connect(self._on_bg_changed)
+        self._peaks_spin.valueChanged.connect(self._on_peaks_changed)
         self._table.itemChanged.connect(self._on_param_edited)
 
     # ── Qt events ─────────────────────────────────────────────────────────────
@@ -242,6 +256,7 @@ class FitParamsDialog(QDialog):
         if name not in _pf.MODELS:
             return
         self.model_name = name
+        # Step models can have multiple steps too (multi-edge XAS); keep spinbox enabled.
         self._last_fits = None
         self._btn_export.setEnabled(False)
         self._update_param_table()
@@ -250,6 +265,15 @@ class FitParamsDialog(QDialog):
 
     def _on_bg_changed(self, name: str):
         self.bg_name   = name
+        self._last_fits = None
+        self._btn_export.setEnabled(False)
+        self._update_param_table()
+        self._results_table.setRowCount(0)
+        self._detail_txt.clear()
+
+    def _on_peaks_changed(self, n: int):
+        self._n_peaks = n
+        self._pending_params = None
         self._last_fits = None
         self._btn_export.setEnabled(False)
         self._update_param_table()
@@ -273,26 +297,43 @@ class FitParamsDialog(QDialog):
         """Show full parameter details for the clicked row."""
         if (self._last_fits is None
                 or current_row < 0
-                or current_row >= len(self._last_fits)):
+                or current_row >= len(self._result_row_data)):
             return
-        x, y, lbl, x_fit, y_fit, info = self._last_fits[current_row]
+        ds_idx, pk_idx = self._result_row_data[current_row]
+        x, y, lbl, x_fit, y_fit, info = self._last_fits[ds_idx]
         is_step     = self.model_name.startswith("Step")
         width_label = "10–90% width" if is_step else "FWHM"
 
         lines = [
             f"Dataset  : {lbl}",
-            f"Model    : {info['model']}",
+            f"Model    : {info['model']}  ×{info.get('n_peaks', 1)}",
             f"R²       : {info['r2']:.6f}",
             f"N points : {info['n_points']}",
-            "",
-            "Parameters:",
         ]
+
+        peaks = info.get("peaks")
+        if self._n_peaks > 1 and peaks:
+            lines.append("")
+            for i, pk in enumerate(peaks):
+                lines.append(f"Peak {i + 1}:")
+                lines.append(f"  {'Center':<26} {pk['center']:>14.6g}")
+                fwhm = pk["fwhm"]
+                if not (isinstance(fwhm, float) and np.isnan(fwhm)):
+                    lines.append(f"  {width_label:<26} {fwhm:>14.6g}")
+                lines.append(f"  {'Amplitude':<26} {pk['amplitude']:>14.6g}")
+            lines.append("")
+            lines.append("All parameters:")
+        else:
+            lines.append("")
+            lines.append("Parameters:")
+
         for name, val, err in zip(info["param_names"], info["params"], info["perr"]):
             lines.append(f"  {name:<26} {val:>14.6g}  ± {err:.4g}")
 
-        fwhm = info["fwhm"]
-        if not (isinstance(fwhm, float) and np.isnan(fwhm)):
-            lines.append(f"  {width_label:<26} {fwhm:>14.6g}")
+        if self._n_peaks == 1:
+            fwhm = info["fwhm"]
+            if not (isinstance(fwhm, float) and np.isnan(fwhm)):
+                lines.append(f"  {width_label:<26} {fwhm:>14.6g}")
 
         result_obj = info.get("result")
         if (result_obj is not None
@@ -301,6 +342,24 @@ class FitParamsDialog(QDialog):
             lines.append(f"\n{result_obj.message}")
 
         self._detail_txt.setPlainText("\n".join(lines))
+
+    _SEP_ROLE = Qt.ItemDataRole.UserRole  # stores "sep" for separator rows
+
+    def _add_separator_row(self, label: str):
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        item = QTableWidgetItem(f"  {label}")
+        item.setData(self._SEP_ROLE, "sep")
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        bg = QColor(230, 235, 245)
+        item.setBackground(bg)
+        for col in range(1, 5):
+            blank = QTableWidgetItem("")
+            blank.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            blank.setBackground(bg)
+            self._table.setItem(row, col, blank)
+        self._table.setItem(row, 0, item)
+        self._table.setRowHeight(row, 18)
 
     def _update_param_table(self):
         if not _pf.LMFIT_AVAILABLE:
@@ -319,16 +378,48 @@ class FitParamsDialog(QDialog):
             self._pending_params = None
         else:
             try:
-                params = _pf.auto_guess(self._x, self._y, self.model_name, self.bg_name)
+                params = _pf.auto_guess_multi(
+                    self._x, self._y, self.model_name, self._n_peaks, self.bg_name
+                )
             except Exception as exc:
                 self._detail_txt.setPlainText(f"Auto-guess failed:\n{exc}")
                 return
 
         self._table.blockSignals(True)
         self._table.setRowCount(0)
-        for pname, par in params.items():
-            if par.expr:
-                continue
+
+        # For multi-peak: group params by peak prefix with separator rows
+        if self._n_peaks > 1:
+            # Collect params by group: p1_, p2_, ..., bg_, unprefixed
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for pname, par in params.items():
+                if par.expr:
+                    continue
+                if "_" in pname:
+                    grp = pname.split("_", 1)[0]
+                else:
+                    grp = ""
+                groups.setdefault(grp, []).append((pname, par))
+
+            for grp, items in groups.items():
+                if grp.startswith("p") and grp[1:].isdigit():
+                    self._add_separator_row(f"Peak {grp[1:]}")
+                elif grp == "bg":
+                    self._add_separator_row("Background")
+                elif grp:
+                    self._add_separator_row(grp)
+                self._fill_param_rows(items)
+        else:
+            non_expr = [(n, p) for n, p in params.items() if not p.expr]
+            self._fill_param_rows(non_expr)
+
+        self._table.resizeColumnsToContents()
+        self._table.blockSignals(False)
+        self._emit_preview()
+
+    def _fill_param_rows(self, items):
+        for pname, par in items:
             row = self._table.rowCount()
             self._table.insertRow(row)
 
@@ -353,22 +444,23 @@ class FitParamsDialog(QDialog):
             layout.addWidget(chk)
             self._table.setCellWidget(row, 4, container)
 
-        self._table.resizeColumnsToContents()
-        self._table.blockSignals(False)
-        self._emit_preview()
-
     def _read_params_from_table(self):
         """Read table values back into an lmfit Parameters object."""
-        signal_model = _pf.make_lmfit_model(self.model_name)
+        composite = _pf.make_composite_model(self.model_name, self._n_peaks)
         bg_name = self._bg_combo.currentText()
         if bg_name != "None":
             bg_model = _pf.make_background_model(bg_name)
-            params   = (signal_model + bg_model).make_params()
+            params   = (composite + bg_model).make_params()
         else:
-            params = signal_model.make_params()
+            params = composite.make_params()
 
         for row in range(self._table.rowCount()):
-            pname = self._table.item(row, 0).text()
+            name_item = self._table.item(row, 0)
+            if name_item is None:
+                continue
+            if name_item.data(self._SEP_ROLE) == "sep":
+                continue
+            pname = name_item.text()
 
             try:
                 val = float(self._table.item(row, 1).text())
@@ -394,20 +486,21 @@ class FitParamsDialog(QDialog):
                     max_val = np.inf
 
             container = self._table.cellWidget(row, 4)
-            chk       = container.findChild(QCheckBox)
-            vary      = not chk.isChecked()
+            chk       = container.findChild(QCheckBox) if container else None
+            vary      = not chk.isChecked() if chk else True
 
             if pname in params:
                 params[pname].set(value=val, min=min_val, max=max_val, vary=vary)
 
-        # Re-add derived expression parameters (fwhm, width_1090, …)
-        try:
-            ref = _pf.auto_guess(self._x, self._y, self.model_name, bg_name)
-            for pname, par in ref.items():
-                if par.expr and pname not in params:
-                    params.add(pname, expr=par.expr, vary=False)
-        except Exception:
-            pass
+        # Re-add derived expression parameters (fwhm, width_1090, …) for single-peak
+        if self._n_peaks == 1:
+            try:
+                ref = _pf.auto_guess(self._x, self._y, self.model_name, bg_name)
+                for pname, par in ref.items():
+                    if par.expr and pname not in params:
+                        params.add(pname, expr=par.expr, vary=False)
+            except Exception:
+                pass
 
         return params
 
@@ -416,14 +509,13 @@ class FitParamsDialog(QDialog):
         if not _pf.LMFIT_AVAILABLE or len(self._x) < 2:
             return
         try:
-            params       = self._read_params_from_table()
-            bg_name      = self._bg_combo.currentText()
-            signal_model = _pf.make_lmfit_model(self.model_name)
+            params    = self._read_params_from_table()
+            bg_name   = self._bg_combo.currentText()
+            composite = _pf.make_composite_model(self.model_name, self._n_peaks)
             if bg_name != "None":
-                bg_model = _pf.make_background_model(bg_name)
-                model    = signal_model + bg_model
+                model = composite + _pf.make_background_model(bg_name)
             else:
-                model = signal_model
+                model = composite
             x_fit = np.linspace(
                 float(self._x[0]), float(self._x[-1]),
                 max(500, len(self._x) * 5),
@@ -458,8 +550,8 @@ class FitParamsDialog(QDialog):
 
             for x, y, lbl in self._datasets:
                 try:
-                    x_fit, y_fit, info = _pf.run_fit(
-                        x, y, params, self.model_name, method, bg_name
+                    x_fit, y_fit, info = _pf.run_fit_multi(
+                        x, y, params, self.model_name, self._n_peaks, method, bg_name
                     )
                     self._last_fits.append((x, y, lbl, x_fit, y_fit, info))
                     if first_x_fit is None:
@@ -512,25 +604,41 @@ class FitParamsDialog(QDialog):
 
         self._results_table.blockSignals(True)
         self._results_table.setRowCount(0)
+        self._result_row_data = []
 
-        for x, y, lbl, x_fit, y_fit, info in self._last_fits:
-            row = self._results_table.rowCount()
-            self._results_table.insertRow(row)
+        def _ro(text):
+            it = QTableWidgetItem(text)
+            it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            return it
 
-            def _ro(text):
-                it = QTableWidgetItem(text)
-                it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                return it
+        def _fwhm_str(fwhm):
+            return (f"{fwhm:.4g}"
+                    if not (isinstance(fwhm, float) and np.isnan(fwhm))
+                    else "—")
 
-            self._results_table.setItem(row, 0, _ro(lbl))
-            self._results_table.setItem(row, 1, _ro(f"{info['x0']:.5g}"))
-            fwhm     = info.get("fwhm", float("nan"))
-            fwhm_str = (f"{fwhm:.4g}"
-                        if not (isinstance(fwhm, float) and np.isnan(fwhm))
-                        else "—")
-            self._results_table.setItem(row, 2, _ro(fwhm_str))
-            self._results_table.setItem(row, 3, _ro(f"{info['r2']:.4f}"))
-            self._results_table.setItem(row, 4, _ro(f"{info['A']:.4g}"))
+        for ds_idx, (x, y, lbl, x_fit, y_fit, info) in enumerate(self._last_fits):
+            peaks = info.get("peaks")
+            if self._n_peaks > 1 and peaks:
+                for pk_idx, pk in enumerate(peaks):
+                    row = self._results_table.rowCount()
+                    self._results_table.insertRow(row)
+                    pk_lbl = f"{lbl} [Peak {pk_idx + 1}]" if len(self._last_fits) > 1 else f"Peak {pk_idx + 1}"
+                    self._results_table.setItem(row, 0, _ro(pk_lbl))
+                    self._results_table.setItem(row, 1, _ro(f"{pk['center']:.5g}"))
+                    self._results_table.setItem(row, 2, _ro(_fwhm_str(pk["fwhm"])))
+                    r2_str = f"{info['r2']:.4f}" if pk_idx == 0 else ""
+                    self._results_table.setItem(row, 3, _ro(r2_str))
+                    self._results_table.setItem(row, 4, _ro(f"{pk['amplitude']:.4g}"))
+                    self._result_row_data.append((ds_idx, pk_idx))
+            else:
+                row = self._results_table.rowCount()
+                self._results_table.insertRow(row)
+                self._results_table.setItem(row, 0, _ro(lbl))
+                self._results_table.setItem(row, 1, _ro(f"{info['x0']:.5g}"))
+                self._results_table.setItem(row, 2, _ro(_fwhm_str(info.get("fwhm", float("nan")))))
+                self._results_table.setItem(row, 3, _ro(f"{info['r2']:.4f}"))
+                self._results_table.setItem(row, 4, _ro(f"{info['A']:.4g}"))
+                self._result_row_data.append((ds_idx, None))
 
         self._results_table.blockSignals(False)
         self._results_table.resizeColumnsToContents()
@@ -547,16 +655,27 @@ class FitParamsDialog(QDialog):
             if i:
                 lines.append("─" * 52)
             lines.append(f"Dataset  : {lbl}")
-            lines.append(f"Model    : {info['model']}")
+            lines.append(f"Model    : {info['model']}  ×{info.get('n_peaks', 1)}")
             lines.append(f"R²       : {info['r2']:.6f}")
             lines.append(f"N points : {info['n_points']}")
+            peaks = info.get("peaks")
+            if self._n_peaks > 1 and peaks:
+                lines.append("")
+                for j, pk in enumerate(peaks):
+                    lines.append(f"  Peak {j + 1}:")
+                    lines.append(f"    {'Center':<24} {pk['center']:>14.6g}")
+                    fwhm = pk["fwhm"]
+                    if not (isinstance(fwhm, float) and np.isnan(fwhm)):
+                        lines.append(f"    {width_label:<24} {fwhm:>14.6g}")
+                    lines.append(f"    {'Amplitude':<24} {pk['amplitude']:>14.6g}")
             lines.append("")
-            lines.append("Parameters:")
+            lines.append("All parameters:")
             for name, val, err in zip(info["param_names"], info["params"], info["perr"]):
                 lines.append(f"  {name:<26} {val:>14.6g}  ± {err:.4g}")
-            fwhm = info["fwhm"]
-            if not (isinstance(fwhm, float) and np.isnan(fwhm)):
-                lines.append(f"  {width_label:<26} {fwhm:>14.6g}")
+            if self._n_peaks == 1:
+                fwhm = info["fwhm"]
+                if not (isinstance(fwhm, float) and np.isnan(fwhm)):
+                    lines.append(f"  {width_label:<26} {fwhm:>14.6g}")
             lines.append("")
         QApplication.clipboard().setText("\n".join(lines))
 
@@ -574,13 +693,12 @@ class FitParamsDialog(QDialog):
             return
 
         try:
-            bg_name      = self._bg_combo.currentText()
-            signal_model = _pf.make_lmfit_model(self.model_name)
+            bg_name   = self._bg_combo.currentText()
+            composite = _pf.make_composite_model(self.model_name, self._n_peaks)
             if bg_name != "None":
-                bg_model = _pf.make_background_model(bg_name)
-                model    = signal_model + bg_model
+                model = composite + _pf.make_background_model(bg_name)
             else:
-                model = signal_model
+                model = composite
 
             is_step = self.model_name.startswith("Step")
             lines = [
@@ -655,6 +773,7 @@ class FitParamsDialog(QDialog):
                         "model_name": model_name,
                         "bg_name":    bg_name,
                         "method":     method,
+                        "n_peaks":    self._n_peaks,
                     }
                     for x, y, lbl, x_fit, y_fit, info in self._last_fits
                 ]
