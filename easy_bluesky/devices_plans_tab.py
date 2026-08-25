@@ -580,7 +580,7 @@ class DevicesPlansTab(QWidget):
         self.devices_tree.expandAll()
         for i in range(5):
             self.devices_tree.resizeColumnToContents(i)
-        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 155))
+        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 165))
 
         # Auto-start PV monitoring whenever a new device list arrives.
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
@@ -692,6 +692,16 @@ class DevicesPlansTab(QWidget):
                     item, 5, self._make_tweak_widget(dev_name, None)
                 )
 
+        # ── Inline XRF Viewer button for MCA/XRF devices ─────────────────
+        from .xrf_viewer import is_xrf_detector
+        for dev_name, item in self._device_items.items():
+            pv_map_dev = self._pv_map_cache.get(dev_name, {})
+            classname  = self._device_classes.get(dev_name, "")
+            if is_xrf_detector(pv_map_dev, classname):
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_xrf_button(dev_name)
+                )
+
         # ── Mode flags and status ────────────────────────────────────────
         if total == 0 and pv_map:
             # Pure sim: every device in pv_map has no EPICS PVs
@@ -726,7 +736,7 @@ class DevicesPlansTab(QWidget):
             self.devices_tree.resizeColumnToContents(i)
         # Column 5 (Tweak): resizeColumnToContents ignores setItemWidget sizes,
         # so enforce a minimum wide enough for ◀ / step / ▶.
-        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 155))
+        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 165))
 
     def on_pv_names_error(self, msg: str):
         self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
@@ -875,6 +885,22 @@ class DevicesPlansTab(QWidget):
             _METADATA_PATH.write_text(json.dumps(self._metadata_cache, indent=2))
         except Exception:
             pass
+
+    def _make_xrf_button(self, dev_name: str) -> QWidget:
+        """Inline 'Open XRF Viewer' button placed in the Tweak column for MCA devices."""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 1, 2, 1)
+        btn = QPushButton("📊 Open XRF Viewer")
+        btn.setFixedHeight(22)
+        btn.setToolTip(f"Open XRF/MCA spectrum viewer for {dev_name}")
+        btn.clicked.connect(
+            lambda _checked, n=dev_name: self._open_xrf_viewer(
+                n, self._pv_map_cache.get(n, {}), force_dialog=False
+            )
+        )
+        h.addWidget(btn)
+        return w
 
     def _make_tweak_widget(self, dev_name: str, setpoint_pvname: str | None) -> QWidget:
         w = QWidget()
@@ -1094,7 +1120,7 @@ class DevicesPlansTab(QWidget):
             if is_ad:
                 menu.addSeparator()
             acts['xrf_open'] = menu.addAction("📊  Open XRF Viewer")
-            acts['xrf_cfg']  = menu.addAction("⚙  Configure XRF Viewer…")
+            acts['xrf_cfg']  = menu.addAction("⚙  Configure XRF Viewer (change spectrum PV)…")
 
         action = menu.exec(self.devices_tree.viewport().mapToGlobal(pos))
         if action == acts.get('ad_open'):
