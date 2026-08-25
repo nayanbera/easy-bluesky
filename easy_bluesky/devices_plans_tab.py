@@ -580,7 +580,7 @@ class DevicesPlansTab(QWidget):
         self.devices_tree.expandAll()
         for i in range(5):
             self.devices_tree.resizeColumnToContents(i)
-        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 165))
+        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 170))
 
         # Auto-start PV monitoring whenever a new device list arrives.
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
@@ -692,12 +692,24 @@ class DevicesPlansTab(QWidget):
                     item, 5, self._make_tweak_widget(dev_name, None)
                 )
 
-        # ── Inline XRF Viewer button for MCA/XRF devices ─────────────────
+        # ── Inline viewer buttons for AD and XRF/MCA devices ─────────────
+        from .ad_viewer  import is_area_detector
         from .xrf_viewer import is_xrf_detector
         for dev_name, item in self._device_items.items():
             pv_map_dev = self._pv_map_cache.get(dev_name, {})
             classname  = self._device_classes.get(dev_name, "")
-            if is_xrf_detector(pv_map_dev, classname):
+            is_ad  = is_area_detector(pv_map_dev, classname)
+            is_xrf = is_xrf_detector(pv_map_dev, classname)
+            if is_ad and is_xrf:
+                # Both: two buttons side-by-side
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_ad_xrf_buttons(dev_name)
+                )
+            elif is_ad:
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_ad_button(dev_name)
+                )
+            elif is_xrf:
                 self.devices_tree.setItemWidget(
                     item, 5, self._make_xrf_button(dev_name)
                 )
@@ -736,7 +748,7 @@ class DevicesPlansTab(QWidget):
             self.devices_tree.resizeColumnToContents(i)
         # Column 5 (Tweak): resizeColumnToContents ignores setItemWidget sizes,
         # so enforce a minimum wide enough for ◀ / step / ▶.
-        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 165))
+        self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 170))
 
     def on_pv_names_error(self, msg: str):
         self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
@@ -886,8 +898,24 @@ class DevicesPlansTab(QWidget):
         except Exception:
             pass
 
+    def _make_ad_button(self, dev_name: str) -> QWidget:
+        """Inline 'Open AD Viewer' button for area-detector devices."""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 1, 2, 1)
+        btn = QPushButton("📺 Open AD Viewer")
+        btn.setFixedHeight(22)
+        btn.setToolTip(f"Open area-detector live viewer for {dev_name}")
+        btn.clicked.connect(
+            lambda _checked, n=dev_name: self._open_ad_viewer(
+                n, self._pv_map_cache.get(n, {}), force_dialog=False
+            )
+        )
+        h.addWidget(btn)
+        return w
+
     def _make_xrf_button(self, dev_name: str) -> QWidget:
-        """Inline 'Open XRF Viewer' button placed in the Tweak column for MCA devices."""
+        """Inline 'Open XRF Viewer' button for MCA/XRF devices."""
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(2, 1, 2, 1)
@@ -900,6 +928,32 @@ class DevicesPlansTab(QWidget):
             )
         )
         h.addWidget(btn)
+        return w
+
+    def _make_ad_xrf_buttons(self, dev_name: str) -> QWidget:
+        """Inline AD + XRF buttons side-by-side for devices that are both."""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 1, 2, 1)
+        h.setSpacing(3)
+        ad_btn = QPushButton("📺 AD")
+        ad_btn.setFixedHeight(22)
+        ad_btn.setToolTip(f"Open area-detector live viewer for {dev_name}")
+        ad_btn.clicked.connect(
+            lambda _checked, n=dev_name: self._open_ad_viewer(
+                n, self._pv_map_cache.get(n, {}), force_dialog=False
+            )
+        )
+        xrf_btn = QPushButton("📊 XRF")
+        xrf_btn.setFixedHeight(22)
+        xrf_btn.setToolTip(f"Open XRF/MCA spectrum viewer for {dev_name}")
+        xrf_btn.clicked.connect(
+            lambda _checked, n=dev_name: self._open_xrf_viewer(
+                n, self._pv_map_cache.get(n, {}), force_dialog=False
+            )
+        )
+        h.addWidget(ad_btn)
+        h.addWidget(xrf_btn)
         return w
 
     def _make_tweak_widget(self, dev_name: str, setpoint_pvname: str | None) -> QWidget:
