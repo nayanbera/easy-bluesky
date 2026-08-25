@@ -1177,13 +1177,15 @@ class DevicesPlansTab(QWidget):
             acts['xrf_cfg']  = menu.addAction("⚙  Configure XRF Viewer (change spectrum PV)…")
 
         action = menu.exec(self.devices_tree.viewport().mapToGlobal(pos))
-        if action == acts.get('ad_open'):
+        if action is None:
+            return  # menu dismissed without selecting anything
+        if action is acts.get('ad_open'):
             self._open_ad_viewer(dev_name, pv_map_dev, force_dialog=False)
-        elif action == acts.get('ad_cfg'):
+        elif action is acts.get('ad_cfg'):
             self._open_ad_viewer(dev_name, pv_map_dev, force_dialog=True)
-        elif action == acts.get('xrf_open'):
+        elif action is acts.get('xrf_open'):
             self._open_xrf_viewer(dev_name, pv_map_dev, force_dialog=False)
-        elif action == acts.get('xrf_cfg'):
+        elif action is acts.get('xrf_cfg'):
             self._open_xrf_viewer(dev_name, pv_map_dev, force_dialog=True)
 
     def _open_ad_viewer(self, dev_name: str, pv_map_dev: dict,
