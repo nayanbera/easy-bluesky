@@ -98,7 +98,9 @@ class _PVAMonitorThread(QThread):
 
     def stop_monitor(self):
         self._stop_evt.set()
-        self.wait(3000)
+        if not self.wait(1500):   # 1.5 s for sub.close() + ctx.close()
+            self.terminate()      # force-kill if p4p ctx.close() hung
+            self.wait(500)
 
     def _on_value(self, value):
         if value is None or isinstance(value, Exception):
@@ -123,6 +125,55 @@ class _PVAMonitorThread(QThread):
         self.connection_changed.emit(True)
         self.new_frame.emit(arr, {'unique_id': uid, 'shape': arr.shape,
                                   'dtype': str(arr.dtype), 'fps': self._fps})
+
+
+class _CAInitThread(QThread):
+    """Background thread: reads initial CA values once PVs have connected.
+
+    All blocking pv.get() calls run here so the main thread is never stalled.
+    Retries up to _MAX_ATTEMPTS times (≈15 s total) before giving up.
+    """
+    init_done = pyqtSignal(object, object, dict)  # (exp_time, exp_period, mode_info)
+
+    _MAX_ATTEMPTS = 10
+
+    def __init__(self, ca_pvs: dict, parent=None):
+        super().__init__(parent)
+        self._ca_pvs = ca_pvs
+
+    def run(self):
+        c = self._ca_pvs
+        for attempt in range(self._MAX_ATTEMPTS):
+            if self.isInterruptionRequested():
+                return
+
+            exp_time   = _pv_get(c.get('acquire_time_rbv'))
+            exp_period = _pv_get(c.get('acquire_period_rbv'))
+
+            _MODES = {
+                'image_mode':   ('image_mode_rbv',  'Image Mode:'),
+                'trigger_mode': ('trigger_mode_rbv', 'Trigger Mode:'),
+            }
+            connected: dict = {}
+            for key, (rbv_key, lbl) in _MODES.items():
+                pv = c.get(key)
+                strs = list(getattr(pv, 'enum_strs', None) or []) if pv else []
+                if strs:
+                    current = _pv_get(c.get(rbv_key), as_string=True)
+                    connected[key] = (rbv_key, lbl, strs, current)
+
+            if connected:
+                self.init_done.emit(exp_time, exp_period, connected)
+                return
+
+            # Wait 1.5 s in short chunks so interruption is responsive
+            for _ in range(15):
+                if self.isInterruptionRequested():
+                    return
+                time.sleep(0.1)
+
+        # Timed out — emit with whatever we gathered
+        self.init_done.emit(None, None, {})
 
 
 def _extract_ndarray(value) -> tuple:
@@ -187,8 +238,9 @@ class ADViewerWindow(QMainWindow):
         self._frame_cnt = 0
 
         self._pva_host = pva_host.strip()
-        self._ca_pvs: dict                     = {}
-        self._thread: _PVAMonitorThread | None = None
+        self._ca_pvs: dict                      = {}
+        self._thread: _PVAMonitorThread | None  = None
+        self._ca_init_thread: _CAInitThread | None = None
         self._crosshair_on = False
         self._active_mode_key = 'image_mode'   # updated in _read_ca_initial
         self._mask_enabled   = False
@@ -428,7 +480,7 @@ class ADViewerWindow(QMainWindow):
         def _pv(role: str, fallback: str) -> str:
             return r.get(role, f"{p}{fallback}")
 
-        # Connect to BOTH TriggerMode and ImageMode — _read_ca_initial will probe
+        # Connect to BOTH TriggerMode and ImageMode — _apply_ca_initial will probe
         # which one has valid enum strings and use that as the active mode control.
         for key, pvname in {
             'acquire':            _pv('acquire',        'Acquire'),
@@ -443,42 +495,35 @@ class ADViewerWindow(QMainWindow):
             'image_mode_rbv':     _pv('image_mode',     'ImageMode') + '_RBV',
         }.items():
             self._ca_pvs[key] = epics.PV(pvname)
-        QTimer.singleShot(1500, self._read_ca_initial)
+        # Defer CA init to a background thread — pv.get(timeout=1.0) would block
+        # the main thread if the detector PVs are unreachable (SimDetector, etc.)
+        QTimer.singleShot(1500, self._start_ca_init_thread)
 
-    def _read_ca_initial(self):
-        c = self._ca_pvs
-        for pv_key, widget in [
-            ('acquire_time_rbv',   self._spin_exp),
-            ('acquire_period_rbv', self._spin_per),
-        ]:
-            val = _pv_get(c.get(pv_key))
-            if val is not None:
-                _block_set(widget, lambda w=widget, v=float(val): w.setValue(v))
+    def _start_ca_init_thread(self):
+        """Launch _CAInitThread to read CA initial values without blocking the UI."""
+        self._ca_init_thread = _CAInitThread(self._ca_pvs, self)
+        self._ca_init_thread.init_done.connect(self._apply_ca_initial)
+        self._ca_init_thread.finished.connect(self._ca_init_thread.deleteLater)
+        self._ca_init_thread.start()
 
-        # Collect enum strings from both mode PVs (whichever connected).
-        _MODES = {
-            'image_mode':   ('image_mode_rbv',   'Image Mode:'),
-            'trigger_mode': ('trigger_mode_rbv',  'Trigger Mode:'),
-        }
-        connected: dict = {}   # key → (rbv_key, label, [enum_strs])
-        for key, (rbv_key, lbl) in _MODES.items():
-            pv = c.get(key)
-            strs = list(getattr(pv, 'enum_strs', None) or []) if pv else []
-            if strs:
-                connected[key] = (rbv_key, lbl, strs)
+    def _apply_ca_initial(self, exp_time, exp_period, connected: dict):
+        """Apply CA initial values received from _CAInitThread (called in main thread)."""
+        if exp_time is not None:
+            _block_set(self._spin_exp,
+                       lambda w=self._spin_exp, v=float(exp_time): w.setValue(v))
+        if exp_period is not None:
+            _block_set(self._spin_per,
+                       lambda w=self._spin_per, v=float(exp_period): w.setValue(v))
 
         if not connected:
-            # Neither PV has responded yet — retry in 1 s
-            QTimer.singleShot(1000, self._read_ca_initial)
-            return
+            return  # PVs unreachable — mode combo stays disabled
 
         # Pick winner: whichever has "Continuous" in its enum strings.
-        # That mode is the primary acquisition-mode control on this detector.
         # If neither has "Continuous" (e.g. Eiger), prefer TriggerMode.
         winner_key = None
         for key in ('image_mode', 'trigger_mode'):
             if key in connected:
-                _, _, strs = connected[key]
+                _, _, strs, _ = connected[key]
                 if any('continuous' in s.lower() for s in strs):
                     winner_key = key
                     break
@@ -486,7 +531,7 @@ class ADViewerWindow(QMainWindow):
             winner_key = ('trigger_mode' if 'trigger_mode' in connected
                           else 'image_mode')
 
-        rbv_key, lbl, enum_strs = connected[winner_key]
+        rbv_key, lbl, enum_strs, current = connected[winner_key]
         self._active_mode_key = winner_key
         self._mode_lbl_widget.setText(lbl)
         self._cmb_mode.blockSignals(True)
@@ -494,7 +539,6 @@ class ADViewerWindow(QMainWindow):
         self._cmb_mode.addItems(enum_strs)
         self._cmb_mode.setEnabled(True)
         self._cmb_mode.blockSignals(False)
-        current = _pv_get(c.get(rbv_key), as_string=True)
         if current:
             idx = self._cmb_mode.findText(current)
             if idx >= 0:
@@ -799,6 +843,16 @@ class ADViewerWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self._save_display_settings()
+        # Stop CA init background thread (requestInterruption lets it exit cleanly)
+        if self._ca_init_thread is not None and self._ca_init_thread.isRunning():
+            self._ca_init_thread.requestInterruption()
+            if not self._ca_init_thread.wait(600):
+                self._ca_init_thread.terminate()
+                self._ca_init_thread.wait(300)
+        # Prevent the no-frame warning from firing after the window is gone
+        if hasattr(self, '_no_frame_timer'):
+            self._no_frame_timer.stop()
+        # Stop PVA monitor thread (non-blocking: terminates if ctx.close() hangs)
         if self._thread and self._thread.isRunning():
             self._thread.stop_monitor()
         for pv in self._ca_pvs.values():
