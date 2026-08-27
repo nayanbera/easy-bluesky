@@ -159,16 +159,6 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             f"export EASY_BLUESKY_MONGO_PORT={mongo_port}\n"
         ) if mongo_db else ""
 
-        # Forward EPICS CA address list so the remote RE Manager can reach IOCs
-        # that are not on the same broadcast subnet (e.g. a SimDetector on a
-        # separate machine).  Only emitted when the profile has a non-empty list.
-        epics_addr   = profile.get("epics_ca_addr_list", "").strip()
-        epics_auto   = profile.get("epics_ca_auto_addr_list", True)
-        epics_exports = (
-            f"export EPICS_CA_ADDR_LIST='{epics_addr}'\n"
-            f"export EPICS_CA_AUTO_ADDR_LIST={'YES' if epics_auto else 'NO'}\n"
-        ) if epics_addr else ""
-
         script_body = (
             "#!/bin/bash\n"
             "source ~/.bash_profile 2>/dev/null || source ~/.bashrc 2>/dev/null\n"
@@ -177,7 +167,6 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             f"export EASY_BLUESKY_PLANS_DIR={scripts_path}/{profile_slug(profile_name)}_plans\n"
             f"export BLUESKY_ZMQ_PUB_PORT={_zmq_pub_port}\n"
             "export PYTHONUNBUFFERED=1\n"
-            + epics_exports
             + mongo_exports
             + f"if ! command -v \"{exe}\" >/dev/null 2>&1; then\n"
             f"  echo \"ERROR: {exe} not found.\"\n"
