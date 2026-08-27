@@ -314,21 +314,24 @@ def set_areadetector_hdf(det, exp_dir: str, sample_name: str, scan_num: int):
         yield from mv(det.hdf1.file_name, sample_name + f"_S_{scan_num:04d}")
 
     else:
-        print(f"[set_areadetector_hdf] det.name={det.name!r}, has hdf1={hasattr(det, 'hdf1')}")
         if hasattr(det, "hdf1"):
             file_path = os.path.join(exp_dir, sample_name, det.name) + "/"
-            print(f"[set_areadetector_hdf] creating dir: {file_path!r}")
+            # Create directory on the RE Manager machine (may be a no-op if the IOC
+            # runs on a different machine, but harmless).
             try:
                 os.makedirs(file_path, exist_ok=True)
-                print(f"[set_areadetector_hdf] makedirs OK, exists={os.path.isdir(file_path)}")
-            except Exception as _e:
-                print(f"[set_areadetector_hdf] makedirs FAILED: {_e}")
-                raise
-            print(f"[set_areadetector_hdf] setting file_path PV -> {file_path!r}")
+            except Exception:
+                pass
             yield from mv(det.hdf1.file_path, file_path)
-            print(f"[set_areadetector_hdf] setting file_name PV -> {sample_name + f'_S_{scan_num:04d}'!r}")
+            # Tell the IOC to create the directory from its own filesystem.
+            # ADCore NDPluginFile::CreateDirectory: negative N → create up to N levels.
+            try:
+                import epics as _epics
+                _cd_pv = det.hdf1.prefix + "CreateDirectory"
+                _epics.caput(_cd_pv, -5, wait=True)
+            except Exception:
+                pass
             yield from mv(det.hdf1.file_name, sample_name + f"_S_{scan_num:04d}")
-            print("[set_areadetector_hdf] done")
 
 
 def _set_image_mode_single(detectors):
