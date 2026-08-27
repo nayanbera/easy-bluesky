@@ -315,7 +315,7 @@ def set_areadetector_hdf(det, exp_dir: str, sample_name: str, scan_num: int):
 
     else:
         if hasattr(det, "hdf1"):
-            file_path = os.path.join(exp_dir, sample_name, det.name)
+            file_path = os.path.join(exp_dir, sample_name, det.name) + "/"
             os.makedirs(file_path, exist_ok=True)
             yield from mv(det.hdf1.file_path, file_path)
             yield from mv(det.hdf1.file_name, sample_name + f"_S_{scan_num:04d}")
