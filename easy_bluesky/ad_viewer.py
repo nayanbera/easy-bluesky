@@ -143,23 +143,33 @@ class _CAInitThread(QThread):
 
     def run(self):
         c = self._ca_pvs
+        _MODES = {
+            'image_mode':   ('image_mode_rbv',  'Image Mode:'),
+            'trigger_mode': ('trigger_mode_rbv', 'Trigger Mode:'),
+        }
         for attempt in range(self._MAX_ATTEMPTS):
             if self.isInterruptionRequested():
                 return
 
-            exp_time   = _pv_get(c.get('acquire_time_rbv'))
+            # Interruption-check between every blocking pv.get() so the thread
+            # responds within 1 s regardless of which call it's in.
+            exp_time = _pv_get(c.get('acquire_time_rbv'))
+            if self.isInterruptionRequested():
+                return
             exp_period = _pv_get(c.get('acquire_period_rbv'))
+            if self.isInterruptionRequested():
+                return
 
-            _MODES = {
-                'image_mode':   ('image_mode_rbv',  'Image Mode:'),
-                'trigger_mode': ('trigger_mode_rbv', 'Trigger Mode:'),
-            }
             connected: dict = {}
             for key, (rbv_key, lbl) in _MODES.items():
+                if self.isInterruptionRequested():
+                    return
                 pv = c.get(key)
                 strs = list(getattr(pv, 'enum_strs', None) or []) if pv else []
                 if strs:
                     current = _pv_get(c.get(rbv_key), as_string=True)
+                    if self.isInterruptionRequested():
+                        return
                     connected[key] = (rbv_key, lbl, strs, current)
 
             if connected:
@@ -501,13 +511,16 @@ class ADViewerWindow(QMainWindow):
 
     def _start_ca_init_thread(self):
         """Launch _CAInitThread to read CA initial values without blocking the UI."""
-        self._ca_init_thread = _CAInitThread(self._ca_pvs, self)
+        # parent=None: we manage lifetime via self._ca_init_thread reference only.
+        # Do NOT also connect finished→deleteLater — that double-manages lifetime and
+        # causes "RuntimeError: wrapped C/C++ object already deleted" in closeEvent.
+        self._ca_init_thread = _CAInitThread(self._ca_pvs)
         self._ca_init_thread.init_done.connect(self._apply_ca_initial)
-        self._ca_init_thread.finished.connect(self._ca_init_thread.deleteLater)
         self._ca_init_thread.start()
 
     def _apply_ca_initial(self, exp_time, exp_period, connected: dict):
         """Apply CA initial values received from _CAInitThread (called in main thread)."""
+        self._ca_init_thread = None   # thread finished naturally; release reference
         if exp_time is not None:
             _block_set(self._spin_exp,
                        lambda w=self._spin_exp, v=float(exp_time): w.setValue(v))
@@ -843,12 +856,15 @@ class ADViewerWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self._save_display_settings()
-        # Stop CA init background thread (requestInterruption lets it exit cleanly)
-        if self._ca_init_thread is not None and self._ca_init_thread.isRunning():
-            self._ca_init_thread.requestInterruption()
-            if not self._ca_init_thread.wait(600):
-                self._ca_init_thread.terminate()
-                self._ca_init_thread.wait(300)
+        # Stop CA init background thread.
+        # With interruption checks between every pv.get(timeout=1s) call, the thread
+        # will always stop within ~1 s of requestInterruption().  We wait up to 1.5 s
+        # before giving up; no terminate() because that is unsafe on macOS pthreads.
+        t = self._ca_init_thread
+        self._ca_init_thread = None   # clear first so _apply_ca_initial is a no-op if late
+        if t is not None:
+            t.requestInterruption()
+            t.wait(1500)   # thread has at most one pv.get(1 s) left before checking
         # Prevent the no-frame warning from firing after the window is gone
         if hasattr(self, '_no_frame_timer'):
             self._no_frame_timer.stop()
