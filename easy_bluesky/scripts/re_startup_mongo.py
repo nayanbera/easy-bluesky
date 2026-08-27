@@ -50,8 +50,8 @@ try:
 
     _orig_sig_wfc = _oph_sig_mod.EpicsSignalBase.wait_for_connection
 
-    def _sig_wfc_15s(self, all_signals=False, timeout=15.0):
-        return _orig_sig_wfc(self, all_signals=all_signals, timeout=timeout)
+    def _sig_wfc_15s(self, timeout=15.0):
+        return _orig_sig_wfc(self, timeout=timeout)
 
     _oph_sig_mod.EpicsSignalBase.wait_for_connection = _sig_wfc_15s
 
