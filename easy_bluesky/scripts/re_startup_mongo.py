@@ -37,32 +37,45 @@ RE = RunEngine({})
 # ── Extend ophyd default CA connection timeout ─────────────────────────────────
 # ophyd's default wait_for_connection timeout is 1 s.  That is too short for a
 # newly-configured EPICS IOC (e.g. ADSimDetector) where the very first CA
-# channel to a PV can take a bit longer to establish, even though the PV exists
+# channel to a PV can take a bit longer to establish even though the PV exists
 # and caget returns immediately.  Lazy component instantiation (triggered by
-# bluesky calling repr() on a detector at plan start) hits this 1-second limit
-# and raises TimeoutError before the plan can run.
+# bluesky calling repr() on a detector at plan start) hits this limit and raises
+# TimeoutError before any data is collected.
 #
-# We patch both EpicsSignalBase and Device to default to 15 s.  Calls that
-# already pass an explicit timeout are unaffected.
+# Different ophyd versions put wait_for_connection on different classes in the
+# hierarchy (EpicsSignalBase, EpicsSignal, EpicsSignalWithRBV, …).  We patch
+# every class that defines the method directly (not via inheritance) so the
+# 15-second default is always reached regardless of which class is instantiated.
 try:
     import ophyd.signal as _oph_sig_mod
     import ophyd.device as _oph_dev_mod
 
-    _orig_sig_wfc = _oph_sig_mod.EpicsSignalBase.wait_for_connection
+    def _make_sig_wfc_patch(orig_fn):
+        def _wfc_15s(self, timeout=15.0):
+            return orig_fn(self, timeout=timeout)
+        return _wfc_15s
 
-    def _sig_wfc_15s(self, timeout=15.0):
-        return _orig_sig_wfc(self, timeout=timeout)
+    _n_sig_patched = 0
+    for _sig_cls_name in ('EpicsSignalBase', 'EpicsSignal', 'EpicsSignalRO',
+                          'EpicsSignalWithRBV', 'EpicsSignalNoValidation'):
+        _sig_cls = getattr(_oph_sig_mod, _sig_cls_name, None)
+        if _sig_cls is not None and 'wait_for_connection' in vars(_sig_cls):
+            setattr(_sig_cls, 'wait_for_connection',
+                    _make_sig_wfc_patch(vars(_sig_cls)['wait_for_connection']))
+            _n_sig_patched += 1
 
-    _oph_sig_mod.EpicsSignalBase.wait_for_connection = _sig_wfc_15s
+    # Device.wait_for_connection has an extra all_signals parameter
+    if 'wait_for_connection' in vars(_oph_dev_mod.Device):
+        _orig_dev_wfc = vars(_oph_dev_mod.Device)['wait_for_connection']
 
-    _orig_dev_wfc = _oph_dev_mod.Device.wait_for_connection
+        def _dev_wfc_15s(self, all_signals=False, timeout=15.0):
+            return _orig_dev_wfc(self, all_signals=all_signals, timeout=timeout)
 
-    def _dev_wfc_15s(self, all_signals=False, timeout=15.0):
-        return _orig_dev_wfc(self, all_signals=all_signals, timeout=timeout)
+        _oph_dev_mod.Device.wait_for_connection = _dev_wfc_15s
+        _n_sig_patched += 1
 
-    _oph_dev_mod.Device.wait_for_connection = _dev_wfc_15s
-
-    print("[re_startup_mongo] ophyd CA connection timeout → 15 s (was 1 s)")
+    print(f"[re_startup_mongo] ophyd CA connection timeout → 15 s "
+          f"({_n_sig_patched} class(es) patched)")
 except Exception as _e_wfc:
     print(f"[re_startup_mongo] WARNING: could not extend ophyd timeout: {_e_wfc}")
 
