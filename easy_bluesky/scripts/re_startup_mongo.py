@@ -34,6 +34,38 @@ from pathlib import Path
 from bluesky import RunEngine
 RE = RunEngine({})
 
+# ── Extend ophyd default CA connection timeout ─────────────────────────────────
+# ophyd's default wait_for_connection timeout is 1 s.  That is too short for a
+# newly-configured EPICS IOC (e.g. ADSimDetector) where the very first CA
+# channel to a PV can take a bit longer to establish, even though the PV exists
+# and caget returns immediately.  Lazy component instantiation (triggered by
+# bluesky calling repr() on a detector at plan start) hits this 1-second limit
+# and raises TimeoutError before the plan can run.
+#
+# We patch both EpicsSignalBase and Device to default to 15 s.  Calls that
+# already pass an explicit timeout are unaffected.
+try:
+    import ophyd.signal as _oph_sig_mod
+    import ophyd.device as _oph_dev_mod
+
+    _orig_sig_wfc = _oph_sig_mod.EpicsSignalBase.wait_for_connection
+
+    def _sig_wfc_15s(self, all_signals=False, timeout=15.0):
+        return _orig_sig_wfc(self, all_signals=all_signals, timeout=timeout)
+
+    _oph_sig_mod.EpicsSignalBase.wait_for_connection = _sig_wfc_15s
+
+    _orig_dev_wfc = _oph_dev_mod.Device.wait_for_connection
+
+    def _dev_wfc_15s(self, all_signals=False, timeout=15.0):
+        return _orig_dev_wfc(self, all_signals=all_signals, timeout=timeout)
+
+    _oph_dev_mod.Device.wait_for_connection = _dev_wfc_15s
+
+    print("[re_startup_mongo] ophyd CA connection timeout → 15 s (was 1 s)")
+except Exception as _e_wfc:
+    print(f"[re_startup_mongo] WARNING: could not extend ophyd timeout: {_e_wfc}")
+
 # ── Hardware devices (from the profile's devices file) ─────────────────────────
 _devices_file = os.getenv("EASY_BLUESKY_DEVICES_FILE", "devices.py")
 
