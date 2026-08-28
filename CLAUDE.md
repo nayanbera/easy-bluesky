@@ -268,6 +268,46 @@ in the log and therefore in the RE console widget.
   (with the `s`). A typo (`device_sim.py`) causes RE Manager to fail with ImportError
   and AVAILABLE DEVICES to be empty.
 
+- **ADSimDetector first-connection timeout**: ophyd's `wait_for_connection` defaults to
+  1 second. A freshly started ADSimDetector IOC may take longer to answer even though
+  `caget` works. Fix: `re_startup_mongo.py` monkey-patches all signal classes that
+  directly define `wait_for_connection` (checked with `vars(cls)`) to use 15 s.
+  Must patch subclasses individually — patching `EpicsSignalBase` alone is bypassed by
+  `EpicsSignal`/`EpicsSignalRO` which each define their own override.
+
+- **ADSimDetector IOC on a different machine from RE Manager**: `os.makedirs` in
+  `set_areadetector_hdf` creates the directory on the RE Manager machine. If the IOC
+  runs on a separate host, that directory doesn't exist there. Fix: put
+  `det.hdf1.prefix + "CreateDirectory"` PV to `-5` via `epics.caput` so the IOC
+  creates the path from its own filesystem.
+
+- **HDF file path in EPICS plugins requires trailing `/`**: without it the AD HDF5
+  plugin treats the last path component as a filename prefix, not a directory.
+  `set_areadetector_hdf` `else` branch adds `"/"` to `os.path.join(...)`.
+
+- **`FileStoreHDF5IterativeWrite.make_filename()` overwrites file_path/file_name**:
+  the base implementation generates a UUID for `file_name` and uses
+  `write_path_template` (empty string) for `file_path`, discarding what
+  `set_areadetector_hdf` just set. Fix: override `make_filename()` in `MyHDF5Plugin`
+  to read the current PV values instead:
+  ```python
+  def make_filename(self):
+      write_path = self.file_path.get(as_string=True)
+      read_path  = self.read_path_template or write_path
+      fn         = self.file_name.get(as_string=True)
+      return fn, read_path, write_path
+  ```
+
+- **`Capture` PV unsupported in Single write mode**: `HDF5Plugin` default `stage_sigs`
+  includes `capture = 1`. In `file_write_mode = 'Single'`, pressing Capture gives
+  "ERROR: capture not supported in Single mode". Fix: pop `capture` and `num_capture`
+  from `stage_sigs` in `_setup_aswaxs_area_detector`.
+
+- **`file_template` default not applied at startup**: `_safe_put` runs once at RE
+  Manager start; if the IOC isn't ready, it fails silently and the ADCore default
+  (`%s%s_%6.6d.h5`) persists. Fix: put `file_template` in `stage_sigs` instead so it
+  is set reliably before every scan.
+
 ## Running locally
 
 ```bash
