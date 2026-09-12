@@ -511,16 +511,22 @@ class ADViewerWindow(QMainWindow):
 
     def _start_ca_init_thread(self):
         """Launch _CAInitThread to read CA initial values without blocking the UI."""
-        # parent=None: we manage lifetime via self._ca_init_thread reference only.
-        # Do NOT also connect finished→deleteLater — that double-manages lifetime and
-        # causes "RuntimeError: wrapped C/C++ object already deleted" in closeEvent.
+        # Hold the reference via self._ca_init_thread.  Clear it only from the
+        # finished signal — not from init_done — so the QThread object is never
+        # garbage-collected while Qt's post-run() cleanup is still in progress.
+        # (Destroying a QThread before finished fires causes "QThread: Destroyed
+        # while thread is still running" and an abort on macOS.)
         self._ca_init_thread = _CAInitThread(self._ca_pvs)
         self._ca_init_thread.init_done.connect(self._apply_ca_initial)
+        self._ca_init_thread.finished.connect(self._on_ca_init_finished)
         self._ca_init_thread.start()
+
+    def _on_ca_init_finished(self):
+        """Clear the _CAInitThread reference only after Qt signals it is truly done."""
+        self._ca_init_thread = None
 
     def _apply_ca_initial(self, exp_time, exp_period, connected: dict):
         """Apply CA initial values received from _CAInitThread (called in main thread)."""
-        self._ca_init_thread = None   # thread finished naturally; release reference
         if exp_time is not None:
             _block_set(self._spin_exp,
                        lambda w=self._spin_exp, v=float(exp_time): w.setValue(v))
@@ -861,7 +867,7 @@ class ADViewerWindow(QMainWindow):
         # will always stop within ~1 s of requestInterruption().  We wait up to 1.5 s
         # before giving up; no terminate() because that is unsafe on macOS pthreads.
         t = self._ca_init_thread
-        self._ca_init_thread = None   # clear first so _apply_ca_initial is a no-op if late
+        self._ca_init_thread = None   # prevent _on_ca_init_finished from re-setting it
         if t is not None:
             t.requestInterruption()
             t.wait(1500)   # thread has at most one pv.get(1 s) left before checking
