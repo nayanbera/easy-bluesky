@@ -1131,6 +1131,7 @@ class ExperimentsTab(QWidget):
         self._esaf_info: dict  = {}      # esaf_id, pi_group, proposal_id, esaf_start_date
         self._logged_uids: set = set()
         self._shown_error_uids: set = set()
+        self._error_dialog_after: float = 0.0
         self._exp_created_at: float = 0.0
         self._exp_end_time: float   = 0.0
         self._next_scan_num: int      = 1
@@ -2354,6 +2355,10 @@ class ExperimentsTab(QWidget):
         self._logged_uids     = set()
         self._shown_error_uids = set()  # reset so old errors don't re-appear
         self._suppressed_uids = set()   # suppressions are per-experiment
+        # Only show error dialogs for plans that finish AFTER this moment.
+        # Plans already in RE Manager history when we connect (including those
+        # that ran on another machine) are silently ignored.
+        self._error_dialog_after = datetime.now().timestamp()
         created = info.get("created", "")
         try:
             self._exp_created_at = datetime.fromisoformat(created).timestamp()
@@ -2878,8 +2883,12 @@ class ExperimentsTab(QWidget):
             except Exception:
                 pass
 
-            # Show error dialog for newly failed plans
-            if exit_status == "failed" and uid not in self._shown_error_uids:
+            # Show error dialog for newly failed plans — only for plans that
+            # finished AFTER this session connected (ignores history from other
+            # machines or previous sessions that is already in RE Manager).
+            if (exit_status == "failed"
+                    and uid not in self._shown_error_uids
+                    and t_stop >= self._error_dialog_after):
                 self._shown_error_uids.add(uid)
                 err_msg = result.get("msg", "") or result.get("traceback", "") or "(no details)"
                 QMessageBox.warning(
