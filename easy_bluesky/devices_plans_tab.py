@@ -911,6 +911,7 @@ class DevicesPlansTab(QWidget):
         h.setContentsMargins(2, 1, 2, 1)
         btn = QPushButton("📺 Open AD Viewer")
         btn.setFixedHeight(22)
+        btn.setStyleSheet("padding: 1px 6px;")
         btn.setToolTip(f"Open area-detector live viewer for {dev_name}")
         btn.clicked.connect(
             lambda _checked, n=dev_name: self._open_ad_viewer(
@@ -927,6 +928,7 @@ class DevicesPlansTab(QWidget):
         h.setContentsMargins(2, 1, 2, 1)
         btn = QPushButton("📊 Open XRF Viewer")
         btn.setFixedHeight(22)
+        btn.setStyleSheet("padding: 1px 6px;")
         btn.setToolTip(f"Open XRF/MCA spectrum viewer for {dev_name}")
         btn.clicked.connect(
             lambda _checked, n=dev_name: self._open_xrf_viewer(
@@ -944,6 +946,7 @@ class DevicesPlansTab(QWidget):
         h.setSpacing(3)
         ad_btn = QPushButton("📺 AD")
         ad_btn.setFixedHeight(22)
+        ad_btn.setStyleSheet("padding: 1px 6px;")
         ad_btn.setToolTip(f"Open area-detector live viewer for {dev_name}")
         ad_btn.clicked.connect(
             lambda _checked, n=dev_name: self._open_ad_viewer(
@@ -952,6 +955,7 @@ class DevicesPlansTab(QWidget):
         )
         xrf_btn = QPushButton("📊 XRF")
         xrf_btn.setFixedHeight(22)
+        xrf_btn.setStyleSheet("padding: 1px 6px;")
         xrf_btn.setToolTip(f"Open XRF/MCA spectrum viewer for {dev_name}")
         xrf_btn.clicked.connect(
             lambda _checked, n=dev_name: self._open_xrf_viewer(
