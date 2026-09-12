@@ -1509,7 +1509,10 @@ class MainWindow(QMainWindow):
             self._reupload_after_open = False
             self.plan_builder.reupload_local_plans()
 
-    def _on_pv_names_error_reupload(self, _: str):
+    def _on_pv_names_error_reupload(self, msg: str):
+        _m = msg.lower()
+        if "must be in idle" in _m or "executing_task" in _m or "executing task" in _m:
+            return  # transient race with sim poll — on_pv_names_error will retry
         if self._reupload_after_open:
             self._reupload_after_open = False
             self.plan_builder.reupload_local_plans()

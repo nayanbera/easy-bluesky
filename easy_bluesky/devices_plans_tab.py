@@ -751,6 +751,12 @@ class DevicesPlansTab(QWidget):
         self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 170))
 
     def on_pv_names_error(self, msg: str):
+        _m = msg.lower()
+        if "must be in idle" in _m or "executing_task" in _m or "executing task" in _m:
+            # Transient race: sim poll held the RE Manager in executing_task when
+            # get_device_pvnames tried to run. Retry after 2 s silently.
+            QTimer.singleShot(2000, self.fetch_pvnames_requested.emit)
+            return
         self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
         self._status_lbl.setText(f"⚠ {msg[:120]}")
         self._refresh_btn.setEnabled(True)
