@@ -1596,8 +1596,19 @@ class MainWindow(QMainWindow):
         if not ready:
             QMessageBox.warning(self, "Cannot Start Queue", reason)
             return
+        # Pause the sim poll timer so a background function_execute call can't
+        # race with queue_start() and cause a spurious "RE Manager busy" error.
+        self.devices_plans_tab.pause_sim_poll()
         ok, msg = self.worker.queue_start()
+        self.devices_plans_tab.resume_sim_poll()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
+        if not ok and ("busy" in msg.lower() or "executing" in msg.lower()):
+            # RE Manager was briefly in executing_task (background function_execute
+            # such as read_devices_status or get_device_pvnames). Retry once after
+            # the task has had time to complete.
+            self._log(f"[{self._ts()}]   ↻ RE Manager busy — retrying in 800 ms…")
+            QTimer.singleShot(800, self._retry_queue_start)
+            return
         if ok:
             self._queue_loop_cancelled = False
             self._loop_iteration = 0
@@ -1610,6 +1621,25 @@ class MainWindow(QMainWindow):
                 self._loop_snapshot = []
                 self.queue_mgr.clear_loop_iteration()
                 self.experiments_tab.clear_loop_iteration()
+
+    def _retry_queue_start(self):
+        ok, msg = self.worker.queue_start()
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue (retry): {msg}")
+        if ok:
+            self._queue_loop_cancelled = False
+            self._loop_iteration = 0
+            if self._loop_enabled:
+                self._loop_snapshot = self.queue_mgr.get_queue_items()
+                spin_val = self.queue_mgr.spin_loop.value()
+                self.queue_mgr.set_loop_iteration(1, spin_val)
+                self.experiments_tab.set_loop_iteration(1, spin_val)
+            else:
+                self._loop_snapshot = []
+                self.queue_mgr.clear_loop_iteration()
+                self.experiments_tab.clear_loop_iteration()
+        else:
+            QMessageBox.warning(self, "Cannot Start Queue",
+                                f"RE Manager is busy:\n{msg}")
 
     def _on_pause_requested(self):
         ok, msg = self.worker.re_pause()
@@ -1746,6 +1776,9 @@ class MainWindow(QMainWindow):
         ok, msg = self.worker.queue_start()
         if not ok:
             self._log(f"[{self._ts()}] ✗ Loop restart failed: {msg}")
+            if "busy" in msg.lower() or "executing" in msg.lower():
+                self._log(f"[{self._ts()}]   ↻ Retrying loop start in 800 ms…")
+                QTimer.singleShot(800, self._loop_queue_start)
 
     def _on_open_env_requested(self):
         ok, msg = self.worker.open_environment()

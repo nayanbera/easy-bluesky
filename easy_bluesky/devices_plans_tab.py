@@ -1030,6 +1030,16 @@ class DevicesPlansTab(QWidget):
         """Timer callback — requests a fresh device value poll from the worker."""
         self.poll_sim_values_requested.emit()
 
+    def pause_sim_poll(self):
+        """Stop the sim poll timer so function_execute doesn't race with queue_start."""
+        if self._sim_timer is not None:
+            self._sim_timer.stop()
+
+    def resume_sim_poll(self):
+        """Restart the sim poll timer after queue_start has been sent."""
+        if self._sim_timer is not None:
+            self._sim_timer.start()
+
     def update_sim_values(self, readings: dict):
         """Update Value/Units/Description columns for polled (sim/pseudo) devices."""
         if not self._sim_device_names:
