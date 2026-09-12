@@ -2352,6 +2352,7 @@ class ExperimentsTab(QWidget):
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()
+        self._shown_error_uids = set()  # reset so old errors don't re-appear
         self._suppressed_uids = set()   # suppressions are per-experiment
         created = info.get("created", "")
         try:
@@ -2697,6 +2698,9 @@ class ExperimentsTab(QWidget):
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
         self._logged_uids = set()
+        # Any UID already in plans_log.jsonl was processed in a prior session;
+        # mark it seen so update_history never re-shows its error dialog.
+        self._shown_error_uids = set()
         self._load_suppressed_uids(exp_path)   # restore persisted deletions
 
         # Collect UIDs from all experiments so we don't double-log after switching.
@@ -2806,6 +2810,9 @@ class ExperimentsTab(QWidget):
             pass
         # Always re-apply manually suppressed UIDs so they survive repeated reloads
         self._logged_uids |= self._suppressed_uids
+        # All UIDs now in _logged_uids were processed in this or a prior session;
+        # never show their error dialogs again.
+        self._shown_error_uids = set(self._logged_uids)
         self._filter_plan_log(self._plan_log_search.text())
 
         if auto_select_newest and self.plan_log_list.count() > 0:
