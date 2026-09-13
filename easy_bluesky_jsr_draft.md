@@ -72,42 +72,99 @@ for adoption at other facilities.
 
 EasyBluesky follows a client–server architecture in which all hardware interaction occurs
 on the remote beamline computer and the graphical application runs locally on the
-experimenter's workstation (Fig. 1). Communication between the two machines uses two
-channels: ZMQ sockets for queue-server control and status polling (control port 60615,
-info port 60625), and SSH for lifecycle management of the RunEngine Manager process and
-live log streaming.
+experimenter's workstation (Fig. 1). The design separates concerns across three
+communication channels: ZMQ sockets for queue-server control and status polling, SSH for
+process lifecycle management and log streaming, and EPICS Channel Access (CA) for
+direct, low-latency device readback.
 
-The application is structured around a background ZMQ worker thread (`ZMQWorker`) that
-polls the queue-server at approximately 1 Hz, emitting Qt signals whenever queue state,
-RE state, device lists, or console output change. All user-interface components are
-signal-driven and update reactively to these emissions, eliminating the need for the
-experimenter to manually refresh any view.
+**ZMQ layer.** The background `ZMQWorker` thread polls the bluesky-queueserver at
+approximately 1 Hz using REQ/REP messages to the control port (default 60615) and reads
+status documents from the info port (60625). On each poll the worker compares the new
+state against the previous one and emits typed Qt signals only when something changes —
+`status_updated`, `console_line`, `devices_updated`, `connected`, `disconnected`. All
+user-interface components are signal-driven and update reactively. A separate
+`ZMQDocThread` subscribes to the bluesky document PUB socket and forwards run documents
+(start, descriptor, event, stop) to the Live Viewer for real-time plotting without
+passing through the poll loop. Long-running calls to `function_execute` — used for
+device-status queries, PV name retrieval, and sim-device control — run in dedicated
+`QThread` worker objects so the poll loop is never blocked.
 
-SSH connectivity is handled via the Paramiko library. On each connection, EasyBluesky
-uploads the latest startup script (`re_startup_mongo.py`) and user permissions file to the
-remote machine, ensuring the queue-server always runs the current version. EPICS Channel
-Access monitoring is performed locally via pyepics, with direct subscriptions to
-control-system PVs obtained by querying the running RunEngine environment.
+**SSH layer.** SSH connectivity is handled via the Paramiko library using key-pair
+authentication (no passwords stored). A `_SSHLogTailer` thread opens a persistent SSH
+channel and runs `tail -n 50 -f <log_file>` on the remote machine, streaming RE Manager
+stdout into the RE Console widget. The channel requests a pseudo-terminal (PTY) so that
+the remote sshd sends SIGHUP to the `tail` process if the connection closes abruptly,
+preventing orphaned processes. On each RunEngine Manager restart, EasyBluesky uploads the
+startup script (`re_startup_mongo.py`) and YAML permission files via SFTP before starting
+the new process, ensuring the remote always runs the current version without manual file
+transfer. Stop and start use separate SSH `exec_command` channels to avoid the stop
+channel being terminated by `pkill` matching its own command line.
+
+**EPICS CA layer.** EPICS Channel Access monitoring is performed locally via pyepics with
+direct subscriptions to control-system PVs. PV names are retrieved from the live
+RunEngine environment once per environment open via `function_execute`; the resulting map
+is fingerprinted so that CA subscriptions are only rebuilt when the device set genuinely
+changes, avoiding unnecessary reconnections after a ZMQ reconnect. Callbacks from the
+pyepics CA thread are forwarded to the Qt main thread via queued signals and coalesced in
+a 100 ms flush timer, ensuring rapid PV changes produce a single tree repaint rather than
+per-callback redraws.
+
+**Data storage.** The startup script subscribes two callbacks in the RunEngine: a
+`suitcase.jsonl` writer via a `RunRouter` that creates per-run JSONL files in the active
+experiment directory (or a local fallback), and a MongoDB writer. Both run unconditionally
+so that run data is preserved even when MongoDB is unavailable. A third ZMQ PUB
+subscription on a configurable document port feeds the Live Viewer. The application
+additionally maintains a lightweight `plans_log.jsonl` index on the client machine,
+recording plan name, parameters, run UID, and scan number for every completed run in the
+active experiment.
+
+**Thread model summary.**
+
+| Thread | Role |
+|---|---|
+| Qt main thread | All widget updates, user actions, CA signal dispatch |
+| `ZMQWorker` (QThread) | 1 Hz poll loop; `function_execute` calls via sub-threads |
+| `ZMQDocThread` (QThread) | ZMQ SUB — live bluesky documents to Live Viewer |
+| `_SSHLogTailer` (QThread) | SSH `tail -f` → RE Console |
+| `_RunListFetcher` etc. (QThread) | pymongo queries, HDF5 export, PV name fetch |
+| pyepics CA thread (internal) | CA callbacks → Qt queued signals |
 
 ### 2.2 Connection Profiles
 
 EasyBluesky stores connection parameters in a JSON file
 (`~/.easy_bluesky/connection.json`) that supports multiple named profiles. Each profile
-specifies the remote host, SSH key, conda environment, queue-server ports, the devices
-file to load, and EPICS network settings. Switching profiles (e.g. from a real beamline
-to a simulation environment) requires a single click in the interface. No passwords are
-stored; authentication uses SSH key pairs only.
+specifies the remote host, SSH key path, conda environment name, queue-server control and
+info ports, the devices file to load on the remote machine, and EPICS network settings
+(`EPICS_CA_ADDR_LIST`, `EPICS_CA_AUTO_ADDR_LIST`). Switching profiles requires a single
+toolbar click and reconnects automatically. No passwords are stored; authentication uses
+SSH key pairs only.
+
+Profiles support both remote (SSH-managed) and local modes. A **local profile** starts
+the RunEngine Manager as a subprocess on the same machine, assigns ports automatically
+from a free-port range, and terminates the process cleanly on application exit. Local
+profiles require no SSH configuration and are the recommended starting point for new
+users. A **simulation profile** pairs a local or remote RunEngine Manager with an
+auto-generated `devices_sim.py` devices file (§3.4). A startup dialog lists all configured
+profiles, greying out any profile already open in another application window to enforce
+single-instance-per-profile operation.
 
 ### 2.3 RunEngine Manager Lifecycle
 
-A dedicated tab exposes full lifecycle control of the remote queue-server process.
-EasyBluesky can start, stop, and restart the RunEngine Manager over SSH, wrapping the
-process in `procServ` for robustness. On each restart, the application automatically
-uploads the current startup and devices scripts, so changes to the plan or device
-configuration made on the local machine propagate to the remote without manual file
-transfer. The RE console output is streamed to the interface via `tail -f` over SSH and
-displayed in a live console widget, giving experimenters the same visibility they would
-have at a terminal without requiring direct shell access.
+EasyBluesky provides full lifecycle control of the remote queue-server process without
+requiring the user to open a terminal. The restart sequence proceeds as follows: (1) an
+SSH channel kills the existing process via its PID file and `pkill -f start-re-manager`;
+(2) a two-second pause allows the process to exit and release ports; (3) a fresh SSH
+channel writes a launcher shell script to `/tmp` via SFTP, exporting the selected devices
+file path as `EASY_BLUESKY_DEVICES_FILE`, and starts `start-re-manager` wrapped in
+`procServ` for automatic restart on crash. The startup script, devices file, and a
+generated simulation devices file (if present) are uploaded at step (3) so that any
+local edits propagate to the remote automatically.
+
+The RE console output is streamed to the interface via `tail -f` over SSH and displayed
+in a live console widget (§2.1), giving experimenters the same visibility they would have
+at a terminal without requiring direct shell access. The `BestEffortCallback` subscriber
+in the startup script prints a live scan table to the RE Manager log at each data point,
+making per-point progress visible in the console widget during running scans.
 
 ---
 
@@ -370,13 +427,23 @@ documentation are available at https://github.com/nayanbera/easy-bluesky.
 
 **Figure 1.** Architecture of the EasyBluesky client–server system. The desktop
 application runs on the experimenter's local workstation (Mac or PC) and communicates
-with the bluesky-queueserver running on a dedicated beamline Linux computer via two
-channels: ZMQ sockets (control port 60615, info port 60625) for queue operations and
-status polling, and SSH (Paramiko) for RunEngine Manager lifecycle control and live log
-streaming. EPICS Channel Access (CA) subscriptions are established directly from the
-local machine to the control system, bypassing the queue-server for low-latency device
-readback. The startup script, user permissions file, and plan source files are uploaded
-to the remote machine over SFTP on each connection.
+with the bluesky-queueserver running on a dedicated beamline Linux computer via three
+independent channels. (i) ZMQ REQ/REP sockets (control port 60615, info port 60625) are
+used by the `ZMQWorker` poll thread for queue operations and 1 Hz status polling; a
+separate ZMQ SUB socket on the document port feeds the Live Viewer with run documents in
+real time. (ii) SSH (Paramiko, key-pair only) is used by a persistent `_SSHLogTailer`
+thread to stream the RE Manager log via `tail -f`, and by explicit commands for lifecycle
+operations (start, stop, restart) and SFTP upload of the startup script, permissions
+file, and devices file. (iii) EPICS Channel Access (CA) subscriptions are established
+directly from the local machine to the beamline control system, bypassing the
+queue-server entirely for low-latency, sub-millisecond device readback. PV names are
+fetched once per environment open via `function_execute`. For shared-beamline deployments,
+an operator lock file and client heartbeat files are maintained on the remote machine via
+the SSH channel; active TCP connections to the ZMQ ports are additionally queried via
+`ss -tn` to provide a second, independent view of the connected-client count. All
+blocking operations (pymongo queries, HDF5 export, PV name retrieval, SFTP upload) run in
+`QThread` worker objects; the Qt main thread handles only widget updates and user
+actions.
 
 **Figure 2.** EasyBluesky graphical interface. *(a)* Main application window showing the
 tab-based layout: Experiments, Queue Manager, Available Devices & Plans, Code Editor,
