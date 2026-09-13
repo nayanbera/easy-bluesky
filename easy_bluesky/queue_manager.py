@@ -292,6 +292,7 @@ class QueueManager(QWidget):
         super().__init__(parent)
         self.worker  = worker
         self.plans   = {}
+        self._queue_has_items: bool = False
         self.devices = {}
         self._all_history_items = []   # full list from last history_updated signal
         self._current_exp_path  = ""   # set by set_current_experiment()
@@ -670,6 +671,7 @@ class QueueManager(QWidget):
                 li.setSelected(True)
 
         self.queue_list.blockSignals(False)
+        self._queue_has_items = len(items) > 0
         self.queue_count.setText(f"{len(items)} item{'s' if len(items) != 1 else ''}")
 
     @staticmethod
@@ -916,7 +918,7 @@ class QueueManager(QWidget):
         running  = re_state == "running"
         paused   = re_state == "paused"
         idle     = re_state in ("", "idle") and env_open
-        self.btn_q_start.setEnabled(idle)
+        self.btn_q_start.setEnabled(idle and self._queue_has_items)
         self.btn_q_pause.setEnabled(running)
         self.btn_q_resume.setEnabled(paused)
         self.btn_q_abort.setEnabled(running or paused)

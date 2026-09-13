@@ -1136,6 +1136,7 @@ class ExperimentsTab(QWidget):
         self._exp_end_time: float   = 0.0
         self._next_scan_num: int      = 1
         self._base_next_scan_num: int = 1
+        self._queue_has_items: bool   = False
         self._detached_win     = None
         self._plot_placeholder = None
         self._sample_name: str = ""
@@ -1850,7 +1851,7 @@ class ExperimentsTab(QWidget):
                        "opening_environment", "destroying_environment"}
         manager_idle = manager_state not in _QUEUE_BUSY
         idle     = re_state in ("", "idle") and env_open and manager_idle
-        self.btn_q_start.setEnabled(idle)
+        self.btn_q_start.setEnabled(idle and self._queue_has_items)
         self.btn_q_pause.setEnabled(running)
         self.btn_q_resume.setEnabled(paused)
         self.btn_q_abort.setEnabled(running or paused)
@@ -2927,6 +2928,7 @@ class ExperimentsTab(QWidget):
             if uid and uid in selected_uids:
                 li.setSelected(True)
         n = len(items)
+        self._queue_has_items = n > 0
         self.queue_count_label.setText(f"{n} item{'s' if n != 1 else ''}")
 
         # Always recalculate next_scan_num from the queue so additions and removals
