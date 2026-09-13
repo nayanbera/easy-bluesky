@@ -761,16 +761,29 @@ class ADViewerWindow(QMainWindow):
             # Enable AD ROI1 and Stats1 plugins
             _pv_put(self._ca_pvs.get('roi1_enable'),  1)
             _pv_put(self._ca_pvs.get('stats1_enable'), 1)
-            # Default: center the ROI in the current image
-            if self._arr is not None:
+            # Initialize overlay from cached ROI1 RBV values (non-blocking).
+            # pv.value holds the last monitor value without making a new CA request.
+            # Falls back to a centered region when PVs are not yet connected.
+            minx  = getattr(self._ca_pvs.get('roi1_minx_rbv'),  'value', None)
+            miny  = getattr(self._ca_pvs.get('roi1_miny_rbv'),  'value', None)
+            sizex = getattr(self._ca_pvs.get('roi1_sizex_rbv'), 'value', None)
+            sizey = getattr(self._ca_pvs.get('roi1_sizey_rbv'), 'value', None)
+            if (None not in (minx, miny, sizex, sizey)
+                    and int(sizex) > 0 and int(sizey) > 0):
+                pos, sz = self._ad_to_overlay_coords(
+                    int(minx), int(miny), int(sizex), int(sizey))
+            elif self._arr is not None:
                 disp = self._prepare(self._arr)
                 h, w = disp.shape[:2]
+                pos, sz = [w // 4, h // 4], [w // 2, h // 2]
+            else:
+                pos, sz = None, None
+            if pos is not None:
                 self._roi_updating = True
-                self._roi.setPos([w // 4, h // 4])
-                self._roi.setSize([w // 2, h // 2])
+                self._roi.setPos(pos)
+                self._roi.setSize(sz)
                 self._roi_updating = False
-            # Subscribe to ROI1 RBV changes — run_callbacks=1 fires immediately if
-            # PVs are already connected so the overlay snaps to the IOC's actual ROI
+            # Subscribe to ROI1 RBV changes for future IOC-side updates
             self._roi1_rbv_cache.clear()
             for key_full, key_short in [
                 ('roi1_minx_rbv',  'minx'),
@@ -784,7 +797,7 @@ class ADViewerWindow(QMainWindow):
                         def _cb(value, **kw):
                             self._on_roi1_rbv_ca(k, value)
                         return _cb
-                    pv.add_callback(_make_rbv_cb(key_short), run_callbacks=1)
+                    pv.add_callback(_make_rbv_cb(key_short))
             # Subscribe to Stats1 live values
             for key in ('stats1_total', 'stats1_net', 'stats1_mean',
                         'stats1_sigma', 'stats1_max', 'stats1_min'):
