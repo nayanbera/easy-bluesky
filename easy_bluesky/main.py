@@ -1307,6 +1307,7 @@ class MainWindow(QMainWindow):
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
         self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
         self.mongo_browser.move_requested.connect(self._on_mongo_move_requested)
+        self.experiments_tab.live_viewer.move_requested.connect(self._on_mongo_move_requested)
 
         self._connect_requested.connect(self.worker.connect)
 

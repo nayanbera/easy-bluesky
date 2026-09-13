@@ -75,6 +75,7 @@ class ZMQDocThread(QThread):
 
 class LiveViewer(QWidget):
     COLORS = PLOT_COLORS
+    move_requested = pyqtSignal(str, float)   # (motor_name, target_position)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -750,15 +751,7 @@ class LiveViewer(QWidget):
         if r != QMessageBox.StandardButton.Yes:
             return
 
-        item = {
-            "name":      "mv",
-            "args":      [motor_guess, x_val],
-            "kwargs":    {},
-            "item_type": "plan",
-        }
-        ok, msg = self.worker.execute_item(item)
-        if not ok:
-            QMessageBox.warning(self, "Move Failed", msg)
+        self.move_requested.emit(motor_guess, x_val)
 
     # ── Screenshot ─────────────────────────────────────────────────────────────
 
