@@ -1603,7 +1603,6 @@ class MainWindow(QMainWindow):
             return
         self.devices_plans_tab.pause_sim_poll()
         ok, msg = self.worker.queue_start()
-        self.devices_plans_tab.resume_sim_poll()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
             _m = msg.lower()
@@ -1613,6 +1612,7 @@ class MainWindow(QMainWindow):
                 self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying every 2 s for up to 90 s…")
                 QTimer.singleShot(2000, self._retry_start_queue)
             else:
+                self.devices_plans_tab.resume_sim_poll()
                 QMessageBox.warning(self, "Cannot Start Queue", f"Start queue failed:\n{msg}")
             return
         self._on_queue_start_success()
@@ -1620,14 +1620,13 @@ class MainWindow(QMainWindow):
     def _retry_start_queue(self):
         elapsed = time.monotonic() - (getattr(self, "_start_retry_deadline", time.monotonic()) - 90.0)
         if time.monotonic() > getattr(self, "_start_retry_deadline", 0.0):
+            self.devices_plans_tab.resume_sim_poll()
             self._log(f"[{self._ts()}] ✗ Queue start timed out — RE Manager still busy after 90 s")
             QMessageBox.warning(self, "Cannot Start Queue",
                                 "RE Manager is still busy after 90 s.\n"
                                 "Check the RE Console tab for the current state.")
             return
-        self.devices_plans_tab.pause_sim_poll()
         ok, msg = self.worker.queue_start()
-        self.devices_plans_tab.resume_sim_poll()
         mstate = self.worker.last_manager_state()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue (retry, {elapsed:.0f}s, state: {mstate}): {msg}")
         if not ok:
@@ -1635,11 +1634,13 @@ class MainWindow(QMainWindow):
             if "busy" in _m or "executing_task" in _m or "executing task" in _m:
                 QTimer.singleShot(2000, self._retry_start_queue)
             else:
+                self.devices_plans_tab.resume_sim_poll()
                 QMessageBox.warning(self, "Cannot Start Queue", f"Start queue failed:\n{msg}")
             return
         self._on_queue_start_success()
 
     def _on_queue_start_success(self):
+        self.devices_plans_tab.resume_sim_poll()
         self._queue_loop_cancelled = False
         self._loop_iteration = 0
         if self._loop_enabled:
