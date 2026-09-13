@@ -393,14 +393,16 @@ class _PVNamesReader(QThread):
     pv_names_ready = pyqtSignal(dict)
     read_error     = pyqtSignal(str)
 
-    def __init__(self, rm, parent=None):
+    def __init__(self, rm, rm_lock, parent=None):
         super().__init__(parent)
-        self._rm = rm
+        self._rm      = rm
+        self._rm_lock = rm_lock
 
     def run(self):
         try:
             from bluesky_queueserver_api import BFunc
-            r = self._rm.function_execute(item=BFunc("get_device_pvnames"))
+            with self._rm_lock:
+                r = self._rm.function_execute(item=BFunc("get_device_pvnames"))
             if not r.get("success"):
                 msg = r.get("msg", "function_execute failed")
                 if "not found in the worker namespace" in msg or "not allowed" in msg:
@@ -415,7 +417,8 @@ class _PVNamesReader(QThread):
             deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:
                 time.sleep(0.3)
-                res = self._rm.task_result(task_uid=task_uid)
+                with self._rm_lock:
+                    res = self._rm.task_result(task_uid=task_uid)
                 state = res.get("status", "")
                 if state == "completed":
                     result = res.get("result", {})
@@ -445,14 +448,16 @@ class _DeviceStatusReader(QThread):
     readings_ready = pyqtSignal(dict)
     read_error     = pyqtSignal(str)
 
-    def __init__(self, rm, parent=None):
+    def __init__(self, rm, rm_lock, parent=None):
         super().__init__(parent)
-        self._rm = rm
+        self._rm      = rm
+        self._rm_lock = rm_lock
 
     def run(self):
         try:
             from bluesky_queueserver_api import BFunc
-            r = self._rm.function_execute(item=BFunc("read_devices_status"))
+            with self._rm_lock:
+                r = self._rm.function_execute(item=BFunc("read_devices_status"))
             if not r.get("success"):
                 self.read_error.emit(r.get("msg", "function_execute failed"))
                 return
@@ -460,7 +465,8 @@ class _DeviceStatusReader(QThread):
             deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:
                 time.sleep(0.3)
-                res = self._rm.task_result(task_uid=task_uid)
+                with self._rm_lock:
+                    res = self._rm.task_result(task_uid=task_uid)
                 state = res.get("status", "")
                 if state == "completed":
                     result = res.get("result", {})
@@ -486,18 +492,20 @@ class _SimDeviceSetter(QThread):
     """Background thread: calls set_sim_device() via function_execute and polls for completion."""
     done  = pyqtSignal(bool, str)   # success, message
 
-    def __init__(self, rm, name: str, value: float, parent=None):
+    def __init__(self, rm, rm_lock, name: str, value: float, parent=None):
         super().__init__(parent)
-        self._rm    = rm
-        self._name  = name
-        self._value = value
+        self._rm      = rm
+        self._rm_lock = rm_lock
+        self._name    = name
+        self._value   = value
 
     def run(self):
         try:
             from bluesky_queueserver_api import BFunc
-            r = self._rm.function_execute(
-                item=BFunc("set_sim_device", name=self._name, value=self._value)
-            )
+            with self._rm_lock:
+                r = self._rm.function_execute(
+                    item=BFunc("set_sim_device", name=self._name, value=self._value)
+                )
             if not r.get("success"):
                 self.done.emit(False, r.get("msg", "function_execute failed"))
                 return
@@ -505,7 +513,8 @@ class _SimDeviceSetter(QThread):
             deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:
                 time.sleep(0.2)
-                res = self._rm.task_result(task_uid=task_uid)
+                with self._rm_lock:
+                    res = self._rm.task_result(task_uid=task_uid)
                 state = res.get("status", "")
                 if state == "completed":
                     result = res.get("result", {})
@@ -1092,7 +1101,7 @@ class ZMQWorker(QObject):
             return
         if self._device_reader is not None and self._device_reader.isRunning():
             return  # already in progress
-        self._device_reader = _DeviceStatusReader(self.rm)
+        self._device_reader = _DeviceStatusReader(self.rm, self._rm_lock)
         self._device_reader.readings_ready.connect(self.device_readings_updated)
         self._device_reader.read_error.connect(self.device_read_error)
         self._device_reader.read_error.connect(self._on_device_read_error)
@@ -1105,7 +1114,7 @@ class ZMQWorker(QObject):
         if self._sim_device_setter is not None and self._sim_device_setter.isRunning():
             # Previous set still in flight — drop this one to avoid stacking requests.
             return
-        self._sim_device_setter = _SimDeviceSetter(self.rm, name, value)
+        self._sim_device_setter = _SimDeviceSetter(self.rm, self._rm_lock, name, value)
         self._sim_device_setter.done.connect(
             lambda ok, msg: self.sim_device_set_done.emit(name, ok, msg)
         )
@@ -1147,7 +1156,7 @@ class ZMQWorker(QObject):
             return
         if self._pv_names_reader is not None and self._pv_names_reader.isRunning():
             return
-        self._pv_names_reader = _PVNamesReader(self.rm)
+        self._pv_names_reader = _PVNamesReader(self.rm, self._rm_lock)
         self._pv_names_reader.pv_names_ready.connect(self.pv_names_ready)
         self._pv_names_reader.read_error.connect(self.pv_names_error)
         self._pv_names_reader.start()
