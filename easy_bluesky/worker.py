@@ -1128,3 +1128,10 @@ class ZMQWorker(QObject):
         self._pv_names_reader.pv_names_ready.connect(self.pv_names_ready)
         self._pv_names_reader.read_error.connect(self.pv_names_error)
         self._pv_names_reader.start()
+
+    def is_executing_task(self) -> bool:
+        """Return True if a function_execute call is currently in-flight."""
+        dr = self._device_reader
+        pn = self._pv_names_reader
+        return bool((dr is not None and dr.isRunning()) or
+                    (pn is not None and pn.isRunning()))
