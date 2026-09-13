@@ -532,14 +532,12 @@ class ADViewerWindow(QMainWindow):
             'roi1_sizex_rbv': f"{roi_pfx}SizeX_RBV",
             'roi1_sizey':     f"{roi_pfx}SizeY",
             'roi1_sizey_rbv': f"{roi_pfx}SizeY_RBV",
-            'roi1_enable':    f"{roi_pfx}EnableCallbacks",
             'stats1_total':   f"{stats_pfx}Total_RBV",
             'stats1_net':     f"{stats_pfx}Net_RBV",
             'stats1_mean':    f"{stats_pfx}MeanValue_RBV",
             'stats1_sigma':   f"{stats_pfx}Sigma_RBV",
             'stats1_max':     f"{stats_pfx}MaxValue_RBV",
             'stats1_min':     f"{stats_pfx}MinValue_RBV",
-            'stats1_enable':  f"{stats_pfx}EnableCallbacks",
         }.items():
             self._ca_pvs[key] = epics.PV(pvname)
 
@@ -758,9 +756,6 @@ class ADViewerWindow(QMainWindow):
         self._roi_on = checked
         self._roi.setVisible(checked)
         if checked:
-            # Enable AD ROI1 and Stats1 plugins
-            _pv_put(self._ca_pvs.get('roi1_enable'),   1)
-            _pv_put(self._ca_pvs.get('stats1_enable'),  1)
             # Default: center the ROI in the current image
             if self._arr is not None:
                 disp = self._prepare(self._arr)
