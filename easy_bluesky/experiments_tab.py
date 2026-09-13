@@ -40,6 +40,14 @@ from .queue_manager import RunDetailDialog
 
 _RECENT_FILE = Path.home() / ".easy_bluesky" / "recent_experiments.json"
 
+_ESAF_PATH_RE = re.compile(r"(?:^|[\\/])ESAF[-_](\d+)", re.IGNORECASE)
+
+
+def _esaf_id_from_path(path: str) -> dict:
+    """Return {"esaf_id": id} if the path contains an ESAF folder pattern, else {}."""
+    m = _ESAF_PATH_RE.search(path)
+    return {"esaf_id": m.group(1)} if m else {}
+
 
 def _load_ui_prefs() -> dict:
     try:
@@ -2513,6 +2521,10 @@ class ExperimentsTab(QWidget):
         self._open_console_log(path)
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
         self._esaf_info       = info.get("esaf", {})
+        # Fallback: infer esaf_id from the folder path when experiment.json
+        # predates the ESAF metadata feature (e.g. ".../ESAF-300747_date/name")
+        if not self._esaf_info:
+            self._esaf_info = _esaf_id_from_path(path)
         # ── DOI: load persisted value, update chip, start polling if needed ──
         self._stop_doi_polling()
         self._doi_value = ""
