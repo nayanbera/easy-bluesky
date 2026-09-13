@@ -1,6 +1,7 @@
 """main.py — MainWindow and application entry point."""
 
 import sys
+import time
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -1599,16 +1600,43 @@ class MainWindow(QMainWindow):
         if not ready:
             QMessageBox.warning(self, "Cannot Start Queue", reason)
             return
-        # Pause the sim poll timer so its background function_execute call
-        # can't race with queue_start().
         self.devices_plans_tab.pause_sim_poll()
         ok, msg = self.worker.queue_start()
         self.devices_plans_tab.resume_sim_poll()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
-            QMessageBox.warning(self, "Cannot Start Queue",
-                                f"RE Manager is busy:\n{msg}")
+            _m = msg.lower()
+            if "busy" in _m or "executing_task" in _m or "executing task" in _m:
+                self._start_retry_deadline = time.monotonic() + 30.0
+                self._log(f"[{self._ts()}]   ↻ RE Manager busy — retrying in 2 s…")
+                QTimer.singleShot(2000, self._retry_start_queue)
+            else:
+                QMessageBox.warning(self, "Cannot Start Queue", f"Start queue failed:\n{msg}")
             return
+        self._on_queue_start_success()
+
+    def _retry_start_queue(self):
+        if time.monotonic() > getattr(self, "_start_retry_deadline", 0.0):
+            self._log(f"[{self._ts()}] ✗ Queue start timed out — RE Manager still busy after 30 s")
+            QMessageBox.warning(self, "Cannot Start Queue",
+                                "RE Manager is still busy after 30 s.\n"
+                                "Check the RE Console tab.")
+            return
+        self.devices_plans_tab.pause_sim_poll()
+        ok, msg = self.worker.queue_start()
+        self.devices_plans_tab.resume_sim_poll()
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue (retry): {msg}")
+        if not ok:
+            _m = msg.lower()
+            if "busy" in _m or "executing_task" in _m or "executing task" in _m:
+                self._log(f"[{self._ts()}]   ↻ Still busy — retrying in 2 s…")
+                QTimer.singleShot(2000, self._retry_start_queue)
+            else:
+                QMessageBox.warning(self, "Cannot Start Queue", f"Start queue failed:\n{msg}")
+            return
+        self._on_queue_start_success()
+
+    def _on_queue_start_success(self):
         self._queue_loop_cancelled = False
         self._loop_iteration = 0
         if self._loop_enabled:

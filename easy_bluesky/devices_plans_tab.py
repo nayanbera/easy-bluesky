@@ -738,8 +738,7 @@ class DevicesPlansTab(QWidget):
             self._status_lbl.setText(f"● Live — monitoring {total} PV(s)")
 
         # ── Start polling timer for any polled devices ───────────────────
-        # DEBUG: sim poll disabled to diagnose "RE Manager busy" on queue start
-        if False and self._sim_device_names:
+        if self._sim_device_names:
             self._sim_timer = QTimer(self)
             self._sim_timer.setInterval(2000)
             self._sim_timer.timeout.connect(self._on_sim_poll)
