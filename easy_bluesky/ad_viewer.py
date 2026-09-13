@@ -540,27 +540,9 @@ class ADViewerWindow(QMainWindow):
             'image_mode_rbv':     _pv('image_mode',     'ImageMode') + '_RBV',
         }.items():
             self._ca_pvs[key] = epics.PV(pvname)
-        roi_pfx   = f"{self._prefix}ROI1:"
-        stats_pfx = f"{self._prefix}Stats1:"
-        for key, pvname in {
-            'roi1_minx':      f"{roi_pfx}MinX",
-            'roi1_minx_rbv':  f"{roi_pfx}MinX_RBV",
-            'roi1_miny':      f"{roi_pfx}MinY",
-            'roi1_miny_rbv':  f"{roi_pfx}MinY_RBV",
-            'roi1_sizex':     f"{roi_pfx}SizeX",
-            'roi1_sizex_rbv': f"{roi_pfx}SizeX_RBV",
-            'roi1_sizey':     f"{roi_pfx}SizeY",
-            'roi1_sizey_rbv': f"{roi_pfx}SizeY_RBV",
-            'roi1_enable':    f"{roi_pfx}EnableCallbacks",
-            'stats1_total':   f"{stats_pfx}Total_RBV",
-            'stats1_net':     f"{stats_pfx}Net_RBV",
-            'stats1_mean':    f"{stats_pfx}MeanValue_RBV",
-            'stats1_sigma':   f"{stats_pfx}Sigma_RBV",
-            'stats1_max':     f"{stats_pfx}MaxValue_RBV",
-            'stats1_min':     f"{stats_pfx}MinValue_RBV",
-            'stats1_enable':  f"{stats_pfx}EnableCallbacks",
-        }.items():
-            self._ca_pvs[key] = epics.PV(pvname)
+        # ROI1/Stats1 PVs are created lazily when the user enables the ROI overlay
+        # (see _ensure_roi_pvs).  Creating them eagerly would generate continuous CA
+        # search broadcasts for potentially non-existent PVs.
 
         # Defer CA init to a background thread — pv.get(timeout=1.0) would block
         # the main thread if the detector PVs are unreachable (SimDetector, etc.)
@@ -773,10 +755,63 @@ class ADViewerWindow(QMainWindow):
         if cmap is not None:
             self._img_view.setColorMap(cmap)
 
+    # ── Lazy ROI1/Stats1 PV management ──────────────────────────────────────────
+
+    _ROI_PV_KEYS = [
+        'roi1_minx', 'roi1_minx_rbv', 'roi1_miny', 'roi1_miny_rbv',
+        'roi1_sizex', 'roi1_sizex_rbv', 'roi1_sizey', 'roi1_sizey_rbv',
+        'roi1_enable',
+        'stats1_total', 'stats1_net', 'stats1_mean',
+        'stats1_sigma', 'stats1_max', 'stats1_min', 'stats1_enable',
+    ]
+
+    def _ensure_roi_pvs(self):
+        """Create ROI1/Stats1 epics.PV objects on first ROI enable (lazy init)."""
+        if 'roi1_minx' in self._ca_pvs:
+            return
+        try:
+            import epics
+        except ImportError:
+            return
+        roi_pfx   = f"{self._prefix}ROI1:"
+        stats_pfx = f"{self._prefix}Stats1:"
+        for key, pvname in {
+            'roi1_minx':      f"{roi_pfx}MinX",
+            'roi1_minx_rbv':  f"{roi_pfx}MinX_RBV",
+            'roi1_miny':      f"{roi_pfx}MinY",
+            'roi1_miny_rbv':  f"{roi_pfx}MinY_RBV",
+            'roi1_sizex':     f"{roi_pfx}SizeX",
+            'roi1_sizex_rbv': f"{roi_pfx}SizeX_RBV",
+            'roi1_sizey':     f"{roi_pfx}SizeY",
+            'roi1_sizey_rbv': f"{roi_pfx}SizeY_RBV",
+            'roi1_enable':    f"{roi_pfx}EnableCallbacks",
+            'stats1_total':   f"{stats_pfx}Total_RBV",
+            'stats1_net':     f"{stats_pfx}Net_RBV",
+            'stats1_mean':    f"{stats_pfx}MeanValue_RBV",
+            'stats1_sigma':   f"{stats_pfx}Sigma_RBV",
+            'stats1_max':     f"{stats_pfx}MaxValue_RBV",
+            'stats1_min':     f"{stats_pfx}MinValue_RBV",
+            'stats1_enable':  f"{stats_pfx}EnableCallbacks",
+        }.items():
+            self._ca_pvs[key] = epics.PV(pvname)
+
+    def _release_roi_pvs(self):
+        """Disconnect and remove ROI1/Stats1 PVs to stop CA search broadcasts."""
+        for key in self._ROI_PV_KEYS:
+            pv = self._ca_pvs.pop(key, None)
+            if pv:
+                try:
+                    pv.clear_callbacks()
+                    pv.disconnect()
+                except Exception:
+                    pass
+
     def _on_roi_toggled(self, checked: bool):
         self._roi_on = checked
         self._roi.setVisible(checked)
         if checked:
+            # Create ROI1/Stats1 PV objects now (lazy — not at window open time)
+            self._ensure_roi_pvs()
             # Enable AD ROI1 and Stats1 plugins
             _pv_put(self._ca_pvs.get('roi1_enable'),  1)
             _pv_put(self._ca_pvs.get('stats1_enable'), 1)
@@ -834,14 +869,8 @@ class ADViewerWindow(QMainWindow):
             if self._arr is not None:
                 self._update_roi_stats()
         else:
-            # Remove subscriptions and clear display
-            for key in ('roi1_minx_rbv', 'roi1_miny_rbv',
-                        'roi1_sizex_rbv', 'roi1_sizey_rbv',
-                        'stats1_total', 'stats1_net', 'stats1_mean',
-                        'stats1_sigma', 'stats1_max', 'stats1_min'):
-                pv = self._ca_pvs.get(key)
-                if pv:
-                    pv.clear_callbacks()
+            # Disconnect and delete ROI1/Stats1 PVs — stops CA search broadcasts
+            self._release_roi_pvs()
             self._stats1_vals.clear()
             self._roi1_rbv_cache.clear()
             self._roi_lbl.setText("")
