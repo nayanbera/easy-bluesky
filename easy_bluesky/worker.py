@@ -898,12 +898,18 @@ class ZMQWorker(QObject):
                     elif env_state == "closed":
                         _opening_env = False
 
-                    # True only when env genuinely opened from closed (saw the
-                    # executing_task phase); False when app connects to an already-open env.
-                    _opened_from_closed = _was_task and env_state == "idle" and _opening_env
+                    # True when env genuinely opened from closed, OR on the very
+                    # first poll (_prev_env_state is None) where we have no history
+                    # and must upload custom plans to ensure they are current.
+                    # False only when reconnecting to an env that was already open
+                    # before disconnect (_prev_env_state has a known value).
+                    _opened_from_closed = (
+                        (_was_task and env_state == "idle" and _opening_env) or
+                        (_prev_env_state is None and _env_open)
+                    )
                     just_opened = (
                         (_env_open and (not _was_open or _prev_env_state is None)) or
-                        _opened_from_closed
+                        (_was_task and env_state == "idle" and _opening_env)
                     )
 
                     if just_opened:
