@@ -1063,6 +1063,7 @@ class MainWindow(QMainWindow):
 
         self.tabs.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._on_tab_context_menu)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         # Snapshot of original widget order — used when reinserting detached tabs
         self._tab_order = [self.tabs.widget(i) for i in range(self.tabs.count())]
 
@@ -1525,6 +1526,10 @@ class MainWindow(QMainWindow):
         return datetime.now().strftime("%H:%M:%S")
 
     # ── Tab detach / reattach ───────────────────────────────────────────────
+
+    def _on_tab_changed(self, index: int) -> None:
+        active = self.tabs.widget(index) is self.devices_plans_tab
+        self.devices_plans_tab.set_tab_active(active)
 
     def _on_tab_context_menu(self, pos):
         idx = self.tabs.tabBar().tabAt(pos)

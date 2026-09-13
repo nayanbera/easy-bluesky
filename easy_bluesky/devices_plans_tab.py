@@ -314,6 +314,7 @@ class DevicesPlansTab(QWidget):
         self._sim_device_names: set = set()   # devices polled via read_devices_status()
         self._pv_names_retry_count: int = 0
         self._sim_timer: QTimer | None = None
+        self._tab_active: bool = False   # set by MainWindow via set_tab_active()
         # Persistent cache of units/desc from real EPICS so sim mode can show them
         self._metadata_cache: dict = {}   # dev_name → {"units": str, "desc": str}
         self._metadata_save_timer = QTimer(self)
@@ -1041,9 +1042,14 @@ class DevicesPlansTab(QWidget):
         h.addWidget(btn_plus)
         return w
 
+    def set_tab_active(self, active: bool) -> None:
+        """Called by MainWindow when this tab is shown or hidden."""
+        self._tab_active = active
+
     def _on_sim_poll(self):
-        """Timer callback — requests a fresh device value poll from the worker."""
-        self.poll_sim_values_requested.emit()
+        """Timer callback — only emit when the tab is visible to avoid unnecessary function_execute traffic."""
+        if self._tab_active:
+            self.poll_sim_values_requested.emit()
 
     def pause_sim_poll(self):
         """Stop the sim poll timer so function_execute doesn't race with queue_start."""

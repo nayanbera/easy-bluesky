@@ -863,6 +863,11 @@ class ZMQWorker(QObject):
                         queue   = self.rm.queue_get()
                         history = self.rm.history_get()
                     self._last_manager_state = status.get("manager_state", "idle")
+                    # Auto-clear _current_task once the server is no longer busy,
+                    # so script_upload (which returns before the server finishes)
+                    # still shows its name while executing_task is active.
+                    if self._last_manager_state != "executing_task":
+                        self._current_task = ""
                     status["_app_task"] = self._current_task
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
@@ -1065,15 +1070,13 @@ class ZMQWorker(QObject):
             return False, str(e)
 
     def upload_script(self, script):
+        self._current_task = "script_upload"
         try:
-            self._current_task = "script_upload"
             with self._rm_lock:
                 r = self.rm.script_upload(script=script)
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
-        finally:
-            self._clear_task("script_upload")
 
     def upload_scripts(self, scripts: list) -> list:
         """Upload multiple Python script strings via script_upload.
@@ -1083,21 +1086,18 @@ class ZMQWorker(QObject):
         """
         self._current_task = "script_upload"
         results = []
-        try:
-            for script in scripts:
-                try:
-                    with self._rm_lock:
-                        r = self.rm.script_upload(script=script)
-                    ok  = r.get("success", False)
-                    msg = r.get("msg", "")
-                    results.append((ok, msg))
-                    if not ok:
-                        break
-                except Exception as e:
-                    results.append((False, str(e)))
+        for script in scripts:
+            try:
+                with self._rm_lock:
+                    r = self.rm.script_upload(script=script)
+                ok  = r.get("success", False)
+                msg = r.get("msg", "")
+                results.append((ok, msg))
+                if not ok:
                     break
-        finally:
-            self._clear_task("script_upload")
+            except Exception as e:
+                results.append((False, str(e)))
+                break
         skipped = len(scripts) - len(results)
         results.extend([(False, "skipped")] * skipped)
         return results
