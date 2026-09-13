@@ -1689,10 +1689,8 @@ class ExperimentsTab(QWidget):
             return
         self._doi_chip.setVisible(True)
         if self._doi_value:
-            self._doi_chip.setText("⬤ DOI")
-            self._doi_chip.setToolTip(
-                f"DOI: {self._doi_value}\nClick to open in browser"
-            )
+            self._doi_chip.setText(f"⬤ DOI: {self._doi_value}  ↗")
+            self._doi_chip.setToolTip("Click to open in browser")
             self._doi_chip.setStyleSheet(
                 "font-size: 10px; color: #2ca02c; font-weight: bold;"
                 " padding: 1px 4px; border-radius: 3px;"
