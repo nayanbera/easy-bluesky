@@ -1393,6 +1393,10 @@ class ExperimentsTab(QWidget):
                     self.btn_q_abort, self.btn_q_stop):
             btn.setEnabled(False)
             exec_row.addWidget(btn)
+        self._re_finishing_lbl = QLabel("")
+        self._re_finishing_lbl.setObjectName("dim_text")
+        self._re_finishing_lbl.setStyleSheet("color: #e8a000; font-style: italic;")
+        exec_row.addWidget(self._re_finishing_lbl)
         exec_row.addStretch()
         vlay.addLayout(exec_row)
 
@@ -1855,6 +1859,8 @@ class ExperimentsTab(QWidget):
         self.btn_q_resume.setEnabled(paused)
         self.btn_q_abort.setEnabled(running or paused)
         self.btn_q_stop.setEnabled(running or paused)
+        finishing = (manager_state == "executing_queue" and re_state in ("", "idle"))
+        self._re_finishing_lbl.setText("⏳ Finishing scan…" if finishing else "")
         if not (running or paused):
             self._running_banner.setVisible(False)
 
@@ -1888,6 +1894,7 @@ class ExperimentsTab(QWidget):
         self.btn_add.setEnabled(False)
         self.btn_add.setToolTip("Waiting for RE Manager to load plans…")
         self._running_banner.setVisible(False)
+        self._re_finishing_lbl.setText("")
 
     def _on_loop_checkbox(self, checked: bool) -> None:
         self.spin_loop.setEnabled(checked)
