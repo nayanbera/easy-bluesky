@@ -1608,9 +1608,10 @@ class MainWindow(QMainWindow):
             _m = msg.lower()
             if "busy" in _m or "executing_task" in _m or "executing task" in _m:
                 self._start_retry_deadline = time.monotonic() + 90.0
+                self._start_retry_last_log  = time.monotonic()
                 mstate = self.worker.last_manager_state()
-                self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying every 2 s for up to 90 s…")
-                QTimer.singleShot(2000, self._retry_start_queue)
+                self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying every 5 s for up to 90 s…")
+                QTimer.singleShot(5000, self._retry_start_queue)
             else:
                 self.devices_plans_tab.resume_sim_poll()
                 QMessageBox.warning(self, "Cannot Start Queue", f"Start queue failed:\n{msg}")
@@ -1627,16 +1628,23 @@ class MainWindow(QMainWindow):
                                 "Check the RE Console tab for the current state.")
             return
         ok, msg = self.worker.queue_start()
-        mstate = self.worker.last_manager_state()
-        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue (retry, {elapsed:.0f}s, state: {mstate}): {msg}")
         if not ok:
             _m = msg.lower()
             if "busy" in _m or "executing_task" in _m or "executing task" in _m:
-                QTimer.singleShot(2000, self._retry_start_queue)
+                # Log a status line at most every 10 s to avoid console spam
+                since_log = time.monotonic() - getattr(self, "_start_retry_last_log", 0.0)
+                if since_log >= 10.0:
+                    mstate = self.worker.last_manager_state()
+                    self._log(f"[{self._ts()}]   ↻ still waiting for RE Manager (state: {mstate}, {elapsed:.0f}s elapsed)…")
+                    self._start_retry_last_log = time.monotonic()
+                QTimer.singleShot(5000, self._retry_start_queue)
             else:
                 self.devices_plans_tab.resume_sim_poll()
+                mstate = self.worker.last_manager_state()
+                self._log(f"[{self._ts()}] ✗ Start queue (retry, {elapsed:.0f}s, state: {mstate}): {msg}")
                 QMessageBox.warning(self, "Cannot Start Queue", f"Start queue failed:\n{msg}")
             return
+        self._log(f"[{self._ts()}] ✓ Start queue succeeded after {elapsed:.0f}s")
         self._on_queue_start_success()
 
     def _on_queue_start_success(self):
