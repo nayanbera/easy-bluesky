@@ -1686,7 +1686,30 @@ class MainWindow(QMainWindow):
         if r != QMessageBox.StandardButton.Yes:
             return
         ok, msg = self.worker.re_abort()
+        if ok:
+            self._log(f"[{self._ts()}] ✓ Abort: {msg}")
+            return
+        if "not paused" in msg.lower():
+            # bluesky-queueserver v0.0.25 requires the RE to be paused before re_abort
+            # while the queue is executing — auto-pause immediately then retry.
+            self._log(f"[{self._ts()}]   → pausing RE before abort…")
+            ok_p, msg_p = self.worker.re_pause(option="immediate")
+            self._log(f"[{self._ts()}] {'✓' if ok_p else '✗'} Pause (pre-abort): {msg_p}")
+            if ok_p:
+                self._abort_deadline = time.monotonic() + 15.0
+                QTimer.singleShot(500, self._abort_after_pause)
+            else:
+                self._log(f"[{self._ts()}] ✗ Abort: could not pause RE — {msg_p}")
+        else:
+            self._log(f"[{self._ts()}] ✗ Abort: {msg}")
+
+    def _abort_after_pause(self):
+        ok, msg = self.worker.re_abort()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Abort: {msg}")
+        if not ok and time.monotonic() < getattr(self, "_abort_deadline", 0.0):
+            if "not paused" in msg.lower() or "busy" in msg.lower():
+                QTimer.singleShot(500, self._abort_after_pause)
+            # else: unexpected error — already logged, stop retrying
 
     def _on_stop_requested(self):
         ok, msg = self.worker.re_stop()
