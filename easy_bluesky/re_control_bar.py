@@ -213,17 +213,18 @@ class REControlBar(QFrame):
             env_state = "idle" if exists else "closed"
 
         colors = {
-            "IDLE":    (SUCCESS, "#1a3a1a"),
-            "RUNNING": (ACCENT,  "#1a2a3a"),
-            "PAUSED":  (WARNING, "#3a2a1a"),
-            "BUSY":    ("#c8a040", "#3a2e10"),
+            "IDLE":       (SUCCESS,    "#1a3a1a"),
+            "RUNNING":    (ACCENT,     "#1a2a3a"),
+            "PAUSED":     (WARNING,    "#3a2a1a"),
+            "BUSY":       ("#c8a040",  "#3a2e10"),
+            "BUSY (ext)": ("#c8a040",  "#3a2e10"),
         }
         # When the manager is processing a background task (function_execute),
         # re_state stays "idle" but the manager won't accept queue_start.
         # Show "BUSY: <task>" so the user knows what is running.
         app_task = status.get("_app_task", "")
         if manager_state == "executing_task" and re_state == "IDLE":
-            chip_text = f"BUSY: {app_task}" if app_task else "BUSY"
+            chip_text = f"BUSY: {app_task}" if app_task else "BUSY (ext)"
         else:
             chip_text = re_state
         color_key = chip_text if chip_text in colors else chip_text.split(":")[0].strip()
