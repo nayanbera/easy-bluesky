@@ -45,3 +45,9 @@ experiments/
 # Coverage
 .coverage
 htmlcov/
+
+# Manuscript (local only — not published to GitHub before submission)
+docs/easy_bluesky_jsr_draft.md
+docs/easy_bluesky_jsr_draft.docx
+docs/figures/
+~$*.docx
