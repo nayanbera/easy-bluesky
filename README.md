@@ -24,6 +24,8 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Remote Data Root** — Per-profile setting for the Linux RE machine's data root directory. Automatically propagated to every plan as `remote_exp_dir` so area detectors can write HDF files to the correct network path without manual entry each run.
 - **Experiment Console Log** — RE Manager console output is automatically appended to `<exp_dir>/console.log` for the duration of each session. The log opens when an experiment is set and closes cleanly when the experiment changes or the app exits.
 - **Experiment Folder Monitoring** — A background filesystem watcher detects if the active experiment folder is deleted or becomes inaccessible while the app is running. A modal dialog notifies the user; if a scan is running it is paused automatically. NFS mount failures (ESTALE, EIO, ENOTCONN) are reported with a distinct message. All filesystem probes run in daemon threads — the Qt event loop is never blocked.
+- **Multi-client awareness** — When two or more EasyBluesky instances connect to the same RE Manager (e.g. Mac + Windows at the same beamline), a **connected-clients chip** in the toolbar shows the count in real time (green for sole operator, amber when sharing). Hovering shows each client's IP address. If a second client is already connected when you launch, a warning dialog appears before the experiment selection dialog so you know to coordinate. The first client is also notified the moment a second joins. An amber **BUSY (ext)** chip distinguishes external RE Manager activity (device polling from another client) from your own running tasks; a 1.5-second debounce suppresses transient flicker.
+- **Operator lock** — Network-level exclusive-control mechanism for shared beamlines. On connect, EasyBluesky checks whether another host holds the operator lock. If so, you can either take control (with a warning that the other operator is not notified) or continue in read-only mode where Start and Stop Manager are blocked. The lock is released automatically on disconnect or app quit.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
 
@@ -162,6 +164,7 @@ The persistent toolbar at the top provides:
 | ⚡ Start RE Mgr | Start (or restart) the active profile's RE Manager |
 | ⏹ Stop RE Mgr | Stop the active profile's RE Manager |
 | ↺ Reconnect | Reconnect ZMQ without restarting RE Manager |
+| ⬤ N clients | Connected-clients chip — green (sole operator) or amber (shared). Hover to see IP addresses of all connected clients. Hidden when disconnected. |
 
 ---
 
@@ -1761,6 +1764,17 @@ easy-bluesky/
 ---
 
 ## Changelog
+
+### 2026-09-13
+
+- **Feat: Connected-clients chip** — A live count of clients connected to the same RE Manager now appears in the toolbar (green for sole operator, amber when sharing). Hover tooltip lists each client's IP address. Updated every 30 s by combining SSH heartbeat files (`/tmp/.easy_bluesky_<slug>_client_<host>.json`) and active TCP connections (`ss -tn`). Client file is registered on connect and removed on disconnect / app quit.
+- **Feat: Multi-client startup warning** — On SSH profiles, the client check now runs before the experiment selection dialog. A background thread registers the local client, fetches the client list, and emits it back to the main thread. If more than one client is detected a warning modal appears first, then the experiment dialog opens. On local profiles the experiment dialog opens immediately. A 5 s fallback timer ensures the dialog appears even if the connection is not yet established.
+- **Feat: First client notified when second joins** — The 30 s polling loop compares incoming IPs against the local machine's known addresses and logs a warning when a new foreign IP appears.
+- **Feat: BUSY (ext) chip** — When another client is executing a `function_execute` call (e.g. device polling) the RE chip shows amber **BUSY (ext)** instead of IDLE. A 1.5 s debounce suppresses transient flicker from sub-second polls.
+- **Fix: Script not re-uploaded to new clients after RE Manager restart** — `env_opened` signal now carries a `bool` (`from_closed`) distinguishing a genuine close→open transition from an app reconnect to an already-open environment. Script re-upload only fires when `from_closed=True`, eliminating repeated "Uploading script to RE environment" log entries on reconnect.
+- **Fix: Plans not reloaded after completing our own function_execute** — `_prev_app_task` captures `_current_task` before the poll loop clears it. `_load_plans_devices()` is called only when `_prev_app_task` is non-empty (our task finished), not on every `executing_task → idle` transition from an external client.
+- **Fix: AD Viewer / XRF Viewer windows not closing on app quit** — `devices_plans_tab.close_all_viewers()` and `experiments_tab.close_detached_windows()` are now called from `MainWindow.closeEvent()`.
+- **Fix: SSH log tailer leaves orphaned `tail` processes after app crash** — `_SSHLogTailer._run()` now requests a PTY (`channel.get_pty(term="dumb")`). sshd sends SIGHUP to the remote `tail` process when the SSH channel closes abruptly, preventing zombie tails accumulating on the remote machine.
 
 ### 2026-08-15 / 2026-08-16
 
