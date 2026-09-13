@@ -224,6 +224,10 @@ def _extract_ndarray(value) -> tuple:
 class ADViewerWindow(QMainWindow):
     """Floating live-view window for one EPICS area detector via PVAccess."""
 
+    # CA-thread → main-thread signals for ROI1 RBV and Stats1 live values
+    _sig_roi1_rbv = pyqtSignal(int, int, int, int)  # minx, miny, sizex, sizey
+    _sig_stats1   = pyqtSignal(dict)                 # {stat_key: float}
+
     def __init__(
         self,
         device_name: str,
@@ -257,6 +261,17 @@ class ADViewerWindow(QMainWindow):
         self._mask_threshold: float | None = None
 
         self._cam1_pvs = _resolve_cam1_pvs(pv_map)
+
+        self._roi_updating  = False   # True while syncing overlay from CA (suppress write-back)
+        self._stats1_vals: dict = {}  # latest Stats1 readings {key: float}
+
+        self._sig_roi1_rbv.connect(self._apply_roi1_from_ca)
+        self._sig_stats1.connect(self._on_stats1_update)
+
+        self._roi_debounce_timer = QTimer(self)
+        self._roi_debounce_timer.setSingleShot(True)
+        self._roi_debounce_timer.setInterval(150)
+        self._roi_debounce_timer.timeout.connect(self._write_roi_to_ad)
 
         self._build_ui()
         self._restore_display_settings()   # apply saved colormap/log/transpose
@@ -315,7 +330,7 @@ class ADViewerWindow(QMainWindow):
         self._roi.addScaleHandle([0, 0], [1, 1])
         self._roi.addScaleHandle([1, 0], [0, 1])
         self._roi.addScaleHandle([0, 1], [1, 0])
-        self._roi.sigRegionChanged.connect(self._update_roi_stats)
+        self._roi.sigRegionChanged.connect(self._on_roi_region_changed)
         self._img_view.addItem(self._roi)
         self._roi.setVisible(False)
 
@@ -505,6 +520,28 @@ class ADViewerWindow(QMainWindow):
             'image_mode_rbv':     _pv('image_mode',     'ImageMode') + '_RBV',
         }.items():
             self._ca_pvs[key] = epics.PV(pvname)
+        roi_pfx   = f"{self._prefix}ROI1:"
+        stats_pfx = f"{self._prefix}Stats1:"
+        for key, pvname in {
+            'roi1_minx':      f"{roi_pfx}MinX",
+            'roi1_minx_rbv':  f"{roi_pfx}MinX_RBV",
+            'roi1_miny':      f"{roi_pfx}MinY",
+            'roi1_miny_rbv':  f"{roi_pfx}MinY_RBV",
+            'roi1_sizex':     f"{roi_pfx}SizeX",
+            'roi1_sizex_rbv': f"{roi_pfx}SizeX_RBV",
+            'roi1_sizey':     f"{roi_pfx}SizeY",
+            'roi1_sizey_rbv': f"{roi_pfx}SizeY_RBV",
+            'roi1_enable':    f"{roi_pfx}EnableCallbacks",
+            'stats1_total':   f"{stats_pfx}Total_RBV",
+            'stats1_net':     f"{stats_pfx}Net_RBV",
+            'stats1_mean':    f"{stats_pfx}MeanValue_RBV",
+            'stats1_sigma':   f"{stats_pfx}Sigma_RBV",
+            'stats1_max':     f"{stats_pfx}MaxValue_RBV",
+            'stats1_min':     f"{stats_pfx}MinValue_RBV",
+            'stats1_enable':  f"{stats_pfx}EnableCallbacks",
+        }.items():
+            self._ca_pvs[key] = epics.PV(pvname)
+
         # Defer CA init to a background thread — pv.get(timeout=1.0) would block
         # the main thread if the detector PVs are unreachable (SimDetector, etc.)
         QTimer.singleShot(1500, self._start_ca_init_thread)
@@ -719,18 +756,155 @@ class ADViewerWindow(QMainWindow):
     def _on_roi_toggled(self, checked: bool):
         self._roi_on = checked
         self._roi.setVisible(checked)
-        if checked and self._arr is not None:
-            disp = self._prepare(self._arr)
-            h, w = disp.shape[:2]
-            self._roi.setPos([w // 4, h // 4])
-            self._roi.setSize([w // 2, h // 2])
-            self._update_roi_stats()
+        if checked:
+            # Enable AD ROI1 and Stats1 plugins
+            _pv_put(self._ca_pvs.get('roi1_enable'),   1)
+            _pv_put(self._ca_pvs.get('stats1_enable'),  1)
+            # Sync overlay to current ROI1 RBV, falling back to centered region
+            self._read_roi1_rbv_initial()
+            # Subscribe to ROI1 RBV changes (any of the 4 triggers a full re-read)
+            for key in ('roi1_minx_rbv', 'roi1_miny_rbv',
+                        'roi1_sizex_rbv', 'roi1_sizey_rbv'):
+                pv = self._ca_pvs.get(key)
+                if pv:
+                    pv.add_callback(self._on_roi1_rbv_ca)
+            # Subscribe to Stats1 live values
+            for key in ('stats1_total', 'stats1_net', 'stats1_mean',
+                        'stats1_sigma', 'stats1_max', 'stats1_min'):
+                pv = self._ca_pvs.get(key)
+                if pv:
+                    def _make_cb(k):
+                        def _cb(value, **kw):
+                            self._on_stats1_ca(k, value)
+                        return _cb
+                    pv.add_callback(_make_cb(key))
+            if self._arr is not None:
+                self._update_roi_stats()
         else:
+            # Remove subscriptions and clear display
+            for key in ('roi1_minx_rbv', 'roi1_miny_rbv',
+                        'roi1_sizex_rbv', 'roi1_sizey_rbv',
+                        'stats1_total', 'stats1_net', 'stats1_mean',
+                        'stats1_sigma', 'stats1_max', 'stats1_min'):
+                pv = self._ca_pvs.get(key)
+                if pv:
+                    pv.clear_callbacks()
+            self._stats1_vals.clear()
             self._roi_lbl.setText("")
+            self._roi_debounce_timer.stop()
+
+    def _read_roi1_rbv_initial(self):
+        """Initialise overlay from current ROI1 RBV PVs; falls back to centred region."""
+        minx  = _pv_get(self._ca_pvs.get('roi1_minx_rbv'))
+        miny  = _pv_get(self._ca_pvs.get('roi1_miny_rbv'))
+        sizex = _pv_get(self._ca_pvs.get('roi1_sizex_rbv'))
+        sizey = _pv_get(self._ca_pvs.get('roi1_sizey_rbv'))
+        if any(v is None for v in (minx, miny, sizex, sizey)) or (sizex == 0 and sizey == 0):
+            if self._arr is not None:
+                disp = self._prepare(self._arr)
+                h, w = disp.shape[:2]
+                self._roi.setPos([w // 4, h // 4])
+                self._roi.setSize([w // 2, h // 2])
+            return
+        pos, sz = self._ad_to_overlay_coords(int(minx), int(miny), int(sizex), int(sizey))
+        self._roi_updating = True
+        self._roi.setPos(pos)
+        self._roi.setSize(sz)
+        self._roi_updating = False
+
+    def _overlay_to_ad_coords(self):
+        """Map current overlay position to AD pixel coords (minx, miny, sizex, sizey)."""
+        pos = self._roi.pos()
+        sz  = self._roi.size()
+        rx  = int(round(pos.x()))
+        ry  = int(round(pos.y()))
+        sx  = max(1, int(round(sz.x())))
+        sy  = max(1, int(round(sz.y())))
+        if self._transpose:
+            # display = arr.T: pg-x = AD col (MinX), pg-y = AD row (MinY)
+            return rx, ry, sx, sy
+        else:
+            # display = arr: pg-x = AD row (MinY), pg-y = AD col (MinX)
+            return ry, rx, sy, sx
+
+    def _ad_to_overlay_coords(self, minx: int, miny: int, sizex: int, sizey: int):
+        """Map AD ROI coords to overlay (pos, size) in pyqtgraph item space."""
+        if self._transpose:
+            return (minx, miny), (sizex, sizey)
+        else:
+            return (miny, minx), (sizey, sizex)
+
+    def _on_roi_region_changed(self):
+        """Called whenever the overlay is dragged/resized."""
+        if self._roi_on:
+            self._update_roi_stats()
+        if not self._roi_updating:
+            self._roi_debounce_timer.start()   # restarts on every event; fires 150 ms after last
+
+    def _write_roi_to_ad(self):
+        """Write current overlay position to the AD ROI1 plugin (debounced)."""
+        if not self._roi_on:
+            return
+        minx, miny, sizex, sizey = self._overlay_to_ad_coords()
+        _pv_put(self._ca_pvs.get('roi1_minx'),  minx)
+        _pv_put(self._ca_pvs.get('roi1_miny'),  miny)
+        _pv_put(self._ca_pvs.get('roi1_sizex'), sizex)
+        _pv_put(self._ca_pvs.get('roi1_sizey'), sizey)
+
+    def _on_roi1_rbv_ca(self, **kw):
+        """CA callback (any of 4 ROI1 RBV PVs changed) — reads all 4 and emits signal."""
+        try:
+            minx  = _pv_get(self._ca_pvs.get('roi1_minx_rbv'))
+            miny  = _pv_get(self._ca_pvs.get('roi1_miny_rbv'))
+            sizex = _pv_get(self._ca_pvs.get('roi1_sizex_rbv'))
+            sizey = _pv_get(self._ca_pvs.get('roi1_sizey_rbv'))
+            if any(v is None for v in (minx, miny, sizex, sizey)):
+                return
+            self._sig_roi1_rbv.emit(int(minx), int(miny), int(sizex), int(sizey))
+        except Exception:
+            pass
+
+    def _apply_roi1_from_ca(self, minx: int, miny: int, sizex: int, sizey: int):
+        """Slot: update overlay from AD ROI1 RBV (main thread)."""
+        if not self._roi_on:
+            return
+        pos, sz = self._ad_to_overlay_coords(minx, miny, sizex, sizey)
+        self._roi_updating = True
+        self._roi.setPos(pos)
+        self._roi.setSize(sz)
+        self._roi_updating = False
+
+    def _on_stats1_ca(self, key: str, value):
+        """CA callback for one Stats1 RBV PV — marshals to main thread via signal."""
+        try:
+            self._stats1_vals[key] = float(value)
+            self._sig_stats1.emit(dict(self._stats1_vals))
+        except Exception:
+            pass
+
+    def _on_stats1_update(self, vals: dict):
+        """Slot: update ROI label with live AD Stats1 values (main thread)."""
+        if not self._roi_on:
+            return
+        order = [
+            ('stats1_total', 'Total'),
+            ('stats1_net',   'Net  '),
+            ('stats1_mean',  'Mean '),
+            ('stats1_sigma', 'Sigma'),
+            ('stats1_max',   'Max  '),
+            ('stats1_min',   'Min  '),
+        ]
+        lines = [f"{lbl}: {vals[k]:.4g}" for k, lbl in order if k in vals]
+        if lines:
+            lines.append("(AD Stats1)")
+            self._roi_lbl.setText('\n'.join(lines))
 
     def _update_roi_stats(self):
+        """Compute stats from the local display array (fallback when Stats1 not connected)."""
         if self._arr is None or not self._roi_on:
             return
+        if self._stats1_vals:
+            return   # AD Stats1 callbacks are providing live values; don't overwrite
         try:
             disp   = self._prepare(self._arr).astype(np.float64)
             region = self._roi.getArrayRegion(disp, self._img_view.getImageItem())
@@ -743,7 +917,8 @@ class ADViewerWindow(QMainWindow):
                 f"Min:  {region.min():.4g}\n"
                 f"Sum:  {region.sum():.4g}\n"
                 f"Std:  {region.std():.4g}\n"
-                f"Size: {w_px}×{h_px} px"
+                f"Size: {w_px}×{h_px} px\n"
+                f"(local)"
             )
         except Exception:
             pass
@@ -871,7 +1046,8 @@ class ADViewerWindow(QMainWindow):
         if t is not None:
             t.requestInterruption()
             t.wait(1500)   # thread has at most one pv.get(1 s) left before checking
-        # Prevent the no-frame warning from firing after the window is gone
+        # Stop pending timers before tearing down PVs
+        self._roi_debounce_timer.stop()
         if hasattr(self, '_no_frame_timer'):
             self._no_frame_timer.stop()
         # Stop PVA monitor thread (non-blocking: terminates if ctx.close() hangs)
