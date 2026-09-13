@@ -1066,11 +1066,14 @@ class ZMQWorker(QObject):
 
     def upload_script(self, script):
         try:
+            self._current_task = "script_upload"
             with self._rm_lock:
                 r = self.rm.script_upload(script=script)
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
+        finally:
+            self._clear_task("script_upload")
 
     def upload_scripts(self, scripts: list) -> list:
         """Upload multiple Python script strings via script_upload.
@@ -1078,19 +1081,23 @@ class ZMQWorker(QObject):
         Returns a list of (ok, msg) tuples, one per script.
         Stops on the first failure and fills remaining entries with (False, "skipped").
         """
+        self._current_task = "script_upload"
         results = []
-        for script in scripts:
-            try:
-                with self._rm_lock:
-                    r = self.rm.script_upload(script=script)
-                ok  = r.get("success", False)
-                msg = r.get("msg", "")
-                results.append((ok, msg))
-                if not ok:
+        try:
+            for script in scripts:
+                try:
+                    with self._rm_lock:
+                        r = self.rm.script_upload(script=script)
+                    ok  = r.get("success", False)
+                    msg = r.get("msg", "")
+                    results.append((ok, msg))
+                    if not ok:
+                        break
+                except Exception as e:
+                    results.append((False, str(e)))
                     break
-            except Exception as e:
-                results.append((False, str(e)))
-                break
+        finally:
+            self._clear_task("script_upload")
         skipped = len(scripts) - len(results)
         results.extend([(False, "skipped")] * skipped)
         return results
