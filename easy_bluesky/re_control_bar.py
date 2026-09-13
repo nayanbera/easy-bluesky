@@ -1,5 +1,6 @@
 """re_control_bar.py — Persistent RE status and control toolbar."""
 
+import time
 from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import pyqtSignal
 from .themes import ACCENT, SUCCESS, DANGER, WARNING, THEMES, DEFAULT_THEME
@@ -15,11 +16,14 @@ class REControlBar(QFrame):
     reconnect_requested     = pyqtSignal()
     profile_changed         = pyqtSignal(str)   # emits the selected profile name
 
+    _EXT_BUSY_DEBOUNCE = 1.5  # seconds before "BUSY (ext)" appears in the chip
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("re_control_bar")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setMaximumHeight(50)
+        self._ext_busy_since: float = 0.0
         self._build()
         self._apply_style()
 
@@ -224,8 +228,19 @@ class REControlBar(QFrame):
         # Show "BUSY: <task>" so the user knows what is running.
         app_task = status.get("_app_task", "")
         if manager_state == "executing_task" and re_state == "IDLE":
-            chip_text = f"BUSY: {app_task}" if app_task else "BUSY (ext)"
+            if app_task:
+                self._ext_busy_since = 0.0
+                chip_text = f"BUSY: {app_task}"
+            else:
+                # External function_execute — only surface the chip after it's
+                # been sustained for _EXT_BUSY_DEBOUNCE seconds so short device
+                # polls from a second client don't constantly flicker the chip.
+                now = time.monotonic()
+                if self._ext_busy_since == 0.0:
+                    self._ext_busy_since = now
+                chip_text = "BUSY (ext)" if (now - self._ext_busy_since) >= self._EXT_BUSY_DEBOUNCE else "IDLE"
         else:
+            self._ext_busy_since = 0.0
             chip_text = re_state
         color_key = chip_text if chip_text in colors else chip_text.split(":")[0].strip()
         color, bg = colors.get(color_key, ("#888", "#2a2a2a"))

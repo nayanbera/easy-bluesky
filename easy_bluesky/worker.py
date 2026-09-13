@@ -866,9 +866,9 @@ class ZMQWorker(QObject):
                         queue   = self.rm.queue_get()
                         history = self.rm.history_get()
                     self._last_manager_state = status.get("manager_state", "idle")
-                    # Auto-clear _current_task once the server is no longer busy,
-                    # so script_upload (which returns before the server finishes)
-                    # still shows its name while executing_task is active.
+                    # Save before auto-clear so transition logic can check whether
+                    # the completing task was ours (non-empty) or external (empty).
+                    _prev_app_task = self._current_task
                     if self._last_manager_state != "executing_task":
                         self._current_task = ""
                     status["_app_task"] = self._current_task
@@ -911,8 +911,10 @@ class ZMQWorker(QObject):
                         self._load_plans_devices()
                         self.fetch_device_pvnames()
                         self.env_opened.emit(_opened_from_closed)
-                    elif _was_task and env_state == "idle":
-                        # script_upload or other admin task finished
+                    elif _was_task and env_state == "idle" and _prev_app_task:
+                        # Our own script_upload or function_execute finished —
+                        # reload plans/devices. Skip for external tasks (empty
+                        # _prev_app_task) since they don't change plan lists.
                         self._load_plans_devices()
                     elif env_state == "closed" and _was_open:
                         self.env_closed.emit()
