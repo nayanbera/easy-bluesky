@@ -1712,11 +1712,32 @@ class MainWindow(QMainWindow):
             # else: unexpected error — already logged, stop retrying
 
     def _on_stop_requested(self):
-        ok, msg = self.worker.re_stop()
-        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}")
+        # Cancel loop regardless of whether the stop succeeds
         self._queue_loop_cancelled = True
         self.queue_mgr.clear_loop_iteration()
         self.experiments_tab.clear_loop_iteration()
+        ok, msg = self.worker.re_stop()
+        if ok:
+            self._log(f"[{self._ts()}] ✓ Stop: {msg}")
+            return
+        if "not paused" in msg.lower():
+            self._log(f"[{self._ts()}]   → pausing RE before stop…")
+            ok_p, msg_p = self.worker.re_pause(option="immediate")
+            self._log(f"[{self._ts()}] {'✓' if ok_p else '✗'} Pause (pre-stop): {msg_p}")
+            if ok_p:
+                self._stop_deadline = time.monotonic() + 15.0
+                QTimer.singleShot(500, self._stop_after_pause)
+            else:
+                self._log(f"[{self._ts()}] ✗ Stop: could not pause RE — {msg_p}")
+        else:
+            self._log(f"[{self._ts()}] ✗ Stop: {msg}")
+
+    def _stop_after_pause(self):
+        ok, msg = self.worker.re_stop()
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}")
+        if not ok and time.monotonic() < getattr(self, "_stop_deadline", 0.0):
+            if "not paused" in msg.lower() or "busy" in msg.lower():
+                QTimer.singleShot(500, self._stop_after_pause)
 
     # ── Auto-start and loop handlers ──────────────────────────────────────────
 
