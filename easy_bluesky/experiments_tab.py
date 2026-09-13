@@ -22,11 +22,13 @@ from PyQt6.QtWidgets import (
     QMenu, QFrame, QCheckBox, QSpinBox,
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer, QFileSystemWatcher
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QDesktopServices
+from PyQt6.QtCore import QUrl
 
 from .config import (
     SUCCESS, DANGER, WARNING, ACCENT,
     EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS, UI_PREFS_FILE,
+    ESAF_INFO_FILE,
 )
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
@@ -333,6 +335,49 @@ class _ESAFHealthWorker(QThread):
             self.result.emit("ok_sqlite", self._url)
         except Exception as exc:
             self.result.emit("error", str(exc))
+
+
+# ── ESAF DOI poller ───────────────────────────────────────────────────────────
+
+class _ESAFDoiPoller(QThread):
+    """One-shot background fetch of DOI from ESAF server for a specific ESAF id."""
+    doi_found  = pyqtSignal(str)   # emits the DOI string when found
+    no_doi     = pyqtSignal()      # emits when server reachable but DOI absent
+
+    def __init__(self, esaf_id: str, server_url: str, parent=None):
+        super().__init__(parent)
+        self._esaf_id   = str(esaf_id).strip()
+        self._url       = server_url.rstrip("/")
+
+    def run(self):
+        if not self._url or not self._esaf_id:
+            self.no_doi.emit()
+            return
+        import urllib.request as _urq
+        import json as _json
+        try:
+            # Try /api/esafs/<id> first for a specific record
+            url = f"{self._url}/api/esafs/{self._esaf_id}"
+            with _urq.urlopen(url, timeout=10) as resp:
+                data = _json.loads(resp.read())
+            doi = (data.get("doi") or "").strip()
+            if doi:
+                self.doi_found.emit(doi)
+                return
+            # Fallback: search the list for this esaf_id
+            list_url = f"{self._url}/api/esafs?esaf_id={self._esaf_id}&limit=5"
+            with _urq.urlopen(list_url, timeout=10) as resp2:
+                records = _json.loads(resp2.read())
+            if isinstance(records, list):
+                for rec in records:
+                    if str(rec.get("esaf_id", "")) == self._esaf_id:
+                        doi = (rec.get("doi") or "").strip()
+                        if doi:
+                            self.doi_found.emit(doi)
+                            return
+            self.no_doi.emit()
+        except Exception:
+            self.no_doi.emit()
 
 
 # ── ESAF list fetcher (aps-esaf-fetcher public API) ───────────────────────────
@@ -1148,6 +1193,11 @@ class ExperimentsTab(QWidget):
         self._scan_log_exp     = ""    # exp path that triggered the in-flight SFTP fetch
         self.history_widget    = _HistoryWidgetStub()
         self._console_log      = None   # open file handle for <exp_dir>/console.log
+        self._doi_value: str   = ""     # empty until DOI is fetched and confirmed
+        self._doi_poller       = None   # _ESAFDoiPoller instance
+        self._doi_timer        = QTimer()
+        self._doi_timer.setInterval(3_600_000)   # re-poll every hour
+        self._doi_timer.timeout.connect(self._poll_doi_once)
         self._fs_watcher       = QFileSystemWatcher()
         self._fs_watcher.directoryChanged.connect(self._on_exp_dir_changed)
         self._fs_watcher.fileChanged.connect(self._on_scan_log_file_changed)
@@ -1235,6 +1285,14 @@ class ExperimentsTab(QWidget):
         self.exp_date_label.setObjectName("dim_text")
         self.exp_date_label.setStyleSheet("font-size: 10px;")
         vlay.addWidget(self.exp_date_label)
+
+        # DOI chip — visible only for ESAF-route experiments
+        self._doi_chip = QLabel("")
+        self._doi_chip.setStyleSheet("font-size: 10px;")
+        self._doi_chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._doi_chip.setVisible(False)
+        self._doi_chip.mousePressEvent = self._on_doi_chip_click
+        vlay.addWidget(self._doi_chip)
 
         self._exp_deleted_warning = QLabel("⚠  Experiment folder was deleted — please open or create a new experiment.")
         self._exp_deleted_warning.setStyleSheet("font-size: 10px; color: #cc4400;")
@@ -1597,6 +1655,95 @@ class ExperimentsTab(QWidget):
             self._esaf_status.setText(f"Unreachable ({host})" if host else "Unreachable")
             self._esaf_status.setStyleSheet("font-size: 10px; color: #cc3333;")
 
+    # ── DOI tracking ──────────────────────────────────────────────────────────
+
+    def _load_esaf_info_json(self) -> dict:
+        if not self._active_exp_path:
+            return {}
+        p = Path(self._active_exp_path) / ESAF_INFO_FILE
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_esaf_info_json(self, data: dict):
+        if not self._active_exp_path:
+            return
+        p = Path(self._active_exp_path) / ESAF_INFO_FILE
+        try:
+            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _update_doi_chip(self):
+        if not self._esaf_info:
+            self._doi_chip.setVisible(False)
+            return
+        self._doi_chip.setVisible(True)
+        if self._doi_value:
+            self._doi_chip.setText("⬤ DOI")
+            self._doi_chip.setToolTip(
+                f"DOI: {self._doi_value}\nClick to open in browser"
+            )
+            self._doi_chip.setStyleSheet(
+                "font-size: 10px; color: #2ca02c; font-weight: bold;"
+                " padding: 1px 4px; border-radius: 3px;"
+                " background: rgba(44,160,44,0.12);"
+            )
+        else:
+            self._doi_chip.setText("◌ DOI pending")
+            self._doi_chip.setToolTip("DOI not yet available — checking every hour")
+            self._doi_chip.setStyleSheet(
+                "font-size: 10px; color: #cc8800;"
+                " padding: 1px 4px; border-radius: 3px;"
+                " background: rgba(204,136,0,0.10);"
+            )
+
+    def _on_doi_chip_click(self, _event):
+        if self._doi_value:
+            QDesktopServices.openUrl(QUrl(f"https://doi.org/{self._doi_value}"))
+
+    def _poll_doi_once(self):
+        if not self._esaf_info:
+            return
+        esaf_id = str(self._esaf_info.get("esaf_id") or "").strip()
+        server  = (self._settings.get("esaf_server_url") or "").strip()
+        if not esaf_id or not server:
+            return
+        if self._doi_poller and self._doi_poller.isRunning():
+            return
+        self._doi_poller = _ESAFDoiPoller(esaf_id, server, self)
+        self._doi_poller.doi_found.connect(self._on_doi_found)
+        self._doi_poller.no_doi.connect(self._on_doi_not_found)
+        self._doi_poller.start()
+
+    def _on_doi_found(self, doi: str):
+        if doi == self._doi_value:
+            return
+        self._doi_value = doi
+        self._update_doi_chip()
+        # Persist to esaf_info.json
+        data = self._load_esaf_info_json()
+        data.update({"doi": doi, "esaf": self._esaf_info})
+        self._save_esaf_info_json(data)
+        # DOI is permanent once assigned — stop polling
+        self._doi_timer.stop()
+
+    def _on_doi_not_found(self):
+        pass   # keep timer running; chip stays amber
+
+    def _start_doi_polling(self):
+        self._doi_timer.stop()
+        self._poll_doi_once()        # immediate first check
+        self._doi_timer.start()      # then every hour
+
+    def _stop_doi_polling(self):
+        self._doi_timer.stop()
+        if self._doi_poller:
+            self._doi_poller.doi_found.disconnect()
+            self._doi_poller.no_doi.disconnect()
+            self._doi_poller = None
+
     def set_profile(self, profile_name: str):
         """Switch the active profile — clears the current experiment and loads the
         one saved for the new profile, if any.  Called by main.py on profile change."""
@@ -1657,6 +1804,8 @@ class ExperimentsTab(QWidget):
         for key in ("title", "beamline", "technique"):
             if esaf.get(key):
                 md[f"esaf_{key}"] = esaf[key]
+        if getattr(self, "_doi_value", ""):
+            md["doi"] = self._doi_value
         return md
 
     def _inject_metadata(self, result_item: dict):
@@ -2076,6 +2225,10 @@ class ExperimentsTab(QWidget):
         if esaf_info:
             exp_info["esaf"] = esaf_info
         (exp_dir / "experiment.json").write_text(json.dumps(exp_info, indent=2))
+        if esaf_info:
+            (exp_dir / ESAF_INFO_FILE).write_text(
+                json.dumps({"esaf": esaf_info, "doi": ""}, indent=2)
+            )
 
         active_info = {
             "name":           name,
@@ -2360,6 +2513,15 @@ class ExperimentsTab(QWidget):
         self._open_console_log(path)
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
         self._esaf_info       = info.get("esaf", {})
+        # ── DOI: load persisted value, update chip, start polling if needed ──
+        self._stop_doi_polling()
+        self._doi_value = ""
+        if self._esaf_info:
+            saved = self._load_esaf_info_json()
+            self._doi_value = (saved.get("doi") or "").strip()
+        self._update_doi_chip()
+        if self._esaf_info and not self._doi_value:
+            self._start_doi_polling()
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids     = set()
@@ -2450,6 +2612,9 @@ class ExperimentsTab(QWidget):
         self._esaf_info       = {}
         self._logged_uids     = set()
         self._suppressed_uids = set()
+        self._stop_doi_polling()
+        self._doi_value = ""
+        self._update_doi_chip()
         self.exp_name_label.setText("—")
         self.exp_path_label.setText("")
         self.exp_remote_label.setText("")
