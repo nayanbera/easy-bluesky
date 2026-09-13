@@ -1131,6 +1131,10 @@ class ZMQWorker(QObject):
         self._pv_names_reader.read_error.connect(self.pv_names_error)
         self._pv_names_reader.start()
 
+    def last_manager_state(self) -> str:
+        """Return the last known manager_state string from the poll thread."""
+        return self._last_manager_state or "unknown"
+
     def is_executing_task(self) -> bool:
         """Return True if RE Manager is in executing_task state.
 
