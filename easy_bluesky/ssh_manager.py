@@ -592,3 +592,31 @@ def test_ssh_connection(settings: dict) -> tuple:
         except Exception:
             pass
         return False, str(e)
+
+
+def get_zmq_clients(settings: dict, control_port: int, info_port: int) -> list:
+    """Return sorted list of unique client IPs connected to the RE Manager ZMQ ports.
+
+    Runs `ss -tn` on the remote machine via SSH and parses peer addresses for the
+    given control and info ports.  Returns an empty list on any error.
+    """
+    try:
+        client = _get_client(settings)
+        cmd = f"ss -tn 2>/dev/null | grep -E ':{control_port}[[:space:]]|:{info_port}[[:space:]]'"
+        _, stdout, _ = client.exec_command(cmd, timeout=5)
+        output = stdout.read().decode()
+        client.close()
+
+        ips: set = set()
+        for line in output.splitlines():
+            parts = line.split()
+            # ss -tn columns: State Recv-Q Send-Q Local:Port Peer:Port
+            if len(parts) < 5:
+                continue
+            peer = parts[4]           # e.g. "164.54.169.16:54589"
+            ip = peer.rsplit(":", 1)[0]
+            if ip and ip != "*":
+                ips.add(ip)
+        return sorted(ips)
+    except Exception:
+        return []

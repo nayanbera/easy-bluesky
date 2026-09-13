@@ -993,9 +993,10 @@ class MainWindow(QMainWindow):
     # Emitted on the main thread; queued delivery runs connect() on worker_thread.
     _connect_requested  = pyqtSignal(str, str)  # ctrl_addr, info_addr
     # Safe cross-thread → main thread delivery for background SSH threads.
-    _thread_log         = pyqtSignal(str)
-    _thread_reconnect   = pyqtSignal()          # triggers auto-reconnect from SSH thread
-    _thread_lock_claimed = pyqtSignal(bool)     # operator lock claim result from background thread
+    _thread_log          = pyqtSignal(str)
+    _thread_reconnect    = pyqtSignal()          # triggers auto-reconnect from SSH thread
+    _thread_lock_claimed = pyqtSignal(bool)      # operator lock claim result from background thread
+    _multi_client_signal = pyqtSignal(str)       # IP list from background multi-client check
 
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
@@ -1203,6 +1204,7 @@ class MainWindow(QMainWindow):
         self._thread_log.connect(self._log)
         self._thread_reconnect.connect(self._auto_reconnect_mode)
         self._thread_lock_claimed.connect(self._on_lock_claimed)
+        self._multi_client_signal.connect(self._show_multiple_clients_warning)
 
         self.worker.status_updated.connect(self.re_bar.update_status)
         self.worker.queue_updated.connect(
@@ -1363,6 +1365,7 @@ class MainWindow(QMainWindow):
             _, log_file, _ = _instance_files(profile.get("name", "Default"))
             self.worker.start_log_tail(self._conn_settings, log_file)
             self._check_operator_lock_async()
+            QTimer.singleShot(2000, self._check_multiple_clients_async)
 
     def _on_re_manager_started(self, pid):
         self.conn_label.setText("⬤  RE Manager starting…")
@@ -1380,6 +1383,42 @@ class MainWindow(QMainWindow):
         checker = _OperatorLockChecker(self._conn_settings, profile, self)
         checker.result.connect(self._on_lock_checked)
         checker.start()
+
+    def _check_multiple_clients_async(self):
+        """Warn (non-blocking) if more than one client IP is connected to the RE Manager."""
+        import threading
+        from .connection_settings import get_active_profile as _gap
+
+        profile      = _gap(self._conn_settings)
+        ctrl_port    = profile.get("control_port", 60615)
+        info_port    = profile.get("info_port",    60625)
+        settings     = self._conn_settings
+
+        def _run():
+            from .ssh_manager import get_zmq_clients
+            ips = get_zmq_clients(settings, ctrl_port, info_port)
+            if len(ips) > 1:
+                ip_list = ", ".join(ips)
+                self._thread_log.emit(
+                    f"[{self._ts()}] ⚠ Multiple clients connected to RE Manager: {ip_list}"
+                )
+                self._multi_client_signal.emit(ip_list)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _show_multiple_clients_warning(self, ip_list: str):
+        """Show a warning dialog when multiple RE Manager clients are detected."""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Multiple Clients Connected")
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText(
+            f"<b>More than one computer is connected to the RE Manager.</b><br><br>"
+            f"Connected clients: <b>{ip_list}</b><br><br>"
+            "Commands from both clients share the same queue and environment. "
+            "Coordinate with the other operator to avoid conflicts."
+        )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
 
     def _on_lock_checked(self, holder: dict):
         """Called on the main thread with the operator lock file contents."""
