@@ -201,6 +201,9 @@ class _SSHLogTailer:
             self._client = _get_client(settings)
             transport = self._client.get_transport()
             self._channel = transport.open_session()
+            # Request a PTY so that when the SSH connection drops (even on crash),
+            # sshd sends SIGHUP to the remote tail process — no orphaned tails.
+            self._channel.get_pty(term="dumb", width=220, height=50)
             self._channel.settimeout(0.5)
             # -n 50: replay the last 50 log lines immediately on connect
             self._channel.exec_command(f"tail -n 50 -f {log_file} 2>/dev/null")
@@ -210,7 +213,7 @@ class _SSHLogTailer:
                     data = self._channel.recv(4096)
                     if not data:
                         break   # channel closed by remote side
-                    buf += data.decode("utf-8", errors="replace")
+                    buf += data.decode("utf-8", errors="replace").replace("\r", "")
                     while "\n" in buf:
                         line, buf = buf.split("\n", 1)
                         self._q.put(line + "\n")
