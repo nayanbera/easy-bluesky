@@ -997,6 +997,7 @@ class MainWindow(QMainWindow):
     _thread_reconnect    = pyqtSignal()          # triggers auto-reconnect from SSH thread
     _thread_lock_claimed = pyqtSignal(bool)      # operator lock claim result from background thread
     _multi_client_signal = pyqtSignal(str)       # IP list from background multi-client check
+    _clients_updated     = pyqtSignal(list)      # live client IP list for toolbar chip
 
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
@@ -1013,6 +1014,12 @@ class MainWindow(QMainWindow):
         self._guard = guard
         self._operator_lock_claimed = False   # True when we hold the remote lock
         self._operator_lock_holder: dict = {} # holder info when another computer holds it
+        import socket as _sock
+        self._my_hostname = _sock.gethostname()
+        self._clients_timer = QTimer(self)
+        self._clients_timer.setInterval(30_000)
+        self._clients_timer.timeout.connect(self._poll_clients_async)
+        self._clients_ssh_profile: dict = {}  # profile snapshot for client polling
         self._auto_start_enabled      = False
         self._prev_queue_len          = 0      # for auto-start detection
         self._loop_enabled            = False
@@ -1205,6 +1212,7 @@ class MainWindow(QMainWindow):
         self._thread_reconnect.connect(self._auto_reconnect_mode)
         self._thread_lock_claimed.connect(self._on_lock_claimed)
         self._multi_client_signal.connect(self._show_multiple_clients_warning)
+        self._clients_updated.connect(self.re_bar.update_clients)
 
         self.worker.status_updated.connect(self.re_bar.update_status)
         self.worker.queue_updated.connect(
@@ -1365,7 +1373,11 @@ class MainWindow(QMainWindow):
             _, log_file, _ = _instance_files(profile.get("name", "Default"))
             self.worker.start_log_tail(self._conn_settings, log_file)
             self._check_operator_lock_async()
+            self._clients_ssh_profile = profile
+            self._start_clients_poll()
             QTimer.singleShot(2000, self._check_multiple_clients_async)
+        else:
+            self._clients_timer.stop()
 
     def _on_re_manager_started(self, pid):
         self.conn_label.setText("⬤  RE Manager starting…")
@@ -1405,6 +1417,71 @@ class MainWindow(QMainWindow):
                 self._multi_client_signal.emit(ip_list)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _start_clients_poll(self):
+        """Register our client file and start the 30 s refresh timer."""
+        import threading
+        settings = self._conn_settings
+        profile  = self._clients_ssh_profile
+        hostname = self._my_hostname
+
+        def _reg():
+            from .ssh_manager import register_client
+            register_client(settings, profile, hostname)
+
+        threading.Thread(target=_reg, daemon=True).start()
+        self._poll_clients_async()          # immediate first read
+        self._clients_timer.start()
+
+    def _poll_clients_async(self):
+        """Re-read the client list in a background thread and update the chip."""
+        import threading
+        settings     = self._conn_settings
+        profile      = self._clients_ssh_profile
+        ctrl_port    = profile.get("control_port", 60615)
+        info_port    = profile.get("info_port",    60625)
+
+        def _run():
+            from .ssh_manager import list_clients, register_client
+            # Refresh our own heartbeat file while we're at it
+            register_client(settings, profile, self._my_hostname)
+            ips = list_clients(settings, profile, ctrl_port, info_port)
+            self._clients_updated.emit(ips)
+            # Notify if count just exceeded 1 (new joiner detected)
+            if len(ips) > 1:
+                others = [ip for ip in ips
+                          if ip not in self._my_known_ips]
+                if others:
+                    ip_list = ", ".join(ips)
+                    self._thread_log.emit(
+                        f"[{self._ts()}] ⚠ Multiple clients connected: {ip_list}"
+                    )
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _unregister_client_async(self):
+        """Remove our heartbeat file in a background thread on disconnect."""
+        import threading
+        settings = self._conn_settings
+        profile  = self._clients_ssh_profile
+        hostname = self._my_hostname
+
+        def _rm():
+            from .ssh_manager import unregister_client
+            unregister_client(settings, profile, hostname)
+
+        threading.Thread(target=_rm, daemon=True).start()
+
+    @property
+    def _my_known_ips(self):
+        """Best-effort set of our own IPs — used to filter the 'others' list."""
+        import socket
+        ips = set()
+        try:
+            ips.add(socket.gethostbyname(socket.gethostname()))
+        except Exception:
+            pass
+        return ips
 
     def _show_multiple_clients_warning(self, ip_list: str):
         """Show a warning dialog when multiple RE Manager clients are detected."""
@@ -1502,6 +1579,8 @@ class MainWindow(QMainWindow):
         self.conn_label.setStyleSheet("color: #d62728;")
         self.re_bar.set_disconnected()
         self.worker.stop_log_tail()
+        self._clients_timer.stop()
+        self._unregister_client_async()
         profile = get_active_profile(self._conn_settings)
         self._log(f"[{self._ts()}] ✗ Disconnected from '{profile.get('name', 'Default')}' RE Manager")
 
@@ -2417,6 +2496,14 @@ class MainWindow(QMainWindow):
         # Stop RE Manager only if the active profile is local
         if use_local:
             self.worker.stop_re_manager()
+        # Remove our client heartbeat file
+        if not use_local and self._clients_ssh_profile:
+            try:
+                from .ssh_manager import unregister_client
+                unregister_client(self._conn_settings, self._clients_ssh_profile,
+                                  self._my_hostname)
+            except Exception:
+                pass
         # Release the remote operator lock if we hold it
         if self._operator_lock_claimed and not use_local:
             try:

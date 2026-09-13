@@ -158,6 +158,18 @@ class REControlBar(QFrame):
 
         lay.addStretch()
 
+        # Connected-clients chip — hidden until first update
+        self.clients_chip = QLabel()
+        self.clients_chip.setStyleSheet(
+            f"color: {SUCCESS}; background: #1a3a1a; border-radius: 4px;"
+            " padding: 2px 6px; font-size: 11px; font-weight: bold;"
+        )
+        self.clients_chip.setToolTip("")
+        self.clients_chip.hide()
+        lay.addWidget(self.clients_chip)
+
+        lay.addWidget(self._separator())
+
         self.queue_label   = QLabel("Queue: —")
         self.queue_label.setStyleSheet("font-size: 11px; padding: 0 6px;")
         self.running_label = QLabel("")
@@ -269,6 +281,7 @@ class REControlBar(QFrame):
             self.set_running_plan("")
 
     def set_disconnected(self):
+        self.clients_chip.hide()
         self.re_chip.setText("● DISCONNECTED")
         self.re_chip.setStyleSheet(
             f"color: {DANGER}; background: #3a1a1a; border-radius: 4px;"
@@ -279,6 +292,26 @@ class REControlBar(QFrame):
         self.btn_open_env.setEnabled(False)
         self.btn_close_env.setEnabled(False)
         self.set_running_plan("")
+
+    def update_clients(self, ips: list):
+        """Update the connected-clients chip with the current IP list."""
+        n = len(ips)
+        if n == 0:
+            self.clients_chip.hide()
+            return
+        self.clients_chip.show()
+        self.clients_chip.setText(f"⬤ {n} client{'s' if n != 1 else ''}")
+        if n > 1:
+            self.clients_chip.setStyleSheet(
+                "color: #c8a040; background: #3a2e10; border-radius: 4px;"
+                " padding: 2px 6px; font-size: 11px; font-weight: bold;"
+            )
+        else:
+            self.clients_chip.setStyleSheet(
+                f"color: {SUCCESS}; background: #1a3a1a; border-radius: 4px;"
+                " padding: 2px 6px; font-size: 11px; font-weight: bold;"
+            )
+        self.clients_chip.setToolTip("Connected clients:\n" + "\n".join(ips))
 
     def update_queue_count(self, n: int):
         self.queue_label.setText(f"Queue: {n}")

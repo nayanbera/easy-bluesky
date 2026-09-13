@@ -620,3 +620,98 @@ def get_zmq_clients(settings: dict, control_port: int, info_port: int) -> list:
         return sorted(ips)
     except Exception:
         return []
+
+
+# ── Connected-client registry (one file per client, mtime = heartbeat) ────────
+
+def _client_file(profile_name: str, hostname: str) -> str:
+    """Remote path of the heartbeat file for one EasyBluesky client."""
+    slug = profile_slug(profile_name)
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in hostname)
+    return f"/tmp/.easy_bluesky_{slug}_client_{safe}.json"
+
+
+def _client_glob(profile_name: str) -> str:
+    slug = profile_slug(profile_name)
+    return f"/tmp/.easy_bluesky_{slug}_client_*.json"
+
+
+def register_client(settings: dict, profile: dict, hostname: str) -> None:
+    """Write our heartbeat file to the remote machine (called on connect)."""
+    import json as _json, socket as _socket
+    path = _client_file(profile.get("name", "Default"), hostname)
+    try:
+        local_ip = _socket.gethostbyname(_socket.gethostname())
+    except Exception:
+        local_ip = "unknown"
+    payload = _json.dumps({"host": hostname, "ip": local_ip})
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        client.exec_command(f"echo '{payload}' > {path}", timeout=5)
+        client.close()
+    except Exception:
+        pass
+
+
+def unregister_client(settings: dict, profile: dict, hostname: str) -> None:
+    """Remove our heartbeat file from the remote machine (called on disconnect)."""
+    path = _client_file(profile.get("name", "Default"), hostname)
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        client.exec_command(f"rm -f {path}", timeout=5)
+        client.close()
+    except Exception:
+        pass
+
+
+def list_clients(settings: dict, profile: dict,
+                 control_port: int, info_port: int,
+                 stale_secs: int = 90) -> list:
+    """Return sorted list of unique client IPs currently connected.
+
+    Combines two sources:
+    - ``ss`` output for live ZMQ connections (authoritative for active TCP).
+    - Heartbeat files whose mtime is within *stale_secs* (catches clients
+      that are connected but currently idle between polls).
+
+    Returns a sorted list of unique IP strings.
+    """
+    import json as _json
+    glob  = _client_glob(profile.get("name", "Default"))
+    ports = f":{control_port}|:{info_port}"
+    # One SSH session, two commands
+    cmd = (
+        f"find /tmp -maxdepth 1 -name '{glob.split('/')[-1]}' "
+        f"-mmin -{stale_secs // 60 + 1} -exec cat {{}} \\; 2>/dev/null; "
+        f"echo '---'; "
+        f"ss -tn 2>/dev/null | grep -E '{ports}'"
+    )
+    try:
+        client = _get_client(_settings_for_profile(settings, profile))
+        _, stdout, _ = client.exec_command(cmd, timeout=8)
+        output = stdout.read().decode()
+        client.close()
+    except Exception:
+        return []
+
+    ips: set = set()
+    section = "files"
+    for line in output.splitlines():
+        if line.strip() == "---":
+            section = "ss"
+            continue
+        if section == "files":
+            try:
+                d = _json.loads(line)
+                if d.get("ip"):
+                    ips.add(d["ip"])
+            except Exception:
+                pass
+        else:
+            parts = line.split()
+            if len(parts) >= 5:
+                peer = parts[4]
+                ip = peer.rsplit(":", 1)[0]
+                if ip and ip != "*":
+                    ips.add(ip)
+    return sorted(ips)
