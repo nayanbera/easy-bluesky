@@ -2271,16 +2271,39 @@ class MainWindow(QMainWindow):
     def _on_mongo_move_requested(self, motor: str, position: float):
         if not self.worker:
             return
-        item = {
-            "name":      "mv",
-            "args":      [motor, position],
-            "kwargs":    {},
-            "item_type": "plan",
-        }
-        ok, msg = self.worker.execute_item(item)
+        self._pending_mv = {"name": "mv", "args": [motor, position],
+                            "kwargs": {}, "item_type": "plan"}
+        ok, msg = self.worker.execute_item(self._pending_mv)
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Move {motor} → {position}: {msg}")
         if not ok:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Move Failed", msg)
+            _m = msg.lower()
+            if "busy" in _m or "executing_task" in _m or "executing task" in _m:
+                self._mv_retry_deadline = time.monotonic() + 90.0
+                mstate = self.worker.last_manager_state()
+                self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying mv every 2 s for up to 90 s…")
+                QTimer.singleShot(2000, self._retry_mv)
+            else:
+                QMessageBox.warning(self, "Move Failed", msg)
+
+    def _retry_mv(self):
+        if not self.worker or not hasattr(self, "_pending_mv"):
+            return
+        elapsed = time.monotonic() - (self._mv_retry_deadline - 90.0)
+        if time.monotonic() > self._mv_retry_deadline:
+            self._log(f"[{self._ts()}] ✗ Move timed out — RE Manager still busy after 90 s")
+            QMessageBox.warning(self, "Move Failed",
+                                "RE Manager is still busy after 90 s.\n"
+                                "Check the RE Console tab for the current state.")
+            return
+        ok, msg = self.worker.execute_item(self._pending_mv)
+        mstate = self.worker.last_manager_state()
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Move retry ({elapsed:.0f}s, state: {mstate}): {msg}")
+        if not ok:
+            _m = msg.lower()
+            if "busy" in _m or "executing_task" in _m or "executing task" in _m:
+                QTimer.singleShot(2000, self._retry_mv)
+            else:
+                QMessageBox.warning(self, "Move Failed", msg)
 
     def closeEvent(self, event):
         # Hide any detached tab windows before teardown
