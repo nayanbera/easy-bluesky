@@ -598,6 +598,7 @@ class ZMQWorker(QObject):
         # _load_plans_devices() always runs in the poll thread (thread-safe).
         self._reload_plans_requested = False
         self._last_manager_state = "idle"   # updated every poll; read on main thread
+        self._current_task: str  = ""       # name of in-flight function_execute task
         self._rm_lock = threading.Lock()    # serialises all self.rm.* ZMQ calls
 
     @pyqtSlot(str, str)
@@ -862,6 +863,7 @@ class ZMQWorker(QObject):
                         queue   = self.rm.queue_get()
                         history = self.rm.history_get()
                     self._last_manager_state = status.get("manager_state", "idle")
+                    status["_app_task"] = self._current_task
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
                     self.running_item_updated.emit(queue.get("running_item") or {})
@@ -1105,10 +1107,13 @@ class ZMQWorker(QObject):
             return
         if self._device_reader is not None and self._device_reader.isRunning():
             return  # already in progress
+        self._current_task = "read_devices_status"
         self._device_reader = _DeviceStatusReader(self.rm, self._rm_lock)
         self._device_reader.readings_ready.connect(self.device_readings_updated)
+        self._device_reader.readings_ready.connect(lambda _: self._clear_task("read_devices_status"))
         self._device_reader.read_error.connect(self.device_read_error)
         self._device_reader.read_error.connect(self._on_device_read_error)
+        self._device_reader.read_error.connect(lambda _: self._clear_task("read_devices_status"))
         self._device_reader.start()
 
     def set_sim_device(self, name: str, value: float):
@@ -1118,10 +1123,12 @@ class ZMQWorker(QObject):
         if self._sim_device_setter is not None and self._sim_device_setter.isRunning():
             # Previous set still in flight — drop this one to avoid stacking requests.
             return
+        self._current_task = f"set_sim_device({name})"
         self._sim_device_setter = _SimDeviceSetter(self.rm, self._rm_lock, name, value)
         self._sim_device_setter.done.connect(
             lambda ok, msg: self.sim_device_set_done.emit(name, ok, msg)
         )
+        self._sim_device_setter.done.connect(lambda *_: self._clear_task(f"set_sim_device({name})"))
         self._sim_device_setter.start()
 
     def fetch_scan_log(self, remote_path: str):
@@ -1140,10 +1147,15 @@ class ZMQWorker(QObject):
         self._scan_log_fetcher.fetch_error.connect(self.scan_log_error)
         self._scan_log_fetcher.start()
 
+    def _clear_task(self, name: str) -> None:
+        if self._current_task == name:
+            self._current_task = ""
+
     def reset_scan_id(self):
         """Reset the RunEngine scan_id counter to 0 (fire-and-forget background thread)."""
         if self.rm is None:
             return
+        self._current_task = "reset_scan_id"
         def _run():
             try:
                 from bluesky_queueserver_api import BFunc
@@ -1151,6 +1163,8 @@ class ZMQWorker(QObject):
                     self.rm.function_execute(item=BFunc("reset_scan_id"))
             except Exception:
                 pass
+            finally:
+                self._clear_task("reset_scan_id")
         import threading
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1160,9 +1174,12 @@ class ZMQWorker(QObject):
             return
         if self._pv_names_reader is not None and self._pv_names_reader.isRunning():
             return
+        self._current_task = "get_device_pvnames"
         self._pv_names_reader = _PVNamesReader(self.rm, self._rm_lock)
         self._pv_names_reader.pv_names_ready.connect(self.pv_names_ready)
+        self._pv_names_reader.pv_names_ready.connect(lambda _: self._clear_task("get_device_pvnames"))
         self._pv_names_reader.read_error.connect(self.pv_names_error)
+        self._pv_names_reader.read_error.connect(lambda _: self._clear_task("get_device_pvnames"))
         self._pv_names_reader.start()
 
     def last_manager_state(self) -> str:
