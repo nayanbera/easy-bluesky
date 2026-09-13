@@ -262,8 +262,9 @@ class ADViewerWindow(QMainWindow):
 
         self._cam1_pvs = _resolve_cam1_pvs(pv_map)
 
-        self._roi_updating  = False   # True while syncing overlay from CA (suppress write-back)
-        self._stats1_vals: dict = {}  # latest Stats1 readings {key: float}
+        self._roi_updating    = False   # True while syncing overlay from CA (suppress write-back)
+        self._stats1_vals: dict    = {}  # latest Stats1 readings {key: float}
+        self._roi1_rbv_cache: dict = {}  # partial RBV values collected across 4 callbacks
 
         self._sig_roi1_rbv.connect(self._apply_roi1_from_ca)
         self._sig_stats1.connect(self._on_stats1_update)
@@ -760,14 +761,30 @@ class ADViewerWindow(QMainWindow):
             # Enable AD ROI1 and Stats1 plugins
             _pv_put(self._ca_pvs.get('roi1_enable'),   1)
             _pv_put(self._ca_pvs.get('stats1_enable'),  1)
-            # Sync overlay to current ROI1 RBV, falling back to centered region
-            self._read_roi1_rbv_initial()
-            # Subscribe to ROI1 RBV changes (any of the 4 triggers a full re-read)
-            for key in ('roi1_minx_rbv', 'roi1_miny_rbv',
-                        'roi1_sizex_rbv', 'roi1_sizey_rbv'):
-                pv = self._ca_pvs.get(key)
+            # Default: center the ROI in the current image
+            if self._arr is not None:
+                disp = self._prepare(self._arr)
+                h, w = disp.shape[:2]
+                self._roi_updating = True
+                self._roi.setPos([w // 4, h // 4])
+                self._roi.setSize([w // 2, h // 2])
+                self._roi_updating = False
+            # Subscribe to ROI1 RBV changes — run_callbacks=1 fires immediately if
+            # PVs are already connected so the overlay snaps to the IOC's actual ROI
+            self._roi1_rbv_cache.clear()
+            for key_full, key_short in [
+                ('roi1_minx_rbv',  'minx'),
+                ('roi1_miny_rbv',  'miny'),
+                ('roi1_sizex_rbv', 'sizex'),
+                ('roi1_sizey_rbv', 'sizey'),
+            ]:
+                pv = self._ca_pvs.get(key_full)
                 if pv:
-                    pv.add_callback(self._on_roi1_rbv_ca)
+                    def _make_rbv_cb(k):
+                        def _cb(value, **kw):
+                            self._on_roi1_rbv_ca(k, value)
+                        return _cb
+                    pv.add_callback(_make_rbv_cb(key_short), run_callbacks=1)
             # Subscribe to Stats1 live values
             for key in ('stats1_total', 'stats1_net', 'stats1_mean',
                         'stats1_sigma', 'stats1_max', 'stats1_min'):
@@ -790,27 +807,9 @@ class ADViewerWindow(QMainWindow):
                 if pv:
                     pv.clear_callbacks()
             self._stats1_vals.clear()
+            self._roi1_rbv_cache.clear()
             self._roi_lbl.setText("")
             self._roi_debounce_timer.stop()
-
-    def _read_roi1_rbv_initial(self):
-        """Initialise overlay from current ROI1 RBV PVs; falls back to centred region."""
-        minx  = _pv_get(self._ca_pvs.get('roi1_minx_rbv'))
-        miny  = _pv_get(self._ca_pvs.get('roi1_miny_rbv'))
-        sizex = _pv_get(self._ca_pvs.get('roi1_sizex_rbv'))
-        sizey = _pv_get(self._ca_pvs.get('roi1_sizey_rbv'))
-        if any(v is None for v in (minx, miny, sizex, sizey)) or (sizex == 0 and sizey == 0):
-            if self._arr is not None:
-                disp = self._prepare(self._arr)
-                h, w = disp.shape[:2]
-                self._roi.setPos([w // 4, h // 4])
-                self._roi.setSize([w // 2, h // 2])
-            return
-        pos, sz = self._ad_to_overlay_coords(int(minx), int(miny), int(sizex), int(sizey))
-        self._roi_updating = True
-        self._roi.setPos(pos)
-        self._roi.setSize(sz)
-        self._roi_updating = False
 
     def _overlay_to_ad_coords(self):
         """Map current overlay position to AD pixel coords (minx, miny, sizex, sizey)."""
@@ -851,16 +850,13 @@ class ADViewerWindow(QMainWindow):
         _pv_put(self._ca_pvs.get('roi1_sizex'), sizex)
         _pv_put(self._ca_pvs.get('roi1_sizey'), sizey)
 
-    def _on_roi1_rbv_ca(self, **kw):
-        """CA callback (any of 4 ROI1 RBV PVs changed) — reads all 4 and emits signal."""
+    def _on_roi1_rbv_ca(self, key: str, value):
+        """CA callback for one ROI1 RBV PV — caches value, emits when all 4 ready."""
         try:
-            minx  = _pv_get(self._ca_pvs.get('roi1_minx_rbv'))
-            miny  = _pv_get(self._ca_pvs.get('roi1_miny_rbv'))
-            sizex = _pv_get(self._ca_pvs.get('roi1_sizex_rbv'))
-            sizey = _pv_get(self._ca_pvs.get('roi1_sizey_rbv'))
-            if any(v is None for v in (minx, miny, sizex, sizey)):
-                return
-            self._sig_roi1_rbv.emit(int(minx), int(miny), int(sizex), int(sizey))
+            self._roi1_rbv_cache[key] = int(value)
+            c = self._roi1_rbv_cache
+            if all(k in c for k in ('minx', 'miny', 'sizex', 'sizey')):
+                self._sig_roi1_rbv.emit(c['minx'], c['miny'], c['sizex'], c['sizey'])
         except Exception:
             pass
 
