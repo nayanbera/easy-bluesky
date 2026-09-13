@@ -200,11 +200,12 @@ class REControlBar(QFrame):
     # ── Public slots ───────────────────────────────────────────────────────────
 
     def update_status(self, status: dict):
-        re_state_raw = status.get("re_state")
+        re_state_raw   = status.get("re_state")
+        manager_state  = status.get("manager_state", "")
         if re_state_raw is not None:
             re_state = re_state_raw.upper()
         else:
-            re_state = status.get("manager_state", "unknown").upper()
+            re_state = manager_state.upper()
         env_state = status.get("worker_environment_state", "")
         if not env_state:
             # Older bluesky-queueserver uses a boolean worker_environment_exists
@@ -215,9 +216,17 @@ class REControlBar(QFrame):
             "IDLE":    (SUCCESS, "#1a3a1a"),
             "RUNNING": (ACCENT,  "#1a2a3a"),
             "PAUSED":  (WARNING, "#3a2a1a"),
+            "BUSY":    ("#c8a040", "#3a2e10"),
         }
-        color, bg = colors.get(re_state, ("#888", "#2a2a2a"))
-        self.re_chip.setText(f"● {re_state}")
+        # When the manager is processing a background task (function_execute),
+        # re_state stays "idle" but the manager won't accept queue_start.
+        # Show "BUSY" so the user knows why Start Queue is blocked.
+        if manager_state == "executing_task" and re_state == "IDLE":
+            chip_text = "BUSY"
+        else:
+            chip_text = re_state
+        color, bg = colors.get(chip_text, ("#888", "#2a2a2a"))
+        self.re_chip.setText(f"● {chip_text}")
         self.re_chip.setStyleSheet(
             f"color: {color}; background: {bg}; border-radius: 4px;"
             " padding: 2px 8px; font-size: 12px; font-weight: bold;"
