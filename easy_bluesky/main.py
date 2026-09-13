@@ -998,6 +998,7 @@ class MainWindow(QMainWindow):
     _thread_lock_claimed = pyqtSignal(bool)      # operator lock claim result from background thread
     _multi_client_signal = pyqtSignal(str)       # IP list from background multi-client check
     _clients_updated     = pyqtSignal(list)      # live client IP list for toolbar chip
+    _startup_clients_ready = pyqtSignal(list)   # result of startup client check
 
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
@@ -1014,6 +1015,7 @@ class MainWindow(QMainWindow):
         self._guard = guard
         self._operator_lock_claimed = False   # True when we hold the remote lock
         self._operator_lock_holder: dict = {} # holder info when another computer holds it
+        self._startup_experiment_shown = False   # show experiment dialog only once
         import socket as _sock
         self._my_hostname = _sock.gethostname()
         self._clients_timer = QTimer(self)
@@ -1213,6 +1215,7 @@ class MainWindow(QMainWindow):
         self._thread_lock_claimed.connect(self._on_lock_claimed)
         self._multi_client_signal.connect(self._show_multiple_clients_warning)
         self._clients_updated.connect(self.re_bar.update_clients)
+        self._startup_clients_ready.connect(self._on_startup_clients_ready)
 
         self.worker.status_updated.connect(self.re_bar.update_status)
         self.worker.queue_updated.connect(
@@ -1375,9 +1378,15 @@ class MainWindow(QMainWindow):
             self._check_operator_lock_async()
             self._clients_ssh_profile = profile
             self._start_clients_poll()
-            QTimer.singleShot(2000, self._check_multiple_clients_async)
+            if not self._startup_experiment_shown:
+                self._startup_experiment_shown = True
+                QTimer.singleShot(0, self._startup_sequence)
         else:
             self._clients_timer.stop()
+            if not self._startup_experiment_shown:
+                self._startup_experiment_shown = True
+                QTimer.singleShot(0,
+                    self.experiments_tab.prompt_experiment_on_startup)
 
     def _on_re_manager_started(self, pid):
         self.conn_label.setText("⬤  RE Manager starting…")
@@ -1417,6 +1426,41 @@ class MainWindow(QMainWindow):
                 self._multi_client_signal.emit(ip_list)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _startup_sequence(self):
+        """Run client check in background, then show experiment dialog."""
+        import threading
+        from .connection_settings import get_active_profile as _gap
+
+        profile   = _gap(self._conn_settings)
+        ctrl_port = profile.get("control_port", 60615)
+        info_port = profile.get("info_port",    60625)
+        settings  = self._conn_settings
+
+        def _run():
+            from .ssh_manager import list_clients, register_client
+            register_client(settings, profile, self._my_hostname)
+            ips = list_clients(settings, profile, ctrl_port, info_port)
+            self._startup_clients_ready.emit(ips)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_startup_clients_ready(self, ips: list):
+        """Called on main thread with the startup client list."""
+        self._clients_updated.emit(ips)
+        if len(ips) > 1:
+            ip_list = ", ".join(ips)
+            self._thread_log.emit(
+                f"[{self._ts()}] ⚠ Multiple clients connected: {ip_list}"
+            )
+            self._show_multiple_clients_warning(ip_list)
+        self.experiments_tab.prompt_experiment_on_startup()
+
+    def _startup_experiment_fallback(self):
+        """Fallback: show experiment dialog if startup sequence never fired."""
+        if not self._startup_experiment_shown:
+            self._startup_experiment_shown = True
+            self.experiments_tab.prompt_experiment_on_startup()
 
     def _start_clients_poll(self):
         """Register our client file and start the 30 s refresh timer."""
@@ -2562,8 +2606,9 @@ def main():
     if selected.get("is_local", False):
         QTimer.singleShot(800, win._on_start_manager_requested)
 
-    # Always prompt for experiment selection — don't auto-restore last session
-    QTimer.singleShot(600, win.experiments_tab.prompt_experiment_on_startup)
+    # Fallback: if _on_connected fires and sets the flag first this is a no-op;
+    # if the app starts disconnected, this ensures the dialog still appears.
+    QTimer.singleShot(5000, win._startup_experiment_fallback)
 
     sys.exit(app.exec())
 
