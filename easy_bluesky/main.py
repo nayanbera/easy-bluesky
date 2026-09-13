@@ -2490,6 +2490,7 @@ class MainWindow(QMainWindow):
             win.setCentralWidget(QWidget())
             win.deleteLater()
         self._detached_tabs.clear()
+        self.devices_plans_tab.close_all_viewers()
         self.worker.stop()
         profile   = get_active_profile(self._conn_settings)
         use_local = profile.get("is_local", False) or is_local_host(self._conn_settings)

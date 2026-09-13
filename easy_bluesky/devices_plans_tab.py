@@ -1318,6 +1318,16 @@ class DevicesPlansTab(QWidget):
         viewer.destroyed.connect(lambda _, n=dev_name: self._xrf_viewers.pop(n, None))
         viewer.show()
 
+    def close_all_viewers(self):
+        """Close all open AD Viewer and XRF Viewer windows."""
+        for viewers in (self._ad_viewers, self._xrf_viewers):
+            for win in list(viewers.values()):
+                try:
+                    win.close()
+                except RuntimeError:
+                    pass
+            viewers.clear()
+
     # ── Public launchers for Tools menu ─────────────────────────────────────────
 
     def open_ad_viewer_from_menu(self):
