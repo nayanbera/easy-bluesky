@@ -1527,6 +1527,15 @@ class ExperimentsTab(QWidget):
         win.show()
         self._detach_btn.setText("⊓  Re-attach")
 
+    def close_detached_windows(self):
+        """Close the detached Plots window if open (called on app quit)."""
+        if self._detached_win:
+            try:
+                self._detached_win.close()
+            except RuntimeError:
+                pass
+            self._detached_win = None
+
     def _do_reattach(self):
         if not self._detached_win:
             return
