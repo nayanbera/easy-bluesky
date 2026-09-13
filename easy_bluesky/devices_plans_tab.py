@@ -312,6 +312,7 @@ class DevicesPlansTab(QWidget):
         self._device_classes: dict = {}   # dev_name → classname (for sim detection)
         self._sim_mode: bool = False
         self._sim_device_names: set = set()   # devices polled via read_devices_status()
+        self._pv_names_retry_count: int = 0
         self._sim_timer: QTimer | None = None
         # Persistent cache of units/desc from real EPICS so sim mode can show them
         self._metadata_cache: dict = {}   # dev_name → {"units": str, "desc": str}
@@ -524,6 +525,7 @@ class DevicesPlansTab(QWidget):
         if fp == self._last_devices_fp and devices:
             return
         self._last_devices_fp = fp
+        self._pv_names_retry_count = 0
 
         if self._sim_timer is not None:
             self._sim_timer.stop()
@@ -753,9 +755,12 @@ class DevicesPlansTab(QWidget):
     def on_pv_names_error(self, msg: str):
         _m = msg.lower()
         if "must be in idle" in _m or "executing_task" in _m or "executing task" in _m:
-            # Transient race: sim poll held the RE Manager in executing_task when
-            # get_device_pvnames tried to run. Retry after 2 s silently.
-            QTimer.singleShot(2000, self.fetch_pvnames_requested.emit)
+            # RE Manager busy (script_upload or other admin task in progress).
+            # Retry a limited number of times so we don't keep RE Manager busy
+            # with a perpetual stream of function_execute calls.
+            self._pv_names_retry_count += 1
+            if self._pv_names_retry_count <= 5:
+                QTimer.singleShot(2000, self.fetch_pvnames_requested.emit)
             return
         self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
         self._status_lbl.setText(f"⚠ {msg[:120]}")

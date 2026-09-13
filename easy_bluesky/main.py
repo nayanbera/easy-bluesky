@@ -1599,42 +1599,12 @@ class MainWindow(QMainWindow):
         if not ready:
             QMessageBox.warning(self, "Cannot Start Queue", reason)
             return
-        # Stop the sim poll timer so no new function_execute calls are scheduled
-        # while we wait for any in-flight one to complete.
+        # Pause the sim poll timer so its background function_execute call
+        # can't race with queue_start().
         self.devices_plans_tab.pause_sim_poll()
-        self._start_wait_attempts = 0
-        self._wait_then_start()
-
-    def _wait_then_start(self):
-        """Poll until any in-flight function_execute finishes, then call queue_start."""
-        _MAX_WAIT = 30  # × 200 ms = 6 s max
-        if self.worker.is_executing_task():
-            self._start_wait_attempts += 1
-            if self._start_wait_attempts == 1:
-                self._log(f"[{self._ts()}]   ⏳ Waiting for background task to finish…")
-            if self._start_wait_attempts < _MAX_WAIT:
-                QTimer.singleShot(200, self._wait_then_start)
-                return
-            # Timed out — resume poll and show error.
-            self.devices_plans_tab.resume_sim_poll()
-            QMessageBox.warning(self, "Cannot Start Queue",
-                                "RE Manager stayed busy for too long.\n"
-                                "A background task did not finish in time.")
-            return
-        self._do_queue_start()
-
-    def _do_queue_start(self):
         ok, msg = self.worker.queue_start()
-        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
-        if not ok and ("busy" in msg.lower() or "executing" in msg.lower()):
-            # Server was briefly idle between poll cycles but is busy again.
-            # Force the cached state and loop back into the wait.
-            _MAX_WAIT = 30
-            if self._start_wait_attempts < _MAX_WAIT:
-                self.worker._last_manager_state = "executing_task"
-                self._wait_then_start()
-                return
         self.devices_plans_tab.resume_sim_poll()
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
             QMessageBox.warning(self, "Cannot Start Queue",
                                 f"RE Manager is busy:\n{msg}")
@@ -1783,9 +1753,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self._loop_queue_start)
 
     def _loop_queue_start(self) -> None:
-        if self.worker.is_executing_task():
-            QTimer.singleShot(200, self._loop_queue_start)
-            return
         ok, msg = self.worker.queue_start()
         if not ok:
             self._log(f"[{self._ts()}] ✗ Loop restart failed: {msg}")
