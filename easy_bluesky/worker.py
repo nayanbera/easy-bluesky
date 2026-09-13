@@ -872,11 +872,15 @@ class ZMQWorker(QObject):
                         env_state = "idle" if status.get("worker_environment_exists") else "closed"
 
                     # environment_open() goes: closed → executing_task → idle.
-                    # script_upload goes:      idle   → executing_task → idle.
+                    # script_upload / function_execute goes: idle → executing_task → idle.
                     # Only fire env_opened for the first case.
-                    _OPEN_STATES = ("idle", "executing_plan", "paused")
+                    # _was_open uses a wider set that includes executing_task so that
+                    # a function_execute completing (executing_task → idle) is NOT
+                    # treated as a fresh env-open event.
+                    _OPEN_STATES     = ("idle", "executing_plan", "paused")
+                    _OPEN_OR_TASK    = ("idle", "executing_plan", "paused", "executing_task")
                     _env_open = env_state in _OPEN_STATES
-                    _was_open = _prev_env_state in _OPEN_STATES
+                    _was_open = _prev_env_state in _OPEN_OR_TASK
                     _was_task = _prev_env_state == "executing_task"
 
                     if env_state == "executing_task" and _prev_env_state in (None, "closed"):
