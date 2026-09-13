@@ -1625,8 +1625,16 @@ class MainWindow(QMainWindow):
 
     def _do_queue_start(self):
         ok, msg = self.worker.queue_start()
-        self.devices_plans_tab.resume_sim_poll()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
+        if not ok and ("busy" in msg.lower() or "executing" in msg.lower()):
+            # Server was briefly idle between poll cycles but is busy again.
+            # Force the cached state and loop back into the wait.
+            _MAX_WAIT = 30
+            if self._start_wait_attempts < _MAX_WAIT:
+                self.worker._last_manager_state = "executing_task"
+                self._wait_then_start()
+                return
+        self.devices_plans_tab.resume_sim_poll()
         if not ok:
             QMessageBox.warning(self, "Cannot Start Queue",
                                 f"RE Manager is busy:\n{msg}")
