@@ -588,6 +588,7 @@ class ZMQWorker(QObject):
         # Set by main thread after script_upload; polled each cycle so
         # _load_plans_devices() always runs in the poll thread (thread-safe).
         self._reload_plans_requested = False
+        self._last_manager_state = "idle"   # updated every poll; read on main thread
 
     @pyqtSlot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -846,6 +847,7 @@ class ZMQWorker(QObject):
                     self._load_plans_devices()
                 try:
                     status  = self.rm.status()
+                    self._last_manager_state = status.get("manager_state", "idle")
                     self.status_updated.emit(status)
                     queue   = self.rm.queue_get()
                     history = self.rm.history_get()
@@ -1130,7 +1132,14 @@ class ZMQWorker(QObject):
         self._pv_names_reader.start()
 
     def is_executing_task(self) -> bool:
-        """Return True if a function_execute call is currently in-flight."""
+        """Return True if RE Manager is in executing_task state.
+
+        Checks the last known server-side manager_state (updated every poll
+        cycle) — covers function_execute, script_upload, and any other admin
+        task, not just the local QThread readers we happen to track.
+        """
+        if self._last_manager_state == "executing_task":
+            return True
         dr = self._device_reader
         pn = self._pv_names_reader
         return bool((dr is not None and dr.isRunning()) or
