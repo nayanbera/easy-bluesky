@@ -589,6 +589,7 @@ class ZMQWorker(QObject):
         # _load_plans_devices() always runs in the poll thread (thread-safe).
         self._reload_plans_requested = False
         self._last_manager_state = "idle"   # updated every poll; read on main thread
+        self._rm_lock = threading.Lock()    # serialises all self.rm.* ZMQ calls
 
     @pyqtSlot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -722,8 +723,9 @@ class ZMQWorker(QObject):
 
     def _load_plans_devices(self):
         try:
-            plans   = self.rm.plans_allowed()
-            devices = self.rm.devices_allowed()
+            with self._rm_lock:
+                plans   = self.rm.plans_allowed()
+                devices = self.rm.devices_allowed()
             self.plans_updated.emit(plans.get("plans_allowed", {}))
             self.devices_updated.emit(devices.get("devices_allowed", {}))
         except Exception as e:
@@ -846,11 +848,12 @@ class ZMQWorker(QObject):
                     self._reload_plans_requested = False
                     self._load_plans_devices()
                 try:
-                    status  = self.rm.status()
+                    with self._rm_lock:
+                        status  = self.rm.status()
+                        queue   = self.rm.queue_get()
+                        history = self.rm.history_get()
                     self._last_manager_state = status.get("manager_state", "idle")
                     self.status_updated.emit(status)
-                    queue   = self.rm.queue_get()
-                    history = self.rm.history_get()
                     self.queue_updated.emit(queue.get("items", []))
                     self.running_item_updated.emit(queue.get("running_item") or {})
                     self.history_updated.emit(history.get("items", []))
@@ -919,7 +922,8 @@ class ZMQWorker(QObject):
     def execute_item(self, item):
         """Execute an item immediately, bypassing queue waiting."""
         try:
-            r = self.rm.item_execute(item=item)
+            with self._rm_lock:
+                r = self.rm.item_execute(item=item)
             if r.get("success"):
                 return True, "Executing immediately"
             return False, r.get("msg", "Unknown error")
@@ -928,7 +932,8 @@ class ZMQWorker(QObject):
 
     def add_item(self, item):
         try:
-            r = self.rm.item_add(item=item)
+            with self._rm_lock:
+                r = self.rm.item_add(item=item)
             if r.get("success"):
                 return True, "Plan added to queue"
             return False, r.get("msg", "Unknown error")
@@ -937,7 +942,8 @@ class ZMQWorker(QObject):
 
     def update_item(self, item):
         try:
-            r = self.rm.item_update(item=item, replace=True)
+            with self._rm_lock:
+                r = self.rm.item_update(item=item, replace=True)
             if r.get("success"):
                 return True, "Plan updated"
             return False, r.get("msg", "Unknown error")
@@ -946,7 +952,8 @@ class ZMQWorker(QObject):
 
     def remove_item(self, uid):
         try:
-            r = self.rm.item_remove(uid=uid)
+            with self._rm_lock:
+                r = self.rm.item_remove(uid=uid)
             if r.get("success"):
                 return True, "Plan removed"
             return False, r.get("msg", "Unknown error")
@@ -955,21 +962,24 @@ class ZMQWorker(QObject):
 
     def move_item(self, uid, pos_dest):
         try:
-            r = self.rm.item_move(uid=uid, pos_dest=pos_dest)
+            with self._rm_lock:
+                r = self.rm.item_move(uid=uid, pos_dest=pos_dest)
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def clear_queue(self):
         try:
-            r = self.rm.queue_clear()
+            with self._rm_lock:
+                r = self.rm.queue_clear()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def clear_history(self):
         try:
-            r = self.rm.history_clear()
+            with self._rm_lock:
+                r = self.rm.history_clear()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
@@ -977,63 +987,72 @@ class ZMQWorker(QObject):
     # ── RE operations ──────────────────────────────────────────────────────────
     def queue_start(self):
         try:
-            r = self.rm.queue_start()
+            with self._rm_lock:
+                r = self.rm.queue_start()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def queue_stop(self):
         try:
-            r = self.rm.queue_stop()
+            with self._rm_lock:
+                r = self.rm.queue_stop()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def re_pause(self, option="deferred"):
         try:
-            r = self.rm.re_pause(option=option)
+            with self._rm_lock:
+                r = self.rm.re_pause(option=option)
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def re_resume(self):
         try:
-            r = self.rm.re_resume()
+            with self._rm_lock:
+                r = self.rm.re_resume()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def re_abort(self):
         try:
-            r = self.rm.re_abort()
+            with self._rm_lock:
+                r = self.rm.re_abort()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def re_stop(self):
         try:
-            r = self.rm.re_stop()
+            with self._rm_lock:
+                r = self.rm.re_stop()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def open_environment(self):
         try:
-            r = self.rm.environment_open()
+            with self._rm_lock:
+                r = self.rm.environment_open()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def close_environment(self):
         try:
-            r = self.rm.environment_close()
+            with self._rm_lock:
+                r = self.rm.environment_close()
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
 
     def upload_script(self, script):
         try:
-            r = self.rm.script_upload(script=script)
+            with self._rm_lock:
+                r = self.rm.script_upload(script=script)
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
@@ -1047,7 +1066,8 @@ class ZMQWorker(QObject):
         results = []
         for script in scripts:
             try:
-                r = self.rm.script_upload(script=script)
+                with self._rm_lock:
+                    r = self.rm.script_upload(script=script)
                 ok  = r.get("success", False)
                 msg = r.get("msg", "")
                 results.append((ok, msg))
@@ -1114,7 +1134,8 @@ class ZMQWorker(QObject):
         def _run():
             try:
                 from bluesky_queueserver_api import BFunc
-                self.rm.function_execute(item=BFunc("reset_scan_id"))
+                with self._rm_lock:
+                    self.rm.function_execute(item=BFunc("reset_scan_id"))
             except Exception:
                 pass
         import threading
