@@ -1504,8 +1504,9 @@ class MainWindow(QMainWindow):
         self.queue_mgr.devices = devices
         self.plan_builder.update_devices(devices)
 
-    def _on_env_opened_schedule_reupload(self):
-        self._reupload_after_open = True
+    def _on_env_opened_schedule_reupload(self, from_closed: bool):
+        if from_closed:
+            self._reupload_after_open = True
 
     def _on_pv_names_ready_reupload(self, _pv_map: dict):
         if self._reupload_after_open:

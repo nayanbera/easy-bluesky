@@ -575,7 +575,7 @@ class ZMQWorker(QObject):
     error_occurred          = pyqtSignal(str)
     connected       = pyqtSignal()
     disconnected    = pyqtSignal()
-    env_opened      = pyqtSignal()
+    env_opened      = pyqtSignal(bool)  # True = genuine close→open; False = app reconnect
     env_closed      = pyqtSignal()
     re_manager_started = pyqtSignal(int)   # pid
     console_updated = pyqtSignal(str)      # new console text since last poll
@@ -898,16 +898,19 @@ class ZMQWorker(QObject):
                     elif env_state == "closed":
                         _opening_env = False
 
+                    # True only when env genuinely opened from closed (saw the
+                    # executing_task phase); False when app connects to an already-open env.
+                    _opened_from_closed = _was_task and env_state == "idle" and _opening_env
                     just_opened = (
                         (_env_open and (not _was_open or _prev_env_state is None)) or
-                        (_was_task and env_state == "idle" and _opening_env)
+                        _opened_from_closed
                     )
 
                     if just_opened:
                         _opening_env = False
                         self._load_plans_devices()
                         self.fetch_device_pvnames()
-                        self.env_opened.emit()
+                        self.env_opened.emit(_opened_from_closed)
                     elif _was_task and env_state == "idle":
                         # script_upload or other admin task finished
                         self._load_plans_devices()
