@@ -32,8 +32,8 @@ def save_ad_settings(settings: dict):
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 try:
@@ -462,10 +462,29 @@ class ADViewerWindow(QMainWindow):
         self._chk_roi.toggled.connect(self._on_roi_toggled)
         g3l.addWidget(self._chk_roi)
 
+        # ROI coordinate spinboxes (enabled only when ROI is on)
+        fl = QFormLayout()
+        fl.setContentsMargins(0, 2, 0, 2)
+        fl.setSpacing(2)
+        fl.setHorizontalSpacing(4)
+        for attr, lo, label in [
+            ('_spin_roi_minx',  0, 'MinX:'),
+            ('_spin_roi_miny',  0, 'MinY:'),
+            ('_spin_roi_sizex', 1, 'SizeX:'),
+            ('_spin_roi_sizey', 1, 'SizeY:'),
+        ]:
+            sb = QSpinBox()
+            sb.setRange(lo, 65535)
+            sb.setEnabled(False)
+            sb.wheelEvent = lambda e: e.ignore()
+            sb.editingFinished.connect(self._on_roi_spinbox_changed)
+            setattr(self, attr, sb)
+            fl.addRow(label, sb)
+        g3l.addLayout(fl)
+
         self._roi_lbl = QLabel("")
         self._roi_lbl.setWordWrap(True)
-        self._roi_lbl.setStyleSheet(
-            "font-family:monospace; font-size:10px; color:#cccccc;")
+        self._roi_lbl.setStyleSheet("font-family:monospace; font-size:10px;")
         g3l.addWidget(self._roi_lbl)
         lay.addWidget(g3)
 
@@ -783,6 +802,10 @@ class ADViewerWindow(QMainWindow):
                 self._roi.setPos(pos)
                 self._roi.setSize(sz)
                 self._roi_updating = False
+            for sb in (self._spin_roi_minx, self._spin_roi_miny,
+                       self._spin_roi_sizex, self._spin_roi_sizey):
+                sb.setEnabled(True)
+            self._update_roi_spinboxes()
             # Subscribe to ROI1 RBV changes for future IOC-side updates
             self._roi1_rbv_cache.clear()
             for key_full, key_short in [
@@ -823,6 +846,9 @@ class ADViewerWindow(QMainWindow):
             self._roi1_rbv_cache.clear()
             self._roi_lbl.setText("")
             self._roi_debounce_timer.stop()
+            for sb in (self._spin_roi_minx, self._spin_roi_miny,
+                       self._spin_roi_sizex, self._spin_roi_sizey):
+                sb.setEnabled(False)
 
     def _overlay_to_ad_coords(self):
         """Map current overlay position to AD pixel coords (minx, miny, sizex, sizey)."""
@@ -850,6 +876,7 @@ class ADViewerWindow(QMainWindow):
         """Called whenever the overlay is dragged/resized."""
         if self._roi_on:
             self._update_roi_stats()
+            self._update_roi_spinboxes()
         if not self._roi_updating:
             self._roi_debounce_timer.start()   # restarts on every event; fires 150 ms after last
 
@@ -874,7 +901,7 @@ class ADViewerWindow(QMainWindow):
             pass
 
     def _apply_roi1_from_ca(self, minx: int, miny: int, sizex: int, sizey: int):
-        """Slot: update overlay from AD ROI1 RBV (main thread)."""
+        """Slot: update overlay and spinboxes from AD ROI1 RBV (main thread)."""
         if not self._roi_on:
             return
         pos, sz = self._ad_to_overlay_coords(minx, miny, sizex, sizey)
@@ -882,6 +909,48 @@ class ADViewerWindow(QMainWindow):
         self._roi.setPos(pos)
         self._roi.setSize(sz)
         self._roi_updating = False
+        for sb, val in [
+            (self._spin_roi_minx,  minx),
+            (self._spin_roi_miny,  miny),
+            (self._spin_roi_sizex, sizex),
+            (self._spin_roi_sizey, sizey),
+        ]:
+            sb.blockSignals(True)
+            sb.setValue(val)
+            sb.blockSignals(False)
+
+    def _update_roi_spinboxes(self):
+        """Sync spinboxes to the current overlay position (no signals emitted)."""
+        if not self._roi_on:
+            return
+        minx, miny, sizex, sizey = self._overlay_to_ad_coords()
+        for sb, val in [
+            (self._spin_roi_minx,  minx),
+            (self._spin_roi_miny,  miny),
+            (self._spin_roi_sizex, sizex),
+            (self._spin_roi_sizey, sizey),
+        ]:
+            sb.blockSignals(True)
+            sb.setValue(val)
+            sb.blockSignals(False)
+
+    def _on_roi_spinbox_changed(self):
+        """User edited a ROI spinbox — move the overlay and write to AD."""
+        if self._roi_updating or not self._roi_on:
+            return
+        minx  = self._spin_roi_minx.value()
+        miny  = self._spin_roi_miny.value()
+        sizex = self._spin_roi_sizex.value()
+        sizey = self._spin_roi_sizey.value()
+        pos, sz = self._ad_to_overlay_coords(minx, miny, sizex, sizey)
+        self._roi_updating = True
+        self._roi.setPos(pos)
+        self._roi.setSize(sz)
+        self._roi_updating = False
+        _pv_put(self._ca_pvs.get('roi1_minx'),  minx)
+        _pv_put(self._ca_pvs.get('roi1_miny'),  miny)
+        _pv_put(self._ca_pvs.get('roi1_sizex'), sizex)
+        _pv_put(self._ca_pvs.get('roi1_sizey'), sizey)
 
     def _on_stats1_ca(self, key: str, value):
         """CA callback for one Stats1 RBV PV — marshals to main thread via signal."""
