@@ -1601,12 +1601,6 @@ class MainWindow(QMainWindow):
         if not ready:
             QMessageBox.warning(self, "Cannot Start Queue", reason)
             return
-        mstate = self.worker.last_manager_state()
-        if mstate not in ("idle", "unknown", ""):
-            self._start_retry_deadline = time.monotonic() + 90.0
-            self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying every 2 s for up to 90 s…")
-            QTimer.singleShot(2000, self._retry_start_queue)
-            return
         self.devices_plans_tab.pause_sim_poll()
         ok, msg = self.worker.queue_start()
         self.devices_plans_tab.resume_sim_poll()
@@ -2280,12 +2274,6 @@ class MainWindow(QMainWindow):
             return
         self._pending_mv = {"name": "mv", "args": [motor, position],
                             "kwargs": {}, "item_type": "plan"}
-        mstate = self.worker.last_manager_state()
-        if mstate not in ("idle", "unknown", ""):
-            self._mv_retry_deadline = time.monotonic() + 90.0
-            self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying mv every 2 s for up to 90 s…")
-            QTimer.singleShot(2000, self._retry_mv)
-            return
         ok, msg = self.worker.execute_item(self._pending_mv)
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Move {motor} → {position}: {msg}")
         if not ok:
