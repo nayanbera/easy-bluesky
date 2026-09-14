@@ -2549,6 +2549,9 @@ class ExperimentsTab(QWidget):
             saved_esaf = saved.get("esaf") or {}
             if saved_esaf.get("esaf_id"):
                 self._esaf_info = saved_esaf
+            else:
+                # File missing or empty — write what we have now so it exists on disk
+                self._save_esaf_info_json({"esaf": self._esaf_info, "doi": self._doi_value})
         self._update_doi_chip()
         if self._esaf_info and not self._doi_value:
             self._start_doi_polling()
