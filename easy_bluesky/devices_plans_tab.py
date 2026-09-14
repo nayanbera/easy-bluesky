@@ -337,6 +337,9 @@ class DevicesPlansTab(QWidget):
         self._ad_viewers:    dict = {}   # dev_name → ADViewerWindow
         self._xrf_viewers:   dict = {}   # dev_name → XRFViewerWindow
         self._conn_settings: dict = {}   # active connection profile
+        self._tweak_step_values: dict = {}  # dev_name → step spinbox value (survives sort)
+        self._sort_col:   int = -1          # -1 = unsorted
+        self._sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
         # Coalesce CA value/desc callbacks — apply at most 10x/sec to avoid
         # flooding the tree widget with setText() calls during scans.
         self._pending_pv_updates: dict = {}    # (dev, sig) → (value, units)
@@ -411,7 +414,12 @@ class DevicesPlansTab(QWidget):
         )
         self.devices_tree.setRootIsDecorated(True)
         self.devices_tree.setAlternatingRowColors(True)
-        self.devices_tree.setSortingEnabled(False)
+        self.devices_tree.setSortingEnabled(False)  # manual sort to preserve col-5 widgets
+        hdr = self.devices_tree.header()
+        hdr.setSortIndicatorShown(True)
+        hdr.setSectionsClickable(True)
+        hdr.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        hdr.sectionClicked.connect(self._on_device_header_clicked)
         # resizeColumnToContents() ignores setItemWidget() widths, so column 5
         # (Tweak) would shrink to the "Tweak" header width (~50 px) and clip the
         # ◀/step/▶ widget.  Pre-size it; setup_epics_monitors enforces the minimum.
@@ -980,7 +988,7 @@ class DevicesPlansTab(QWidget):
 
         step = NoScrollDoubleSpinBox()
         step.setRange(0.0001, 100000)
-        step.setValue(0.1)
+        step.setValue(self._tweak_step_values.get(dev_name, 0.1))
         step.setDecimals(4)
         step.setFixedWidth(82)
         step.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
@@ -1034,6 +1042,7 @@ class DevicesPlansTab(QWidget):
 
         btn_minus.clicked.connect(lambda: _move(-1))
         btn_plus.clicked.connect(lambda: _move(+1))
+        step.valueChanged.connect(lambda v, n=dev_name: self._tweak_step_values.__setitem__(n, v))
         # Store button refs so on_sim_device_set_done can re-enable them.
         self._tweak_buttons.setdefault(dev_name, []).extend([btn_minus, btn_plus])
 
@@ -1107,6 +1116,70 @@ class DevicesPlansTab(QWidget):
             self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
             self._status_lbl.setText(f"⚠ Tweak {dev_name} failed: {msg[:100]}")
             QTimer.singleShot(4000, self._restore_status_label)
+
+    # ── Device tree sorting ────────────────────────────────────────────────────
+
+    def _on_device_header_clicked(self, col: int):
+        if col not in (0, 1):
+            return
+        if self._sort_col == col:
+            self._sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self._sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            self._sort_col   = col
+            self._sort_order = Qt.SortOrder.AscendingOrder
+        self.devices_tree.header().setSortIndicator(col, self._sort_order)
+        self._sort_devices_tree(col, self._sort_order)
+
+    def _sort_devices_tree(self, col: int, order: Qt.SortOrder):
+        reverse = (order == Qt.SortOrder.DescendingOrder)
+        root    = self.devices_tree.invisibleRootItem()
+
+        # Lift all top-level group items
+        groups = [root.takeChild(0) for _ in range(root.childCount())]
+        groups.sort(key=lambda it: it.text(col).lower(), reverse=reverse)
+
+        for grp in groups:
+            # Sort device children within each group
+            children = [grp.takeChild(0) for _ in range(grp.childCount())]
+            children.sort(key=lambda it: it.text(col).lower(), reverse=reverse)
+            for ch in children:
+                grp.addChild(ch)
+            root.addChild(grp)
+
+        self.devices_tree.expandAll()
+        # Qt stores item-widgets by model index, not by item pointer, so they
+        # become detached after a takeChild/addChild reorder.  Re-apply them all.
+        self._reapply_col5_widgets()
+
+    def _reapply_col5_widgets(self):
+        from .ad_viewer  import is_area_detector
+        from .xrf_viewer import is_xrf_detector
+        _SIM_MOTOR_CLASSES = {"SynAxis", "PseudoSingle"}
+        self._tweak_buttons.clear()
+        for dev_name, item in self._device_items.items():
+            pv_map_dev = self._pv_map_cache.get(dev_name, {})
+            classname  = self._device_classes.get(dev_name, "")
+            is_ad  = is_area_detector(pv_map_dev, classname)
+            is_xrf = is_xrf_detector(pv_map_dev, classname)
+            if is_ad and is_xrf:
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_ad_xrf_buttons(dev_name))
+            elif is_ad:
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_ad_button(dev_name))
+            elif is_xrf:
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_xrf_button(dev_name))
+            elif dev_name in self._tweak_pvnames:
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_tweak_widget(dev_name, self._tweak_pvnames[dev_name]))
+            elif self._sim_mode and classname in _SIM_MOTOR_CLASSES:
+                self.devices_tree.setItemWidget(
+                    item, 5, self._make_tweak_widget(dev_name, None))
 
     def _restore_status_label(self):
         """Restore the status label to its normal connected/sim state."""
