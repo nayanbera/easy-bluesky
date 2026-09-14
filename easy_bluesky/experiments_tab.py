@@ -2554,21 +2554,21 @@ class ExperimentsTab(QWidget):
         if self._esaf_info:
             saved      = self._load_esaf_info_json()
             self._doi_value = (saved.get("doi") or "").strip()
-            saved_esaf = saved.get("esaf") or {}
+            # Clean skip-fields out of the saved record so they're removed on next write
+            saved_esaf = _clean_esaf_record(saved.get("esaf") or {})
             # Merge: experiment.json/path-detected fields fill gaps; server-fetched
             # (saved_esaf) wins on conflicts since it is more authoritative.
             merged = {**self._esaf_info, **saved_esaf}
             self._esaf_info = merged
-            if merged != saved_esaf:
-                # Something new to write (experiment.json had extra fields, or file
-                # was missing entirely) — persist the enriched record now.
+            # Rewrite whenever the cleaned result differs from what's on disk
+            # (catches raw_json removal, new fields from experiment.json, missing file)
+            if merged != (saved.get("esaf") or {}):
                 self._save_esaf_info_json({"esaf": merged, "doi": self._doi_value})
         self._update_doi_chip()
         # Poll when DOI is unknown OR the stored record is thin (< 5 keys means we
         # only have path-detected or old partial data — a fresh server fetch will
         # fill in title, PI, dates, status, etc.)
-        saved_esaf_len = len((self._load_esaf_info_json().get("esaf") or {}))
-        if self._esaf_info and (not self._doi_value or saved_esaf_len < 5):
+        if self._esaf_info and (not self._doi_value or len(self._esaf_info) < 5):
             self._start_doi_polling()
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
