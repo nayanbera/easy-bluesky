@@ -339,7 +339,7 @@ class ADViewerWindow(QMainWindow):
         self.statusBar().addWidget(self._status_lbl, 1)
         self._crosshair_lbl = QLabel("")
         self._crosshair_lbl.setStyleSheet(
-            "font-family: Menlo, Monaco, 'Courier New'; color:#1a1a1a; min-width:180px;")
+            "font-family: Menlo, Consolas, Monaco, 'Courier New'; color:#1a1a1a; min-width:180px;")
         self.statusBar().addPermanentWidget(self._crosshair_lbl)
         self._fps_lbl = QLabel("—")
         self.statusBar().addPermanentWidget(self._fps_lbl)
@@ -484,7 +484,7 @@ class ADViewerWindow(QMainWindow):
 
         self._roi_lbl = QLabel("")
         self._roi_lbl.setWordWrap(True)
-        self._roi_lbl.setStyleSheet("font-family: Menlo, Monaco, 'Courier New'; font-size:10px;")
+        self._roi_lbl.setStyleSheet("font-family: Menlo, Consolas, Monaco, 'Courier New'; font-size:10px;")
         g3l.addWidget(self._roi_lbl)
         lay.addWidget(g3)
 

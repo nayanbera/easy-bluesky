@@ -796,7 +796,7 @@ class MongoDataBrowserTab(QWidget):
         self._coord_label.setObjectName("dim_text")
         self._coord_label.setStyleSheet(
             "font-size: 11px; padding: 2px 4px;"
-            " font-family: Menlo, Monaco, 'Courier New';"
+            " font-family: Menlo, Consolas, Monaco, 'Courier New';"
         )
 
         # Y list on the right of the plot (in a resizable splitter)
