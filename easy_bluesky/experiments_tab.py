@@ -42,6 +42,15 @@ _RECENT_FILE = Path.home() / ".easy_bluesky" / "recent_experiments.json"
 
 _ESAF_PATH_RE = re.compile(r"(?:^|[\\/])ESAF[-_](\d+)", re.IGNORECASE)
 
+# Fields from the ESAF API response that are large/redundant and should not
+# be written into esaf_info.json.
+_ESAF_SKIP_FIELDS = {"raw_json", "raw_data", "_sa_instance_state"}
+
+
+def _clean_esaf_record(rec: dict) -> dict:
+    """Return a copy of rec with internal/bulky server fields removed."""
+    return {k: v for k, v in rec.items() if k not in _ESAF_SKIP_FIELDS}
+
 
 def _esaf_id_from_path(path: str) -> dict:
     """Return {"esaf_id": id} if the path contains an ESAF folder pattern, else {}."""
@@ -1131,8 +1140,8 @@ class _NewExperimentDialog(QDialog):
         self.local_parent_dir   = local_parent
         self.remote_exp_dir     = "/".join(remote_parts) if remote_parts else ""
         self.open_existing_path = ""
-        # Store the complete API record plus derived/renamed keys used by _build_metadata
-        self.esaf_info = dict(rec)
+        # Store the complete API record (minus bulky internal fields) plus derived keys
+        self.esaf_info = _clean_esaf_record(rec)
         self.esaf_info.setdefault("proposal_id",
                                   rec.get("gup_id", "") or rec.get("local_id", ""))
         self.esaf_info.setdefault("esaf_start_date", rec.get("start_date", ""))
@@ -1742,8 +1751,8 @@ class ExperimentsTab(QWidget):
         """Update _esaf_info and esaf_info.json with the full API record."""
         if not record:
             return
-        # Enrich _esaf_info with everything the server returned
-        merged = dict(record)
+        # Enrich _esaf_info with everything the server returned (skip bulky fields)
+        merged = _clean_esaf_record(record)
         merged.setdefault("esaf_id", self._esaf_info.get("esaf_id", ""))
         # Keep derived/renamed keys for backward-compat with _build_metadata
         merged.setdefault("esaf_start_date", record.get("start_date", ""))
