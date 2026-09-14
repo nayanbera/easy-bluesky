@@ -348,31 +348,34 @@ class _ESAFHealthWorker(QThread):
 # ── ESAF DOI poller ───────────────────────────────────────────────────────────
 
 class _ESAFDoiPoller(QThread):
-    """One-shot background fetch of DOI from ESAF server for a specific ESAF id."""
-    doi_found  = pyqtSignal(str)   # emits the DOI string when found
-    no_doi     = pyqtSignal()      # emits when server reachable but DOI absent
+    """One-shot background fetch of DOI + full ESAF record from the server."""
+    doi_found  = pyqtSignal(str, dict)  # (doi, full_record)
+    no_doi     = pyqtSignal(dict)       # (full_record) — server reached but no DOI yet
 
     def __init__(self, esaf_id: str, server_url: str, parent=None):
         super().__init__(parent)
-        self._esaf_id   = str(esaf_id).strip()
-        self._url       = server_url.rstrip("/")
+        self._esaf_id = str(esaf_id).strip()
+        self._url     = server_url.rstrip("/")
 
     def run(self):
         if not self._url or not self._esaf_id:
-            self.no_doi.emit()
+            self.no_doi.emit({})
             return
         import urllib.request as _urq
         import json as _json
         try:
-            # Try /api/esafs/<id> first for a specific record
+            # Try /api/esafs/<id> first
             url = f"{self._url}/api/esafs/{self._esaf_id}"
             with _urq.urlopen(url, timeout=10) as resp:
-                data = _json.loads(resp.read())
-            doi = (data.get("doi") or "").strip()
-            if doi:
-                self.doi_found.emit(doi)
+                record = _json.loads(resp.read())
+            if isinstance(record, dict) and record.get("esaf_id"):
+                doi = (record.get("doi") or "").strip()
+                if doi:
+                    self.doi_found.emit(doi, record)
+                else:
+                    self.no_doi.emit(record)
                 return
-            # Fallback: search the list for this esaf_id
+            # Fallback: search the list endpoint
             list_url = f"{self._url}/api/esafs?esaf_id={self._esaf_id}&limit=5"
             with _urq.urlopen(list_url, timeout=10) as resp2:
                 records = _json.loads(resp2.read())
@@ -381,11 +384,13 @@ class _ESAFDoiPoller(QThread):
                     if str(rec.get("esaf_id", "")) == self._esaf_id:
                         doi = (rec.get("doi") or "").strip()
                         if doi:
-                            self.doi_found.emit(doi)
-                            return
-            self.no_doi.emit()
+                            self.doi_found.emit(doi, rec)
+                        else:
+                            self.no_doi.emit(rec)
+                        return
+            self.no_doi.emit({})
         except Exception:
-            self.no_doi.emit()
+            self.no_doi.emit({})
 
 
 # ── ESAF list fetcher (aps-esaf-fetcher public API) ───────────────────────────
@@ -1126,17 +1131,12 @@ class _NewExperimentDialog(QDialog):
         self.local_parent_dir   = local_parent
         self.remote_exp_dir     = "/".join(remote_parts) if remote_parts else ""
         self.open_existing_path = ""
-        self.esaf_info = {
-            "esaf_id":         rec.get("esaf_id", ""),
-            "pi_name":         rec.get("pi_name", ""),
-            "pi_institution":  rec.get("pi_institution", ""),
-            "proposal_id":     rec.get("gup_id", "") or rec.get("local_id", ""),
-            "esaf_start_date": rec.get("start_date", ""),
-            "esaf_end_date":   rec.get("end_date", ""),
-            "title":           rec.get("title", ""),
-            "beamline":        rec.get("beamline", ""),
-            "technique":       rec.get("technique", ""),
-        }
+        # Store the complete API record plus derived/renamed keys used by _build_metadata
+        self.esaf_info = dict(rec)
+        self.esaf_info.setdefault("proposal_id",
+                                  rec.get("gup_id", "") or rec.get("local_id", ""))
+        self.esaf_info.setdefault("esaf_start_date", rec.get("start_date", ""))
+        self.esaf_info.setdefault("esaf_end_date",   rec.get("end_date",   ""))
         self.accept()
 
     def _accept_manual(self):
@@ -1723,20 +1723,36 @@ class ExperimentsTab(QWidget):
         self._doi_poller.no_doi.connect(self._on_doi_not_found)
         self._doi_poller.start()
 
-    def _on_doi_found(self, doi: str):
-        if doi == self._doi_value:
+    def _on_doi_found(self, doi: str, record: dict):
+        if doi == self._doi_value and record.get("esaf_id"):
+            # Already have this DOI — still update esaf_info.json if record is richer
+            self._merge_esaf_record(record)
             return
         self._doi_value = doi
         self._update_doi_chip()
-        # Persist to esaf_info.json
-        data = self._load_esaf_info_json()
-        data.update({"doi": doi, "esaf": self._esaf_info})
-        self._save_esaf_info_json(data)
-        # DOI is permanent once assigned — stop polling
-        self._doi_timer.stop()
+        self._merge_esaf_record(record, doi=doi)
+        self._doi_timer.stop()   # DOI is permanent once assigned
 
-    def _on_doi_not_found(self):
-        pass   # keep timer running; chip stays amber
+    def _on_doi_not_found(self, record: dict):
+        # Server reached — save full record even though DOI isn't assigned yet
+        if record.get("esaf_id"):
+            self._merge_esaf_record(record)
+
+    def _merge_esaf_record(self, record: dict, doi: str = None):
+        """Update _esaf_info and esaf_info.json with the full API record."""
+        if not record:
+            return
+        # Enrich _esaf_info with everything the server returned
+        merged = dict(record)
+        merged.setdefault("esaf_id", self._esaf_info.get("esaf_id", ""))
+        # Keep derived/renamed keys for backward-compat with _build_metadata
+        merged.setdefault("esaf_start_date", record.get("start_date", ""))
+        merged.setdefault("esaf_end_date",   record.get("end_date",   ""))
+        merged.setdefault("proposal_id",
+                          record.get("gup_id", "") or record.get("local_id", ""))
+        self._esaf_info = merged
+        saved_doi = doi if doi is not None else (self._load_esaf_info_json().get("doi") or "")
+        self._save_esaf_info_json({"esaf": merged, "doi": saved_doi})
 
     def _start_doi_polling(self):
         self._doi_timer.stop()
@@ -2529,6 +2545,10 @@ class ExperimentsTab(QWidget):
         if self._esaf_info:
             saved = self._load_esaf_info_json()
             self._doi_value = (saved.get("doi") or "").strip()
+            # If esaf_info.json has a richer record (from a previous poll), use it
+            saved_esaf = saved.get("esaf") or {}
+            if saved_esaf.get("esaf_id"):
+                self._esaf_info = saved_esaf
         self._update_doi_chip()
         if self._esaf_info and not self._doi_value:
             self._start_doi_polling()
