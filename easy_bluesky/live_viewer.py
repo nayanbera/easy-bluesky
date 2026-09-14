@@ -228,7 +228,7 @@ class LiveViewer(QWidget):
 
         self.coord_label = QLabel("")
         self.coord_label.setObjectName("dim_text")
-        self.coord_label.setStyleSheet("font-size: 11px; padding: 4px; font-family: Menlo, Monaco, Courier New, monospace;")
+        self.coord_label.setStyleSheet("font-size: 11px; padding: 4px; font-family: Menlo, Monaco, 'Courier New';")
         bot.addWidget(self.coord_label)
         main.addLayout(bot)
 
