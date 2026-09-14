@@ -3073,6 +3073,16 @@ class ExperimentsTab(QWidget):
                 self._logged_uids.add(uid)
                 continue
 
+            # If the plan carries exp_dir metadata, it belongs to a specific
+            # experiment folder.  Only log it when it matches ours — this is the
+            # primary guard against cross-client contamination in multi-client sessions.
+            plan_exp_dir = (
+                ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
+            ).rstrip("/")
+            if plan_exp_dir and plan_exp_dir != self._active_exp_path.rstrip("/"):
+                self._logged_uids.add(uid)
+                continue
+
             # Scans (non-empty run_uids) get the next sequential number;
             # motion-only plans (mv etc.) get None — they don't appear in
             # MongoDB browser so shouldn't consume a scan slot.
