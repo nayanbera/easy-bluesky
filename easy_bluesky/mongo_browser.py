@@ -522,6 +522,110 @@ def _fmt(v, spec=".5g"):
     return "—" if v is None else format(float(v), spec)
 
 
+# ── Motor reproducibility dialog ───────────────────────────────────────────────
+
+class _MotorReproDialog(QDialog):
+    """Show peak-position reproducibility across repeated scans."""
+
+    def __init__(self, x_field, y_field, results, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Motor Reproducibility — {x_field}")
+        self.setMinimumSize(720, 580)
+
+        positions = np.array([r["x_peak"] for r in results])
+        indices   = np.arange(len(positions), dtype=float)
+        mean_pos  = float(np.mean(positions))
+        std_pos   = float(np.std(positions, ddof=1)) if len(positions) > 1 else 0.0
+        pp        = float(positions.max() - positions.min())
+        rms       = float(np.sqrt(np.mean((positions - mean_pos) ** 2)))
+        coeffs    = np.polyfit(indices, positions, 1) if len(positions) >= 2 else [0.0, mean_pos]
+        drift_per_scan = float(coeffs[0])
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # ── Summary line ─────────────────────────────────────────────────────
+        txt = (
+            f"<b>Peak position reproducibility for <i>{x_field}</i>"
+            f" (N={len(results)}, field: {y_field})</b><br>"
+            f"Mean = {mean_pos:.5f} &nbsp;|&nbsp; "
+            f"Std = {std_pos:.5f} &nbsp;|&nbsp; "
+            f"Peak-to-peak = {pp:.5f} &nbsp;|&nbsp; "
+            f"RMS = {rms:.5f} &nbsp;|&nbsp; "
+            f"Drift = {drift_per_scan*1e3:.3f} &times;10⁻³ / scan"
+        )
+        lbl = QLabel(txt)
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        # ── Scatter plot ─────────────────────────────────────────────────────
+        if PG_AVAILABLE:
+            pw = pg.PlotWidget(background="#1e1e1e")
+            pw.setLabel("left", x_field)
+            pw.setLabel("bottom", "Scan index (oldest → newest)")
+            pw.showGrid(x=True, y=True, alpha=0.3)
+            pw.setFixedHeight(220)
+
+            # ±1σ fill
+            uf = pw.plot(indices, np.full_like(indices, mean_pos + std_pos), pen=None)
+            lf = pw.plot(indices, np.full_like(indices, mean_pos - std_pos), pen=None)
+            pw.addItem(pg.FillBetweenItem(uf, lf, brush=pg.mkBrush(100, 210, 130, 70)))
+
+            # Mean line
+            pw.addItem(pg.InfiniteLine(
+                pos=mean_pos, angle=0,
+                pen=pg.mkPen("#69db7c", width=2, style=Qt.PenStyle.DashLine),
+                label=f"mean = {mean_pos:.4f}",
+                labelOpts={"color": "#69db7c", "position": 0.92},
+            ))
+
+            # Drift line
+            if abs(drift_per_scan) > 1e-9:
+                pw.plot(
+                    indices, np.polyval(coeffs, indices),
+                    pen=pg.mkPen("#ff6b6b", width=1, style=Qt.PenStyle.DashDotLine),
+                )
+
+            # Data points
+            colors = [
+                "#ff6b6b" if abs(p - mean_pos) > std_pos else "#4dabf7"
+                for p in positions
+            ]
+            for i, (xi, yi, c) in enumerate(zip(indices, positions, colors)):
+                sc = pg.ScatterPlotItem(
+                    x=[xi], y=[yi], size=10,
+                    pen=pg.mkPen("#ffffff", width=0.5),
+                    brush=pg.mkBrush(c),
+                )
+                sc.setToolTip(results[i]["label"])
+                pw.addItem(sc)
+
+            layout.addWidget(pw)
+
+        # ── Table ─────────────────────────────────────────────────────────────
+        table = QTableWidget(len(results), 3)
+        table.setHorizontalHeaderLabels(["Scan", "Peak position", "Δ from mean"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        for i, r in enumerate(results):
+            table.setItem(i, 0, QTableWidgetItem(r["label"]))
+            table.setItem(i, 1, QTableWidgetItem(f"{r['x_peak']:.5f}"))
+            dev = r["x_peak"] - mean_pos
+            dev_item = QTableWidgetItem(f"{dev:+.5f}")
+            dev_item.setForeground(QColor("#ff6b6b" if abs(dev) > std_pos else "#aaffaa"))
+            table.setItem(i, 2, dev_item)
+        layout.addWidget(table)
+
+        # ── Close button ─────────────────────────────────────────────────────
+        btn = QPushButton("Close")
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+
 # ── Main tab ───────────────────────────────────────────────────────────────────
 
 class MongoDataBrowserTab(QWidget):
@@ -560,6 +664,7 @@ class MongoDataBrowserTab(QWidget):
         self._stats_panel       = None # secondary PlotWidget for RSD
         self._stats_label       = None # QLabel showing χ² results
         self._stats_cb          = None # checkbox reference (set in _build_ui)
+        self._repro_btn         = None # Motor Repro button (set in _build_ui)
         self._fetch_timer    = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._schedule_data_fetch)
@@ -877,6 +982,13 @@ class MongoDataBrowserTab(QWidget):
         self._stats_cb.setToolTip("Show mean ± σ band and RSD panel (≥2 runs selected)")
         self._stats_cb.stateChanged.connect(self._auto_plot)
         bot_bar.addWidget(self._stats_cb)
+        self._repro_btn = QPushButton("Motor Repro…")
+        self._repro_btn.setToolTip(
+            "Show peak-position reproducibility across repeated scans (≥2 runs)"
+        )
+        self._repro_btn.setEnabled(False)
+        self._repro_btn.clicked.connect(self._show_motor_repro)
+        bot_bar.addWidget(self._repro_btn)
         rlayout.addLayout(bot_bar)
 
         splitter.addWidget(right)
@@ -1160,6 +1272,9 @@ class MongoDataBrowserTab(QWidget):
 
     def _on_data_ready(self, run_data_list: list):
         self._run_data_list = run_data_list
+        multi = len(run_data_list) >= 2
+        if self._repro_btn:
+            self._repro_btn.setEnabled(multi)
         self._populate_axis_controls()
 
         n_events = sum(
@@ -1646,12 +1761,6 @@ class MongoDataBrowserTab(QWidget):
         """Overlay mean±σ band on main plot; show RSD and χ² panels."""
         from scipy.stats import chi2 as _chi2_dist
 
-        # Save view range so adding overlay items doesn't trigger auto-range zoom-out
-        _saved_range = None
-        if self._plot_widget:
-            vb = self._plot_widget.getViewBox()
-            _saved_range = vb.viewRange()  # [[x0, x1], [y0, y1]]
-
         # Clean up previous stats items
         for item in self._fill_items + self._mean_curves:
             try:
@@ -1781,11 +1890,6 @@ class MongoDataBrowserTab(QWidget):
                     f"{field}: χ²/DOF={chi2_red:.2f}  p={p_val:.3f}  ({interp})"
                 )
 
-        # Restore view so overlay items don't cause zoom-out
-        if _saved_range and self._plot_widget:
-            vb = self._plot_widget.getViewBox()
-            vb.setRange(xRange=_saved_range[0], yRange=_saved_range[1], padding=0)
-
         show_stats = bool(self._fill_items)
         if self._stats_panel:
             self._stats_panel.setVisible(show_stats)
@@ -1793,12 +1897,85 @@ class MongoDataBrowserTab(QWidget):
                 total = self._vplot_splitter.height()
                 rsd_h = min(160, max(100, total // 5))
                 self._vplot_splitter.setSizes([total - rsd_h, rsd_h])
+
+        # Auto-range to the statistics region (common x overlap across runs).
+        # This avoids the main plot being locked to a wide range from a single
+        # outlier run that has a different scan range than the others.
+        if show_stats and self._mean_curves and self._plot_widget:
+            self._plot_widget.autoRange(items=self._mean_curves)
         if self._stats_label:
             if chi_texts:
                 self._stats_label.setText("  |  ".join(chi_texts))
                 self._stats_label.setVisible(True)
             else:
                 self._stats_label.setVisible(False)
+
+    # ── Motor reproducibility ─────────────────────────────────────────────────
+
+    def _show_motor_repro(self):
+        """Compute peak positions via center-of-mass and show reproducibility dialog."""
+        if len(self._run_data_list) < 2:
+            QMessageBox.information(
+                self, "Motor Reproducibility",
+                "Select ≥2 runs to compare motor positioning reproducibility."
+            )
+            return
+
+        stream = self._stream_combo.currentText()
+        x_field = self._x_combo.currentData() or self._x_combo.currentText()
+        y_fields = [
+            self._y_list.item(i).text()
+            for i in range(self._y_list.count())
+            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        norm_field = self._norm_combo.currentData()
+
+        if not y_fields or x_field in ("time", "seq_num"):
+            QMessageBox.information(
+                self, "Motor Reproducibility",
+                "Select a motor field as X and at least one detector as Y."
+            )
+            return
+
+        y_field = y_fields[0]
+        results = []
+        for rd in self._run_data_list:
+            sdata = rd["streams"].get(stream)
+            if not sdata:
+                continue
+            x_arr = sdata.get(x_field)
+            y_arr = sdata.get(y_field)
+            if x_arr is None or y_arr is None or not len(x_arr):
+                continue
+            n = min(len(x_arr), len(y_arr))
+            x = x_arr[:n].astype(float)
+            y = y_arr[:n].astype(float)
+
+            if norm_field and norm_field in sdata:
+                norm = sdata[norm_field][:n].astype(float)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    y = np.where(norm > 0, y / norm, np.nan)
+
+            y_max = np.nanmax(y)
+            if not np.isfinite(y_max) or y_max <= 0:
+                continue
+            mask = np.isfinite(y) & (y >= 0.5 * y_max)
+            if mask.sum() < 2:
+                continue
+
+            x_peak = float(np.sum(x[mask] * y[mask]) / np.sum(y[mask]))
+            results.append({"label": rd.get("label", "?"), "x_peak": x_peak})
+
+        if len(results) < 2:
+            QMessageBox.information(
+                self, "Motor Reproducibility",
+                "Not enough valid runs to compute reproducibility "
+                "(need clear peaks in ≥2 runs)."
+            )
+            return
+
+        dlg = _MotorReproDialog(x_field, y_field, results, parent=self)
+        dlg.exec()
 
     # ── Peak fitting ───────────────────────────────────────────────────────────
 
