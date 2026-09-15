@@ -1500,13 +1500,17 @@ class MongoDataBrowserTab(QWidget):
             and len(self._run_data_list) >= 2
         )
 
-        # When Stats is active show only mean±σ; skip individual run curves.
-        if stats_on:
-            _individual_skip = True
+        # Resolve x_label before the loop so it's available even when the loop
+        # is skipped (Stats mode hides individual curves).
+        if x_field == "time":
+            x_label = "Time  (s)"
+        elif x_field == "seq_num":
+            x_label = "Sequence #"
         else:
-            _individual_skip = False
+            x_label = x_field
 
-        for rd in self._run_data_list if not _individual_skip else []:
+        # When Stats is active show only mean±σ; skip individual run curves.
+        for rd in self._run_data_list if not stats_on else []:
             sdata = rd["streams"].get(stream)
             if not sdata:
                 continue
