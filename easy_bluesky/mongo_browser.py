@@ -849,9 +849,14 @@ class MongoDataBrowserTab(QWidget):
         plot_splitter.setSizes([720, 180])
         plot_splitter.setStretchFactor(0, 1)
         plot_splitter.setStretchFactor(1, 0)
-        rlayout.addWidget(plot_splitter, 1)
+
+        self._vplot_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._vplot_splitter.addWidget(plot_splitter)
         if self._stats_panel:
-            rlayout.addWidget(self._stats_panel)
+            self._vplot_splitter.addWidget(self._stats_panel)
+            self._vplot_splitter.setStretchFactor(0, 1)
+            self._vplot_splitter.setStretchFactor(1, 0)
+        rlayout.addWidget(self._vplot_splitter, 1)
         rlayout.addWidget(self._stats_label)
 
         # ── Bottom bar: crosshair coords + display transforms ─────────────────
@@ -1761,6 +1766,10 @@ class MongoDataBrowserTab(QWidget):
         show_stats = bool(self._fill_items)
         if self._stats_panel:
             self._stats_panel.setVisible(show_stats)
+            if show_stats and hasattr(self, "_vplot_splitter"):
+                total = self._vplot_splitter.height()
+                rsd_h = min(160, max(100, total // 5))
+                self._vplot_splitter.setSizes([total - rsd_h, rsd_h])
         if self._stats_label:
             if chi_texts:
                 self._stats_label.setText("  |  ".join(chi_texts))
