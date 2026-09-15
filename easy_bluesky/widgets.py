@@ -481,23 +481,37 @@ class ListScanArgsWidget(QWidget):
                     for key, val in row.items():
                         cols.setdefault(key.strip(), []).append(val.strip())
 
-            matched = False
-            for col_name, values in cols.items():
-                for d in self.devices:
-                    if d == col_name or col_name in d or d in col_name:
-                        for i in range(self._motor_list.count()):
-                            if self._motor_list.item(i).text() == d:
-                                self._motor_list.item(i).setSelected(True)
-                        self._edits[d].setText(", ".join(v for v in values if v))
-                        matched = True
-                        break
+            device_set   = set(self.devices)
+            matched_info = []   # "motor (N pts)"
+            unrecognized = []   # column names with no exact match
 
-            if not matched:
+            for col_name, values in cols.items():
+                if col_name in device_set:
+                    for i in range(self._motor_list.count()):
+                        if self._motor_list.item(i).text() == col_name:
+                            self._motor_list.item(i).setSelected(True)
+                    clean = [v for v in values if v]
+                    self._edits[col_name].setText(", ".join(clean))
+                    matched_info.append(f"{col_name} ({len(clean)} pts)")
+                else:
+                    unrecognized.append(col_name)
+
+            if matched_info:
+                msg = "Loaded: " + ", ".join(matched_info)
+                if unrecognized:
+                    msg += (
+                        "\n\nIgnored (no exact motor-name match):\n"
+                        + ", ".join(unrecognized)
+                    )
+                QMessageBox.information(self, "CSV Import", msg)
+            else:
                 QMessageBox.warning(
                     self, "CSV Import",
-                    "No column headers matched any known motor name.\n"
-                    f"CSV columns: {list(cols.keys())}\n"
-                    f"Available motors: {self.devices}")
+                    "No CSV column header exactly matched a motor name.\n\n"
+                    f"CSV columns : {', '.join(cols.keys())}\n"
+                    f"Motor names : {', '.join(self.devices)}\n\n"
+                    "Headers must match motor names exactly (case-sensitive)."
+                )
         except Exception as e:
             QMessageBox.critical(self, "CSV Error", str(e))
 
