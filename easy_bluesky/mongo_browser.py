@@ -1840,17 +1840,30 @@ class MongoDataBrowserTab(QWidget):
 
             color = self.COLORS[fi % len(self.COLORS)]
             r, g, b = pg.mkColor(color).getRgb()[:3]
-            fill_brush = pg.mkBrush(r, g, b, 120)
 
-            # upper/lower must be added to the plot so FillBetweenItem has
-            # correct scene-coordinate mapping; pen=None keeps them invisible
-            upper = self._plot_widget.plot(ref_x, mean_y + std_y, pen=None)
-            lower = self._plot_widget.plot(ref_x, mean_y - std_y, pen=None)
-            fill  = pg.FillBetweenItem(upper, lower, brush=fill_brush)
+            # Guide curves for FillBetweenItem (pen=None → invisible lines,
+            # data still accessible for the fill path computation)
+            upper_g = self._plot_widget.plot(ref_x, mean_y + std_y, pen=None)
+            lower_g = self._plot_widget.plot(ref_x, mean_y - std_y, pen=None)
+            fill = pg.FillBetweenItem(
+                upper_g, lower_g, brush=pg.mkBrush(r, g, b, 80)
+            )
             self._plot_widget.addItem(fill)
+
+            # Dashed ±σ boundary lines — always visible regardless of fill z-order
+            sigma_pen = pg.mkPen(
+                color=(r, g, b, 220), width=1.5,
+                style=Qt.PenStyle.DashLine,
+            )
+            upper_line = self._plot_widget.plot(ref_x, mean_y + std_y, pen=sigma_pen)
+            lower_line = self._plot_widget.plot(ref_x, mean_y - std_y, pen=sigma_pen)
+
+            # Bold mean curve on top
             mean_pen  = pg.mkPen(color=color, width=3)
-            mean_curve = self._plot_widget.plot(ref_x, mean_y, pen=mean_pen, name=f"mean({field})")
-            self._fill_items.extend([upper, lower, fill])
+            mean_curve = self._plot_widget.plot(
+                ref_x, mean_y, pen=mean_pen, name=f"mean({field})"
+            )
+            self._fill_items.extend([upper_g, lower_g, fill, upper_line, lower_line])
             self._mean_curves.append(mean_curve)
 
             # RSD panel
