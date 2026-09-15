@@ -1646,6 +1646,12 @@ class MongoDataBrowserTab(QWidget):
         """Overlay mean±σ band on main plot; show RSD and χ² panels."""
         from scipy.stats import chi2 as _chi2_dist
 
+        # Save view range so adding overlay items doesn't trigger auto-range zoom-out
+        _saved_range = None
+        if self._plot_widget:
+            vb = self._plot_widget.getViewBox()
+            _saved_range = vb.viewRange()  # [[x0, x1], [y0, y1]]
+
         # Clean up previous stats items
         for item in self._fill_items + self._mean_curves:
             try:
@@ -1762,6 +1768,11 @@ class MongoDataBrowserTab(QWidget):
                 chi2_red = chi2_sum / dof
                 p_val    = float(_chi2_dist.sf(chi2_sum, dof))
                 chi_texts.append(f"{field}: χ²/DOF={chi2_red:.2f}  p={p_val:.3f}")
+
+        # Restore view so overlay items don't cause zoom-out
+        if _saved_range and self._plot_widget:
+            vb = self._plot_widget.getViewBox()
+            vb.setRange(xRange=_saved_range[0], yRange=_saved_range[1], padding=0)
 
         show_stats = bool(self._fill_items)
         if self._stats_panel:
