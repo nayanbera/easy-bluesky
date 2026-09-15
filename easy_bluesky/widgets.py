@@ -615,12 +615,24 @@ class ParamForm(QWidget):
             return None
 
         # ── VAR_POSITIONAL motor args ─────────────────────────────────────────────
-        # list_scan:  annotation contains "list[" → ListScanArgsWidget
-        # grid_scan:  plan name contains "grid"   → GridScanArgsWidget (per-axis num)
-        # scan:       everything else             → ScanArgsWidget
+        # list_scan:  annotation contains "list[" OR plan name contains "list"
+        #             → ListScanArgsWidget  (motor, [positions]) pairs
+        # grid_scan:  plan name contains "grid"
+        #             → GridScanArgsWidget  (motor, start, stop, num) per axis
+        # scan:       everything else
+        #             → ScanArgsWidget      (motor, start, stop) per axis
+        #
+        # Custom plans with unannotated *args fall back to name-based detection.
         if kind == "VAR_POSITIONAL" and ("__MOVABLE__" in typ or n in ("args",)):
             motor_list = self.motors or self.devices
-            if "list[" in typ.lower():
+            is_list = (
+                "list[" in typ.lower()
+                or (
+                    "list" in self._plan_name
+                    and "grid" not in self._plan_name
+                )
+            )
+            if is_list:
                 return ListScanArgsWidget(motor_list)
             is_grid = (self._plan_name in _GRID_PLAN_NAMES
                        or "grid" in self._plan_name)
