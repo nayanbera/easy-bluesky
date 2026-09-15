@@ -474,12 +474,15 @@ class ListScanArgsWidget(QWidget):
         if not path:
             return
         try:
-            with open(path, newline="") as f:
+            # utf-8-sig strips BOM automatically; BOM is common in CSVs from
+            # Excel/Numbers and would corrupt the first column header otherwise.
+            with open(path, newline="", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 cols: dict = {}
                 for row in reader:
                     for key, val in row.items():
-                        cols.setdefault(key.strip(), []).append(val.strip())
+                        clean_key = key.strip().lstrip("﻿")
+                        cols.setdefault(clean_key, []).append(val.strip())
 
             device_set   = set(self.devices)
             matched_info = []   # "motor (N pts)"
