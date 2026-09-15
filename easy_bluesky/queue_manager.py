@@ -275,7 +275,8 @@ class RunDetailDialog(QDialog):
         # fields (e.g. detectors not stored when plan used server defaults)
         dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-            ok, msg = self._worker.add_item(dlg.result_item)
+            ok, result = self._worker.add_item(dlg.result_item)
+            msg = "Plan added to queue" if ok else result
             QMessageBox.information(self, "Re-queue", f"{'✓' if ok else '✗'} {msg}")
 
 
@@ -501,8 +502,8 @@ class QueueManager(QWidget):
     def _add_plan(self):
         dlg = PlanDialog(self.plans, self.devices, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-            ok, msg = self.worker.add_item(dlg.result_item)
-            self._log(f"{'✓' if ok else '✗'} Add plan: {msg}")
+            ok, result = self.worker.add_item(dlg.result_item)
+            self._log("✓ Add plan: queued" if ok else f"✗ Add plan: {result}")
 
     def _edit_plan(self, list_item=None):
         item = self._current_queue_item()
@@ -840,8 +841,8 @@ class QueueManager(QWidget):
         if name in self.plans:
             dlg = PlanDialog(self.plans, self.devices, item=base, parent=self)
             if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-                ok, msg = self.worker.add_item(dlg.result_item)
-                self._log(f"{'✓' if ok else '✗'} Re-queue '{name}': {msg}")
+                ok, result = self.worker.add_item(dlg.result_item)
+                self._log(f"✓ Re-queue '{name}': queued" if ok else f"✗ Re-queue '{name}': {result}")
         else:
             r = QMessageBox.question(
                 self, "Re-queue",
@@ -851,8 +852,8 @@ class QueueManager(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if r == QMessageBox.StandardButton.Yes:
-                ok, msg = self.worker.add_item(base)
-                self._log(f"{'✓' if ok else '✗'} Re-queue '{name}': {msg}")
+                ok, result = self.worker.add_item(base)
+                self._log(f"✓ Re-queue '{name}': queued" if ok else f"✗ Re-queue '{name}': {result}")
 
     def _on_history_selection(self, current, _previous):
         if not current:
@@ -868,8 +869,9 @@ class QueueManager(QWidget):
             return
         base = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
         base.setdefault("item_type", "plan")
-        ok, msg = self.worker.add_item(base)
-        self._log(f"{'✓' if ok else '✗'} Re-queue '{item.get('name', '?')}': {msg}")
+        ok, result = self.worker.add_item(base)
+        name_str = item.get('name', '?')
+        self._log(f"✓ Re-queue '{name_str}': queued" if ok else f"✗ Re-queue '{name_str}': {result}")
 
     def _history_context_menu(self, pos):
         list_item = self.history_list.itemAt(pos)

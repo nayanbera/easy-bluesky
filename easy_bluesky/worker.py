@@ -969,7 +969,8 @@ class ZMQWorker(QObject):
             with self._rm_lock:
                 r = self.rm.item_add(item=item)
             if r.get("success"):
-                return True, "Plan added to queue"
+                item_uid = (r.get("item") or {}).get("item_uid", "")
+                return True, item_uid
             return False, r.get("msg", "Unknown error")
         except Exception as e:
             return False, str(e)

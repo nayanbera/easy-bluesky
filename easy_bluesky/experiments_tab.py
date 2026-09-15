@@ -4,6 +4,7 @@ import errno
 import json
 import os
 import re
+import socket
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -1211,6 +1212,7 @@ class ExperimentsTab(QWidget):
         self.history_widget    = _HistoryWidgetStub()
         self._console_log      = None   # open file handle for <exp_dir>/console.log
         self._doi_value: str   = ""     # empty until DOI is fetched and confirmed
+        self._queued_scan_lookup: dict = {}  # item_uid -> reserved scan_num
         self._doi_poller       = None   # _ESAFDoiPoller instance
         self._doi_timer        = QTimer()
         self._doi_timer.setInterval(3_600_000)   # re-poll every hour
@@ -1837,6 +1839,7 @@ class ExperimentsTab(QWidget):
                 md[f"esaf_{key}"] = esaf[key]
         if getattr(self, "_doi_value", ""):
             md["doi"] = self._doi_value
+        md["client_host"] = socket.gethostname()
         return md
 
     def _inject_metadata(self, result_item: dict):
@@ -1868,8 +1871,36 @@ class ExperimentsTab(QWidget):
         dlg = PlanDialog(self._plans, self._devices, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
             item = self._inject_metadata(dlg.result_item)
-            ok, msg = self.worker.add_item(item)
-            self._log(f"{'✓' if ok else '✗'} Add plan: {msg}")
+            ok, result = self.worker.add_item(item)
+            if ok:
+                self._write_queued_scan(item, result)
+                self._log("✓ Add plan: queued")
+            else:
+                self._log(f"✗ Add plan: {result}")
+
+    def _write_queued_scan(self, item: dict, item_uid: str):
+        """Write a scan-number reservation entry to queued_scans.jsonl."""
+        if not self._active_exp_path or not item_uid:
+            return
+        kwargs = item.get("kwargs", {}) or {}
+        md = kwargs.get("md", {}) or {}
+        scan_num = md.get("scan_num")
+        if scan_num is None:
+            return  # motion-only plans don't reserve scan numbers
+        entry = {
+            "item_uid":    item_uid,
+            "scan_num":    scan_num,
+            "name":        item.get("name", ""),
+            "client_host": md.get("client_host", ""),
+            "queued_at":   datetime.now().isoformat(),
+        }
+        self._queued_scan_lookup[item_uid] = scan_num
+        try:
+            qfile = Path(self._active_exp_path) / "queued_scans.jsonl"
+            with open(qfile, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass
 
     def _on_compact_queue_reorder(self, parent, start, end, dest, row):
         self._compact_queue_uids = None  # force re-render after drag-reorder
@@ -2922,6 +2953,62 @@ class ExperimentsTab(QWidget):
         except Exception:
             pass
 
+    def _reconstruct_plans_log_from_runs(self, exp_path: str) -> list:
+        """Parse runs/*.jsonl files and build plans_log entries for old experiments."""
+        runs_dir = Path(exp_path) / "runs"
+        if not runs_dir.is_dir():
+            return []
+        entries = []
+        for jf in sorted(runs_dir.glob("*.jsonl")):
+            start_doc = stop_doc = None
+            try:
+                with open(jf) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            doc_type, doc = json.loads(line)
+                            if doc_type == "start":
+                                start_doc = doc
+                            elif doc_type == "stop":
+                                stop_doc = doc
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+            if not start_doc:
+                continue
+            run_uid = start_doc.get("uid", "")
+            if not run_uid:
+                continue
+            md = start_doc.get("md", {}) or {}
+            name = start_doc.get("plan_name", "") or md.get("plan_name", "")
+            args = start_doc.get("plan_args", []) or []
+            kwargs = start_doc.get("plan_kwargs", {}) or {}
+            if md:
+                kwargs = dict(kwargs)
+                kwargs["md"] = md
+            t_start = start_doc.get("time", 0)
+            t_stop  = stop_doc.get("time", 0) if stop_doc else 0
+            exit_status = (stop_doc.get("exit_status", "completed")
+                           if stop_doc else "completed")
+            ts  = (datetime.fromtimestamp(t_stop or t_start).isoformat()
+                   if (t_stop or t_start) else "")
+            dur = round(t_stop - t_start, 2) if (t_stop and t_start) else None
+            entries.append({
+                "timestamp":   ts,
+                "uid":         run_uid,
+                "run_uids":    [run_uid],
+                "name":        name,
+                "args":        args,
+                "kwargs":      kwargs,
+                "exit_status": exit_status,
+                "duration_s":  dur,
+                "scan_num":    md.get("scan_num"),
+            })
+        return entries
+
     def _load_plan_log(self, exp_path: str, auto_select_newest: bool = False):
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
@@ -2950,7 +3037,17 @@ class ExperimentsTab(QWidget):
                         pass
 
         if not log_file.exists():
-            return
+            reconstructed = self._reconstruct_plans_log_from_runs(exp_path)
+            if reconstructed:
+                try:
+                    with open(log_file, "w") as f:
+                        for e in reconstructed:
+                            f.write(json.dumps(e) + "\n")
+                    self._log(f"✓ Reconstructed plan log from {len(reconstructed)} run file(s)")
+                except Exception:
+                    pass
+            if not log_file.exists():
+                return
         try:
             # Read ALL raw entries without timestamp filtering.
             all_entries = []
@@ -2993,6 +3090,34 @@ class ExperimentsTab(QWidget):
             self._next_scan_num      = scan_counter  # next unused number
             self._base_next_scan_num = scan_counter
             self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+
+            # Extend _next_scan_num past any scan numbers already reserved by
+            # queued plans (possibly from another client on the same experiment).
+            self._queued_scan_lookup = {}
+            queued_file = Path(exp_path) / "queued_scans.jsonl"
+            if queued_file.exists():
+                try:
+                    max_queued = 0
+                    with open(queued_file) as qf:
+                        for qline in qf:
+                            qline = qline.strip()
+                            if not qline:
+                                continue
+                            try:
+                                qe = json.loads(qline)
+                                iuid = qe.get("item_uid", "")
+                                sn   = qe.get("scan_num") or 0
+                                if iuid:
+                                    self._queued_scan_lookup[iuid] = sn
+                                if sn > max_queued:
+                                    max_queued = sn
+                            except Exception:
+                                pass
+                    if max_queued >= self._next_scan_num:
+                        self._next_scan_num = max_queued + 1
+                        self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+                except Exception:
+                    pass
 
             if file_changed:
                 try:
@@ -3156,6 +3281,10 @@ class ExperimentsTab(QWidget):
             li = QListWidgetItem(f"{prefix}  {name}{summary}")
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
+            client_host = md.get("client_host", "")
+            if client_host and client_host != socket.gethostname():
+                li.setForeground(QColor("#e8a44a"))
+                li.setToolTip(f"Queued from: {client_host}")
             self.queue_compact.addItem(li)
             if uid and uid in selected_uids:
                 li.setSelected(True)
@@ -3197,11 +3326,12 @@ class ExperimentsTab(QWidget):
                 "item_type": "plan",
             }
             item = self._inject_metadata(item)
-            ok, msg = self.worker.add_item(item)
+            ok, result = self.worker.add_item(item)
             if ok:
+                self._write_queued_scan(item, result)
                 added += 1
             else:
-                self._log(f"✗ Re-queue '{item['name']}': {msg}")
+                self._log(f"✗ Re-queue '{item['name']}': {result}")
         if added:
             self._log(f"✓ Added {added} plan(s) to queue")
 
@@ -3220,8 +3350,12 @@ class ExperimentsTab(QWidget):
         dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
             item = self._inject_metadata(dlg.result_item)
-            ok, msg = self.worker.add_item(item)
-            self._log(f"{'✓' if ok else '✗'} Re-queue '{base['name']}': {msg}")
+            ok, result = self.worker.add_item(item)
+            if ok:
+                self._write_queued_scan(item, result)
+                self._log(f"✓ Re-queue '{base['name']}': queued")
+            else:
+                self._log(f"✗ Re-queue '{base['name']}': {result}")
 
     def _plan_log_context_menu(self, pos):
         li = self.plan_log_list.itemAt(pos)
