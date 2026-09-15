@@ -1955,7 +1955,7 @@ class MainWindow(QMainWindow):
         if (self._auto_start_enabled
                 and n > 0
                 and self._prev_queue_len == 0
-                and not self._last_status.get("queue_running", False)):
+                and self._last_status.get("manager_state", "") != "executing_queue"):
             status = self._last_status
             env_state = status.get("worker_environment_state", "")
             if not env_state:
@@ -1967,7 +1967,7 @@ class MainWindow(QMainWindow):
 
     def _on_status_for_loop_and_autostart(self, status: dict) -> None:
         self._last_status = status
-        queue_running = status.get("queue_running", False)
+        queue_running = status.get("manager_state", "") == "executing_queue"
         if self._prev_queue_running and not queue_running:
             # Queue just stopped — check if we should loop
             if (self._loop_enabled
