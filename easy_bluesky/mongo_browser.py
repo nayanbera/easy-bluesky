@@ -962,7 +962,7 @@ class MongoDataBrowserTab(QWidget):
             self._vplot_splitter.setStretchFactor(0, 1)
             self._vplot_splitter.setStretchFactor(1, 0)
         rlayout.addWidget(self._vplot_splitter, 1)
-        rlayout.addWidget(self._stats_label)
+        # _stats_label removed from layout — chi² text is shown as the RSD panel title
 
         # ── Bottom bar: crosshair coords + display transforms ─────────────────
         bot_bar = QHBoxLayout()
@@ -1633,8 +1633,6 @@ class MongoDataBrowserTab(QWidget):
             self._mean_curves = []
             if self._stats_panel:
                 self._stats_panel.setVisible(False)
-            if self._stats_label:
-                self._stats_label.setVisible(False)
 
         smart_legend_position(self._plot_widget)
 
@@ -1652,10 +1650,8 @@ class MongoDataBrowserTab(QWidget):
         self._mean_curves = []
         if self._stats_panel:
             self._stats_panel.clear()
+            self._stats_panel.setTitle("RSD (%)", size="10pt", color="#e0e0e0")
             self._stats_panel.setVisible(False)
-        if self._stats_label:
-            self._stats_label.setText("")
-            self._stats_label.setVisible(False)
         for item in list(self._error_items.values()) + list(self._curves.values()):
             try:
                 self._plot_widget.removeItem(item)
@@ -1903,12 +1899,9 @@ class MongoDataBrowserTab(QWidget):
         # outlier run that has a different scan range than the others.
         if show_stats and self._mean_curves and self._plot_widget:
             self._plot_widget.autoRange(items=self._mean_curves)
-        if self._stats_label:
-            if chi_texts:
-                self._stats_label.setText("  |  ".join(chi_texts))
-                self._stats_label.setVisible(True)
-            else:
-                self._stats_label.setVisible(False)
+        if self._stats_panel:
+            title = "  |  ".join(chi_texts) if chi_texts else "RSD (%)"
+            self._stats_panel.setTitle(title, size="10pt", color="#e0e0e0")
 
     # ── Motor reproducibility ─────────────────────────────────────────────────
 
