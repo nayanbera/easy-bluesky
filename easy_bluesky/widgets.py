@@ -1087,6 +1087,25 @@ class PlanDialog(QDialog):
             QMessageBox.warning(self, "Error", "Select a valid plan")
             return
 
+        # Validate required positional detector params before submitting
+        _det_names = {"detectors", "dets", "det", "readables", "readable", "detectors_list"}
+        for p in self.param_form.params:
+            pname = p.get("name", "")
+            kind  = p.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
+            if kind != "POSITIONAL_OR_KEYWORD":
+                continue
+            if pname.lower() not in _det_names:
+                continue
+            w = self.param_form.widgets.get(pname)
+            if isinstance(w, (MultiSelectWidget, QListWidget)):
+                selected = [item.text() for item in w.selectedItems()]
+                if not selected:
+                    QMessageBox.warning(
+                        self, "Missing detectors",
+                        f"Please select at least one detector for '{pname}'."
+                    )
+                    return
+
         args, kwargs = self.param_form.get_values()
 
         # Parse metadata
