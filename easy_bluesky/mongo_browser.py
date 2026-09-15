@@ -840,7 +840,7 @@ class MongoDataBrowserTab(QWidget):
 
         self._stats_label = QLabel("")
         self._stats_label.setWordWrap(True)
-        self._stats_label.setStyleSheet("font-size: 10px; color: #aaaaaa; padding: 2px 4px;")
+        self._stats_label.setStyleSheet("font-size: 10px; color: #e0e0e0; padding: 2px 4px;")
         self._stats_label.setVisible(False)
 
         plot_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1735,15 +1735,17 @@ class MongoDataBrowserTab(QWidget):
 
             color = self.COLORS[fi % len(self.COLORS)]
             r, g, b = pg.mkColor(color).getRgb()[:3]
-            fill_color = pg.mkColor(r, g, b, 60)
+            fill_brush = pg.mkBrush(r, g, b, 120)
 
-            upper = pg.PlotDataItem(ref_x, mean_y + std_y, pen=None)
-            lower = pg.PlotDataItem(ref_x, mean_y - std_y, pen=None)
-            fill  = pg.FillBetweenItem(upper, lower, brush=pg.mkBrush(fill_color))
+            # upper/lower must be added to the plot so FillBetweenItem has
+            # correct scene-coordinate mapping; pen=None keeps them invisible
+            upper = self._plot_widget.plot(ref_x, mean_y + std_y, pen=None)
+            lower = self._plot_widget.plot(ref_x, mean_y - std_y, pen=None)
+            fill  = pg.FillBetweenItem(upper, lower, brush=fill_brush)
+            self._plot_widget.addItem(fill)
             mean_pen  = pg.mkPen(color=color, width=3)
             mean_curve = self._plot_widget.plot(ref_x, mean_y, pen=mean_pen, name=f"mean({field})")
-            self._plot_widget.addItem(fill)
-            self._fill_items.append(fill)
+            self._fill_items.extend([upper, lower, fill])
             self._mean_curves.append(mean_curve)
 
             # RSD panel
@@ -1767,7 +1769,17 @@ class MongoDataBrowserTab(QWidget):
                 chi2_sum = float(np.nansum(chi2_vals))
                 chi2_red = chi2_sum / dof
                 p_val    = float(_chi2_dist.sf(chi2_sum, dof))
-                chi_texts.append(f"{field}: χ²/DOF={chi2_red:.2f}  p={p_val:.3f}")
+                if chi2_red < 0.5:
+                    interp = "scatter < Poisson noise — highly reproducible"
+                elif chi2_red < 2.0:
+                    interp = "scatter ≈ Poisson noise — Poisson-limited"
+                elif chi2_red < 5.0:
+                    interp = "excess scatter beyond Poisson noise"
+                else:
+                    interp = "large excess scatter — check sample or alignment"
+                chi_texts.append(
+                    f"{field}: χ²/DOF={chi2_red:.2f}  p={p_val:.3f}  ({interp})"
+                )
 
         # Restore view so overlay items don't cause zoom-out
         if _saved_range and self._plot_widget:
