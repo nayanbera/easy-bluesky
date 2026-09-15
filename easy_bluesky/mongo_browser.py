@@ -1494,7 +1494,19 @@ class MongoDataBrowserTab(QWidget):
         color_idx  = 0
         multi_run = len(self._run_data_list) > 1
 
-        for rd in self._run_data_list:
+        stats_on = (
+            self._stats_cb is not None
+            and self._stats_cb.isChecked()
+            and len(self._run_data_list) >= 2
+        )
+
+        # When Stats is active show only mean±σ; skip individual run curves.
+        if stats_on:
+            _individual_skip = True
+        else:
+            _individual_skip = False
+
+        for rd in self._run_data_list if not _individual_skip else []:
             sdata = rd["streams"].get(stream)
             if not sdata:
                 continue
@@ -1615,11 +1627,6 @@ class MongoDataBrowserTab(QWidget):
                 title += f"  (+{len(rows)-1} more)"
             self._plot_widget.setTitle(title)
 
-        stats_on = (
-            self._stats_cb is not None
-            and self._stats_cb.isChecked()
-            and len(self._run_data_list) >= 2
-        )
         if stats_on:
             self._draw_statistics(stream, x_field, y_fields, norm_field, log_y, deriv_mode)
         else:
@@ -1841,29 +1848,23 @@ class MongoDataBrowserTab(QWidget):
             color = self.COLORS[fi % len(self.COLORS)]
             r, g, b = pg.mkColor(color).getRgb()[:3]
 
-            # Guide curves for FillBetweenItem (pen=None → invisible lines,
-            # data still accessible for the fill path computation)
-            upper_g = self._plot_widget.plot(ref_x, mean_y + std_y, pen=None)
-            lower_g = self._plot_widget.plot(ref_x, mean_y - std_y, pen=None)
-            fill = pg.FillBetweenItem(
-                upper_g, lower_g, brush=pg.mkBrush(r, g, b, 80)
-            )
-            self._plot_widget.addItem(fill)
-
-            # Dashed ±σ boundary lines — always visible regardless of fill z-order
-            sigma_pen = pg.mkPen(
-                color=(r, g, b, 220), width=1.5,
-                style=Qt.PenStyle.DashLine,
-            )
+            # Solid ±σ boundary lines (no individual curves behind them when Stats is on)
+            sigma_pen  = pg.mkPen(color=(r, g, b, 220), width=1.5)
             upper_line = self._plot_widget.plot(ref_x, mean_y + std_y, pen=sigma_pen)
             lower_line = self._plot_widget.plot(ref_x, mean_y - std_y, pen=sigma_pen)
 
-            # Bold mean curve on top
-            mean_pen  = pg.mkPen(color=color, width=3)
+            # Filled band between the two boundary curves
+            fill = pg.FillBetweenItem(
+                upper_line, lower_line, brush=pg.mkBrush(r, g, b, 100)
+            )
+            self._plot_widget.addItem(fill)
+
+            # Bold mean curve on top of the band
+            mean_pen   = pg.mkPen(color=color, width=3)
             mean_curve = self._plot_widget.plot(
                 ref_x, mean_y, pen=mean_pen, name=f"mean({field})"
             )
-            self._fill_items.extend([upper_g, lower_g, fill, upper_line, lower_line])
+            self._fill_items.extend([upper_line, lower_line, fill])
             self._mean_curves.append(mean_curve)
 
             # RSD panel
@@ -1888,15 +1889,15 @@ class MongoDataBrowserTab(QWidget):
                 chi2_red = chi2_sum / dof
                 p_val    = float(_chi2_dist.sf(chi2_sum, dof))
                 if chi2_red < 0.5:
-                    interp = "scatter < Poisson noise — highly reproducible"
+                    symbol, interp = "●", "sub-Poisson"
                 elif chi2_red < 2.0:
-                    interp = "scatter ≈ Poisson noise — Poisson-limited"
+                    symbol, interp = "●", "Poisson-limited"
                 elif chi2_red < 5.0:
-                    interp = "excess scatter beyond Poisson noise"
+                    symbol, interp = "▲", "excess scatter"
                 else:
-                    interp = "large excess scatter — check sample or alignment"
+                    symbol, interp = "✗", "large scatter!"
                 chi_texts.append(
-                    f"{field}: χ²/DOF={chi2_red:.2f}  p={p_val:.3f}  ({interp})"
+                    f"{symbol} {field}:  χ²/DOF={chi2_red:.2f}  p={p_val:.3f}  ({interp})"
                 )
 
         show_stats = bool(self._fill_items)
@@ -1913,8 +1914,8 @@ class MongoDataBrowserTab(QWidget):
         if show_stats and self._mean_curves and self._plot_widget:
             self._plot_widget.autoRange(items=self._mean_curves)
         if self._stats_panel:
-            title = "  |  ".join(chi_texts) if chi_texts else "RSD (%)"
-            self._stats_panel.setTitle(title, size="10pt", color="#e0e0e0")
+            title = "    ".join(chi_texts) if chi_texts else "RSD (%)"
+            self._stats_panel.setTitle(title, size="9pt", color="#e0e0e0")
 
     # ── Motor reproducibility ─────────────────────────────────────────────────
 
