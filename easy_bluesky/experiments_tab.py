@@ -2176,16 +2176,26 @@ class ExperimentsTab(QWidget):
         items_to_update = []
         for i in range(self.queue_compact.count()):
             item = self.queue_compact.item(i).data(Qt.ItemDataRole.UserRole + 1)
-            if item and item.get("kwargs", {}).get("md", {}).get("sample_name"):
+            if not item:
+                continue
+            md = item.get("kwargs", {}).get("md")
+            if not isinstance(md, dict):
+                continue
+            # Include plans that either have a different sample_name or none at all
+            if md.get("sample_name", "") != new_name:
                 items_to_update.append(item)
         if not items_to_update:
             return
         n = len(items_to_update)
-        old_label = f"'{old_name}'" if old_name else "a previous sample"
+        if old_name:
+            body = (f"{n} plan(s) in the queue use sample '{old_name}' or have no "
+                    f"sample name.\nUpdate them all to '{new_name}'?")
+        else:
+            body = (f"{n} plan(s) in the queue have no sample name.\n"
+                    f"Set sample_name='{new_name}' on them now?")
         r = QMessageBox.question(
             self, "Update Queued Plans",
-            f"{n} plan(s) in the queue still use {old_label}.\n"
-            f"Update them to use '{new_name}'?",
+            body,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if r != QMessageBox.StandardButton.Yes:
