@@ -555,6 +555,11 @@ class MongoDataBrowserTab(QWidget):
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
         self._crosshair_cleanup = None
+        self._fill_items: list  = []   # pg.FillBetweenItem for ±σ bands
+        self._mean_curves: list = []   # mean PlotDataItems on main plot
+        self._stats_panel       = None # secondary PlotWidget for RSD
+        self._stats_label       = None # QLabel showing χ² results
+        self._stats_cb          = None # checkbox reference (set in _build_ui)
         self._fetch_timer    = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._schedule_data_fetch)
@@ -823,9 +828,20 @@ class MongoDataBrowserTab(QWidget):
                 self._plot_widget, self._coord_label, lambda: self._curves
             )
             plot_area = self._plot_widget
+
+            self._stats_panel = pg.PlotWidget(background="#1e1e1e")
+            self._stats_panel.showGrid(x=True, y=True, alpha=0.3)
+            self._stats_panel.setLabel("left", "RSD (%)")
+            self._stats_panel.setMaximumHeight(160)
+            self._stats_panel.setVisible(False)
         else:
             self._plot_widget = None
             plot_area = QLabel("pyqtgraph not available — pip install pyqtgraph")
+
+        self._stats_label = QLabel("")
+        self._stats_label.setWordWrap(True)
+        self._stats_label.setStyleSheet("font-size: 10px; color: #aaaaaa; padding: 2px 4px;")
+        self._stats_label.setVisible(False)
 
         plot_splitter = QSplitter(Qt.Orientation.Horizontal)
         plot_splitter.addWidget(plot_area)
@@ -834,6 +850,9 @@ class MongoDataBrowserTab(QWidget):
         plot_splitter.setStretchFactor(0, 1)
         plot_splitter.setStretchFactor(1, 0)
         rlayout.addWidget(plot_splitter, 1)
+        if self._stats_panel:
+            rlayout.addWidget(self._stats_panel)
+        rlayout.addWidget(self._stats_label)
 
         # ── Bottom bar: crosshair coords + display transforms ─────────────────
         bot_bar = QHBoxLayout()
@@ -848,6 +867,11 @@ class MongoDataBrowserTab(QWidget):
         lbl_deriv.setStyleSheet("font-size: 11px;")
         bot_bar.addWidget(lbl_deriv)
         bot_bar.addWidget(self._deriv_combo)
+        bot_bar.addWidget(_vline())
+        self._stats_cb = QCheckBox("Stats")
+        self._stats_cb.setToolTip("Show mean ± σ band and RSD panel (≥2 runs selected)")
+        self._stats_cb.stateChanged.connect(self._auto_plot)
+        bot_bar.addWidget(self._stats_cb)
         rlayout.addLayout(bot_bar)
 
         splitter.addWidget(right)
@@ -1470,12 +1494,48 @@ class MongoDataBrowserTab(QWidget):
             if len(rows) > 1:
                 title += f"  (+{len(rows)-1} more)"
             self._plot_widget.setTitle(title)
+
+        stats_on = (
+            self._stats_cb is not None
+            and self._stats_cb.isChecked()
+            and len(self._run_data_list) >= 2
+        )
+        if stats_on:
+            self._draw_statistics(stream, x_field, y_fields, norm_field, log_y, deriv_mode)
+        else:
+            # Clear any leftover stats items
+            for item in self._fill_items + self._mean_curves:
+                try:
+                    self._plot_widget.removeItem(item)
+                except Exception:
+                    pass
+            self._fill_items  = []
+            self._mean_curves = []
+            if self._stats_panel:
+                self._stats_panel.setVisible(False)
+            if self._stats_label:
+                self._stats_label.setVisible(False)
+
         smart_legend_position(self._plot_widget)
 
     def _clear_plot(self):
         if self._plot_widget is None:
             return
         self._clear_fit_overlays()
+        # Clean up stats overlays on the main plot
+        for item in self._fill_items + self._mean_curves:
+            try:
+                self._plot_widget.removeItem(item)
+            except Exception:
+                pass
+        self._fill_items  = []
+        self._mean_curves = []
+        if self._stats_panel:
+            self._stats_panel.clear()
+            self._stats_panel.setVisible(False)
+        if self._stats_label:
+            self._stats_label.setText("")
+            self._stats_label.setVisible(False)
         for item in list(self._error_items.values()) + list(self._curves.values()):
             try:
                 self._plot_widget.removeItem(item)
@@ -1574,6 +1634,139 @@ class MongoDataBrowserTab(QWidget):
         sigma_out = np.full_like(sigma, np.nan)
         sigma_out[finite] = dsf
         return x, y_out, sigma_out
+
+    # ── Statistical comparison ────────────────────────────────────────────────
+
+    def _draw_statistics(self, stream, x_field, y_fields, norm_field, log_y, deriv_mode):
+        """Overlay mean±σ band on main plot; show RSD and χ² panels."""
+        from scipy.stats import chi2 as _chi2_dist
+
+        # Clean up previous stats items
+        for item in self._fill_items + self._mean_curves:
+            try:
+                self._plot_widget.removeItem(item)
+            except Exception:
+                pass
+        self._fill_items  = []
+        self._mean_curves = []
+        if self._stats_panel:
+            self._stats_panel.clear()
+        chi_texts = []
+
+        for fi, field in enumerate(y_fields):
+            # Collect aligned (x, y) arrays across runs
+            arrays = []
+            for rd in self._run_data_list:
+                sdata = rd["streams"].get(stream)
+                if not sdata:
+                    continue
+                if x_field == "time":
+                    x_raw = sdata.get("time")
+                    if x_raw is None or not len(x_raw):
+                        continue
+                    x_arr = x_raw - x_raw[0]
+                elif x_field == "seq_num":
+                    t = sdata.get("time")
+                    x_arr = np.arange(1, len(t) + 1) if t is not None else None
+                else:
+                    x_arr = sdata.get(x_field)
+                if x_arr is None or not len(x_arr):
+                    continue
+
+                y_arr = sdata.get(field)
+                if y_arr is None or not len(y_arr):
+                    continue
+
+                n = min(len(x_arr), len(y_arr))
+                x = x_arr[:n].astype(float)
+                y = y_arr[:n].astype(float)
+
+                norm_arr = None
+                if norm_field and norm_field in sdata:
+                    norm_arr = sdata[norm_field][:n].astype(float)
+
+                y_raw = y.copy()
+                if norm_arr is not None:
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        y = np.where(norm_arr != 0, y / norm_arr, np.nan)
+
+                sigma = _poisson_sigma(y_raw, norm_arr)
+
+                if deriv_mode > 0:
+                    _, y, sigma = self._apply_deriv(x, y, sigma, order=deriv_mode)
+
+                if log_y:
+                    y_lin = y.copy()
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        y = np.log10(np.where(y > 0, y, np.nan))
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        sigma = np.where(y_lin > 0, sigma / (y_lin * np.log(10)), np.nan)
+
+                arrays.append((x, y, sigma))
+
+            if len(arrays) < 2:
+                continue
+
+            # Interpolate all runs to the shortest common x grid
+            ref_x = min(arrays, key=lambda a: len(a[0]))[0]
+            ys_interp = []
+            for x_i, y_i, _ in arrays:
+                try:
+                    ys_interp.append(np.interp(ref_x, x_i, y_i))
+                except Exception:
+                    pass
+            if len(ys_interp) < 2:
+                continue
+
+            Y = np.array(ys_interp)            # shape (n_runs, n_points)
+            mean_y = np.nanmean(Y, axis=0)
+            std_y  = np.nanstd(Y, axis=0, ddof=1)
+
+            color = self.COLORS[fi % len(self.COLORS)]
+            r, g, b = pg.mkColor(color).getRgb()[:3]
+            fill_color = pg.mkColor(r, g, b, 60)
+
+            upper = pg.PlotDataItem(ref_x, mean_y + std_y, pen=None)
+            lower = pg.PlotDataItem(ref_x, mean_y - std_y, pen=None)
+            fill  = pg.FillBetweenItem(upper, lower, brush=pg.mkBrush(fill_color))
+            mean_pen  = pg.mkPen(color=color, width=3)
+            mean_curve = self._plot_widget.plot(ref_x, mean_y, pen=mean_pen, name=f"mean({field})")
+            self._plot_widget.addItem(fill)
+            self._fill_items.append(fill)
+            self._mean_curves.append(mean_curve)
+
+            # RSD panel
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rsd = np.where(np.abs(mean_y) > 0, std_y / np.abs(mean_y) * 100.0, np.nan)
+            if self._stats_panel:
+                rsd_pen = pg.mkPen(color=color, width=2)
+                self._stats_panel.plot(ref_x, rsd, pen=rsd_pen, name=field)
+
+            # χ²/DOF + p-value (per-point Poisson σ vs scatter)
+            sigma_arr = np.array([
+                np.interp(ref_x, arrays[i][0], arrays[i][2])
+                for i in range(len(arrays))
+            ])
+            pooled_sigma = np.nanmean(sigma_arr, axis=0)
+            valid = np.isfinite(mean_y) & np.isfinite(pooled_sigma) & (pooled_sigma > 0)
+            if valid.sum() > 1:
+                residuals = Y[:, valid] - mean_y[valid]
+                chi2_vals = (residuals / pooled_sigma[valid]) ** 2
+                dof = (len(arrays) - 1) * valid.sum()
+                chi2_sum = float(np.nansum(chi2_vals))
+                chi2_red = chi2_sum / dof
+                p_val    = float(_chi2_dist.sf(chi2_sum, dof))
+                chi_texts.append(f"{field}: χ²/DOF={chi2_red:.2f}  p={p_val:.3f}")
+
+        show_stats = bool(self._fill_items)
+        if self._stats_panel:
+            self._stats_panel.setVisible(show_stats)
+        if self._stats_label:
+            if chi_texts:
+                self._stats_label.setText("  |  ".join(chi_texts))
+                self._stats_label.setVisible(True)
+            else:
+                self._stats_label.setVisible(False)
 
     # ── Peak fitting ───────────────────────────────────────────────────────────
 
