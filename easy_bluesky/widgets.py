@@ -389,12 +389,16 @@ class ListScanArgsWidget(QWidget):
     A CSV import button lets users load multi-column position tables where
     each column header matches a motor name.
 
-    Output: [motor1, [p1, p2, ...], motor2, [p1, p2, ...], ...]
+    pair_mode=False (default): Output: [motor1, [p1, p2, ...], motor2, ...]
+    pair_mode=True  (bluesky annotated list_scan): Output: [[motor1, [p1, ...]],
+        [motor2, [p1, ...]]] — each pair is a 2-element list, as the queueserver's
+        pydantic model (Sequence[Tuple[Device, Sequence]]) requires.
     """
 
-    def __init__(self, devices, parent=None):
+    def __init__(self, devices, pair_mode=False, parent=None):
         super().__init__(parent)
         self.devices      = list(devices) if devices else []
+        self._pair_mode   = pair_mode
         self._edits       = {}        # motor_name → QLineEdit
         self._row_widgets = {}        # motor_name → row QWidget
         self._build()
@@ -518,13 +522,22 @@ class ListScanArgsWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "CSV Error", str(e))
 
-    def populate(self, flat_args):
-        """Pre-fill from [motor1, [p1, p2, ...], motor2, [...], ...]."""
-        i = 0
-        while i + 1 < len(flat_args):
-            motor     = str(flat_args[i])
-            positions = flat_args[i + 1]
-            i += 2
+    def populate(self, args):
+        """Pre-fill from either flat [motor1, [p1,...], motor2, [...], ...]
+        or pair [[motor1, [p1,...]], [motor2, [...]], ...] format."""
+        # Detect pair format: first element is a list/tuple of 2 items
+        if args and isinstance(args[0], (list, tuple)) and len(args[0]) == 2:
+            pairs = args
+        else:
+            # flat format — regroup into pairs
+            pairs = []
+            i = 0
+            while i + 1 < len(args):
+                pairs.append((args[i], args[i + 1]))
+                i += 2
+        for pair in pairs:
+            motor     = str(pair[0])
+            positions = pair[1]
             for j in range(self._motor_list.count()):
                 if self._motor_list.item(j).text() == motor:
                     self._motor_list.item(j).setSelected(True)
@@ -536,7 +549,10 @@ class ListScanArgsWidget(QWidget):
                     self._edits[motor].setText(str(positions))
 
     def get_value(self):
-        """Return [motor1, [p1, p2, ...], ...] in selection order, or None."""
+        """Return motor-position data in selection order, or None.
+        pair_mode=False: [motor1, [p1, p2, ...], motor2, [...], ...]
+        pair_mode=True:  [[motor1, [p1, ...]], [motor2, [...]], ...]
+        """
         result = []
         for d in self.devices:
             row = self._row_widgets.get(d)
@@ -548,7 +564,10 @@ class ListScanArgsWidget(QWidget):
             try:
                 positions = [float(x.strip()) for x in text.split(",") if x.strip()]
                 if positions:
-                    result.extend([d, positions])
+                    if self._pair_mode:
+                        result.append([d, positions])
+                    else:
+                        result.extend([d, positions])
             except ValueError:
                 pass
         return result if result else None
@@ -650,7 +669,12 @@ class ParamForm(QWidget):
                 )
             )
             if is_list:
-                return ListScanArgsWidget(motor_list)
+                # Built-in bluesky list_scan annotates *args as
+                # Sequence[Tuple[Device, Sequence]] — queueserver pydantic
+                # validation requires pairs [[motor, [pos,...]], ...] rather
+                # than the flat [motor, [pos,...], ...] format.
+                pair_mode = "tuple" in typ.lower()
+                return ListScanArgsWidget(motor_list, pair_mode=pair_mode)
             is_grid = (self._plan_name in _GRID_PLAN_NAMES
                        or "grid" in self._plan_name)
             if is_grid:
