@@ -744,7 +744,7 @@ class ParamForm(QWidget):
             w = self.widgets[name]
             if kind == "VAR_POSITIONAL":
                 remaining = list(arg_iter)  # consume all remaining positional args
-                if isinstance(w, (ScanArgsWidget, ListScanArgsWidget)) and remaining:
+                if isinstance(w, (ScanArgsWidget, GridScanArgsWidget, ListScanArgsWidget)) and remaining:
                     w.populate(remaining)
                 continue  # arg_iter exhausted; KEYWORD_ONLY params may still follow
             elif kind == "KEYWORD_ONLY":
@@ -801,7 +801,7 @@ class ParamForm(QWidget):
             w    = self.widgets[name]
             kind = p.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
             if kind == "VAR_POSITIONAL":
-                val = w.get_value() if isinstance(w, (ScanArgsWidget, ListScanArgsWidget)) else self._read_widget(w, p)
+                val = w.get_value() if isinstance(w, (ScanArgsWidget, GridScanArgsWidget, ListScanArgsWidget)) else self._read_widget(w, p)
                 if val:
                     args.extend(val)
             elif kind == "KEYWORD_ONLY":
