@@ -261,6 +261,126 @@ class ScanArgsWidget(QWidget):
         return result if result else None
 
 
+class GridScanArgsWidget(QWidget):
+    """
+    Motor selector for grid_scan-style plans.
+    Each axis has its own start / stop / num, producing:
+      [motor1, start1, stop1, num1, motor2, start2, stop2, num2, ...]
+    """
+
+    def __init__(self, devices, parent=None):
+        super().__init__(parent)
+        self.devices      = list(devices) if devices else []
+        self._spinboxes   = {}   # motor -> (start, stop, num)
+        self._row_widgets = {}   # motor -> row QWidget
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        lay.addWidget(QLabel("Select motors (each axis has its own num):"))
+
+        self._motor_list = QListWidget()
+        self._motor_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.MultiSelection)
+        self._motor_list.setMaximumHeight(100)
+        for d in self.devices:
+            self._motor_list.addItem(QListWidgetItem(d))
+        self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
+        lay.addWidget(self._motor_list)
+
+        self._motor_summary = QLabel("None selected")
+        self._motor_summary.setStyleSheet(
+            "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+        self._motor_summary.setWordWrap(True)
+        lay.addWidget(self._motor_summary)
+
+        self._rows_container = QWidget()
+        self._rows_layout    = QVBoxLayout(self._rows_container)
+        self._rows_layout.setContentsMargins(0, 2, 0, 0)
+        self._rows_layout.setSpacing(2)
+        lay.addWidget(self._rows_container)
+
+        for d in self.devices:
+            start_spin = NoScrollDoubleSpinBox()
+            start_spin.setRange(-1e9, 1e9)
+            start_spin.setDecimals(4)
+            start_spin.setSingleStep(0.1)
+
+            stop_spin = NoScrollDoubleSpinBox()
+            stop_spin.setRange(-1e9, 1e9)
+            stop_spin.setDecimals(4)
+            stop_spin.setSingleStep(0.1)
+            stop_spin.setValue(1.0)
+
+            num_spin = NoScrollSpinBox()
+            num_spin.setRange(2, 999999)
+            num_spin.setValue(11)
+
+            self._spinboxes[d] = (start_spin, stop_spin, num_spin)
+
+            row = QWidget()
+            rl  = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(4)
+            lbl = QLabel(f"{d}:")
+            lbl.setMinimumWidth(80)
+            rl.addWidget(lbl)
+            rl.addWidget(QLabel("start"))
+            rl.addWidget(start_spin, 2)
+            rl.addWidget(QLabel("stop"))
+            rl.addWidget(stop_spin, 2)
+            rl.addWidget(QLabel("num"))
+            rl.addWidget(num_spin, 1)
+
+            self._row_widgets[d] = row
+            self._rows_layout.addWidget(row)
+            row.hide()
+
+    def _on_selection_changed(self):
+        selected = {self._motor_list.item(i).text()
+                    for i in range(self._motor_list.count())
+                    if self._motor_list.item(i).isSelected()}
+        for motor, row in self._row_widgets.items():
+            row.setVisible(motor in selected)
+        if selected:
+            self._motor_summary.setText("✓  " + ",   ".join(sorted(selected)))
+            self._motor_summary.setStyleSheet(
+                "color: #2ca02c; font-size: 11px; font-weight: bold; padding: 1px 2px;")
+        else:
+            self._motor_summary.setText("None selected")
+            self._motor_summary.setStyleSheet(
+                "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+
+    def populate(self, flat_args):
+        """Pre-fill from [motor1, start1, stop1, num1, motor2, ...]."""
+        quartets = [flat_args[i:i + 4] for i in range(0, len(flat_args) - 3, 4)]
+        for q in quartets:
+            motor, start, stop, num = str(q[0]), q[1], q[2], q[3]
+            for i in range(self._motor_list.count()):
+                if self._motor_list.item(i).text() == motor:
+                    self._motor_list.item(i).setSelected(True)
+            if motor in self._spinboxes:
+                s, e, n = self._spinboxes[motor]
+                try:
+                    s.setValue(float(start))
+                    e.setValue(float(stop))
+                    n.setValue(int(num))
+                except (TypeError, ValueError):
+                    pass
+
+    def get_value(self):
+        """Return [motor1, start1, stop1, num1, ...] in selection order."""
+        result = []
+        for d in self.devices:
+            if self._row_widgets.get(d) and self._row_widgets[d].isVisible():
+                s, e, n = self._spinboxes[d]
+                result.extend([d, s.value(), e.value(), n.value()])
+        return result if result else None
+
+
 class ListScanArgsWidget(QWidget):
     """
     Widget for list_scan-style plans: alternating (motor, [positions]) pairs.
@@ -417,10 +537,13 @@ class ListScanArgsWidget(QWidget):
         return result if result else None
 
 
+_GRID_PLAN_NAMES = {"grid_scan", "rel_grid_scan"}
+
 class ParamForm(QWidget):
-    def __init__(self, params, devices, parent=None):
+    def __init__(self, params, devices, plan_name="", parent=None):
         super().__init__(parent)
-        self.params = params
+        self.params     = params
+        self._plan_name = plan_name.lower()
         devices = devices or {}
         self.devices   = sorted(devices.keys())
         self.motors    = sorted(k for k, v in devices.items()
@@ -492,12 +615,17 @@ class ParamForm(QWidget):
             return None
 
         # ── VAR_POSITIONAL motor args ─────────────────────────────────────────────
-        # list_scan: annotation is tuple[Movable, list[...]] → contains "list["
-        # scan:      annotation is Movable | Any             → no "list["
+        # list_scan:  annotation contains "list[" → ListScanArgsWidget
+        # grid_scan:  plan name contains "grid"   → GridScanArgsWidget (per-axis num)
+        # scan:       everything else             → ScanArgsWidget
         if kind == "VAR_POSITIONAL" and ("__MOVABLE__" in typ or n in ("args",)):
             motor_list = self.motors or self.devices
             if "list[" in typ.lower():
                 return ListScanArgsWidget(motor_list)
+            is_grid = (self._plan_name in _GRID_PLAN_NAMES
+                       or "grid" in self._plan_name)
+            if is_grid:
+                return GridScanArgsWidget(motor_list)
             return ScanArgsWidget(motor_list)
 
         # ── Classify the annotation ──────────────────────────────────────────────
@@ -903,7 +1031,7 @@ class PlanDialog(QDialog):
         except Exception:
             self._source_label.setText("")
         params = info.get("parameters", [])
-        self.param_form = ParamForm(params, self.devices)
+        self.param_form = ParamForm(params, self.devices, plan_name=name)
         self.form_widget.deleteLater()
         self.form_widget = self.param_form
         self.scroll.setWidget(self.form_widget)
