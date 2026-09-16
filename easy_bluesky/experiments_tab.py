@@ -2188,7 +2188,8 @@ class ExperimentsTab(QWidget):
 
         # Motor travel: args layout after stripping detector lists is
         # motor, start, stop [, motor, start, stop, ...] for rel_scan-style plans.
-        motor_time = 0.0
+        # Motors move simultaneously, so per-step time = max across axes.
+        per_step_times = []
         flat_args = [a for a in args if not isinstance(a, list)]
         i = 0
         while i + 2 < len(flat_args):
@@ -2196,11 +2197,14 @@ class ExperimentsTab(QWidget):
             try:
                 start = float(flat_args[i + 1])
                 stop  = float(flat_args[i + 2])
-                motor_time += self._estimate_motor_seconds(str(motor_name), abs(stop - start))
+                per_step_times.append(
+                    self._estimate_motor_seconds(str(motor_name), abs(stop - start) / max(num - 1, 1))
+                )
                 i += 3
             except (TypeError, ValueError):
                 i += 1
 
+        motor_time = max(per_step_times) * num if per_step_times else 0.0
         return acq_total + motor_time
 
     def _update_eta_label(self) -> None:
