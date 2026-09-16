@@ -6,6 +6,7 @@ import os
 import re
 import socket
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -1224,6 +1225,13 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
         self._re_state: str    = ""
+        self._pv_map: dict          = {}
+        self._velocity_cache: dict  = {}
+        self._running_item_uid      = ""
+        self._running_item_start    = 0.0
+        self._running_item_est      = None   # float seconds or None
+        self._current_running_item: dict = {}
+        self._current_queue_items: list  = []
         self._watcher_debounce = QTimer()
         self._watcher_debounce.setSingleShot(True)
         self._watcher_debounce.setInterval(500)
@@ -1525,6 +1533,11 @@ class ExperimentsTab(QWidget):
         self.chk_auto_start.toggled.connect(self.auto_start_toggled)
         self.chk_loop.toggled.connect(self._on_loop_checkbox)
         self.spin_loop.valueChanged.connect(self.loop_count_changed)
+
+        self._eta_label = QLabel("")
+        self._eta_label.setStyleSheet("font-size: 11px; color: #8a9ba8; padding: 1px 0;")
+        self._eta_label.setVisible(False)
+        vlay.addWidget(self._eta_label)
 
         lbl_con = QLabel("CONSOLE")
         lbl_con.setObjectName("section_title")
@@ -2081,6 +2094,14 @@ class ExperimentsTab(QWidget):
 
     def update_running_item(self, item: dict) -> None:
         """Show/hide the 'now running' banner above the Plan Log."""
+        uid = (item or {}).get("item_uid", "")
+        if uid != self._running_item_uid:
+            self._running_item_uid   = uid
+            self._running_item_start = time.monotonic() if uid else 0.0
+            self._running_item_est   = self._estimate_plan_seconds(item) if uid else None
+        self._current_running_item = item or {}
+        self._update_eta_label()
+
         if not item:
             self._running_banner.setVisible(False)
             return
@@ -2101,6 +2122,123 @@ class ExperimentsTab(QWidget):
         detail = f"  [{', '.join(parts)}]" if parts else ""
         self._running_banner.setText(f"▶  Running: {name}{detail}")
         self._running_banner.setVisible(True)
+
+    # ── ETA estimation ──────────────────────────────────────────────────────────
+
+    def set_pv_map(self, pv_map: dict) -> None:
+        self._pv_map = pv_map
+        self._velocity_cache.clear()
+        vel_pvs = {dev: sigs["user_velocity"]
+                   for dev, sigs in pv_map.items()
+                   if sigs.get("user_velocity")}
+        if vel_pvs:
+            threading.Thread(target=self._fetch_velocities, args=(vel_pvs,), daemon=True).start()
+
+    def _fetch_velocities(self, vel_pvs: dict) -> None:
+        try:
+            import epics  # noqa: PLC0415
+            for dev_name, pvname in vel_pvs.items():
+                try:
+                    val = epics.caget(pvname, timeout=1.5)
+                    if val is not None:
+                        v = float(val)
+                        if v > 0:
+                            self._velocity_cache[dev_name] = v
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _format_duration(secs: float) -> str:
+        secs = int(round(max(0.0, secs)))
+        if secs < 60:
+            return f"{secs}s"
+        m, s = divmod(secs, 60)
+        if m < 60:
+            return f"{m}m {s:02d}s"
+        h, m = divmod(m, 60)
+        return f"{h}h {m:02d}m"
+
+    def _estimate_motor_seconds(self, motor_name: str, distance: float) -> float:
+        vel = self._velocity_cache.get(motor_name)
+        if vel and vel > 0 and distance > 0:
+            return distance / vel
+        return 0.0
+
+    def _estimate_plan_seconds(self, item: dict):
+        if not item:
+            return None
+        kwargs = item.get("kwargs", {}) or {}
+        args   = item.get("args",   []) or []
+
+        num = kwargs.get("num")
+        if num is None:
+            return None
+        acquire_time = (kwargs.get("acquire_time") or
+                        kwargs.get("exposure_time") or
+                        kwargs.get("count_time"))
+        if acquire_time is None:
+            return None
+
+        num          = int(num)
+        acquire_time = float(acquire_time)
+        delay        = float(kwargs.get("delay", 0) or 0)
+        acq_total    = num * (acquire_time + delay)
+
+        # Motor travel: args layout after stripping detector lists is
+        # motor, start, stop [, motor, start, stop, ...] for rel_scan-style plans.
+        motor_time = 0.0
+        flat_args = [a for a in args if not isinstance(a, list)]
+        i = 0
+        while i + 2 < len(flat_args):
+            motor_name = flat_args[i]
+            try:
+                start = float(flat_args[i + 1])
+                stop  = float(flat_args[i + 2])
+                motor_time += self._estimate_motor_seconds(str(motor_name), abs(stop - start))
+                i += 3
+            except (TypeError, ValueError):
+                i += 1
+
+        return acq_total + motor_time
+
+    def _update_eta_label(self) -> None:
+        running = self._current_running_item
+        queued  = self._current_queue_items
+        parts   = []
+
+        if running:
+            est = self._running_item_est
+            if est is not None:
+                elapsed   = time.monotonic() - self._running_item_start
+                remaining = max(0.0, est - elapsed)
+                parts.append(f"Running: ~{self._format_duration(remaining)} left")
+            else:
+                parts.append("Running: duration unknown")
+
+        if queued:
+            total_q  = 0.0
+            unknown  = 0
+            for item in queued:
+                s = self._estimate_plan_seconds(item)
+                if s is not None:
+                    total_q += s
+                else:
+                    unknown += 1
+            if total_q > 0 or unknown == 0:
+                txt = f"Queue: ~{self._format_duration(total_q)}"
+                if unknown:
+                    txt += f" + {unknown} unknown"
+                parts.append(txt)
+            else:
+                parts.append(f"Queue: {unknown} plan(s), unknown duration")
+
+        text = "  |  ".join(parts)
+        self._eta_label.setText(text)
+        self._eta_label.setVisible(bool(text))
+
+    # ── End ETA estimation ──────────────────────────────────────────────────────
 
     def on_disconnected(self) -> None:
         for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
@@ -3273,8 +3411,10 @@ class ExperimentsTab(QWidget):
             self.scan_completed.emit()
 
     def update_compact_queue(self, items: list):
+        self._current_queue_items = items
         new_uids = [item.get("item_uid", "") for item in items]
         if new_uids == getattr(self, "_compact_queue_uids", None):
+            self._update_eta_label()
             return  # nothing changed — skip full rebuild
         self._compact_queue_uids = new_uids
         selected_uids = {
@@ -3316,6 +3456,8 @@ class ExperimentsTab(QWidget):
         if new_next != self._next_scan_num:
             self._next_scan_num = new_next
             self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+
+        self._update_eta_label()
 
     # ── Internal slots ─────────────────────────────────────────────────────────
 

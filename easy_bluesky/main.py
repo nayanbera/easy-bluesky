@@ -1231,6 +1231,7 @@ class MainWindow(QMainWindow):
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
         self.worker.devices_updated.connect(self.devices_plans_tab.update_devices)
         self.worker.pv_names_ready.connect(self.devices_plans_tab.setup_epics_monitors)
+        self.worker.pv_names_ready.connect(self.experiments_tab.set_pv_map)
         self.worker.pv_names_error.connect(self.devices_plans_tab.on_pv_names_error)
         self.devices_plans_tab.fetch_pvnames_requested.connect(self.worker.fetch_device_pvnames)
         self.devices_plans_tab.reload_devices_requested.connect(self.worker.reload_plans_devices)
