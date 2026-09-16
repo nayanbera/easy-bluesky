@@ -2152,6 +2152,11 @@ class ExperimentsTab(QWidget):
         name = self.sample_name_edit.text().strip()
         if not name or name == self._sample_name:
             return
+        # Commit _sample_name BEFORE any QMessageBox so that if the dialog's
+        # nested event loop processes a pending "Add Plan" click, _inject_metadata
+        # already sees the correct sample name.
+        old_name = self._sample_name
+        self._sample_name = name
         if self._active_exp_path:
             safe = re.sub(r"[^\w\-]", "_", name)
             sample_dir = Path(self._active_exp_path) / safe
@@ -2162,10 +2167,9 @@ class ExperimentsTab(QWidget):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 if r != QMessageBox.StandardButton.Yes:
-                    self.sample_name_edit.setText(self._sample_name)
+                    self._sample_name = old_name
+                    self.sample_name_edit.setText(old_name)
                     return
-        old_name = self._sample_name
-        self._sample_name = name
         self._log(f"✓ Sample: {name}")
         self._offer_queue_sample_update(old_name, name)
 
