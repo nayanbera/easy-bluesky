@@ -309,8 +309,20 @@ def set_areadetector_hdf(det, exp_dir: str, sample_name: str, scan_num: int):
     elif det.name == "Pil300K":
         local_path = f"{exp_dir}/{sample_name}/{det.name}/"
         file_path  = local_path.replace("chem_epics", "det")
-        os.makedirs(local_path, exist_ok=True)
+        # Create directory on the RE Manager (NFS-visible) side.
+        try:
+            os.makedirs(local_path, exist_ok=True)
+        except Exception:
+            pass
         yield from mv(det.hdf1.file_path, file_path)
+        # Ask the Pilatus IOC to create the directory on its own filesystem.
+        # NDPluginFile::CreateDirectory: negative N → create up to N levels.
+        try:
+            import epics as _epics
+            _cd_pv = det.hdf1.prefix + "CreateDirectory"
+            _epics.caput(_cd_pv, -5, wait=True)
+        except Exception:
+            pass
         yield from mv(det.hdf1.file_name, sample_name + f"_S_{scan_num:04d}")
 
     else:
@@ -385,7 +397,10 @@ def count_w_time(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -455,7 +470,10 @@ def scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -526,7 +544,10 @@ def rel_scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -594,7 +615,10 @@ def grid_scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -662,7 +686,10 @@ def rel_grid_scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -730,7 +757,10 @@ def list_scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -798,7 +828,10 @@ def rel_list_scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -866,7 +899,10 @@ def list_grid_scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -934,7 +970,10 @@ def rel_list_grid_scan_w_time_n_delay(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -975,7 +1014,7 @@ def rel_list_grid_scan_w_time_n_delay(
 # ---------------------------------------------------------------------------
 
 def load_multi_motor_csv(filename):
-    with open(filename, "r") as f:
+    with open(filename, "r", encoding="utf-8-sig") as f:
         reader = csv.reader(f)
         header = next(reader)
         columns = [[] for _ in range(len(header))]
@@ -1023,7 +1062,10 @@ def list_scan_w_time_n_delay_from_csv(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -1288,7 +1330,10 @@ def aswaxs_energy_scan(
     md = md or {}
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
-    _sample = md.get("sample_name", "sample")
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
@@ -1533,7 +1578,13 @@ def capillary_transmission_scan_plan(
     """
     md = md or {}
     shutter = _resolve_device(shutter)
-    _dir = _exp_dir_from_md(md)
+    _dir    = _exp_dir_from_md(md)
+    _sample = md.get("sample_name") or ""
+    if not _sample:
+        print("WARNING: sample_name not set in metadata — HDF files will be saved to a 'sample' subfolder")
+        _sample = "sample"
+    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    md["scan_num"] = _scan_n
 
     scan_md = dict(md)
     scan_md.update({
@@ -1566,6 +1617,7 @@ def capillary_transmission_scan_plan(
         yield from _save_and_set_det_mode(detectors, hdf_autosave, saved)
         for detector in detectors:
             yield from set_detector_acquire_time(detector, exposure_time)
+            yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
         yield from bps.mv(sy, y_fixed)
         yield from inner_scan()
 
