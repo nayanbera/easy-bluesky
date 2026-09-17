@@ -2242,20 +2242,20 @@ class ExperimentsTab(QWidget):
         parts   = []
 
         if running:
-            elapsed = time.monotonic() - self._running_item_start
-            num     = self._running_item_num
-            done    = self._completed_points
+            elapsed   = time.monotonic() - self._running_item_start
+            num       = self._running_item_num
+            done      = self._completed_points
+            progress  = f" ({done}/{num})" if num > 0 else (f" (point {done})" if done else "")
             if done >= 2 and num > 0:
                 # Adaptive: measured avg time per point × remaining points
                 avg       = elapsed / done
                 remaining = max(0.0, (num - done) * avg)
-                parts.append(f"Running: ~{self._format_duration(remaining)} left"
-                             f" ({done}/{num})")
+                parts.append(f"Running: ~{self._format_duration(remaining)} left{progress}")
             elif self._running_item_est is not None:
                 remaining = max(0.0, self._running_item_est - elapsed)
-                parts.append(f"Running: ~{self._format_duration(remaining)} left")
+                parts.append(f"Running: ~{self._format_duration(remaining)} left{progress}")
             else:
-                parts.append("Running: duration unknown")
+                parts.append(f"Running: duration unknown{progress}")
 
         if queued:
             total_q  = 0.0
