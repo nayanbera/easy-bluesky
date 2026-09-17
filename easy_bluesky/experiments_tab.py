@@ -2177,9 +2177,7 @@ class ExperimentsTab(QWidget):
             return None
         acquire_time = (kwargs.get("acquire_time") or
                         kwargs.get("exposure_time") or
-                        kwargs.get("count_time"))
-        if acquire_time is None:
-            return None
+                        kwargs.get("count_time") or 0.0)
 
         num          = int(num)
         acquire_time = float(acquire_time)
