@@ -420,18 +420,51 @@ def count_w_time(
     yield from bpp.finalize_wrapper(_body(), _cleanup())
 
 
+def _make_per_step(settle_time=0.0, delay=0.0, shutter=None):
+    """Return a bluesky per_step callable with settle and inter-step delays.
+
+    Execution order per scan point:
+      move_per_step → sleep(settle_time) → [shutter open + 0.3s] →
+      trigger_and_read → [shutter close] → sleep(delay)
+
+    Parameters
+    ----------
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
+    delay : float
+        Seconds to wait after acquisition completes, before moving to next point.
+    shutter : Device or None
+        Fast shutter device (set to 0 to open, 1 to close).
+    """
+    def _step(detectors, step, pos_cache):
+        yield from _set_image_mode_single(detectors)
+        yield from move_per_step(step, pos_cache)
+        if settle_time > 0:
+            yield from sleep(settle_time)
+        if shutter is not None:
+            yield from mv(shutter, 0)
+            yield from sleep(0.3)
+        yield from trigger_and_read(list(detectors) + list(step.keys()))
+        if shutter is not None:
+            yield from mv(shutter, 1)
+        if delay > 0:
+            yield from sleep(delay)
+    return _step
+
+
 def scan_w_time_n_delay(
     detectors,
     *args,
     num: int,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """Absolute scan with per-step acquire time, delay, and optional shutter.
+    """Absolute scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -443,8 +476,10 @@ def scan_w_time_n_delay(
         Number of points in the scan.
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -459,17 +494,6 @@ def scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -477,7 +501,7 @@ def scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from scan(detectors, *args, num=num, md=md, **kwargs)
 
     def _cleanup():
@@ -496,13 +520,14 @@ def rel_scan_w_time_n_delay(
     *args,
     num: int,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """Relative scan with per-step acquire time, delay, and optional shutter.
+    """Relative scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -514,8 +539,10 @@ def rel_scan_w_time_n_delay(
         Number of points in the scan.
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -530,17 +557,6 @@ def rel_scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -548,7 +564,7 @@ def rel_scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from rel_scan(detectors, *args, num=num, md=md, **kwargs)
 
     def _cleanup():
@@ -566,13 +582,14 @@ def grid_scan_w_time_n_delay(
     detectors,
     *args,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """Grid scan with per-step acquire time, delay, and optional shutter.
+    """Grid scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -582,8 +599,10 @@ def grid_scan_w_time_n_delay(
         Motors, ranges, and point counts per axis (standard grid_scan args).
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -598,17 +617,6 @@ def grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -616,7 +624,7 @@ def grid_scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
@@ -634,13 +642,14 @@ def rel_grid_scan_w_time_n_delay(
     detectors,
     *args,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """Relative grid scan with per-step acquire time, delay, and optional shutter.
+    """Relative grid scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -650,8 +659,10 @@ def rel_grid_scan_w_time_n_delay(
         Motors, relative ranges, and point counts per axis.
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -666,17 +677,6 @@ def rel_grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -684,7 +684,7 @@ def rel_grid_scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from rel_grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
@@ -702,13 +702,14 @@ def list_scan_w_time_n_delay(
     detectors,
     *args,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """List scan with per-step acquire time, delay, and optional shutter.
+    """List scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -718,8 +719,10 @@ def list_scan_w_time_n_delay(
         Motors and their position lists (standard list_scan args).
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -734,17 +737,6 @@ def list_scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -752,7 +744,7 @@ def list_scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from list_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
@@ -770,13 +762,14 @@ def rel_list_scan_w_time_n_delay(
     detectors,
     *args,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """Relative list scan with per-step acquire time, delay, and optional shutter.
+    """Relative list scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -786,8 +779,10 @@ def rel_list_scan_w_time_n_delay(
         Motors and their relative position lists.
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -802,17 +797,6 @@ def rel_list_scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -820,7 +804,7 @@ def rel_list_scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from rel_list_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
@@ -838,13 +822,14 @@ def list_grid_scan_w_time_n_delay(
     detectors,
     *args,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """List grid scan with per-step acquire time, delay, and optional shutter.
+    """List grid scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -854,8 +839,10 @@ def list_grid_scan_w_time_n_delay(
         Motors and position lists per axis (standard list_grid_scan args).
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -870,17 +857,6 @@ def list_grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -888,7 +864,7 @@ def list_grid_scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from list_grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
@@ -906,13 +882,14 @@ def rel_list_grid_scan_w_time_n_delay(
     detectors,
     *args,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
     md: dict = None,
     **kwargs,
 ):
-    """Relative list grid scan with per-step acquire time, delay, and optional shutter.
+    """Relative list grid scan with per-step acquire time, settle/delay, and optional shutter.
 
     Parameters
     ----------
@@ -922,8 +899,10 @@ def rel_list_grid_scan_w_time_n_delay(
         Motors and relative position lists per axis.
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -938,17 +917,6 @@ def rel_list_grid_scan_w_time_n_delay(
     _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
     md["scan_num"] = _scan_n
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -956,7 +924,7 @@ def rel_list_grid_scan_w_time_n_delay(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         yield from rel_list_grid_scan(detectors, *args, md=md, **kwargs)
 
     def _cleanup():
@@ -992,6 +960,7 @@ def list_scan_w_time_n_delay_from_csv(
     motors,
     csv_file: str,
     acquire_time: float = 1.0,
+    settle_time: float = 0.0,
     delay: float = 0.0,
     shutter: Optional[Device] = None,
     hdf_autosave: bool = True,
@@ -1011,8 +980,10 @@ def list_scan_w_time_n_delay_from_csv(
         First row is a header (column names are ignored).
     acquire_time : float
         Detector exposure time in seconds.
+    settle_time : float
+        Seconds to wait after motors reach position, before triggering detectors.
     delay : float
-        Extra wait after each step in seconds.
+        Extra wait after each acquisition in seconds.
     shutter : Device, optional
         Fast shutter device.
     hdf_autosave : bool
@@ -1033,17 +1004,6 @@ def list_scan_w_time_n_delay_from_csv(
             f"CSV has {len(columns)} columns but {len(motors)} motors were provided"
         )
 
-    def one_nd_step_with_delay(detectors, step, pos_cache):
-        yield from _set_image_mode_single(detectors)
-        yield from move_per_step(step, pos_cache)
-        if shutter is not None:
-            yield from mv(shutter, 0)
-            yield from sleep(0.3)
-        yield from trigger_and_read(list(detectors) + list(step.keys()))
-        if shutter is not None:
-            yield from mv(shutter, 1)
-        yield from sleep(delay)
-
     saved = {}
 
     def _body():
@@ -1051,7 +1011,7 @@ def list_scan_w_time_n_delay_from_csv(
         for detector in detectors:
             yield from set_detector_acquire_time(detector, acquire_time)
             yield from set_areadetector_hdf(detector, _dir, _sample, _scan_n)
-        kwargs.setdefault("per_step", one_nd_step_with_delay)
+        kwargs.setdefault("per_step", _make_per_step(settle_time, delay, shutter))
         scan_args = []
         for motor, pos_list in zip(motors, columns):
             scan_args.extend([motor, pos_list])
