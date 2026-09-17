@@ -1231,6 +1231,8 @@ class ExperimentsTab(QWidget):
         self._running_item_uid      = ""
         self._running_item_start    = 0.0
         self._running_item_est      = None   # float seconds or None
+        self._running_item_num      = 0      # total points in running plan
+        self._completed_points      = 0      # event docs received so far
         self._current_running_item: dict = {}
         self._current_queue_items: list  = []
         self._watcher_debounce = QTimer()
@@ -2100,6 +2102,8 @@ class ExperimentsTab(QWidget):
             self._running_item_uid   = uid
             self._running_item_start = time.monotonic() if uid else 0.0
             self._running_item_est   = self._estimate_plan_seconds(item) if uid else None
+            self._running_item_num   = int((item or {}).get("kwargs", {}).get("num") or 0)
+            self._completed_points   = 0
         self._current_running_item = item or {}
         self._update_eta_label()
 
@@ -2225,16 +2229,30 @@ class ExperimentsTab(QWidget):
         motor_time = max(per_step_times) * num if per_step_times else 0.0
         return acq_total + motor_time
 
+    def on_scan_point_completed(self, seq_num: int) -> None:
+        """Called each time an event document arrives from the ZMQ doc stream."""
+        if not self._running_item_uid:
+            return
+        self._completed_points = max(self._completed_points, seq_num)
+        self._update_eta_label()
+
     def _update_eta_label(self) -> None:
         running = self._current_running_item
         queued  = self._current_queue_items
         parts   = []
 
         if running:
-            est = self._running_item_est
-            if est is not None:
-                elapsed   = time.monotonic() - self._running_item_start
-                remaining = max(0.0, est - elapsed)
+            elapsed = time.monotonic() - self._running_item_start
+            num     = self._running_item_num
+            done    = self._completed_points
+            if done >= 2 and num > 0:
+                # Adaptive: measured avg time per point × remaining points
+                avg       = elapsed / done
+                remaining = max(0.0, (num - done) * avg)
+                parts.append(f"Running: ~{self._format_duration(remaining)} left"
+                             f" ({done}/{num})")
+            elif self._running_item_est is not None:
+                remaining = max(0.0, self._running_item_est - elapsed)
                 parts.append(f"Running: ~{self._format_duration(remaining)} left")
             else:
                 parts.append("Running: duration unknown")

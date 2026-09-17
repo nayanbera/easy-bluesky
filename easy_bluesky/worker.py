@@ -253,6 +253,7 @@ class _LocalDocWriter:
         self._exp_dir  = None   # Path or None, guarded by _lock
         self._lock     = threading.Lock()
         self._open_fhs = {}     # uid → file handle (only accessed by _run thread)
+        self.event_queue: _queue.Queue = _queue.Queue()  # (seq_num) drained by poll()
 
     def set_exp_dir(self, path: str):
         with self._lock:
@@ -344,6 +345,9 @@ class _LocalDocWriter:
             fh.flush()
         except Exception:
             pass
+
+        if name == "event":
+            self.event_queue.put_nowait(doc.get("seq_num", 0))
 
         if name == "stop":
             try:
@@ -578,7 +582,8 @@ class ZMQWorker(QObject):
     env_opened      = pyqtSignal(bool)  # True = genuine close→open; False = app reconnect
     env_closed      = pyqtSignal()
     re_manager_started = pyqtSignal(int)   # pid
-    console_updated = pyqtSignal(str)      # new console text since last poll
+    console_updated      = pyqtSignal(str)   # new console text since last poll
+    scan_point_completed = pyqtSignal(int)  # seq_num of each completed event doc
     scan_log_ready  = pyqtSignal(bytes)    # raw bytes of remote scans_log.json
     scan_log_error  = pyqtSignal(str)      # error message if SFTP fetch failed
 
@@ -931,6 +936,13 @@ class ZMQWorker(QObject):
                     msgs = self._console_mon.drain() + self._log_tailer.drain()
                     if msgs:
                         self.console_updated.emit("".join(msgs))
+                    # Drain bluesky event documents for adaptive ETA estimation
+                    try:
+                        while True:
+                            seq_num = self._doc_writer.event_queue.get_nowait()
+                            self.scan_point_completed.emit(seq_num)
+                    except _queue.Empty:
+                        pass
                 except Exception:
                     if not self._is_connecting:
                         self.rm = None
