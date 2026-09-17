@@ -1225,8 +1225,9 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
         self._re_state: str    = ""
-        self._pv_map: dict          = {}
-        self._velocity_cache: dict  = {}
+        self._pv_map: dict           = {}
+        self._velocity_cache: dict   = {}
+        self._acquire_time_cache: dict = {}  # det_name → float seconds
         self._running_item_uid      = ""
         self._running_item_start    = 0.0
         self._running_item_est      = None   # float seconds or None
@@ -2128,13 +2129,16 @@ class ExperimentsTab(QWidget):
     def set_pv_map(self, pv_map: dict) -> None:
         self._pv_map = pv_map
         self._velocity_cache.clear()
+        self._acquire_time_cache.clear()
         vel_pvs = {dev: sigs["user_velocity"]
                    for dev, sigs in pv_map.items()
-                   if sigs.get("user_velocity")}
-        if vel_pvs:
-            threading.Thread(target=self._fetch_velocities, args=(vel_pvs,), daemon=True).start()
+                   if not dev.startswith('__') and sigs.get("user_velocity")}
+        acq_pvs = pv_map.get("__timing__", {})
+        if vel_pvs or acq_pvs:
+            threading.Thread(target=self._fetch_device_pvs,
+                             args=(vel_pvs, acq_pvs), daemon=True).start()
 
-    def _fetch_velocities(self, vel_pvs: dict) -> None:
+    def _fetch_device_pvs(self, vel_pvs: dict, acq_pvs: dict) -> None:
         try:
             import epics  # noqa: PLC0415
             for dev_name, pvname in vel_pvs.items():
@@ -2144,6 +2148,13 @@ class ExperimentsTab(QWidget):
                         v = float(val)
                         if v > 0:
                             self._velocity_cache[dev_name] = v
+                except Exception:
+                    pass
+            for dev_name, pvname in acq_pvs.items():
+                try:
+                    val = epics.caget(pvname, timeout=1.5)
+                    if val is not None:
+                        self._acquire_time_cache[dev_name] = float(val)
                 except Exception:
                     pass
         except Exception:
@@ -2175,12 +2186,21 @@ class ExperimentsTab(QWidget):
         num = kwargs.get("num")
         if num is None:
             return None
-        acquire_time = (kwargs.get("acquire_time") or
-                        kwargs.get("exposure_time") or
-                        kwargs.get("count_time") or 0.0)
+        acquire_time = float(kwargs.get("acquire_time") or
+                             kwargs.get("exposure_time") or
+                             kwargs.get("count_time") or 0.0)
+
+        # For plans without an explicit timing kwarg (e.g. built-in rel_scan),
+        # fall back to the cached PV readback for the first listed detector.
+        if acquire_time == 0.0:
+            det_list = next((a for a in args if isinstance(a, list)), [])
+            for det_name in det_list:
+                cached = self._acquire_time_cache.get(str(det_name))
+                if cached:
+                    acquire_time = cached
+                    break
 
         num          = int(num)
-        acquire_time = float(acquire_time)
         delay        = float(kwargs.get("delay", 0) or 0)
         acq_total    = num * (acquire_time + delay)
 

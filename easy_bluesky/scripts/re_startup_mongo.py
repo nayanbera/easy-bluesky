@@ -270,6 +270,33 @@ def get_device_pvnames():
                 out[_n] = {_n: pv} if pv else {}
             except Exception:
                 pass
+    # Collect acquire_time PVs for detectors (may be nested under .cam).
+    # Returned under the special key "__timing__" so the GUI can fetch cached
+    # values without needing them in the CA subscription map.
+    _timing_paths = ['cam.acquire_time', 'acquire_time', 'count_time']
+    _timing = {}
+    for _n, _obj in list(globals().items()):
+        if _n.startswith('_') or _n not in out:
+            continue
+        if not isinstance(_obj, _oph.Device):
+            continue
+        for _path in _timing_paths:
+            try:
+                _sig = _obj
+                for _p in _path.split('.'):
+                    _sig = getattr(_sig, _p, None)
+                    if _sig is None:
+                        break
+                if (_sig is not None
+                        and not isinstance(_sig, _oph.Device)
+                        and hasattr(_sig, 'pvname')
+                        and _sig.pvname):
+                    _timing[_n] = _sig.pvname
+                    break
+            except Exception:
+                pass
+    if _timing:
+        out['__timing__'] = _timing
     return out
 
 

@@ -654,8 +654,9 @@ class DevicesPlansTab(QWidget):
         # Partition: EPICS devices have ≥1 real (non-empty) pvname;
         # polled devices (SynAxis, PseudoSingle, SynSignal, …) have none.
         epics_pv_map = {dev: sigs for dev, sigs in pv_map.items()
-                        if any(v for v in sigs.values())}
-        sim_dev_set = set(pv_map) - set(epics_pv_map)
+                        if not dev.startswith('__') and any(v for v in sigs.values())}
+        sim_dev_set = (set(pv_map) - set(epics_pv_map)
+                       - {d for d in pv_map if d.startswith('__')})
 
         # ── Signal sub-rows + tweak widgets for EPICS devices ────────────
         for dev_name, sigs in epics_pv_map.items():
