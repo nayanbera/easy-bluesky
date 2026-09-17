@@ -318,6 +318,19 @@ class HDF5Viewer(QWidget):
         self.stats_label = QLabel("")
         self.stats_label.setObjectName("dim_text")
         bot.addWidget(self.stats_label, 1)
+
+        self._log_y_cb = QCheckBox("Log Y")
+        self._log_y_cb.stateChanged.connect(self._replot)
+        bot.addWidget(self._log_y_cb)
+
+        bot.addWidget(QLabel("Deriv:"))
+        self._deriv_combo = QComboBox()
+        self._deriv_combo.addItems(["—", "dy/dx", "d²y/dx²"])
+        self._deriv_combo.setFixedHeight(22)
+        self._deriv_combo.setFixedWidth(90)
+        self._deriv_combo.currentIndexChanged.connect(self._replot)
+        bot.addWidget(self._deriv_combo)
+
         self.coord_label = QLabel("")
         self.coord_label.setObjectName("dim_text")
         self.coord_label.setStyleSheet(
@@ -543,6 +556,13 @@ class HDF5Viewer(QWidget):
                 # Poisson σ (propagated through normalization)
                 sigma = _poisson_sigma(y_raw, norm_raw)
 
+                deriv_mode = self._deriv_combo.currentIndex()
+                if deriv_mode > 0:
+                    _, y, sigma = self._apply_deriv(x, y, sigma, order=deriv_mode)
+                if self._log_y_cb.isChecked():
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        y = np.log10(np.where(y > 0, y, np.nan))
+
                 mask = np.isfinite(x) & np.isfinite(y)
                 x_, y_, s_ = x[mask], y[mask], sigma[mask]
                 if not len(x_):
@@ -574,11 +594,79 @@ class HDF5Viewer(QWidget):
         y_label = ", ".join(ycs)
         if norm_col:
             y_label += f"  /  {norm_col}"
+        deriv_mode = self._deriv_combo.currentIndex()
+        if deriv_mode == 1:
+            y_label += "  [dy/dx]"
+        elif deriv_mode == 2:
+            y_label += "  [d²y/dx²]"
+        if self._log_y_cb.isChecked():
+            y_label = f"log₁₀({y_label})"
         self.plot_widget.setLabel("left", y_label)
         self.stats_label.setText("   ".join(stats))
         smart_legend_position(self.plot_widget)
 
     # ── Double-click → details dialog ─────────────────────────────────────────
+
+    @staticmethod
+    def _apply_deriv(x, y, sigma=None, order=1):
+        """Central-difference derivative; same implementation as MongoDataBrowserTab."""
+        finite = np.isfinite(x) & np.isfinite(y)
+        if finite.sum() < 3:
+            nan_y = np.full_like(y, np.nan)
+            nan_s = np.full_like(sigma, np.nan) if sigma is not None else None
+            return x, nan_y, nan_s
+        xf, yf = x[finite], y[finite]
+        dy = np.gradient(yf, xf)
+        if order == 2:
+            dy = np.gradient(dy, xf)
+        y_out = np.full_like(y, np.nan)
+        y_out[finite] = dy
+        if sigma is None:
+            return x, y_out, None
+        sf = sigma[finite]
+        n  = len(sf)
+        dsf = np.full(n, np.nan)
+        if n >= 3:
+            fin_s = np.isfinite(sf)
+            if fin_s.sum() >= 2:
+                dxc = xf[2:] - xf[:-2]
+                valid = fin_s[2:] & fin_s[:-2] & (dxc != 0)
+                dsf[1:-1] = np.where(
+                    valid,
+                    np.sqrt(np.where(fin_s[2:], sf[2:], 0)**2
+                            + np.where(fin_s[:-2], sf[:-2], 0)**2)
+                    / np.where(dxc != 0, dxc, np.nan),
+                    np.nan,
+                )
+                dx0 = xf[1] - xf[0]
+                if fin_s[0] and fin_s[1] and dx0 != 0:
+                    dsf[0] = np.sqrt(sf[0]**2 + sf[1]**2) / abs(dx0)
+                dxn = xf[-1] - xf[-2]
+                if fin_s[-1] and fin_s[-2] and dxn != 0:
+                    dsf[-1] = np.sqrt(sf[-1]**2 + sf[-2]**2) / abs(dxn)
+            if order == 2:
+                dsf2 = np.full(n, np.nan)
+                fin2 = np.isfinite(dsf)
+                if fin2.sum() >= 3:
+                    dxc2 = xf[2:] - xf[:-2]
+                    v2 = fin2[2:] & fin2[:-2] & (dxc2 != 0)
+                    dsf2[1:-1] = np.where(
+                        v2,
+                        np.sqrt(np.where(fin2[2:], dsf[2:], 0)**2
+                                + np.where(fin2[:-2], dsf[:-2], 0)**2)
+                        / np.where(dxc2 != 0, dxc2, np.nan),
+                        np.nan,
+                    )
+                    dx0b = xf[1] - xf[0]
+                    if fin2[0] and fin2[1] and dx0b != 0:
+                        dsf2[0] = np.sqrt(dsf[0]**2 + dsf[1]**2) / abs(dx0b)
+                    dxnb = xf[-1] - xf[-2]
+                    if fin2[-1] and fin2[-2] and dxnb != 0:
+                        dsf2[-1] = np.sqrt(dsf[-1]**2 + dsf[-2]**2) / abs(dxnb)
+                dsf = dsf2
+        sigma_out = np.full_like(sigma, np.nan)
+        sigma_out[finite] = dsf
+        return x, y_out, sigma_out
 
     def _on_double_clicked(self, li: QListWidgetItem):
         scan = li.data(Qt.ItemDataRole.UserRole)
