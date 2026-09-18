@@ -10,6 +10,9 @@ except ImportError:
 from PyQt6.QtCore import Qt, QObject, QEvent
 
 
+_COORD_PLACEHOLDER = "X: —        Y: —"
+
+
 class _LeaveFilter(QObject):
     """Event filter that hides crosshair items when mouse leaves the viewport."""
     def __init__(self, items, label, parent=None):
@@ -21,7 +24,7 @@ class _LeaveFilter(QObject):
         if event.type() == QEvent.Type.Leave:
             for item in self._items:
                 item.hide()
-            self._label.setText("")
+            self._label.setText(_COORD_PLACEHOLDER)
         return False
 
 
@@ -54,10 +57,12 @@ def setup_crosshair(plot_widget, coord_label, get_curves_fn=None):
         plot_widget.addItem(item, ignoreBounds=True)
         item.hide()
 
+    coord_label.setText(_COORD_PLACEHOLDER)
+
     def on_mouse_moved(pos):
         if not plot_widget.sceneBoundingRect().contains(pos):
             vline.hide(); hline.hide(); tooltip.hide()
-            coord_label.setText("")
+            coord_label.setText(_COORD_PLACEHOLDER)
             return
 
         vb  = plot_widget.getPlotItem().vb
