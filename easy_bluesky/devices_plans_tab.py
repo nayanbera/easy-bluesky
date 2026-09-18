@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QTreeWidget, QTreeWidgetItem,
     QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit, QComboBox, QMenu,
-    QMessageBox, QDialog, QFormLayout, QDialogButtonBox,
+    QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QCheckBox,
 )
 from .widgets import NoScrollDoubleSpinBox
 import json
