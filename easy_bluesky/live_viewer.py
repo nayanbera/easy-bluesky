@@ -75,7 +75,8 @@ class ZMQDocThread(QThread):
 
 class LiveViewer(QWidget):
     COLORS = PLOT_COLORS
-    move_requested = pyqtSignal(str, float)   # (motor_name, target_position)
+    move_requested        = pyqtSignal(str, float)   # (motor_name, target_position)
+    scan_point_completed  = pyqtSignal(int)          # seq_num of each event doc
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -365,16 +366,20 @@ class LiveViewer(QWidget):
             self.status_bar.setText(f"Signals: {', '.join(all_cols)}")
 
         elif name == "event":
+            seq = doc.get("seq_num", 0)
             self._ingest_event(
-                seq=doc.get("seq_num", 0),
+                seq=seq,
                 t=doc.get("time", 0.0),
                 data=doc.get("data", {}),
             )
+            self.scan_point_completed.emit(seq)
 
         elif name == "event_page":
             seq_nums  = doc.get("seq_num", [])
             times     = doc.get("time", [])
             data_cols = doc.get("data", {})
+            if seq_nums:
+                self.scan_point_completed.emit(int(seq_nums[-1]))
             for i, seq in enumerate(seq_nums):
                 self._ingest_event(
                     seq=seq,
