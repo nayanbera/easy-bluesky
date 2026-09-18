@@ -237,25 +237,24 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
         sftp.close()
 
         # ── Stop ──────────────────────────────────────────────────────────────
-        # Run stop in its own SSH channel.  pkill -f matches processes whose
-        # cmdline contains the pattern string — which INCLUDES the bash process
-        # that is running this very SSH command (bash's cmdline contains
-        # "start-re-manager" as part of the pkill argument).  Bash therefore
-        # receives SIGTERM and may die early; that is intentional and harmless
-        # here because pkill has already dispatched signals to all matching RE
-        # Manager processes before bash exits.
-        # Kill procServ wrappers first so they don't restart RE Manager
-        # immediately after pkill.  Use SIGTERM then SIGKILL with a brief
-        # pause to ensure all children exit before we try to bind the ports.
+        # Stop only the RE Manager instance that owns this profile's ports.
+        # We identify it by the ZMQ control port it is bound to, using lsof/fuser
+        # to find the exact PID — this avoids killing RE Manager instances
+        # belonging to other profiles running on the same remote host.
+        # procServ wrapper is killed first (by pid file, then by port pattern)
+        # so it does not immediately restart the RE Manager after the kill.
         stop_cmd = (
+            # 1. Kill procServ by pid file, then by port pattern for this profile
             f"kill $(cat {pid_file} 2>/dev/null) 2>/dev/null; "
             f"rm -f {pid_file}; "
             f"pkill -f 'procServ.*{ctrl_port}' 2>/dev/null; "
-            f"pkill -f start-re-manager 2>/dev/null; "
+            # 2. Kill the RE Manager process bound to THIS profile's control port
+            f"_pids=$(lsof -t -i:{ctrl_port} 2>/dev/null || fuser {ctrl_port}/tcp 2>/dev/null); "
+            f"[ -n \"$_pids\" ] && kill $_pids 2>/dev/null; "
             f"sleep 1; "
-            f"pkill -9 -f start-re-manager 2>/dev/null; "
-            # Free any process still holding the ZMQ PUB port so the new
-            # startup script can bind it without "Address already in use".
+            f"_pids=$(lsof -t -i:{ctrl_port} 2>/dev/null || fuser {ctrl_port}/tcp 2>/dev/null); "
+            f"[ -n \"$_pids\" ] && kill -9 $_pids 2>/dev/null; "
+            # 3. Free the ZMQ PUB port for this profile so the new instance can bind it
             f"fuser -k {_zmq_pub_port}/tcp 2>/dev/null || "
             f"  kill $(lsof -t -i:{_zmq_pub_port} 2>/dev/null) 2>/dev/null; "
             f"true"
@@ -312,16 +311,17 @@ def stop_re_manager(settings: dict, profile: dict) -> tuple:
             _, log_file, pid_file = _instance_files(profile_name)
             cmd = (
                 # Kill procServ wrapper first (prevents immediate restart),
-                # then kill RE Manager processes.  SIGKILL after 1 s for
-                # any that ignored SIGTERM.
+                # then kill only the RE Manager bound to this profile's port.
                 f"if [ -f {pid_file} ]; then "
                 f"  kill $(cat {pid_file}) 2>/dev/null; "
                 f"  rm -f {pid_file}; "
                 f"fi; "
                 f"pkill -f 'procServ.*{ctrl_port}' 2>/dev/null; "
-                f"pkill -f start-re-manager 2>/dev/null; "
+                f"_pids=$(lsof -t -i:{ctrl_port} 2>/dev/null || fuser {ctrl_port}/tcp 2>/dev/null); "
+                f"[ -n \"$_pids\" ] && kill $_pids 2>/dev/null; "
                 f"sleep 1; "
-                f"pkill -9 -f start-re-manager 2>/dev/null; "
+                f"_pids=$(lsof -t -i:{ctrl_port} 2>/dev/null || fuser {ctrl_port}/tcp 2>/dev/null); "
+                f"[ -n \"$_pids\" ] && kill -9 $_pids 2>/dev/null; "
                 f"true"
             )
         _, stdout, stderr = client.exec_command(cmd, timeout=10)
