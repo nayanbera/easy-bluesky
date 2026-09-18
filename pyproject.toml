@@ -42,6 +42,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+sample-view = [
+    "aswaxs-sample-view @ git+https://github.com/JIAJTIAN/ASWAXS_Sample_View.git",
+]
 epics = [
     "pyepics>=3.5",
     "p4p>=3.5",

@@ -15,6 +15,10 @@ pdfplumber>=0.10
 # EPICS Channel Access (real-hardware mode)
 pyepics>=3.5
 
+# Optional: ASWAXS Sample View station (Sample View Mode in AD Viewer config)
+# pip install git+https://github.com/JIAJTIAN/ASWAXS_Sample_View.git
+# aswaxs-sample-view
+
 # Optional editor enhancements (auto-completion and static analysis)
 jedi>=0.19
 pyflakes>=3.0

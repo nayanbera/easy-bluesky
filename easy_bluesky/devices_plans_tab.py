@@ -27,7 +27,8 @@ class _ADConfigDialog(QDialog):
     """Two-field dialog: AD EPICS prefix + beamline host for PVA routing."""
 
     def __init__(self, device_name: str, default_prefix: str,
-                 default_host: str, parent=None):
+                 default_host: str, default_sample_view: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Configure AD Viewer — {device_name}")
         self.setMinimumWidth(400)
@@ -59,6 +60,14 @@ class _ADConfigDialog(QDialog):
 
         lay.addLayout(form)
 
+        self._sample_view_cb = QCheckBox("Sample View Mode")
+        self._sample_view_cb.setChecked(default_sample_view)
+        self._sample_view_cb.setToolTip(
+            "Open the ASWAXS Sample View station instead of the standard AD image viewer.\n"
+            "Requires: pip install git+https://github.com/JIAJTIAN/ASWAXS_Sample_View.git"
+        )
+        lay.addWidget(self._sample_view_cb)
+
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
@@ -76,6 +85,10 @@ class _ADConfigDialog(QDialog):
     @property
     def host(self) -> str:
         return self._host_edit.text().strip()
+
+    @property
+    def sample_view_mode(self) -> bool:
+        return self._sample_view_cb.isChecked()
 
 
 class _XRFConfigDialog(QDialog):
@@ -335,6 +348,7 @@ class DevicesPlansTab(QWidget):
         self._plan_catalog: PlanCatalog | None = None
         self._pv_map_cache:  dict = {}   # dev_name → {sig_name: pvname}
         self._ad_viewers:    dict = {}   # dev_name → ADViewerWindow
+        self._sample_viewers: dict = {}  # dev_name → SampleStation window
         self._xrf_viewers:   dict = {}   # dev_name → XRFViewerWindow
         self._conn_settings: dict = {}   # active connection profile
         self._tweak_step_values: dict = {}  # dev_name → step spinbox value (survives sort)
@@ -1317,22 +1331,32 @@ class DevicesPlansTab(QWidget):
         profile_host = self._conn_settings.get('host', '')
         pva_host     = saved.get('pva_host', '') or profile_host
 
+        sample_view_mode = saved.get('sample_view_mode', False)
+
         # Show config dialog when forced, prefix unknown, or host not yet saved
         if force_dialog or not prefix or not pva_host:
             dlg = _ADConfigDialog(
                 dev_name,
                 prefix or f"{dev_name}:",
                 pva_host,
+                default_sample_view=sample_view_mode,
                 parent=self,
             )
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
-            prefix   = dlg.prefix
-            pva_host = dlg.host
+            prefix           = dlg.prefix
+            pva_host         = dlg.host
+            sample_view_mode = dlg.sample_view_mode
 
-        # Persist prefix/host without overwriting other saved keys (colormap etc.)
-        ad_settings.setdefault(dev_name, {}).update({'prefix': prefix, 'pva_host': pva_host})
+        # Persist settings without overwriting other saved keys (colormap etc.)
+        ad_settings.setdefault(dev_name, {}).update(
+            {'prefix': prefix, 'pva_host': pva_host, 'sample_view_mode': sample_view_mode}
+        )
         save_ad_settings(ad_settings)
+
+        if sample_view_mode:
+            self._open_sample_viewer(dev_name)
+            return
 
         # Bring existing window to front rather than open a second one
         existing = self._ad_viewers.get(dev_name)
@@ -1349,6 +1373,36 @@ class DevicesPlansTab(QWidget):
         self._ad_viewers[dev_name] = viewer
         viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         viewer.destroyed.connect(lambda _, n=dev_name: self._ad_viewers.pop(n, None))
+        viewer.show()
+
+    def _open_sample_viewer(self, dev_name: str) -> None:
+        """Launch the ASWAXS Sample View station (aswaxs-sample-view package)."""
+        existing = self._sample_viewers.get(dev_name)
+        if existing is not None:
+            try:
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                pass
+
+        try:
+            from sample_station import SampleStation  # noqa: PLC0415
+        except ImportError:
+            QMessageBox.warning(
+                self,
+                "aswaxs-sample-view not installed",
+                "The Sample View Mode requires the aswaxs-sample-view package.\n\n"
+                "Install it with:\n"
+                "    pip install git+https://github.com/JIAJTIAN/ASWAXS_Sample_View.git",
+            )
+            return
+
+        viewer = SampleStation()
+        viewer.setWindowTitle(f"Sample View — {dev_name}" if dev_name else "Sample View")
+        viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._sample_viewers[dev_name] = viewer
+        viewer.destroyed.connect(lambda _, n=dev_name: self._sample_viewers.pop(n, None))
         viewer.show()
 
     # ── XRF Viewer ───────────────────────────────────────────────────────────────
@@ -1393,8 +1447,8 @@ class DevicesPlansTab(QWidget):
         viewer.show()
 
     def close_all_viewers(self):
-        """Close all open AD Viewer and XRF Viewer windows."""
-        for viewers in (self._ad_viewers, self._xrf_viewers):
+        """Close all open AD Viewer, XRF Viewer and Sample View windows."""
+        for viewers in (self._ad_viewers, self._xrf_viewers, self._sample_viewers):
             for win in list(viewers.values()):
                 try:
                     win.close()
