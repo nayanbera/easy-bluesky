@@ -1361,9 +1361,7 @@ class MainWindow(QMainWindow):
         ctrl_addr, _, doc_addr = make_zmq_addrs(self._conn_settings)
         self.status_bar.showMessage("Connected to RE Manager at " + ctrl_addr)
         profile = get_active_profile(self._conn_settings)
-        profile_name = profile.get('name', 'Default')
-        self.setWindowTitle(f"EasyBluesky — {profile_name}")
-        self._log(f"[{self._ts()}] ✓ Connected to '{profile_name}' RE Manager")
+        self._log(f"[{self._ts()}] ✓ Connected to '{profile.get('name', 'Default')}' RE Manager")
         self._plan_catalog.clear()
         self.plan_builder.set_profile(self._conn_settings)
         self.devices_plans_tab.set_profile(self._conn_settings)
@@ -1624,7 +1622,6 @@ class MainWindow(QMainWindow):
             self._log(f"[{self._ts()}] ✓ Operator lock claimed for this session")
 
     def _on_disconnected(self):
-        self.setWindowTitle("EasyBluesky")
         self.conn_label.setText("⬤  Disconnected")
         self.conn_label.setStyleSheet("color: #d62728;")
         self.re_bar.set_disconnected()
