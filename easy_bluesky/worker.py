@@ -321,6 +321,9 @@ class _LocalDocWriter:
         ctx.term()
 
     def _handle(self, name: str, doc: dict):
+        if name == "event":
+            self.event_queue.put_nowait(doc.get("seq_num", 0))
+
         exp_dir = self._get_exp_dir()
         if exp_dir is None:
             return
@@ -345,9 +348,6 @@ class _LocalDocWriter:
             fh.flush()
         except Exception:
             pass
-
-        if name == "event":
-            self.event_queue.put_nowait(doc.get("seq_num", 0))
 
         if name == "stop":
             try:
