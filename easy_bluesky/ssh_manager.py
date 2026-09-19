@@ -678,13 +678,16 @@ def list_clients(settings: dict, profile: dict,
     """
     import json as _json
     glob  = _client_glob(profile.get("name", "Default"))
-    ports = f":{control_port}|:{info_port}"
-    # One SSH session, two commands
+    # One SSH session, two commands.
+    # ss -tn columns: State RecvQ SendQ Local Peer
+    # We filter rows where the LOCAL address ends with :control_port or :info_port
+    # (i.e. the server side) so we only count clients for THIS profile's ports,
+    # not clients of other profiles whose peer port happens to match.
     cmd = (
         f"find /tmp -maxdepth 1 -name '{glob.split('/')[-1]}' "
         f"-mmin -{stale_secs // 60 + 1} -exec cat {{}} \\; 2>/dev/null; "
         f"echo '---'; "
-        f"ss -tn 2>/dev/null | grep -E '{ports}'"
+        f"ss -tn 2>/dev/null | awk '$4 ~ /:{control_port}$/ || $4 ~ /:{info_port}$/ {{print}}'"
     )
     try:
         client = _get_client(_settings_for_profile(settings, profile))
@@ -711,7 +714,10 @@ def list_clients(settings: dict, profile: dict,
             parts = line.split()
             if len(parts) >= 5:
                 peer = parts[4]
-                ip = peer.rsplit(":", 1)[0]
+                ip = peer.rsplit(":", 1)[0].strip("[]")
+                # Normalise IPv4-mapped IPv6 (::ffff:a.b.c.d → a.b.c.d)
+                if ip.lower().startswith("::ffff:"):
+                    ip = ip[7:]
                 if ip and ip != "*":
                     ips.add(ip)
     return sorted(ips)
