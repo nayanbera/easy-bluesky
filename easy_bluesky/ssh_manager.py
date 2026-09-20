@@ -178,6 +178,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
             f" --zmq-control-addr tcp://*:{ctrl_port}"
             f" --zmq-info-addr tcp://*:{info_port}"
             f" --zmq-publish-console ON"
+            f" --redis-name-prefix qs_{ctrl_port}"
             f" --startup-script {scripts_path}/{startup_script}"
             f" --existing-plans-devices {scripts_path}/existing_plans_and_devices.yaml"
             f" --user-group-permissions {scripts_path}/user_group_permissions.yaml"
