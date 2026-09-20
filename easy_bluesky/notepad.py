@@ -4,6 +4,17 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import markdown as _md_module
+    def _to_html(text: str) -> str:
+        return _md_module.markdown(text, extensions=["fenced_code", "tables", "nl2br"])
+except ImportError:
+    def _to_html(text: str) -> str:
+        return (
+            text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace("\n", "<br>")
+        )
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
@@ -132,14 +143,8 @@ class NotepadWindow(QMainWindow):
 
         rows = []
         for n in self._notes:
-            ts   = n.get("ts", "")
-            text = (
-                n.get("text", "")
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\n", "<br>")
-            )
+            ts          = n.get("ts", "")
+            raw_text    = n.get("text", "")
             scan_num    = n.get("scan_num")
             source      = n.get("source", "manual")
             attachments = n.get("attachments", [])
@@ -150,10 +155,11 @@ class NotepadWindow(QMainWindow):
                 if scan_num else ""
             )
             header = (
-                f'<div style="color:#888;font-size:10px;margin-top:10px">'
+                f'<div style="color:#888;font-size:10px;margin-top:10px;'
+                f'border-top:1px solid #333;padding-top:6px">'
                 f'{src_icon} {ts}{scan_tag}</div>'
             )
-            body = f'<div style="margin:2px 0 4px 0">{text}</div>'
+            body = f'<div style="margin:2px 0 4px 0">{_to_html(raw_text)}</div>'
             attach_html = "".join(
                 f'<div style="margin:4px 0">'
                 f'<img src="file:///{Path(p).as_posix()}" width="460" '
@@ -166,9 +172,25 @@ class NotepadWindow(QMainWindow):
             )
             rows.append(header + body + attach_html)
 
+        css = (
+            "body{background:#1e1e1e;color:#ddd;"
+            "font-family:Menlo,Consolas,monospace;font-size:12px;padding:6px;margin:0}"
+            "h1,h2,h3{color:#eee;margin:6px 0 2px 0}"
+            "h1{font-size:15px}h2{font-size:13px}h3{font-size:12px}"
+            "p{margin:2px 0}"
+            "code{background:#2d2d2d;color:#f8c555;padding:1px 3px;border-radius:3px}"
+            "pre{background:#2d2d2d;padding:6px;border-radius:4px;overflow-x:auto}"
+            "pre code{background:none;padding:0}"
+            "blockquote{border-left:3px solid #555;margin:4px 0;padding-left:8px;color:#aaa}"
+            "a{color:#6af}"
+            "table{border-collapse:collapse;margin:4px 0}"
+            "th,td{border:1px solid #555;padding:2px 6px}"
+            "th{background:#2a2a2a}"
+            "ul,ol{margin:2px 0;padding-left:20px}"
+            "hr{border:none;border-top:1px solid #444;margin:6px 0}"
+        )
         self._viewer.setHtml(
-            '<html><body style="background:#1e1e1e;color:#ddd;'
-            "font-family:Menlo,Consolas,monospace;font-size:12px;padding:4px\">"
+            f"<html><head><style>{css}</style></head><body>"
             + "".join(rows)
             + "</body></html>"
         )
