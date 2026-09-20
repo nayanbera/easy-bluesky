@@ -155,7 +155,13 @@ class NotepadWindow(QMainWindow):
             )
             body = f'<div style="margin:2px 0 4px 0">{text}</div>'
             attach_html = "".join(
-                f'<div style="color:#6af;font-size:10px">📎 {Path(p).name}</div>'
+                f'<div style="margin:4px 0">'
+                f'<img src="file:///{Path(p).as_posix()}" width="460" '
+                f'style="border:1px solid #444;border-radius:4px"><br>'
+                f'<span style="color:#6af;font-size:10px">📎 {Path(p).name}</span>'
+                f'</div>'
+                if Path(p).suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
+                else f'<div style="color:#6af;font-size:10px">📎 {Path(p).name}</div>'
                 for p in attachments
             )
             rows.append(header + body + attach_html)
@@ -218,9 +224,33 @@ class NotepadWindow(QMainWindow):
             return
         shots_dir = self._exp_dir / "screenshots"
         shots_dir.mkdir(parents=True, exist_ok=True)
-        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = shots_dir / f"{ts}_{tag}.png"
-        widget.grab().save(str(path))
-        self._pending_attachments.append(str(path))
-        names = [Path(p).name for p in self._pending_attachments]
-        self._attach_label.setText("Pending: " + ", ".join(names))
+        ts_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path    = shots_dir / f"{ts_file}_{tag}.png"
+        ok = widget.grab().save(str(path))
+        if not ok:
+            QMessageBox.warning(self, "Screenshot failed", f"Could not save to {path}")
+            return
+
+        # If there is text in the entry box, just add the image to pending so
+        # the user can save text + screenshot together. Otherwise save immediately.
+        if self._entry.toPlainText().strip():
+            self._pending_attachments.append(str(path))
+            names = [Path(p).name for p in self._pending_attachments]
+            self._attach_label.setText("Pending: " + ", ".join(names))
+        else:
+            scan_num = self._scan_spin.value() or None
+            ts_note  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            label    = {"plot": "Live Plot", "app": "App Window"}.get(tag, tag)
+            note = {
+                "ts":          ts_note,
+                "text":        f"Screenshot: {label}",
+                "scan_num":    scan_num,
+                "source":      "manual",
+                "attachments": [str(path)],
+            }
+            f = self._notes_file()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            with open(f, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(note) + "\n")
+            self._notes.append(note)
+            self._render()
