@@ -15,6 +15,7 @@ class REControlBar(QFrame):
     stop_manager_requested  = pyqtSignal()
     reconnect_requested     = pyqtSignal()
     profile_changed         = pyqtSignal(str)   # emits the selected profile name
+    notes_requested         = pyqtSignal()
 
     _EXT_BUSY_DEBOUNCE = 1.5  # seconds before "BUSY (ext)" appears in the chip
 
@@ -177,12 +178,20 @@ class REControlBar(QFrame):
         lay.addWidget(self.queue_label)
         lay.addWidget(self.running_label)
 
+        lay.addWidget(self._separator())
+
+        self.btn_notes = QPushButton("📝 Notes")
+        self.btn_notes.setToolTip("Open / raise the experiment note-taking window")
+        self.btn_notes.setFixedWidth(90)
+        lay.addWidget(self.btn_notes)
+
         # Wire signals
         self.btn_open_env.clicked.connect(self.open_env_requested)
         self.btn_close_env.clicked.connect(self.close_env_requested)
         self.btn_start_mgr.clicked.connect(self.start_manager_requested)
         self.btn_stop_mgr.clicked.connect(self.stop_manager_requested)
         self.btn_reconnect.clicked.connect(self.reconnect_requested)
+        self.btn_notes.clicked.connect(self.notes_requested)
 
         # Start in a neutral state
         self._set_re_buttons_enabled(False, False)

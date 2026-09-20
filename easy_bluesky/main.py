@@ -1072,6 +1072,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
         self.tabs.addTab(self.re_console,        "🖥  RE Console")
 
+        # Floating notepad window (not a tab)
+        from .notepad import NotepadWindow
+        self._notepad = NotepadWindow(main_window=self)
+
         self.tabs.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._on_tab_context_menu)
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -1321,6 +1325,7 @@ class MainWindow(QMainWindow):
         self.re_bar.stop_manager_requested.connect(self._on_stop_manager_requested)
         self.re_bar.reconnect_requested.connect(self._on_reconnect_requested)
         self.re_bar.profile_changed.connect(self._on_profile_changed)
+        self.re_bar.notes_requested.connect(self._on_notes_requested)
 
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
         self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
@@ -2494,12 +2499,18 @@ class MainWindow(QMainWindow):
         self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(active)
 
+    def _on_notes_requested(self):
+        self._notepad.show()
+        self._notepad.raise_()
+        self._notepad.activateWindow()
+
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
         self._refresh_recent_menu()
         exp_dir = str(Path(runs_dir).parent)
         self.mongo_browser.set_active_experiment(exp_dir)
         self.queue_mgr.set_current_experiment(exp_dir)
+        self._notepad.set_experiment(exp_dir)
 
     def _on_mongo_move_requested(self, motor: str, position: float):
         if not self.worker:
@@ -2547,6 +2558,7 @@ class MainWindow(QMainWindow):
         self._detached_tabs.clear()
         self.devices_plans_tab.close_all_viewers()
         self.experiments_tab.close_detached_windows()
+        self._notepad.close()
         self.worker.stop()
         profile   = get_active_profile(self._conn_settings)
         use_local = profile.get("is_local", False) or is_local_host(self._conn_settings)
