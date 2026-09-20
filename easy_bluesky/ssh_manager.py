@@ -667,7 +667,8 @@ def unregister_client(settings: dict, profile: dict, hostname: str) -> None:
 
 def list_clients(settings: dict, profile: dict,
                  control_port: int, info_port: int,
-                 stale_secs: int = 90) -> list:
+                 stale_secs: int = 90,
+                 heartbeat_payload: str = "") -> list:
     """Return sorted list of unique client IPs currently connected.
 
     Combines two sources:
@@ -675,17 +676,25 @@ def list_clients(settings: dict, profile: dict,
     - Heartbeat files whose mtime is within *stale_secs* (catches clients
       that are connected but currently idle between polls).
 
+    If *heartbeat_payload* is non-empty, the caller's heartbeat file is
+    refreshed in the same SSH session (avoids a second connection).
+
     Returns a sorted list of unique IP strings.
     """
     import json as _json
     glob  = _client_glob(profile.get("name", "Default"))
-    # One SSH session, two commands.
     # ss -tn columns: State RecvQ SendQ Local Peer
     # We filter rows where the LOCAL address ends with :control_port or :info_port
     # (i.e. the server side) so we only count clients for THIS profile's ports,
     # not clients of other profiles whose peer port happens to match.
+    heartbeat_cmd = ""
+    if heartbeat_payload:
+        hb_path = _client_file(profile.get("name", "Default"),
+                               _json.loads(heartbeat_payload).get("host", "unknown"))
+        heartbeat_cmd = f"echo '{heartbeat_payload}' > {hb_path}; "
     cmd = (
-        f"find /tmp -maxdepth 1 -name '{glob.split('/')[-1]}' "
+        heartbeat_cmd
+        + f"find /tmp -maxdepth 1 -name '{glob.split('/')[-1]}' "
         f"-mmin -{stale_secs // 60 + 1} -exec cat {{}} \\; 2>/dev/null; "
         f"echo '---'; "
         f"ss -tn 2>/dev/null | awk '$4 ~ /:{control_port}$/ || $4 ~ /:{info_port}$/ {{print}}'"

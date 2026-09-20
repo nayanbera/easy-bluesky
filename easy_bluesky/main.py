@@ -1491,10 +1491,16 @@ class MainWindow(QMainWindow):
         info_port    = profile.get("info_port",    60625)
 
         def _run():
-            from .ssh_manager import list_clients, register_client
-            # Refresh our own heartbeat file while we're at it
-            register_client(settings, profile, self._my_hostname)
-            ips = list_clients(settings, profile, ctrl_port, info_port)
+            import json as _json, socket as _socket
+            from .ssh_manager import list_clients
+            try:
+                local_ip = _socket.gethostbyname(_socket.gethostname())
+            except Exception:
+                local_ip = "unknown"
+            hb = _json.dumps({"host": self._my_hostname, "ip": local_ip})
+            # Heartbeat refresh + client list in one SSH connection
+            ips = list_clients(settings, profile, ctrl_port, info_port,
+                               heartbeat_payload=hb)
             self._clients_updated.emit(ips)
             # Notify if count just exceeded 1 (new joiner detected)
             if len(ips) > 1:
@@ -2574,6 +2580,11 @@ class MainWindow(QMainWindow):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
+    # Suppress paramiko's internal transport-thread tracebacks (banner/connection
+    # reset errors are caught by our callers; the raw traceback on stderr is noise).
+    import logging as _logging
+    _logging.getLogger("paramiko.transport").setLevel(_logging.CRITICAL)
+
     app = QApplication(sys.argv)
     app.setApplicationName("EasyBluesky")
     app.setStyle("Fusion")
