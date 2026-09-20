@@ -438,8 +438,36 @@ def apply_epics_env(settings: dict):
     os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "YES" if auto else "NO"
 
 
+def _this_hostname() -> str:
+    import socket as _socket
+    return _socket.gethostname()
+
+
+def get_active_profile_name(settings: dict) -> str:
+    """Return the active profile name for THIS machine.
+
+    Looks up ``active_profile_by_host[hostname]`` first so that machines
+    sharing the same NFS-mounted connection.json each remember their own
+    last-used profile independently.  Falls back to the legacy global
+    ``active_profile`` key for backwards compatibility.
+    """
+    host = _this_hostname()
+    by_host = settings.get("active_profile_by_host", {})
+    if host in by_host:
+        return by_host[host]
+    return settings.get("active_profile", "Default")
+
+
+def set_active_profile_name(settings: dict, name: str) -> None:
+    """Persist the active profile name for THIS machine only."""
+    host = _this_hostname()
+    settings.setdefault("active_profile_by_host", {})[host] = name
+    # Keep legacy key in sync so older app versions still work
+    settings["active_profile"] = name
+
+
 def get_active_profile(settings: dict) -> dict:
-    active_name = settings.get("active_profile", "Default")
+    active_name = get_active_profile_name(settings)
     profiles = settings.get("profiles", [])
     for p in profiles:
         if p.get("name") == active_name:
@@ -581,8 +609,8 @@ def delete_profile(settings: dict, name: str) -> bool:
             settings.setdefault("deleted_profiles", []).append(entry)
             profiles.pop(i)
             settings["profiles"] = profiles
-            if settings.get("active_profile") == name:
-                settings["active_profile"] = profiles[0]["name"] if profiles else ""
+            if get_active_profile_name(settings) == name:
+                set_active_profile_name(settings, profiles[0]["name"] if profiles else "")
             return True
     return False
 
@@ -1617,7 +1645,7 @@ class ConnectionDialog(QDialog):
         outer.addWidget(btns)
 
         self._populate_profile_list()
-        active = self._settings.get("active_profile", "Default")
+        active = get_active_profile_name(self._settings)
         selected = False
         for i in range(self._profile_list.count()):
             if self._profile_list.item(i).data(Qt.ItemDataRole.UserRole) == active:
@@ -1633,7 +1661,7 @@ class ConnectionDialog(QDialog):
         self._update_zmq_label()
 
     def _populate_profile_list(self):
-        active = self._settings.get("active_profile", "Default")
+        active = get_active_profile_name(self._settings)
         self._profile_list.blockSignals(True)
         self._profile_list.clear()
         for p in self._settings.get("profiles", []):
@@ -1706,12 +1734,12 @@ class ConnectionDialog(QDialog):
             "remote_data_root": self._prof_remote_data_root.text().strip(),
         }
 
-        if old_name == self._settings.get("active_profile") and new_name != old_name:
-            self._settings["active_profile"] = new_name
+        if old_name == get_active_profile_name(self._settings) and new_name != old_name:
+            set_active_profile_name(self._settings, new_name)
 
         item = self._profile_list.item(row)
         if item:
-            current_active = self._settings.get("active_profile", "Default")
+            current_active = get_active_profile_name(self._settings)
             label = f"{new_name}  [LOCAL]" if is_local else new_name
             if new_name == current_active:
                 label += "  [active]"
@@ -1766,8 +1794,8 @@ class ConnectionDialog(QDialog):
         profiles.pop(row)
         self._settings["profiles"] = profiles
 
-        if self._settings.get("active_profile") == removed_name:
-            self._settings["active_profile"] = profiles[0]["name"] if profiles else "Default"
+        if get_active_profile_name(self._settings) == removed_name:
+            set_active_profile_name(self._settings, profiles[0]["name"] if profiles else "Default")
 
         self._current_row = None
         self._profile_list.blockSignals(True)
@@ -2003,7 +2031,7 @@ class ConnectionDialog(QDialog):
         self._settings["registry_host"] = host
         self._current_row = None
         self._populate_profile_list()
-        active = self._settings.get("active_profile", "Default")
+        active = get_active_profile_name(self._settings)
         for i in range(self._profile_list.count()):
             if self._profile_list.item(i).data(Qt.ItemDataRole.UserRole) == active:
                 self._profile_list.setCurrentRow(i)

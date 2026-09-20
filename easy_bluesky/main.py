@@ -15,7 +15,8 @@ from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from .config import APP_NAME, ACCENT
 from .connection_settings import (
     load_connection, save_connection, make_zmq_addrs,
-    get_active_profile, ConnectionDialog, is_local_host,
+    get_active_profile, get_active_profile_name, set_active_profile_name,
+    ConnectionDialog, is_local_host,
     profile_slug, delete_profile, restore_profile,
     purge_old_deleted, find_free_ports, _all_used_ports,
     apply_epics_env,
@@ -455,7 +456,7 @@ def _create_first_run_profile(settings: dict):
         "procserv_port": ports[3] if len(ports) > 3 else 60635,
     }
     settings["profiles"] = [profile]
-    settings["active_profile"] = "Local Sim"
+    set_active_profile_name(settings, "Local Sim")
     settings.setdefault("deleted_profiles", [])
 
 
@@ -1058,7 +1059,7 @@ class MainWindow(QMainWindow):
         self.hdf5_viewer        = HDF5Viewer()
         self.experiments_tab.update_settings(self._conn_settings)
         # Set initial profile so _load_active_experiment reads the right slot.
-        initial_profile = self._conn_settings.get("active_profile", "Default")
+        initial_profile = get_active_profile_name(self._conn_settings)
         self.experiments_tab._active_profile = initial_profile
         self.re_console         = REConsoleWidget()
 
@@ -1099,7 +1100,7 @@ class MainWindow(QMainWindow):
 
         profiles = self._conn_settings.get("profiles", [])
         names = [p.get("name", "") for p in profiles]
-        active = self._conn_settings.get("active_profile", "Default")
+        active = get_active_profile_name(self._conn_settings)
         self.re_bar.update_profiles(names, active)
 
     def _build_menu(self):
@@ -2176,7 +2177,7 @@ class MainWindow(QMainWindow):
                 f"Profile '{name}' is already open in another window on this computer."
             )
             # Revert combo to current profile
-            current = self._conn_settings.get("active_profile", "Default")
+            current = get_active_profile_name(self._conn_settings)
             profiles = self._conn_settings.get("profiles", [])
             names = [p.get("name", "") for p in profiles]
             self.re_bar.update_profiles(names, current)
@@ -2186,7 +2187,7 @@ class MainWindow(QMainWindow):
         self._operator_lock_claimed = False
         self._operator_lock_holder  = {}
 
-        self._conn_settings["active_profile"] = name
+        set_active_profile_name(self._conn_settings, name)
         save_connection(self._conn_settings)
         ctrl, info, doc = make_zmq_addrs(self._conn_settings)
         self._log(f"[{self._ts()}] Switching to profile '{name}' → {ctrl}")
@@ -2429,7 +2430,7 @@ class MainWindow(QMainWindow):
 
         # Update the profile combo
         names  = [p.get("name", "") for p in profiles]
-        active = self._conn_settings.get("active_profile", "Default")
+        active = get_active_profile_name(self._conn_settings)
         self.re_bar.update_profiles(names, active)
 
         running_names = [i["name"] for i in instances if i.get("running")]
@@ -2479,7 +2480,7 @@ class MainWindow(QMainWindow):
         self.experiments_tab.live_viewer.restart_zmq(doc)
         profiles = self._conn_settings.get("profiles", [])
         names = [p.get("name", "") for p in profiles]
-        active = self._conn_settings.get("active_profile", "Default")
+        active = get_active_profile_name(self._conn_settings)
         self.re_bar.update_profiles(names, active)
         self.mongo_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
@@ -2600,7 +2601,7 @@ def main():
         sys.exit(0)
 
     selected = picker.selected_profile
-    settings["active_profile"] = selected["name"]
+    set_active_profile_name(settings, selected["name"])
     save_connection(settings)
 
     win = MainWindow(guard=guard)
