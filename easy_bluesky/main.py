@@ -989,6 +989,16 @@ class _OperatorLockChecker(QThread):
         self.result.emit(holder)
 
 
+def _ai_settings(conn: dict) -> dict:
+    return {
+        "provider":          conn.get("ai_provider", "anthropic"),
+        "anthropic_api_key": conn.get("anthropic_api_key", ""),
+        "ai_base_url":       conn.get("ai_base_url", ""),
+        "ai_api_key":        conn.get("ai_api_key", ""),
+        "ai_model":          conn.get("ai_model", ""),
+    }
+
+
 # ── Main window ────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -1066,9 +1076,8 @@ class MainWindow(QMainWindow):
 
         # AI assistant window (created here; shown lazily on button click)
         _slug = profile_slug(initial_profile)
-        _api_key = self._conn_settings.get("anthropic_api_key", "")
         self.ai_window = AIAssistantWindow(
-            self.experiments_tab, _slug, _api_key, parent=self
+            self.experiments_tab, _slug, _ai_settings(self._conn_settings), parent=self
         )
 
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
@@ -2225,10 +2234,7 @@ class MainWindow(QMainWindow):
         self.experiments_tab.update_settings(self._conn_settings)
         self.experiments_tab.set_profile(name)
         self.watchdog_tab.load_for_profile(name)
-        self.ai_window.update_profile(
-            profile_slug(name),
-            self._conn_settings.get("anthropic_api_key", ""),
-        )
+        self.ai_window.update_profile(profile_slug(name), _ai_settings(self._conn_settings))
 
     def _on_open_hdf5(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -2511,10 +2517,7 @@ class MainWindow(QMainWindow):
         _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
         self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(active)
-        self.ai_window.update_profile(
-            profile_slug(active),
-            self._conn_settings.get("anthropic_api_key", ""),
-        )
+        self.ai_window.update_profile(profile_slug(active), _ai_settings(self._conn_settings))
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")

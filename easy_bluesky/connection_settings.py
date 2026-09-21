@@ -1398,44 +1398,123 @@ class ConnectionDialog(QDialog):
         ai_title.setStyleSheet("font-weight: bold; font-size: 12px;")
         lay.addWidget(ai_title)
 
-        ai_note = QLabel(
-            "Enables the 🤖 AI assistant. Get a free API key from "
-            '<a href="https://console.anthropic.com/account/keys">console.anthropic.com</a>.'
+        # Provider selector
+        prov_row = QFormLayout()
+        prov_row.setHorizontalSpacing(12)
+        self._ai_provider = QComboBox()
+        self._ai_provider.addItems(["Anthropic", "OpenAI-compatible (Groq, Ollama, …)"])
+        saved_provider = self._settings.get("ai_provider", "anthropic")
+        self._ai_provider.setCurrentIndex(0 if saved_provider == "anthropic" else 1)
+        prov_row.addRow("Provider:", self._ai_provider)
+        lay.addLayout(prov_row)
+
+        # ── Anthropic panel ────────────────────────────────────────────────────
+        self._ai_panel_anthropic = QWidget()
+        ant_form = QFormLayout(self._ai_panel_anthropic)
+        ant_form.setContentsMargins(0, 0, 0, 0)
+        ant_form.setHorizontalSpacing(12)
+
+        ant_note = QLabel(
+            'Get a free API key at <a href="https://console.anthropic.com/account/keys">'
+            'console.anthropic.com</a>.'
         )
-        ai_note.setOpenExternalLinks(True)
-        ai_note.setWordWrap(True)
-        ai_note.setStyleSheet("color: #999; font-size: 11px;")
-        lay.addWidget(ai_note)
+        ant_note.setOpenExternalLinks(True)
+        ant_note.setStyleSheet("color: #999; font-size: 11px;")
+        ant_form.addRow("", ant_note)
 
-        ai_form = QFormLayout()
-        ai_form.setHorizontalSpacing(12)
-
-        key_row = QHBoxLayout()
+        ant_key_row = QHBoxLayout()
         self._anthropic_key = QLineEdit(self._settings.get("anthropic_api_key", ""))
         self._anthropic_key.setPlaceholderText("sk-ant-…")
         self._anthropic_key.setEchoMode(QLineEdit.EchoMode.Password)
-        key_row.addWidget(self._anthropic_key, 1)
-
-        btn_show_key = QPushButton("👁")
-        btn_show_key.setFixedWidth(32)
-        btn_show_key.setToolTip("Show / hide key")
-        btn_show_key.setCheckable(True)
-        btn_show_key.toggled.connect(
-            lambda checked: self._anthropic_key.setEchoMode(
-                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        ant_key_row.addWidget(self._anthropic_key, 1)
+        btn_ant_show = QPushButton("👁")
+        btn_ant_show.setFixedWidth(32)
+        btn_ant_show.setCheckable(True)
+        btn_ant_show.setToolTip("Show / hide")
+        btn_ant_show.toggled.connect(
+            lambda on: self._anthropic_key.setEchoMode(
+                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
             )
         )
-        key_row.addWidget(btn_show_key)
-
-        btn_get_key = QPushButton("Get key ↗")
-        btn_get_key.setToolTip("Open Anthropic Console to create an API key")
-        btn_get_key.clicked.connect(
+        ant_key_row.addWidget(btn_ant_show)
+        btn_get_ant = QPushButton("Get key ↗")
+        btn_get_ant.setToolTip("Open Anthropic Console")
+        btn_get_ant.clicked.connect(
             lambda: __import__("webbrowser").open("https://console.anthropic.com/account/keys")
         )
-        key_row.addWidget(btn_get_key)
+        ant_key_row.addWidget(btn_get_ant)
+        ant_form.addRow("API key:", ant_key_row)
+        lay.addWidget(self._ai_panel_anthropic)
 
-        ai_form.addRow("Anthropic API key:", key_row)
-        lay.addLayout(ai_form)
+        # ── OpenAI-compatible panel ────────────────────────────────────────────
+        self._ai_panel_oai = QWidget()
+        oai_form = QFormLayout(self._ai_panel_oai)
+        oai_form.setContentsMargins(0, 0, 0, 0)
+        oai_form.setHorizontalSpacing(12)
+
+        oai_note = QLabel(
+            "Works with Groq, Ollama, Together AI, OpenRouter, and any OpenAI-compatible server."
+        )
+        oai_note.setWordWrap(True)
+        oai_note.setStyleSheet("color: #999; font-size: 11px;")
+        oai_form.addRow("", oai_note)
+
+        preset_row = QHBoxLayout()
+        btn_groq = QPushButton("Groq (free) ↗")
+        btn_groq.setToolTip("Free tier at console.groq.com — fast Llama/Mixtral models")
+        btn_ollama = QPushButton("Ollama (local)")
+        btn_ollama.setToolTip("Run models locally at http://localhost:11434")
+
+        def _set_groq():
+            self._ai_base_url.setText("https://api.groq.com/openai/v1")
+            self._ai_model.setText("llama-3.3-70b-versatile")
+            __import__("webbrowser").open("https://console.groq.com/keys")
+
+        def _set_ollama():
+            self._ai_base_url.setText("http://localhost:11434/v1")
+            self._ai_api_key.setText("ollama")
+            self._ai_model.setText("llama3.1")
+
+        btn_groq.clicked.connect(_set_groq)
+        btn_ollama.clicked.connect(_set_ollama)
+        preset_row.addWidget(btn_groq)
+        preset_row.addWidget(btn_ollama)
+        preset_row.addStretch()
+        oai_form.addRow("Presets:", preset_row)
+
+        self._ai_base_url = QLineEdit(self._settings.get("ai_base_url", ""))
+        self._ai_base_url.setPlaceholderText("https://api.groq.com/openai/v1")
+        oai_form.addRow("Base URL:", self._ai_base_url)
+
+        oai_key_row = QHBoxLayout()
+        self._ai_api_key = QLineEdit(self._settings.get("ai_api_key", ""))
+        self._ai_api_key.setPlaceholderText("API key (leave empty for Ollama)")
+        self._ai_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        oai_key_row.addWidget(self._ai_api_key, 1)
+        btn_oai_show = QPushButton("👁")
+        btn_oai_show.setFixedWidth(32)
+        btn_oai_show.setCheckable(True)
+        btn_oai_show.setToolTip("Show / hide")
+        btn_oai_show.toggled.connect(
+            lambda on: self._ai_api_key.setEchoMode(
+                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
+            )
+        )
+        oai_key_row.addWidget(btn_oai_show)
+        oai_form.addRow("API key:", oai_key_row)
+
+        self._ai_model = QLineEdit(self._settings.get("ai_model", ""))
+        self._ai_model.setPlaceholderText("llama-3.3-70b-versatile")
+        oai_form.addRow("Model:", self._ai_model)
+        lay.addWidget(self._ai_panel_oai)
+
+        # Toggle panels based on provider selection
+        def _on_provider_changed(idx):
+            self._ai_panel_anthropic.setVisible(idx == 0)
+            self._ai_panel_oai.setVisible(idx != 0)
+
+        self._ai_provider.currentIndexChanged.connect(_on_provider_changed)
+        _on_provider_changed(self._ai_provider.currentIndex())
 
         # ── Profiles section ───────────────────────────────────────────────────
         sep_prof = QFrame()
@@ -2201,6 +2280,10 @@ class ConnectionDialog(QDialog):
             "esaf_server_url":          self._esaf_url.text().strip(),
             "esaf_api_key":             self._esaf_key.text().strip(),
             "anthropic_api_key":        self._anthropic_key.text().strip(),
+            "ai_provider":              "anthropic" if self._ai_provider.currentIndex() == 0 else "openai_compatible",
+            "ai_base_url":              self._ai_base_url.text().strip(),
+            "ai_api_key":               self._ai_api_key.text().strip(),
+            "ai_model":                 self._ai_model.text().strip(),
         }
 
     def _on_accept(self):

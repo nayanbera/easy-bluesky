@@ -20,8 +20,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer, QEvent
 from PyQt6.QtGui import QKeyEvent  # noqa: F401  (used implicitly via event.key())
 
-_MODEL = "claude-haiku-4-5-20251001"
-_MAX_HISTORY = 40
+_MODEL_ANTHROPIC = "claude-haiku-4-5-20251001"
+_MODEL_OAI       = "llama-3.3-70b-versatile"
+_MAX_HISTORY     = 40
 
 _TOOLS = [
     {
@@ -78,6 +79,19 @@ _TOOLS = [
             "required": ["summary"],
         },
     },
+]
+
+# OpenAI-compatible tool format (structurally equivalent, different key names)
+_OAI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        },
+    }
+    for t in _TOOLS
 ]
 
 
@@ -160,63 +174,104 @@ class _AIThread(QThread):
     result_ready   = pyqtSignal(str, list)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, api_key: str, system: str, messages: list, parent=None):
+    def __init__(self, ai_settings: dict, system: str, messages: list, parent=None):
         super().__init__(parent)
-        self._api_key  = api_key
+        self._settings = ai_settings
         self._system   = system
         self._messages = messages
 
     def run(self):
+        if self._settings.get("provider", "anthropic") == "anthropic":
+            self._run_anthropic()
+        else:
+            self._run_openai_compatible()
+
+    def _run_anthropic(self):
         if not ANTHROPIC_AVAILABLE:
             self.error_occurred.emit(
                 "anthropic package not installed.\nRun: pip install anthropic"
             )
             return
         try:
-            client   = _ant.Anthropic(api_key=self._api_key)
+            api_key  = self._settings.get("anthropic_api_key", "")
+            model    = self._settings.get("ai_model") or _MODEL_ANTHROPIC
+            client   = _ant.Anthropic(api_key=api_key)
             messages = list(self._messages)
-
             resp = client.messages.create(
-                model=_MODEL,
-                max_tokens=1024,
-                system=self._system,
-                messages=messages,
-                tools=_TOOLS,
+                model=model, max_tokens=1024,
+                system=self._system, messages=messages, tools=_TOOLS,
             )
-
-            tool_uses   = []
-            text_parts  = []
-
+            tool_uses, text_parts = [], []
             for block in resp.content:
                 if block.type == "text":
                     text_parts.append(block.text)
                 elif block.type == "tool_use":
                     tool_uses.append({"id": block.id, "name": block.name, "input": block.input})
-
             if tool_uses and resp.stop_reason == "tool_use":
                 messages.append({"role": "assistant", "content": resp.content})
-                tool_results = [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tu["id"],
-                        "content":     self._tool_ack(tu["name"], tu["input"]),
-                    }
+                messages.append({"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": tu["id"],
+                     "content": self._tool_ack(tu["name"], tu["input"])}
                     for tu in tool_uses
-                ]
-                messages.append({"role": "user", "content": tool_results})
+                ]})
                 resp2 = client.messages.create(
-                    model=_MODEL,
-                    max_tokens=1024,
-                    system=self._system,
-                    messages=messages,
-                    tools=_TOOLS,
+                    model=model, max_tokens=1024,
+                    system=self._system, messages=messages, tools=_TOOLS,
                 )
                 for block in resp2.content:
                     if block.type == "text":
                         text_parts.append(block.text)
-
             self.result_ready.emit("\n".join(text_parts).strip(), tool_uses)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
 
+    def _run_openai_compatible(self):
+        try:
+            from openai import OpenAI
+        except ImportError:
+            self.error_occurred.emit(
+                "openai package not installed.\nRun: pip install openai"
+            )
+            return
+        try:
+            api_key  = self._settings.get("ai_api_key", "") or "ollama"
+            base_url = self._settings.get("ai_base_url") or None
+            model    = self._settings.get("ai_model") or _MODEL_OAI
+            client   = OpenAI(api_key=api_key, base_url=base_url)
+            # System prompt goes in messages for OpenAI-compatible APIs
+            messages = [{"role": "system", "content": self._system}] + list(self._messages)
+            resp = client.chat.completions.create(
+                model=model, max_tokens=1024,
+                messages=messages, tools=_OAI_TOOLS,
+            )
+            msg        = resp.choices[0].message
+            text       = msg.content or ""
+            oai_tcs    = msg.tool_calls or []
+            tool_uses  = []
+            for tc in oai_tcs:
+                try:
+                    inp = json.loads(tc.function.arguments)
+                except Exception:
+                    inp = {}
+                tool_uses.append({"id": tc.id, "name": tc.function.name, "input": inp})
+            if tool_uses:
+                messages.append({
+                    "role": "assistant", "content": msg.content,
+                    "tool_calls": [tc.model_dump() for tc in oai_tcs],
+                })
+                for tu in tool_uses:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tu["id"],
+                        "content": self._tool_ack(tu["name"], tu["input"]),
+                    })
+                resp2 = client.chat.completions.create(
+                    model=model, max_tokens=1024,
+                    messages=messages, tools=_OAI_TOOLS,
+                )
+                text2 = resp2.choices[0].message.content or ""
+                text  = "\n".join(filter(None, [text, text2]))
+            self.result_ready.emit(text.strip(), tool_uses)
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
@@ -355,11 +410,11 @@ class _MemoryCard(QFrame):
 # ── Main window ────────────────────────────────────────────────────────────────
 
 class AIAssistantWindow(QMainWindow):
-    def __init__(self, experiments_tab, profile_slug: str, api_key: str, parent=None):
+    def __init__(self, experiments_tab, profile_slug: str, ai_settings: dict, parent=None):
         super().__init__(parent)
         self._exp_tab          = experiments_tab
         self._profile_slug     = profile_slug
-        self._api_key          = api_key
+        self._ai_settings      = dict(ai_settings)
         self._memory           = UniversalMemory(profile_slug)
         self._exp_summary      = ExperimentSummary("")
         self._history: list    = []
@@ -443,10 +498,19 @@ class AIAssistantWindow(QMainWindow):
         text = self._input.toPlainText().strip()
         if not text:
             return
-        if not self._api_key:
+        provider = self._ai_settings.get("provider", "anthropic")
+        key = (self._ai_settings.get("anthropic_api_key", "") if provider == "anthropic"
+               else self._ai_settings.get("ai_api_key", ""))
+        if provider == "anthropic" and not key:
             QMessageBox.warning(
                 self, "No API Key",
-                "Set anthropic_api_key in ~/.easy_bluesky/connection.json to use the AI assistant."
+                "Set your Anthropic API key in Settings → Connection Settings → AI Scan Assistant."
+            )
+            return
+        if provider != "anthropic" and not self._ai_settings.get("ai_base_url", ""):
+            QMessageBox.warning(
+                self, "No Base URL",
+                "Set the Base URL for your AI provider in Settings → Connection Settings → AI Scan Assistant."
             )
             return
         if self._ai_thread and self._ai_thread.isRunning():
@@ -460,7 +524,7 @@ class AIAssistantWindow(QMainWindow):
         self._typing_lbl = self._add_system_message("● Thinking…")
 
         system = self._build_system_prompt()
-        self._ai_thread = _AIThread(self._api_key, system, list(self._history), parent=self)
+        self._ai_thread = _AIThread(self._ai_settings, system, list(self._history), parent=self)
         self._ai_thread.result_ready.connect(self._on_ai_result)
         self._ai_thread.error_occurred.connect(self._on_ai_error)
         self._ai_thread.start()
@@ -754,9 +818,9 @@ class AIAssistantWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
-    def update_profile(self, slug: str, api_key: str):
+    def update_profile(self, slug: str, ai_settings: dict):
         self._profile_slug = slug
-        self._api_key      = api_key
+        self._ai_settings  = dict(ai_settings)
         self._memory       = UniversalMemory(slug)
         self._clear_conversation()
 
