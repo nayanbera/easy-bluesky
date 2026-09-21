@@ -392,8 +392,11 @@ class NotepadWindow(QMainWindow):
             n_att = len(n.get("attachments", []))
             att_tag = f" 📎{n_att}" if n_att else ""
             self._list.addItem(f"{icon} {ts}{att_tag}  —  {preview}")
+        # Restore previous selection; default to last note so Edit/Delete are ready.
         if 0 <= prev_row < self._list.count():
             self._list.setCurrentRow(prev_row)
+        elif self._list.count() > 0:
+            self._list.setCurrentRow(self._list.count() - 1)
         self._list.blockSignals(False)
         self._on_list_row_changed(self._list.currentRow())
 
@@ -425,6 +428,7 @@ class NotepadWindow(QMainWindow):
             )
             bg = "background:#1a2a3a;" if i == highlight_idx else ""
             header = (
+                f'<a name="note_{i}"></a>'
                 f'<div class="note-header" style="{bg}">'
                 f'{src_icon} {ts}{scan_tag}{edit_tag}</div>'
             )
@@ -448,8 +452,11 @@ class NotepadWindow(QMainWindow):
             + "".join(rows)
             + "</body></html>"
         )
-        sb = self._viewer.verticalScrollBar()
-        sb.setValue(sb.maximum() if highlight_idx < 0 else 0)
+        if highlight_idx >= 0:
+            QTimer.singleShot(0, lambda: self._viewer.scrollToAnchor(f"note_{highlight_idx}"))
+        else:
+            sb = self._viewer.verticalScrollBar()
+            sb.setValue(sb.maximum())
 
     # ── List selection ─────────────────────────────────────────────────────────
 
