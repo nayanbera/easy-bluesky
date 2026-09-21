@@ -1612,8 +1612,8 @@ class MainWindow(QMainWindow):
         msg = (
             f"<b>{host}</b> has been operating this profile "
             f"since <b>{since} UTC</b>.<br><br>"
-            f"<b>Restart RE Manager</b> and <b>Stop RE Manager</b> are blocked "
-            f"until you take control.<br><br>"
+            f"<b>Start queue, Pause, Resume, Abort, Restart RE Manager</b> and "
+            f"<b>Stop RE Manager</b> are all blocked until you take control.<br><br>"
             f"<b>Warning:</b> {host} will <u>not</u> be notified if you take control. "
             f"Make sure the operator at {host} has stopped before proceeding."
         )
@@ -1628,7 +1628,7 @@ class MainWindow(QMainWindow):
             self._claim_lock_async()
         else:
             self._log(
-                f"[{self._ts()}] ⚠ Restart/Stop RE Manager blocked "
+                f"[{self._ts()}] ⚠ Queue control and Restart/Stop RE Manager blocked "
                 f"({host} is active operator) — use 'Take Control' to unlock"
             )
 
@@ -1651,6 +1651,27 @@ class MainWindow(QMainWindow):
         if ok:
             self._operator_lock_holder = {}
             self._log(f"[{self._ts()}] ✓ Operator lock claimed for this session")
+
+    def _locked_out_of_queue_control(self) -> bool:
+        """Return True (and show a warning) when this client doesn't hold the operator lock.
+
+        Only enforced for SSH-connected (non-local) profiles where the lock is meaningful.
+        """
+        settings  = self._conn_settings
+        profile   = get_active_profile(settings)
+        use_local = profile.get("is_local", False) or is_local_host(settings)
+        if use_local:
+            return False
+        if self.worker.rm is None or self._operator_lock_claimed:
+            return False
+        other = self._operator_lock_holder.get("host", "another computer")
+        QMessageBox.warning(
+            self, "Action Blocked",
+            f"This action is blocked.\n\n"
+            f"<b>{other}</b> is currently the active operator and holds the control lock.\n\n"
+            f"Reconnect and choose <b>Take Control</b> to enable queue operations.",
+        )
+        return True
 
     def _on_disconnected(self):
         self.conn_label.setText("⬤  Disconnected")
@@ -1799,6 +1820,8 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(insert_at)
 
     def _on_start_requested(self):
+        if self._locked_out_of_queue_control():
+            return
         ready, reason = self.experiments_tab.is_ready_to_run()
         if not ready:
             QMessageBox.warning(self, "Cannot Start Queue", reason)
@@ -1864,10 +1887,14 @@ class MainWindow(QMainWindow):
             self.experiments_tab.clear_loop_iteration()
 
     def _on_pause_requested(self):
+        if self._locked_out_of_queue_control():
+            return
         ok, msg = self.worker.re_pause()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Pause: {msg}")
 
     def _on_resume_requested(self):
+        if self._locked_out_of_queue_control():
+            return
         ok, msg = self.worker.re_resume()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Resume: {msg}")
 
@@ -1884,6 +1911,8 @@ class MainWindow(QMainWindow):
         self._log(f"[{self._ts()}] [Watchdog] {'✓' if ok else '✗'} Resume: {msg}")
 
     def _on_abort_requested(self):
+        if self._locked_out_of_queue_control():
+            return
         r = QMessageBox.question(self, "Abort", "Abort the currently running plan?")
         if r != QMessageBox.StandardButton.Yes:
             return
