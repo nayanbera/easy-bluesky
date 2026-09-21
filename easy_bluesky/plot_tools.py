@@ -265,8 +265,10 @@ class TwoDMapWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._current_cmap = None
-        self._cbar         = None
+        self._current_cmap  = None
+        self._cbar          = None
+        self._scan_x_range  = None   # (min, max) from plan parameters
+        self._scan_y_range  = None
         self._build()
 
     # ── Construction ──────────────────────────────────────────────────────────
@@ -359,6 +361,7 @@ class TwoDMapWidget(QWidget):
         """Populate Y-motor and Z combos; auto-select from motor/detector hints."""
         motors    = list(motors    or [])
         detectors = list(detectors or [])
+        det_set   = set(detectors)
 
         for combo in (self._y_combo, self._z_combo):
             combo.blockSignals(True)
@@ -366,11 +369,15 @@ class TwoDMapWidget(QWidget):
             combo.addItems(cols)
             combo.blockSignals(False)
 
-        # Y motor: first motor that is not x_col
+        # Y motor: prefer explicit motor hints, then non-x non-detector columns
         y_cands = [m for m in motors if m != x_col and m in cols]
         if not y_cands:
+            # Exclude known detectors from the fallback so we pick a motor-like column
             y_cands = [c for c in cols
-                       if c != x_col and c not in ("time", "seq_num")]
+                       if c != x_col and c not in ("time", "seq_num") and c not in det_set]
+        if not y_cands:
+            # Last resort: anything that's not x
+            y_cands = [c for c in cols if c != x_col and c not in ("time", "seq_num")]
         if y_cands:
             self._y_combo.setCurrentText(y_cands[0])
 
@@ -388,6 +395,17 @@ class TwoDMapWidget(QWidget):
 
     def get_z_signal(self) -> str:
         return self._z_combo.currentText()
+
+    def set_scan_range(self, x_min, x_max, y_min, y_max):
+        """Lock the view to the planned motor extents (call once from start doc)."""
+        self._scan_x_range = (float(x_min), float(x_max))
+        self._scan_y_range = (float(y_min), float(y_max))
+        if PG_AVAILABLE and self._plot is not None:
+            self._plot.setRange(
+                xRange=self._scan_x_range,
+                yRange=self._scan_y_range,
+                padding=0.05,
+            )
 
     def replot(self, xs, ys, zs, x_label="X", y_label="Y", z_label="Z"):
         """Build and display the 2D intensity map from flat (x, y, z) arrays."""
@@ -456,12 +474,24 @@ class TwoDMapWidget(QWidget):
                 except Exception:
                     pass
 
+        # Use planned motor extents if available; otherwise auto-range to data
+        if self._scan_x_range is not None and self._scan_y_range is not None:
+            self._plot.setRange(
+                xRange=self._scan_x_range,
+                yRange=self._scan_y_range,
+                padding=0.05,
+            )
+        else:
+            self._plot.autoRange(items=[self._img_item])
+
         self._plot.setLabel('bottom', x_label)
         self._plot.setLabel('left',   y_label)
         title = (f"log₁₀({z_label})" if self._log_z_cb.isChecked() else z_label)
         self._plot.setTitle(title, color='#aaaaaa', size='10pt')
 
     def clear(self):
+        self._scan_x_range = None
+        self._scan_y_range = None
         if PG_AVAILABLE and self._img_item is not None:
             self._img_item.clear()
             self._plot.setTitle("")

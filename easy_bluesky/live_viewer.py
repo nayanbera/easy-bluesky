@@ -26,6 +26,37 @@ from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 from . import peak_fit as _peak_fit
 
 
+def _parse_motor_ranges(start_doc: dict) -> dict:
+    """Extract {motor_name: (start, stop)} from a bluesky start document.
+
+    Handles the grid_scan / list_scan / scan convention where plan_args["args"]
+    is a list of [motor, start, stop, num] sub-lists (or flat interleaved form).
+    Returns an empty dict when the structure is not recognised.
+    """
+    ranges = {}
+    try:
+        plan_args = start_doc.get("plan_args", {}) or {}
+        args = plan_args.get("args", []) or []
+        # grid_scan: args is [[motor, start, stop, num], ...]
+        for entry in args:
+            if (isinstance(entry, (list, tuple)) and len(entry) >= 3
+                    and isinstance(entry[1], (int, float))
+                    and isinstance(entry[2], (int, float))):
+                m_name = str(entry[0])
+                ranges[m_name] = (float(entry[1]), float(entry[2]))
+        # scan / rel_scan: plan_args has "motor", "start", "stop" at top level
+        if not ranges:
+            for key in ("motor", "motor1", "motor2"):
+                m = plan_args.get(key)
+                s = plan_args.get(key.replace("motor", "start"))
+                e = plan_args.get(key.replace("motor", "stop"))
+                if m and isinstance(s, (int, float)) and isinstance(e, (int, float)):
+                    ranges[str(m)] = (float(s), float(e))
+    except Exception:
+        pass
+    return ranges
+
+
 def _poisson_sigma(y_raw, norm_raw=None):
     """Poisson √N error with propagation through y/norm normalization."""
     y = np.abs(y_raw)
@@ -96,6 +127,7 @@ class LiveViewer(QWidget):
         self._map_mode    = False            # True when 2D map is active
         self._pending_2d  = False            # auto-switch when descriptor arrives
         self._all_cols:   list = []          # all signal columns from last descriptor
+        self._start_motor_ranges: dict = {}  # motor_name → (min, max) from start doc
         self._build()
         self._start_zmq()
 
@@ -303,6 +335,7 @@ class LiveViewer(QWidget):
             self._start_motors    = [str(m) for m in (doc.get("motors",    []) or [])]
             self._start_detectors = [str(d) for d in (doc.get("detectors", []) or [])]
             self._pending_2d = len(self._start_motors) >= 2
+            self._start_motor_ranges = _parse_motor_ranges(doc)
             self._reset_run()
             self.run_label.setText(
                 f"Run: {doc.get('plan_name','?')}  [{self._run_uid[:8]}]")
@@ -391,6 +424,7 @@ class LiveViewer(QWidget):
                 all_cols, x_chosen,
                 self._start_motors, self._start_detectors,
             )
+            self._apply_2d_scan_range(x_chosen)
             # Auto-switch to 2D map when ≥ 2 motors detected in start doc
             if self._pending_2d and not self._map_mode:
                 self._pending_2d = False
@@ -524,7 +558,16 @@ class LiveViewer(QWidget):
                     cols, x_key,
                     self._start_motors, self._start_detectors,
                 )
+                self._apply_2d_scan_range(x_key)
             self._update_2d_plot()
+
+    def _apply_2d_scan_range(self, x_key: str):
+        """Pass planned motor extents to TwoDMapWidget if available."""
+        y_key = self._2d_widget.get_y_signal()
+        xr = self._start_motor_ranges.get(x_key)
+        yr = self._start_motor_ranges.get(y_key)
+        if xr and yr:
+            self._2d_widget.set_scan_range(xr[0], xr[1], yr[0], yr[1])
 
     def _update_2d_plot(self):
         if not self._data:
