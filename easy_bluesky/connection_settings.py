@@ -1388,6 +1388,25 @@ class ConnectionDialog(QDialog):
         self._esaf_status.setWordWrap(True)
         lay.addWidget(self._esaf_status)
 
+        # ── AI Assistant ───────────────────────────────────────────────────────
+        sep_ai = QFrame()
+        sep_ai.setFrameShape(QFrame.Shape.HLine)
+        sep_ai.setFrameShadow(QFrame.Shadow.Sunken)
+        lay.addWidget(sep_ai)
+
+        ai_title = QLabel("AI Scan Assistant")
+        ai_title.setStyleSheet("font-weight: bold; font-size: 12px;")
+        lay.addWidget(ai_title)
+
+        ai_form = QFormLayout()
+        ai_form.setHorizontalSpacing(12)
+
+        self._anthropic_key = QLineEdit(self._settings.get("anthropic_api_key", ""))
+        self._anthropic_key.setPlaceholderText("sk-ant-…  (Anthropic API key for 🤖 AI assistant)")
+        self._anthropic_key.setEchoMode(QLineEdit.EchoMode.Password)
+        ai_form.addRow("Anthropic API key:", self._anthropic_key)
+        lay.addLayout(ai_form)
+
         # ── Profiles section ───────────────────────────────────────────────────
         sep_prof = QFrame()
         sep_prof.setFrameShape(QFrame.Shape.HLine)
@@ -2151,6 +2170,7 @@ class ConnectionDialog(QDialog):
             "epics_ca_auto_addr_list":  self._ca_auto.isChecked(),
             "esaf_server_url":          self._esaf_url.text().strip(),
             "esaf_api_key":             self._esaf_key.text().strip(),
+            "anthropic_api_key":        self._anthropic_key.text().strip(),
         }
 
     def _on_accept(self):

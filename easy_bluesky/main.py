@@ -2511,6 +2511,10 @@ class MainWindow(QMainWindow):
         _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
         self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(active)
+        self.ai_window.update_profile(
+            profile_slug(active),
+            self._conn_settings.get("anthropic_api_key", ""),
+        )
 
     def _on_experiment_changed(self, runs_dir: str):
         self._log(f"[{self._ts()}] ✓ Active experiment changed → {runs_dir}")
