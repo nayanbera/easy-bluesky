@@ -2350,6 +2350,32 @@ class ExperimentsTab(QWidget):
     def set_devices(self, devices: dict):
         self._devices = devices
 
+    def get_ai_context(self) -> dict:
+        return {
+            "profile_name":    self._active_profile,
+            "exp_path":        self._active_exp_path,
+            "exp_name":        self.exp_name_label.text(),
+            "current_sample":  self.sample_name_edit.text().strip(),
+            "plans":           dict(self._plans),
+            "devices":         dict(self._devices),
+            "queue_items":     list(self._current_queue_items),
+        }
+
+    def open_ai_plan_dialog(self, plan_name: str, kwargs: dict):
+        """Open PlanDialog pre-populated with an AI-suggested plan."""
+        if not self.worker or not self._plans:
+            return
+        item = {"name": plan_name, "args": [], "kwargs": dict(kwargs or {}), "item_type": "plan"}
+        dlg = PlanDialog(self._plans, self._devices, item=item, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
+            queued = self._inject_metadata(dlg.result_item)
+            ok, result = self.worker.add_item(queued)
+            if ok:
+                self._write_queued_scan(queued, result)
+                self._log("✓ AI plan: queued")
+            else:
+                self._log(f"✗ AI plan: {result}")
+
     # ── Sample management ──────────────────────────────────────────────────────
 
     def _on_sample_name_commit(self):

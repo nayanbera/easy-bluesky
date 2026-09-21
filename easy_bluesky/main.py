@@ -37,6 +37,7 @@ from .pv_watchdog import PVWatchdogTab
 from .mongo_browser import MongoDataBrowserTab
 from .hdf5_viewer import HDF5Viewer
 from .re_console import REConsoleWidget
+from .ai_assistant import AIAssistantWindow
 
 
 # ── Single-instance guard (one app per profile) ────────────────────────────────
@@ -1063,6 +1064,13 @@ class MainWindow(QMainWindow):
         self.experiments_tab._active_profile = initial_profile
         self.re_console         = REConsoleWidget()
 
+        # AI assistant window (created here; shown lazily on button click)
+        _slug = profile_slug(initial_profile)
+        _api_key = self._conn_settings.get("anthropic_api_key", "")
+        self.ai_window = AIAssistantWindow(
+            self.experiments_tab, _slug, _api_key, parent=self
+        )
+
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
         self.tabs.addTab(self.queue_mgr,         "⚙  Queue Manager")
         self.tabs.addTab(self.plan_builder,      "🔧  Plan Builder")
@@ -1322,7 +1330,13 @@ class MainWindow(QMainWindow):
         self.re_bar.stop_manager_requested.connect(self._on_stop_manager_requested)
         self.re_bar.reconnect_requested.connect(self._on_reconnect_requested)
         self.re_bar.profile_changed.connect(self._on_profile_changed)
+        self.re_bar.ai_requested.connect(self.ai_window.show_or_raise)
         self.experiments_tab.experiment_changed.connect(self._on_experiment_changed)
+        self.experiments_tab.experiment_changed.connect(
+            lambda runs_dir: self.ai_window.notify_experiment_changed(
+                str(Path(runs_dir).parent) if runs_dir else ""
+            )
+        )
         self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
         self.mongo_browser.move_requested.connect(self._on_mongo_move_requested)
         self.experiments_tab.live_viewer.move_requested.connect(self._on_mongo_move_requested)
@@ -2211,6 +2225,10 @@ class MainWindow(QMainWindow):
         self.experiments_tab.update_settings(self._conn_settings)
         self.experiments_tab.set_profile(name)
         self.watchdog_tab.load_for_profile(name)
+        self.ai_window.update_profile(
+            profile_slug(name),
+            self._conn_settings.get("anthropic_api_key", ""),
+        )
 
     def _on_open_hdf5(self):
         from PyQt6.QtWidgets import QFileDialog
