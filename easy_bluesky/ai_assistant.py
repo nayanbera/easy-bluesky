@@ -604,9 +604,15 @@ class AIAssistantWindow(QMainWindow):
         return lbl
 
     def _add_plan_card(self, inp: dict):
+        raw_kwargs = inp.get("kwargs") or {}
+        if isinstance(raw_kwargs, str):
+            try:
+                raw_kwargs = json.loads(raw_kwargs)
+            except Exception:
+                raw_kwargs = {}
         card = _PlanCard(
             inp.get("plan_name", ""),
-            inp.get("kwargs") or {},
+            raw_kwargs,
             inp.get("explanation", ""),
             parent=self._chat_widget,
         )
@@ -615,10 +621,16 @@ class AIAssistantWindow(QMainWindow):
         QTimer.singleShot(50, self._scroll_to_bottom)
 
     def _add_memory_card(self, inp: dict):
+        raw_tags = inp.get("tags") or []
+        if isinstance(raw_tags, str):
+            try:
+                raw_tags = json.loads(raw_tags)
+            except Exception:
+                raw_tags = []
         card = _MemoryCard(
             inp.get("category", "general"),
             inp.get("content", ""),
-            inp.get("tags") or [],
+            raw_tags,
             parent=self._chat_widget,
         )
         card.approved.connect(self._on_memory_approved)
