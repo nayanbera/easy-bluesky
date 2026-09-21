@@ -697,8 +697,9 @@ class ParamForm(QWidget):
             return ScanArgsWidget(self.motors or self.devices)
 
         # ── List[Readable] / List[Detector] → multi-select device list ──────────
-        is_det_name = n in ("detectors", "dets", "det", "readables", "readable",
-                            "detectors_list")
+        is_det_name = (n in ("detectors", "dets", "det", "readables", "readable",
+                             "detectors_list", "detector_list", "det_list")
+                       or n.endswith("_detectors") or n.endswith("_dets"))
         if is_readable_ann or (convert and is_list_ann) or (is_det_name and not typ):
             return self._make_device_list(default)
 
@@ -757,8 +758,9 @@ class ParamForm(QWidget):
                 return w
 
         # ── Single device (motor / movable) ──────────────────────────────────────
-        is_mot_name = n in ("motor", "movable", "device", "flyer",
-                            "axis", "positioner", "actuator")
+        is_mot_name = (n in ("motor", "movable", "device", "flyer",
+                             "axis", "positioner", "actuator")
+                       or n.endswith("_motor") or n.endswith("_movable"))
         if (is_movable_ann and not is_list_ann) or \
            (convert and not is_list_ann) or \
            (is_mot_name and not typ):
