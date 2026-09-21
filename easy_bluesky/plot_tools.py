@@ -310,7 +310,8 @@ class TwoDMapWidget(QWidget):
         lay.addLayout(ctrl)
 
         if PG_AVAILABLE:
-            self._glw = pg.GraphicsLayoutWidget(background='#1e1e1e')
+            self._glw = pg.GraphicsLayoutWidget()
+            self._glw.setBackground('#1e1e1e')
             self._plot = self._glw.addPlot(row=0, col=0)
             self._plot.setAspectLocked(False)
             self._img_item = pg.ImageItem()
