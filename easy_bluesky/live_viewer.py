@@ -515,12 +515,15 @@ class LiveViewer(QWidget):
     def _toggle_map_mode(self, checked: bool):
         self._map_mode = checked
         self._plot_stack.setCurrentIndex(1 if checked else 0)
-        if checked and self._all_cols:
-            x_key = self._x_signal or "seq_num"
-            self._2d_widget.set_columns(
-                self._all_cols, x_key,
-                self._start_motors, self._start_detectors,
-            )
+        if checked:
+            # Use cached descriptor columns; fall back to keys currently in _data
+            cols = self._all_cols or [k for k in self._data if k != "seq_num"]
+            if cols:
+                x_key = self._x_signal or self.x_combo.currentText() or "seq_num"
+                self._2d_widget.set_columns(
+                    cols, x_key,
+                    self._start_motors, self._start_detectors,
+                )
             self._update_2d_plot()
 
     def _update_2d_plot(self):
