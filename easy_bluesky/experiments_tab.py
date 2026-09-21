@@ -3329,18 +3329,18 @@ class ExperimentsTab(QWidget):
                     return 0.0
             all_entries.sort(key=_ts_key)
 
-            # Renumber in time order: entries with non-empty run_uids are actual
-            # scans and get sequential numbers 1, 2, 3…; motion-only plans (empty
-            # run_uids) get scan_num = None.  The MongoDB browser column shows the
-            # same time-ordered position, so the numbers match across both tables.
+            # Renumber in time order: non-motion plans get sequential numbers 1, 2, 3…;
+            # motion-only plans (mv etc.) get scan_num = None.  Aborted scans count
+            # even when run_uids is empty (aborted before the bluesky start document).
             scan_counter = 1
             file_changed = True   # always write back after sort
             for e in all_entries:
-                new_num = scan_counter if e.get("run_uids") else None
+                is_mot = _is_motion_only(e.get("name", ""), e.get("kwargs", {}) or {})
+                new_num = None if is_mot else scan_counter
                 if e.get("scan_num") != new_num:
                     e["scan_num"] = new_num
                     file_changed = True
-                if e.get("run_uids"):
+                if not is_mot:
                     scan_counter += 1
             self._next_scan_num      = scan_counter  # next unused number
             self._base_next_scan_num = scan_counter
@@ -3463,10 +3463,17 @@ class ExperimentsTab(QWidget):
                 self._logged_uids.add(uid)
                 continue
 
-            # Scans (non-empty run_uids) get the next sequential number;
-            # motion-only plans (mv etc.) get None — they don't appear in
-            # MongoDB browser so shouldn't consume a scan slot.
-            scan_num = self._next_scan_num if run_uids else None
+            # Use the scan number reserved at queue time when available.
+            # Fall back to _next_scan_num for plans queued before this session.
+            # Motion-only plans (mv etc.) always get None — they don't appear in
+            # MongoDB and shouldn't consume a scan slot.
+            plan_name = item.get("name", "")
+            is_motion = _is_motion_only(plan_name, item.get("kwargs", {}) or {})
+            if is_motion:
+                scan_num = None
+            else:
+                reserved = self._queued_scan_lookup.get(uid)
+                scan_num = reserved if reserved is not None else self._next_scan_num
 
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
@@ -3477,7 +3484,7 @@ class ExperimentsTab(QWidget):
                 "timestamp":   timestamp,
                 "uid":         uid,
                 "run_uids":    run_uids,
-                "name":        item.get("name", ""),
+                "name":        plan_name,
                 "args":        item.get("args", []) or [],
                 "kwargs":      item.get("kwargs", {}) or {},
                 "exit_status": exit_status,
@@ -3488,10 +3495,14 @@ class ExperimentsTab(QWidget):
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
-                # Keep _next_scan_num ahead of the highest assigned number so
-                # motion plans (no run_uids / no MongoDB) never collide.
-                if run_uids:
-                    self._next_scan_num += 1
+                # Advance both counters so the next queued scan gets a fresh number
+                # even when this scan was aborted (with or without bluesky run_uids).
+                if not is_motion:
+                    if scan_num >= self._next_scan_num:
+                        self._next_scan_num = scan_num + 1
+                    if scan_num >= self._base_next_scan_num:
+                        self._base_next_scan_num = scan_num + 1
+                        self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
                 changed = True
             except Exception:
                 pass
