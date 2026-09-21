@@ -2122,6 +2122,21 @@ class ExperimentsTab(QWidget):
             self._completed_points  = 0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
+
+            # When a plan transitions into running state, advance _base_next_scan_num
+            # past its reserved scan_num immediately.  This prevents update_compact_queue
+            # from resetting _next_scan_num back to the pre-run value while the plan is
+            # running or aborting (before update_history has a chance to log it).
+            if uid and item:
+                running_scan_num = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
+                if running_scan_num is not None:
+                    needed = int(running_scan_num) + 1
+                    if needed > self._base_next_scan_num:
+                        self._base_next_scan_num = needed
+                    if needed > self._next_scan_num:
+                        self._next_scan_num = needed
+                        self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+
         self._current_running_item = item or {}
         self._update_progress_bars()
 
