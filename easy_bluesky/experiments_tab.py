@@ -2898,6 +2898,70 @@ class ExperimentsTab(QWidget):
             self.exp_remote_label.setText("")
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
         self._load_plan_log(path)
+        self._offer_queue_metadata_update(path)
+
+    def _offer_queue_metadata_update(self, new_exp_path: str):
+        """If the queue contains items with stale exp_dir / scan_num metadata,
+        offer to rewrite their md to match the newly-opened experiment."""
+        if not self.worker or not self._current_queue_items:
+            return
+        stale = [
+            item for item in self._current_queue_items
+            if (((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or "")
+               .rstrip("/") != new_exp_path.rstrip("/")
+        ]
+        if not stale:
+            return
+
+        n = len(stale)
+        reply = QMessageBox.question(
+            self,
+            "Update Queued Plans?",
+            f"The queue has {n} plan{'s' if n > 1 else ''} with metadata from a "
+            f"different experiment.<br><br>"
+            f"Update their <b>exp_dir</b>, <b>sample_name</b>, and <b>scan_num</b> "
+            f"to match the newly-opened experiment?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        errors = []
+        for item in stale:
+            kwargs  = dict(item.get("kwargs") or {})
+            old_md  = dict(kwargs.get("md") or {})
+            new_md  = {**old_md}
+            new_md["exp_dir"] = new_exp_path
+            if self._remote_exp_dir:
+                new_md["remote_exp_dir"] = self._remote_exp_dir
+            else:
+                new_md.pop("remote_exp_dir", None)
+            # Assign a fresh scan_num from the current counter
+            new_md["scan_num"] = self._next_scan_num
+            self._next_scan_num += 1
+            self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+            # Update sample_name if the experiment has one set
+            sample = self.sample_name_edit.text().strip()
+            if sample:
+                new_md["sample_name"] = sample
+            kwargs["md"] = new_md
+            updated = dict(item)
+            updated["kwargs"] = kwargs
+            ok, msg = self.worker.update_item(updated)
+            if not ok:
+                errors.append(f"{item.get('name','?')}: {msg}")
+            else:
+                # Record the new scan_num reservation
+                self._write_queued_scan(updated, item.get("item_uid", ""))
+
+        if errors:
+            QMessageBox.warning(
+                self, "Some Updates Failed",
+                "Could not update all plans:\n" + "\n".join(errors),
+            )
+        else:
+            self._log(f"[{self._ts()}] ✓ Updated {n} queued plan(s) to new experiment")
 
     def _on_exp_dir_changed(self, _changed_path: str):
         """Called by QFileSystemWatcher when the experiment directory changes.
