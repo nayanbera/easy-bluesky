@@ -241,7 +241,7 @@ class _AIThread(QThread):
             # System prompt goes in messages for OpenAI-compatible APIs
             messages = [{"role": "system", "content": self._system}] + list(self._messages)
             resp = client.chat.completions.create(
-                model=model, max_tokens=1024,
+                model=model, max_tokens=1024, temperature=0.2,
                 messages=messages, tools=_OAI_TOOLS,
             )
             msg        = resp.choices[0].message
@@ -266,7 +266,7 @@ class _AIThread(QThread):
                         "content": self._tool_ack(tu["name"], tu["input"]),
                     })
                 resp2 = client.chat.completions.create(
-                    model=model, max_tokens=1024,
+                    model=model, max_tokens=1024, temperature=0.2,
                     messages=messages, tools=_OAI_TOOLS,
                 )
                 text2 = resp2.choices[0].message.content or ""
