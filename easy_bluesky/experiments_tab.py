@@ -36,6 +36,7 @@ from .config import (
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
 from .queue_manager import RunDetailDialog
+from .report_generator import generate_report
 
 # ── Recent-experiments tracking file ──────────────────────────────────────────
 # Stores experiments created or opened from ANY location (not just EXPERIMENTS_DIR).
@@ -1368,6 +1369,11 @@ class ExperimentsTab(QWidget):
         self._next_scan_label = QLabel("Next scan: —")
         self._next_scan_label.setStyleSheet("color: gray; font-size: 11px;")
         log_header.addWidget(self._next_scan_label)
+        self._btn_report = QPushButton("📄 Report")
+        self._btn_report.setToolTip("Generate an HTML experiment report and open in browser")
+        self._btn_report.setEnabled(False)
+        self._btn_report.clicked.connect(self._generate_report)
+        log_header.addWidget(self._btn_report)
         vlay.addLayout(log_header)
 
         self._running_banner = QLabel("")
@@ -2736,6 +2742,15 @@ class ExperimentsTab(QWidget):
         self._log(f"✗ HDF5 export failed: {msg}")
         QMessageBox.critical(self, "Export Failed", msg)
 
+    def _generate_report(self):
+        if not self._active_exp_path:
+            return
+        try:
+            path = generate_report(self._active_exp_path, self._active_profile)
+            self._log(f"✓ Report saved → {Path(path).name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Report Error", str(exc))
+
     def _write_active_experiment(self, info: dict):
         active_file = Path(ACTIVE_EXPERIMENT_FILE)
         active_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2783,6 +2798,7 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.start()
         self._exp_deleted_warning.setVisible(False)
         self._active_exp_path = path
+        self._btn_report.setEnabled(True)
         self._update_next_scan_label()
         self._open_console_log(path)
         self._remote_exp_dir  = info.get("remote_exp_dir", "")
@@ -2911,6 +2927,7 @@ class ExperimentsTab(QWidget):
         self.exp_remote_label.setText("")
         self.exp_date_label.setText("")
         self.plan_log_list.clear()
+        self._btn_report.setEnabled(False)
         self.experiment_changed.emit("")
 
         # Build the dialog message
