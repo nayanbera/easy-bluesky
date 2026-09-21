@@ -1398,13 +1398,43 @@ class ConnectionDialog(QDialog):
         ai_title.setStyleSheet("font-weight: bold; font-size: 12px;")
         lay.addWidget(ai_title)
 
+        ai_note = QLabel(
+            "Enables the 🤖 AI assistant. Get a free API key from "
+            '<a href="https://console.anthropic.com/account/keys">console.anthropic.com</a>.'
+        )
+        ai_note.setOpenExternalLinks(True)
+        ai_note.setWordWrap(True)
+        ai_note.setStyleSheet("color: #999; font-size: 11px;")
+        lay.addWidget(ai_note)
+
         ai_form = QFormLayout()
         ai_form.setHorizontalSpacing(12)
 
+        key_row = QHBoxLayout()
         self._anthropic_key = QLineEdit(self._settings.get("anthropic_api_key", ""))
-        self._anthropic_key.setPlaceholderText("sk-ant-…  (Anthropic API key for 🤖 AI assistant)")
+        self._anthropic_key.setPlaceholderText("sk-ant-…")
         self._anthropic_key.setEchoMode(QLineEdit.EchoMode.Password)
-        ai_form.addRow("Anthropic API key:", self._anthropic_key)
+        key_row.addWidget(self._anthropic_key, 1)
+
+        btn_show_key = QPushButton("👁")
+        btn_show_key.setFixedWidth(32)
+        btn_show_key.setToolTip("Show / hide key")
+        btn_show_key.setCheckable(True)
+        btn_show_key.toggled.connect(
+            lambda checked: self._anthropic_key.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        )
+        key_row.addWidget(btn_show_key)
+
+        btn_get_key = QPushButton("Get key ↗")
+        btn_get_key.setToolTip("Open Anthropic Console to create an API key")
+        btn_get_key.clicked.connect(
+            lambda: __import__("webbrowser").open("https://console.anthropic.com/account/keys")
+        )
+        key_row.addWidget(btn_get_key)
+
+        ai_form.addRow("Anthropic API key:", key_row)
         lay.addLayout(ai_form)
 
         # ── Profiles section ───────────────────────────────────────────────────
