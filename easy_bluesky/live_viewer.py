@@ -311,6 +311,10 @@ class LiveViewer(QWidget):
         self.zmq_thread.doc_received.connect(self._on_doc)
         self.zmq_thread.status_changed.connect(self.status_bar.setText)
         self.zmq_thread.start()
+        # When the app starts mid-scan, start/descriptor are already gone from ZMQ.
+        # Bootstrap motor info from the RE Manager running-item poll instead.
+        if self.worker:
+            self.worker.running_item_updated.connect(self._on_running_item)
 
     def restart_zmq(self, addr: str):
         """Stop the current ZMQ thread and start a new one with a new address."""
@@ -481,6 +485,37 @@ class LiveViewer(QWidget):
         self._run_live_fit()
         self.status_bar.setText(f"Event #{seq}")
 
+    def _on_running_item(self, item: dict):
+        """Bootstrap motor/detector hints from the RE Manager running-item poll.
+
+        Called on every worker poll tick.  Only acts once per run (when start doc
+        was missed) and only when we already have ZMQ event data but no start-doc
+        info yet (i.e. the app started mid-scan).
+        """
+        if not item or self._run_uid:
+            # start doc already received — nothing to do
+            return
+        if not self._data:
+            # no event data yet — nothing to bootstrap
+            return
+        kwargs    = item.get("kwargs", {}) or {}
+        md        = kwargs.get("md", {}) or {}
+        motors    = [str(m) for m in (item.get("kwargs", {}).get("motors", []) or
+                                      md.get("motors", []) or [])]
+        detectors = [str(d) for d in (item.get("kwargs", {}).get("detectors", []) or
+                                      md.get("detectors", []) or [])]
+        # If we still have no motor list, make a synthetic start-doc and parse
+        fake_start = {"plan_args": kwargs, "motors": motors, "detectors": detectors}
+        ranges = _parse_motor_ranges(fake_start)
+        if motors and not self._start_motors:
+            self._start_motors    = motors
+            self._start_detectors = detectors
+            self._start_motor_ranges = ranges
+            # Re-run auto-setup with the now-known motor/detector hints
+            if self._data:
+                first_event_keys = [k for k in self._data if k not in ("seq_num", "time")]
+                self._auto_setup_from_event({k: 0 for k in first_event_keys})
+
     def _auto_setup_from_event(self, data):
         """Populate X/Y controls from event data keys when the descriptor was missed."""
         keys = sorted(data.keys())
@@ -488,6 +523,7 @@ class LiveViewer(QWidget):
             return
         all_cols = keys + ["time"]
         avail    = set(all_cols)
+        self._all_cols = all_cols  # cache so 2D widget can use it
 
         self.x_combo.blockSignals(True)
         self.x_combo.clear()
@@ -543,6 +579,15 @@ class LiveViewer(QWidget):
         for i in range(self.y_list.count()):
             self.y_list.item(i).setSelected(
                 self.y_list.item(i).text() in y_chosen)
+
+        # Also populate the 2D widget combos with what we know
+        self._2d_widget.set_columns(
+            all_cols, x_chosen,
+            self._start_motors, self._start_detectors,
+        )
+        self._apply_2d_scan_range(x_chosen)
+        if self._map_mode:
+            self._update_2d_plot()
 
     # ── Plot ───────────────────────────────────────────────────────────────────
 
