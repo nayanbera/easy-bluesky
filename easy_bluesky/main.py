@@ -1656,6 +1656,7 @@ class MainWindow(QMainWindow):
         """Return True (and show a warning) when this client doesn't hold the operator lock.
 
         Only enforced for SSH-connected (non-local) profiles where the lock is meaningful.
+        Offers a 'Take Control' button so the user can reclaim the lock without reconnecting.
         """
         settings  = self._conn_settings
         profile   = get_active_profile(settings)
@@ -1665,12 +1666,24 @@ class MainWindow(QMainWindow):
         if self.worker.rm is None or self._operator_lock_claimed:
             return False
         other = self._operator_lock_holder.get("host", "another computer")
-        QMessageBox.warning(
-            self, "Action Blocked",
-            f"This action is blocked.\n\n"
-            f"<b>{other}</b> is currently the active operator and holds the control lock.\n\n"
-            f"Reconnect and choose <b>Take Control</b> to enable queue operations.",
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Action Blocked")
+        dlg.setIcon(QMessageBox.Icon.Warning)
+        dlg.setText(
+            f"This action is blocked.<br><br>"
+            f"<b>{other}</b> is currently the active operator and holds the control lock.<br><br>"
+            f"Click <b>Take Control</b> to claim the lock (the operator at {other} will "
+            f"<u>not</u> be notified), then retry the action."
         )
+        btn_take   = dlg.addButton("Take Control", QMessageBox.ButtonRole.AcceptRole)
+        dlg.addButton("Cancel",       QMessageBox.ButtonRole.RejectRole)
+        dlg.exec()
+        if dlg.clickedButton() is btn_take:
+            self._claim_lock_async()
+            self._log(
+                f"[{self._ts()}] ⚠ Taking control from {other} — "
+                f"retry the action in a moment once the lock is claimed"
+            )
         return True
 
     def _on_disconnected(self):
