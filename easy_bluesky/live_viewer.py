@@ -27,24 +27,41 @@ from . import peak_fit as _peak_fit
 
 
 def _parse_motor_ranges(start_doc: dict) -> dict:
-    """Extract {motor_name: (start, stop)} from a bluesky start document.
+    """Extract {motor_name: (start, stop)} from a bluesky start document or
+    a plan kwargs dict.
 
-    Handles the grid_scan / list_scan / scan convention where plan_args["args"]
-    is a list of [motor, start, stop, num] sub-lists (or flat interleaved form).
+    Handles multiple storage formats:
+    - Nested: plan_args["args"] = [[motor, start, stop, num], ...]  (grid_scan)
+    - Flat:   plan_args["args"] = [motor, start, stop, num, motor, ...]
+    - Top-level keys: plan_args["motor"] / plan_args["start"] / plan_args["stop"]
     Returns an empty dict when the structure is not recognised.
     """
     ranges = {}
     try:
         plan_args = start_doc.get("plan_args", {}) or {}
         args = plan_args.get("args", []) or []
-        # grid_scan: args is [[motor, start, stop, num], ...]
-        for entry in args:
-            if (isinstance(entry, (list, tuple)) and len(entry) >= 3
-                    and isinstance(entry[1], (int, float))
-                    and isinstance(entry[2], (int, float))):
-                m_name = str(entry[0])
-                ranges[m_name] = (float(entry[1]), float(entry[2]))
-        # scan / rel_scan: plan_args has "motor", "start", "stop" at top level
+
+        # Nested format: [[motor, start, stop, num], ...]
+        if args and isinstance(args[0], (list, tuple)):
+            for entry in args:
+                if (len(entry) >= 3
+                        and isinstance(entry[1], (int, float))
+                        and isinstance(entry[2], (int, float))):
+                    ranges[str(entry[0])] = (float(entry[1]), float(entry[2]))
+
+        # Flat interleaved format: [motor, start, stop, num, motor, start, stop, num, ...]
+        if not ranges and args and not isinstance(args[0], (list, tuple)):
+            i = 0
+            while i + 3 <= len(args):
+                m, s, e = args[i], args[i + 1], args[i + 2]
+                if isinstance(s, (int, float)) and isinstance(e, (int, float)):
+                    ranges[str(m)] = (float(s), float(e))
+                    # skip 4 elements (motor, start, stop, num)
+                    i += 4
+                else:
+                    i += 1
+
+        # scan / rel_scan top-level keys
         if not ranges:
             for key in ("motor", "motor1", "motor2"):
                 m = plan_args.get(key)
@@ -500,21 +517,24 @@ class LiveViewer(QWidget):
             return
         kwargs    = item.get("kwargs", {}) or {}
         md        = kwargs.get("md", {}) or {}
-        motors    = [str(m) for m in (item.get("kwargs", {}).get("motors", []) or
-                                      md.get("motors", []) or [])]
-        detectors = [str(d) for d in (item.get("kwargs", {}).get("detectors", []) or
+        detectors = [str(d) for d in (kwargs.get("detectors", []) or
                                       md.get("detectors", []) or [])]
-        # If we still have no motor list, make a synthetic start-doc and parse
-        fake_start = {"plan_args": kwargs, "motors": motors, "detectors": detectors}
+        # Parse motor ranges from kwargs directly (handles grid_scan args format)
+        fake_start = {"plan_args": kwargs}
         ranges = _parse_motor_ranges(fake_start)
-        if motors and not self._start_motors:
-            self._start_motors    = motors
-            self._start_detectors = detectors
+        # Derive motor list from parsed ranges; fall back to explicit motors key
+        motors = list(ranges.keys()) or [str(m) for m in (kwargs.get("motors", []) or
+                                                           md.get("motors", []) or [])]
+        if (motors or ranges) and not self._start_motors:
+            self._start_motors       = motors
+            self._start_detectors    = detectors
             self._start_motor_ranges = ranges
             # Re-run auto-setup with the now-known motor/detector hints
-            if self._data:
-                first_event_keys = [k for k in self._data if k not in ("seq_num", "time")]
-                self._auto_setup_from_event({k: 0 for k in first_event_keys})
+            first_event_keys = [k for k in self._data if k not in ("seq_num", "time")]
+            self._auto_setup_from_event({k: 0 for k in first_event_keys})
+            # Apply axis range immediately (auto_setup may not have ranges yet)
+            x_key = self._x_signal or self.x_combo.currentText() or "seq_num"
+            self._apply_2d_scan_range(x_key)
 
     def _auto_setup_from_event(self, data):
         """Populate X/Y controls from event data keys when the descriptor was missed."""

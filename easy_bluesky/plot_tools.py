@@ -210,8 +210,8 @@ def build_2d_map(xs, ys, zs):
     ys = np.asarray(ys, dtype=float)
     zs = np.asarray(zs, dtype=float)
     n  = min(len(xs), len(ys), len(zs))
-    if n < 4:
-        raise ValueError("Not enough points for a 2D map (need ≥ 4)")
+    if n < 2:
+        raise ValueError("Not enough points for a 2D map (need ≥ 2)")
     xs, ys, zs = xs[:n], ys[:n], zs[:n]
 
     def _unique_tol(arr):
@@ -226,8 +226,8 @@ def build_2d_map(xs, ys, zs):
     x_u = _unique_tol(xs)
     y_u = _unique_tol(ys)
     nx, ny = len(x_u), len(y_u)
-    if nx < 2 or ny < 2:
-        raise ValueError("Need ≥ 2 unique values per axis for a 2D map")
+    if nx < 2:
+        raise ValueError("Need ≥ 2 unique X values for a 2D map")
 
     img   = np.full((ny, nx), np.nan)
     x_tol = max((x_u[-1] - x_u[0]) * 5e-4, 1e-10)
