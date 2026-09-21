@@ -237,7 +237,7 @@ class _AIThread(QThread):
             api_key  = self._settings.get("ai_api_key", "") or "ollama"
             base_url = self._settings.get("ai_base_url") or None
             model    = self._settings.get("ai_model") or _MODEL_OAI
-            client   = OpenAI(api_key=api_key, base_url=base_url)
+            client   = OpenAI(api_key=api_key, base_url=base_url, timeout=180.0)
             # System prompt goes in messages for OpenAI-compatible APIs
             messages = [{"role": "system", "content": self._system}] + list(self._messages)
             resp = client.chat.completions.create(
