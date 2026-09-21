@@ -95,6 +95,7 @@ class LiveViewer(QWidget):
         self._crosshair_cleanup = None
         self._map_mode    = False            # True when 2D map is active
         self._pending_2d  = False            # auto-switch when descriptor arrives
+        self._all_cols:   list = []          # all signal columns from last descriptor
         self._build()
         self._start_zmq()
 
@@ -382,6 +383,7 @@ class LiveViewer(QWidget):
                 self.y_list.item(i).setSelected(
                     self.y_list.item(i).text() in y_chosen)
 
+            self._all_cols = all_cols
             self.status_bar.setText(f"Signals: {', '.join(all_cols)}")
 
             # Populate 2D widget combos every time so Y/Z stay valid
@@ -513,7 +515,12 @@ class LiveViewer(QWidget):
     def _toggle_map_mode(self, checked: bool):
         self._map_mode = checked
         self._plot_stack.setCurrentIndex(1 if checked else 0)
-        if checked:
+        if checked and self._all_cols:
+            x_key = self._x_signal or "seq_num"
+            self._2d_widget.set_columns(
+                self._all_cols, x_key,
+                self._start_motors, self._start_detectors,
+            )
             self._update_2d_plot()
 
     def _update_2d_plot(self):
