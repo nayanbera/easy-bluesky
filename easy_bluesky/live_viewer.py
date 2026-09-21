@@ -18,11 +18,11 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QAbstractItemView,
-    QMessageBox, QApplication, QSplitter, QSizePolicy,
+    QMessageBox, QApplication, QSplitter, QSizePolicy, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
-from .plot_tools import setup_crosshair, smart_legend_position
+from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 from . import peak_fit as _peak_fit
 
 
@@ -93,6 +93,8 @@ class LiveViewer(QWidget):
         self._live_fit_curve = None          # dashed fit overlay (PlotDataItem)
         self._live_fit_n_fitted = 0          # point count at last live-fit call
         self._crosshair_cleanup = None
+        self._map_mode    = False            # True when 2D map is active
+        self._pending_2d  = False            # auto-switch when descriptor arrives
         self._build()
         self._start_zmq()
 
@@ -179,6 +181,15 @@ class LiveViewer(QWidget):
 
         ctrl.addStretch()
 
+        self._btn_map_mode = QPushButton("2D Map")
+        self._btn_map_mode.setCheckable(True)
+        self._btn_map_mode.setToolTip(
+            "Switch between 1D line plot and 2D pixel-intensity map.\n"
+            "Activates automatically when a grid scan with ≥ 2 motors is detected."
+        )
+        self._btn_map_mode.clicked.connect(self._toggle_map_mode)
+        ctrl.addWidget(self._btn_map_mode)
+
         self.run_label = QLabel("No active run")
         self.run_label.setObjectName("dim_text")
         ctrl.addWidget(self.run_label)
@@ -217,7 +228,14 @@ class LiveViewer(QWidget):
         plot_splitter.setSizes([900, 180])
         plot_splitter.setStretchFactor(0, 1)
         plot_splitter.setStretchFactor(1, 0)
-        main.addWidget(plot_splitter, 1)
+
+        self._2d_widget = TwoDMapWidget(parent=self)
+        self._2d_widget.selection_changed.connect(self._update_2d_plot)
+
+        self._plot_stack = QStackedWidget()
+        self._plot_stack.addWidget(plot_splitter)   # index 0 → 1D
+        self._plot_stack.addWidget(self._2d_widget) # index 1 → 2D
+        main.addWidget(self._plot_stack, 1)
 
         # Bottom bar: status left, cursor coords right
         bot = QHBoxLayout()
@@ -283,6 +301,7 @@ class LiveViewer(QWidget):
             self._run_uid = doc.get("uid", "")
             self._start_motors    = [str(m) for m in (doc.get("motors",    []) or [])]
             self._start_detectors = [str(d) for d in (doc.get("detectors", []) or [])]
+            self._pending_2d = len(self._start_motors) >= 2
             self._reset_run()
             self.run_label.setText(
                 f"Run: {doc.get('plan_name','?')}  [{self._run_uid[:8]}]")
@@ -365,6 +384,17 @@ class LiveViewer(QWidget):
 
             self.status_bar.setText(f"Signals: {', '.join(all_cols)}")
 
+            # Populate 2D widget combos every time so Y/Z stay valid
+            self._2d_widget.set_columns(
+                all_cols, x_chosen,
+                self._start_motors, self._start_detectors,
+            )
+            # Auto-switch to 2D map when ≥ 2 motors detected in start doc
+            if self._pending_2d and not self._map_mode:
+                self._pending_2d = False
+                self._btn_map_mode.setChecked(True)
+                self._toggle_map_mode(True)
+
         elif name == "event":
             seq = doc.get("seq_num", 0)
             self._ingest_event(
@@ -410,6 +440,8 @@ class LiveViewer(QWidget):
             self._auto_setup_from_event(data)
 
         self._update_plot()
+        if self._map_mode:
+            self._update_2d_plot()
         self._run_live_fit()
         self.status_bar.setText(f"Event #{seq}")
 
@@ -478,9 +510,30 @@ class LiveViewer(QWidget):
 
     # ── Plot ───────────────────────────────────────────────────────────────────
 
+    def _toggle_map_mode(self, checked: bool):
+        self._map_mode = checked
+        self._plot_stack.setCurrentIndex(1 if checked else 0)
+        if checked:
+            self._update_2d_plot()
+
+    def _update_2d_plot(self):
+        if not self._data:
+            return
+        x_key = self._x_signal or "seq_num"
+        y_key = self._2d_widget.get_y_signal()
+        z_key = self._2d_widget.get_z_signal()
+        if not y_key or not z_key:
+            return
+        xs = np.array(self._data.get(x_key, []), dtype=float)
+        ys = np.array(self._data.get(y_key, []), dtype=float)
+        zs = np.array(self._data.get(z_key, []), dtype=float)
+        self._2d_widget.replot(xs, ys, zs, x_key, y_key, z_key)
+
     def _on_x_changed(self, text):
         self._x_signal = text
         self._update_plot()
+        if self._map_mode:
+            self._update_2d_plot()
         self._run_live_fit(force=True)
 
     def _on_err_toggled(self):
@@ -658,6 +711,7 @@ class LiveViewer(QWidget):
         self._data    = {}
         self._x_signal = None
         self._live_fit_n_fitted = 0
+        self._2d_widget.clear()
         if PYQTGRAPH_AVAILABLE and self._live_fit_curve is not None:
             try:
                 self.plot_widget.removeItem(self._live_fit_curve)

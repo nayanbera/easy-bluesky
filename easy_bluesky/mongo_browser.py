@@ -23,12 +23,13 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSplitter,
-    QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
 
 from .config import PLOT_COLORS
-from .plot_tools import setup_crosshair, smart_legend_position
+from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 from . import peak_fit as _peak_fit
 from .curve_fit_dialog import FitParamsDialog as _FitParamsDialog
 
@@ -665,6 +666,7 @@ class MongoDataBrowserTab(QWidget):
         self._stats_label       = None # QLabel showing χ² results
         self._stats_cb          = None # checkbox reference (set in _build_ui)
         self._repro_btn         = None # Motor Repro button (set in _build_ui)
+        self._map_mode       = False
         self._fetch_timer    = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._schedule_data_fetch)
@@ -900,6 +902,14 @@ class MongoDataBrowserTab(QWidget):
             self._btn_export_exp.setEnabled(False)
         ctrl_bar.addWidget(self._btn_export_exp)
 
+        ctrl_bar.addWidget(_vline())
+        self._btn_map_mode = QPushButton("2D Map")
+        self._btn_map_mode.setCheckable(True)
+        self._btn_map_mode.setFixedHeight(26)
+        self._btn_map_mode.setToolTip("Switch to 2D pixel-intensity map view")
+        self._btn_map_mode.clicked.connect(self._toggle_map_mode)
+        ctrl_bar.addWidget(self._btn_map_mode)
+
         rlayout.addLayout(ctrl_bar)
 
         self._coord_label = QLabel("")
@@ -961,7 +971,13 @@ class MongoDataBrowserTab(QWidget):
             self._vplot_splitter.addWidget(self._stats_panel)
             self._vplot_splitter.setStretchFactor(0, 1)
             self._vplot_splitter.setStretchFactor(1, 0)
-        rlayout.addWidget(self._vplot_splitter, 1)
+
+        self._2d_widget = TwoDMapWidget(parent=self)
+        self._2d_widget.selection_changed.connect(self._update_2d_plot)
+        self._plot_stack = QStackedWidget()
+        self._plot_stack.addWidget(self._vplot_splitter)  # index 0 → 1D
+        self._plot_stack.addWidget(self._2d_widget)        # index 1 → 2D
+        rlayout.addWidget(self._plot_stack, 1)
         # _stats_label removed from layout — chi² text is shown as the RSD panel title
 
         # ── Bottom bar: crosshair coords + display transforms ─────────────────
@@ -1290,7 +1306,11 @@ class MongoDataBrowserTab(QWidget):
         if len(rows) == 1 and rows[0].row() < len(self._runs):
             self._update_info_single(rows[0].row())
 
-        self._plot()
+        if self._map_mode:
+            self._populate_2d_columns()
+            self._update_2d_plot()
+        else:
+            self._plot()
 
     # ── Axis controls ──────────────────────────────────────────────────────────
 
@@ -1677,8 +1697,67 @@ class MongoDataBrowserTab(QWidget):
 
     def _auto_plot(self, *_args):
         """Re-plot whenever axis controls change — guard against no data."""
-        if self._run_data_list:
+        if not self._run_data_list:
+            return
+        if self._map_mode:
+            self._update_2d_plot()
+        else:
             self._plot()
+
+    def _toggle_map_mode(self, checked: bool):
+        self._map_mode = checked
+        self._plot_stack.setCurrentIndex(1 if checked else 0)
+        if checked:
+            self._populate_2d_columns()
+            self._update_2d_plot()
+
+    def _populate_2d_columns(self):
+        """Populate TwoDMapWidget column combos from current run data."""
+        if not self._run_data_list:
+            return
+        stream = self._stream_combo.currentText()
+        rd = self._run_data_list[0]
+        sdata = rd["streams"].get(stream, {})
+        cols = [k for k in sdata if k not in ("time", "seq_num")]
+        x_col = self._x_combo.currentData() or self._x_combo.currentText()
+        # Detect motors/detectors from metadata hints
+        meta = rd.get("meta", {})
+        motors = meta.get("motors", [])
+        dets   = meta.get("detectors", [])
+        self._2d_widget.set_columns(cols, x_col=x_col, motors=motors, detectors=dets)
+
+    def _update_2d_plot(self):
+        """Collect x/y/z data from the first selected run and send to TwoDMapWidget."""
+        if not PG_AVAILABLE or not self._run_data_list or not self._map_mode:
+            return
+        stream = self._stream_combo.currentText()
+        x_field = self._x_combo.currentData() or self._x_combo.currentText()
+        y_field = self._2d_widget.get_y_signal()
+        z_field = self._2d_widget.get_z_signal()
+        if not y_field or not z_field:
+            return
+        rd = self._run_data_list[0]
+        sdata = rd["streams"].get(stream, {})
+        if not sdata:
+            return
+        if x_field == "time":
+            raw = sdata.get("time")
+            x_arr = (raw - raw[0]).astype(float) if raw is not None and len(raw) else None
+        elif x_field == "seq_num":
+            t = sdata.get("time")
+            x_arr = np.arange(1, len(t) + 1, dtype=float) if t is not None else None
+        else:
+            raw = sdata.get(x_field)
+            x_arr = raw.astype(float) if raw is not None else None
+        y_arr = sdata.get(y_field)
+        z_arr = sdata.get(z_field)
+        if x_arr is None or y_arr is None or z_arr is None:
+            return
+        n = min(len(x_arr), len(y_arr), len(z_arr))
+        self._2d_widget.replot(
+            x_arr[:n], y_arr[:n].astype(float), z_arr[:n].astype(float),
+            x_label=x_field, y_label=y_field, z_label=z_field,
+        )
 
     # ── Derivative transform ───────────────────────────────────────────────────
 

@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QAbstractItemView, QComboBox, QCheckBox,
     QFileDialog, QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox,
-    QTextEdit, QSizePolicy,
+    QTextEdit, QSizePolicy, QStackedWidget,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
@@ -41,7 +41,7 @@ def _poisson_sigma(y_raw, norm_raw=None):
     n = np.abs(norm_raw)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(n > 0, np.sqrt(y / n ** 2 + y ** 2 / n ** 3), np.nan)
-from .plot_tools import setup_crosshair, smart_legend_position
+from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 from . import peak_fit as _peak_fit
 from .curve_fit_dialog import FitParamsDialog
 
@@ -135,6 +135,7 @@ class HDF5Viewer(QWidget):
         self._fit_datasets: list     = []     # datasets passed to the open dialog
         self._saved_fit_state: dict  = None   # {model_name, bg_name, params} — persists
         self._crosshair_cleanup = None
+        self._map_mode = False
         self._build()
 
     # ── UI ─────────────────────────────────────────────────────────────────────
@@ -278,6 +279,13 @@ class HDF5Viewer(QWidget):
         self.run_label.setObjectName("dim_text")
         self.run_label.setStyleSheet("font-size: 12px; padding: 0 4px;")
         ctrl_bar.addWidget(self.run_label)
+
+        self._btn_map_mode = QPushButton("2D Map")
+        self._btn_map_mode.setCheckable(True)
+        self._btn_map_mode.setToolTip("Switch to 2D pixel-intensity map view")
+        self._btn_map_mode.clicked.connect(self._toggle_map_mode)
+        ctrl_bar.addWidget(self._btn_map_mode)
+
         ctrl_bar.addStretch()
         vlay.addLayout(ctrl_bar)
 
@@ -311,7 +319,14 @@ class HDF5Viewer(QWidget):
         plot_splitter.setSizes([880, 180])
         plot_splitter.setStretchFactor(0, 1)
         plot_splitter.setStretchFactor(1, 0)
-        vlay.addWidget(plot_splitter, 1)
+
+        self._2d_widget = TwoDMapWidget(parent=w)
+        self._2d_widget.selection_changed.connect(self._update_2d_plot)
+
+        self._plot_stack = QStackedWidget()
+        self._plot_stack.addWidget(plot_splitter)
+        self._plot_stack.addWidget(self._2d_widget)
+        vlay.addWidget(self._plot_stack, 1)
 
         bot = QHBoxLayout()
         bot.setContentsMargins(0, 0, 0, 0)
@@ -507,7 +522,36 @@ class HDF5Viewer(QWidget):
 
         n = len(self._dfs)
         self.run_label.setText(f"{n} scan{'s' if n != 1 else ''} selected")
-        self._replot()
+
+        # Populate 2D widget combos
+        x_col = self.x_combo.currentText()
+        self._2d_widget.set_columns(cols, x_col, motor_cols, det_cols)
+        if self._map_mode:
+            self._update_2d_plot()
+        else:
+            self._replot()
+
+    def _toggle_map_mode(self, checked: bool):
+        self._map_mode = checked
+        self._plot_stack.setCurrentIndex(1 if checked else 0)
+        if checked:
+            self._update_2d_plot()
+        else:
+            self._replot()
+
+    def _update_2d_plot(self):
+        if not self._dfs:
+            return
+        df, _  = self._dfs[0]
+        x_col  = self.x_combo.currentText()
+        y_col  = self._2d_widget.get_y_signal()
+        z_col  = self._2d_widget.get_z_signal()
+        if not all(c in df.columns for c in (x_col, y_col, z_col)):
+            return
+        self._2d_widget.replot(
+            df[x_col].values, df[y_col].values, df[z_col].values,
+            x_col, y_col, z_col,
+        )
 
     def _replot(self):
         if not self._dfs or not PG_AVAILABLE:

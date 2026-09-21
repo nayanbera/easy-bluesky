@@ -1,4 +1,4 @@
-"""plot_tools.py — Shared pyqtgraph helpers: crosshair, point tooltip."""
+"""plot_tools.py — Shared pyqtgraph helpers: crosshair, point tooltip, 2D map."""
 
 try:
     import pyqtgraph as pg
@@ -7,7 +7,10 @@ try:
 except ImportError:
     PG_AVAILABLE = False
 
-from PyQt6.QtCore import Qt, QObject, QEvent
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox,
+)
+from PyQt6.QtCore import Qt, QObject, QEvent, QRectF, pyqtSignal
 
 
 _COORD_PLACEHOLDER = "X: —        Y: —"
@@ -192,3 +195,272 @@ def smart_legend_position(plot_widget):
     # setOffset sign convention: positive → from left/top, negative → from right/bottom
     _offsets = [(10, 10), (-10, 10), (10, -10), (-10, -10)]
     legend.setOffset(_offsets[int(np.argmin(scores))])
+
+
+# ── 2D map helpers ─────────────────────────────────────────────────────────────
+
+def build_2d_map(xs, ys, zs):
+    """Convert flat (x, y, z) triplets to a 2D image array.
+
+    Returns (img[ny, nx], x_unique, y_unique).
+    img[iy, ix] = z value at grid position (x_unique[ix], y_unique[iy]).
+    Missing pixels are NaN.  Raises ValueError if data is insufficient.
+    """
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    zs = np.asarray(zs, dtype=float)
+    n  = min(len(xs), len(ys), len(zs))
+    if n < 4:
+        raise ValueError("Not enough points for a 2D map (need ≥ 4)")
+    xs, ys, zs = xs[:n], ys[:n], zs[:n]
+
+    def _unique_tol(arr):
+        s   = np.sort(arr)
+        tol = max(abs(float(s[-1]) - float(s[0])) * 1e-4, 1e-10)
+        u   = [float(s[0])]
+        for v in s[1:]:
+            if abs(float(v) - u[-1]) > tol:
+                u.append(float(v))
+        return np.array(u)
+
+    x_u = _unique_tol(xs)
+    y_u = _unique_tol(ys)
+    nx, ny = len(x_u), len(y_u)
+    if nx < 2 or ny < 2:
+        raise ValueError("Need ≥ 2 unique values per axis for a 2D map")
+
+    img   = np.full((ny, nx), np.nan)
+    x_tol = max((x_u[-1] - x_u[0]) * 5e-4, 1e-10)
+    y_tol = max((y_u[-1] - y_u[0]) * 5e-4, 1e-10)
+
+    for xi, yi, zi in zip(xs, ys, zs):
+        ix = int(np.searchsorted(x_u, xi))
+        iy = int(np.searchsorted(y_u, yi))
+        ix = max(0, min(ix, nx - 1))
+        iy = max(0, min(iy, ny - 1))
+        if ix > 0 and abs(x_u[ix] - xi) > abs(x_u[ix - 1] - xi):
+            ix -= 1
+        if iy > 0 and abs(y_u[iy] - yi) > abs(y_u[iy - 1] - yi):
+            iy -= 1
+        if abs(x_u[ix] - xi) <= x_tol and abs(y_u[iy] - yi) <= y_tol:
+            img[iy, ix] = zi
+
+    return img, x_u, y_u
+
+
+class TwoDMapWidget(QWidget):
+    """Reusable 2D heatmap (pixel-map) widget backed by pyqtgraph ImageItem.
+
+    Usage::
+        w = TwoDMapWidget()
+        w.set_columns(cols, x_col, motors, detectors)   # populate combos
+        w.selection_changed.connect(my_replot_slot)      # replot when Y/Z change
+        w.replot(xs, ys, zs, x_label, y_label, z_label) # draw
+    """
+
+    selection_changed = pyqtSignal()
+
+    _CMAPS     = ['viridis', 'inferno', 'plasma', 'coolwarm', 'gray']
+    _NAN_COLOR = np.array([60, 60, 60], dtype=np.uint8)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._current_cmap = None
+        self._cbar         = None
+        self._build()
+
+    # ── Construction ──────────────────────────────────────────────────────────
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.setSpacing(4)
+
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(6)
+
+        ctrl.addWidget(QLabel("Y motor:"))
+        self._y_combo = QComboBox()
+        self._y_combo.setMinimumWidth(120)
+        self._y_combo.setMaximumWidth(220)
+        self._y_combo.currentTextChanged.connect(self.selection_changed)
+        ctrl.addWidget(self._y_combo)
+
+        ctrl.addSpacing(8)
+        ctrl.addWidget(QLabel("Z (intensity):"))
+        self._z_combo = QComboBox()
+        self._z_combo.setMinimumWidth(120)
+        self._z_combo.setMaximumWidth(220)
+        self._z_combo.currentTextChanged.connect(self.selection_changed)
+        ctrl.addWidget(self._z_combo)
+
+        ctrl.addSpacing(8)
+        ctrl.addWidget(QLabel("Colormap:"))
+        self._cmap_combo = QComboBox()
+        for c in self._CMAPS:
+            self._cmap_combo.addItem(c)
+        self._cmap_combo.currentTextChanged.connect(self._on_cmap_changed)
+        ctrl.addWidget(self._cmap_combo)
+
+        self._log_z_cb = QCheckBox("Log Z")
+        self._log_z_cb.stateChanged.connect(self.selection_changed)
+        ctrl.addWidget(self._log_z_cb)
+
+        ctrl.addStretch()
+        lay.addLayout(ctrl)
+
+        if PG_AVAILABLE:
+            self._glw = pg.GraphicsLayoutWidget(background='#1e1e1e')
+            self._plot = self._glw.addPlot(row=0, col=0)
+            self._plot.setAspectLocked(False)
+            self._img_item = pg.ImageItem()
+            self._plot.addItem(self._img_item)
+            try:
+                self._cbar = pg.ColorBarItem(values=(0, 1), width=15,
+                                             interactive=False)
+                self._cbar.setImageItem(self._img_item, insert_in=self._plot)
+            except Exception:
+                self._cbar = None
+            self._set_cmap(self._CMAPS[0])
+            lay.addWidget(self._glw, 1)
+        else:
+            self._img_item = None
+            lay.addWidget(QLabel("pyqtgraph not available"), 1)
+
+    def _on_cmap_changed(self, name):
+        self._set_cmap(name)
+        self.selection_changed.emit()
+
+    def _set_cmap(self, name):
+        if not PG_AVAILABLE:
+            return
+        for src in (None, 'matplotlib', 'colorcet'):
+            try:
+                kw = {} if src is None else {'source': src}
+                self._current_cmap = pg.colormap.get(name, **kw)
+                break
+            except Exception:
+                continue
+        if self._current_cmap is None:
+            try:
+                self._current_cmap = pg.colormap.get('viridis')
+            except Exception:
+                return
+        if self._cbar is not None:
+            try:
+                self._cbar.setColorMap(self._current_cmap)
+            except Exception:
+                pass
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def set_columns(self, cols, x_col="", motors=None, detectors=None):
+        """Populate Y-motor and Z combos; auto-select from motor/detector hints."""
+        motors    = list(motors    or [])
+        detectors = list(detectors or [])
+
+        for combo in (self._y_combo, self._z_combo):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(cols)
+            combo.blockSignals(False)
+
+        # Y motor: first motor that is not x_col
+        y_cands = [m for m in motors if m != x_col and m in cols]
+        if not y_cands:
+            y_cands = [c for c in cols
+                       if c != x_col and c not in ("time", "seq_num")]
+        if y_cands:
+            self._y_combo.setCurrentText(y_cands[0])
+
+        # Z: first detector, or first column not used by x or y
+        z_cands = [d for d in detectors if d in cols]
+        if not z_cands:
+            y_sel = self._y_combo.currentText()
+            z_cands = [c for c in cols
+                       if c not in (x_col, y_sel, "time", "seq_num")]
+        if z_cands:
+            self._z_combo.setCurrentText(z_cands[0])
+
+    def get_y_signal(self) -> str:
+        return self._y_combo.currentText()
+
+    def get_z_signal(self) -> str:
+        return self._z_combo.currentText()
+
+    def replot(self, xs, ys, zs, x_label="X", y_label="Y", z_label="Z"):
+        """Build and display the 2D intensity map from flat (x, y, z) arrays."""
+        if not PG_AVAILABLE or self._img_item is None or self._current_cmap is None:
+            return
+        try:
+            img, x_vals, y_vals = build_2d_map(xs, ys, zs)
+        except Exception:
+            return
+
+        if self._log_z_cb.isChecked():
+            with np.errstate(divide='ignore', invalid='ignore'):
+                img = np.log10(np.where(img > 0, img, np.nan))
+
+        nan_mask = np.isnan(img)
+        valid    = img[~nan_mask]
+        if len(valid) == 0:
+            return
+
+        vmin, vmax = float(valid.min()), float(valid.max())
+        if vmax == vmin:
+            vmax = vmin + 1.0
+
+        # Sentinel value placed 10 % below the data minimum.
+        # The LUT's first ~23 entries are assigned the NaN colour so that the
+        # sentinel region is visually distinct from real data (which maps to the
+        # remaining ~233 entries of the colourmap).
+        sentinel      = vmin - 0.1 * (vmax - vmin)
+        idx_boundary  = max(1, int((vmin - sentinel) / (vmax - sentinel) * 255))
+
+        try:
+            n_cmap = max(1, 256 - idx_boundary)
+            lut_cmap = self._current_cmap.getLookupTable(0.0, 1.0, n_cmap,
+                                                          alpha=False)
+            nan_part = np.tile(self._NAN_COLOR, (idx_boundary, 1))
+            lut      = np.vstack([nan_part, lut_cmap])[:256]
+        except Exception:
+            lut = None
+
+        img_disp          = img.copy()
+        img_disp[nan_mask] = sentinel
+
+        # pg.ImageItem expects (nx, ny) — transpose from our (ny, nx) array
+        self._img_item.setImage(img_disp.T, autoLevels=False,
+                                levels=(sentinel, vmax))
+        if lut is not None:
+            self._img_item.setLookupTable(lut)
+
+        # Position the image in data-space coordinates
+        nx, ny = len(x_vals), len(y_vals)
+        dx = (float(x_vals[-1]) - float(x_vals[0])) / max(nx - 1, 1) if nx > 1 else 1.0
+        dy = (float(y_vals[-1]) - float(y_vals[0])) / max(ny - 1, 1) if ny > 1 else 1.0
+        self._img_item.setRect(QRectF(
+            float(x_vals[0])  - dx / 2,
+            float(y_vals[0])  - dy / 2,
+            float(x_vals[-1]) - float(x_vals[0]) + dx,
+            float(y_vals[-1]) - float(y_vals[0]) + dy,
+        ))
+
+        if self._cbar is not None:
+            try:
+                self._cbar.setLevels(low=vmin, high=vmax)
+            except Exception:
+                try:
+                    self._cbar.setLevels(values=(vmin, vmax))
+                except Exception:
+                    pass
+
+        self._plot.setLabel('bottom', x_label)
+        self._plot.setLabel('left',   y_label)
+        title = (f"log₁₀({z_label})" if self._log_z_cb.isChecked() else z_label)
+        self._plot.setTitle(title, color='#aaaaaa', size='10pt')
+
+    def clear(self):
+        if PG_AVAILABLE and self._img_item is not None:
+            self._img_item.clear()
+            self._plot.setTitle("")
