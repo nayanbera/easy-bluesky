@@ -362,6 +362,10 @@ class TwoDMapWidget(QWidget):
         motors    = list(motors    or [])
         detectors = list(detectors or [])
         det_set   = set(detectors)
+        col_set   = set(cols)
+
+        saved_y = self._y_combo.currentText()
+        saved_z = self._z_combo.currentText()
 
         for combo in (self._y_combo, self._z_combo):
             combo.blockSignals(True)
@@ -369,7 +373,17 @@ class TwoDMapWidget(QWidget):
             combo.addItems(cols)
             combo.blockSignals(False)
 
-        # Y motor: prefer explicit motor hints, then non-x non-detector columns
+        # Restore previous selections when the same columns are present again
+        if saved_y in col_set and saved_z in col_set:
+            self._y_combo.blockSignals(True)
+            self._y_combo.setCurrentText(saved_y)
+            self._y_combo.blockSignals(False)
+            self._z_combo.blockSignals(True)
+            self._z_combo.setCurrentText(saved_z)
+            self._z_combo.blockSignals(False)
+            return
+
+        # Auto-select Y motor: prefer explicit motor hints, then non-x non-detector columns
         y_cands = [m for m in motors if m != x_col and m in cols]
         if not y_cands:
             # Exclude known detectors from the fallback so we pick a motor-like column

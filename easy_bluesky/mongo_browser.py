@@ -1789,7 +1789,8 @@ class MongoDataBrowserTab(QWidget):
 
         missing = [
             rd["label"] for rd in self._run_data_list
-            if x_field not in rd["streams"].get(stream, {})
+            if (x_field not in ("time", "seq_num")
+                and x_field not in rd["streams"].get(stream, {}))
             or z_field not in rd["streams"].get(stream, {})
         ]
         if missing:

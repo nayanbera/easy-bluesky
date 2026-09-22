@@ -491,6 +491,13 @@ class HDF5Viewer(QWidget):
                    if len(col_sets) > 1 else col_sets[0]
         cols     = [c for c in numeric_cols(self._dfs[0][0]) if c in common]
 
+        saved_x = self.x_combo.currentText()
+        saved_y = {
+            self.y_list.item(i).text()
+            for i in range(self.y_list.count())
+            if self.y_list.item(i).isSelected()
+        }
+
         self.x_combo.blockSignals(True)
         self.x_combo.clear()
         self.x_combo.addItems(cols)
@@ -514,18 +521,31 @@ class HDF5Viewer(QWidget):
                 break
         self.norm_combo.blockSignals(False)
 
+        col_set    = set(cols)
         motor_cols = [c for c in cols
                       if any(w in c.lower()
                              for w in ("motor", "pos", "stage", "enc"))]
         det_cols   = [c for c in cols
                       if c not in motor_cols and c not in ("seq_num", "time")]
-        x_default  = motor_cols[0] if motor_cols else (cols[0] if cols else "")
-        if x_default:
-            self.x_combo.setCurrentText(x_default)
-        for i in range(self.y_list.count()):
-            sig = self.y_list.item(i).text()
-            self.y_list.item(i).setSelected(
-                sig in det_cols or (not det_cols and sig != x_default))
+
+        if saved_x and saved_x in col_set:
+            self.x_combo.blockSignals(True)
+            self.x_combo.setCurrentText(saved_x)
+            self.x_combo.blockSignals(False)
+        else:
+            x_default = motor_cols[0] if motor_cols else (cols[0] if cols else "")
+            if x_default:
+                self.x_combo.setCurrentText(x_default)
+
+        x_cur = self.x_combo.currentText()
+        if saved_y & col_set:
+            for i in range(self.y_list.count()):
+                self.y_list.item(i).setSelected(self.y_list.item(i).text() in saved_y)
+        else:
+            for i in range(self.y_list.count()):
+                sig = self.y_list.item(i).text()
+                self.y_list.item(i).setSelected(
+                    sig in det_cols or (not det_cols and sig != x_cur))
 
         n = len(self._dfs)
         self.run_label.setText(f"{n} scan{'s' if n != 1 else ''} selected")
