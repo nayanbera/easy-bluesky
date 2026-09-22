@@ -114,6 +114,34 @@ def _is_motion_only(name: str, kwargs: dict) -> bool:
     return name.lower() in _MOTION_PLANS
 
 
+def _next_scan_num_for(exp_path: str) -> int:
+    """Return the next scan_num to assign for an experiment by reading files.
+
+    Takes max(plans_log.jsonl scan_nums, queued_scans.jsonl scan_nums) + 1.
+    Reading fresh from disk prevents in-memory counter drift across clients.
+    """
+    max_seen = 0
+    for fname in ("plans_log.jsonl", "queued_scans.jsonl"):
+        p = Path(exp_path) / fname
+        if not p.exists():
+            continue
+        try:
+            with open(p) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        sn = json.loads(line).get("scan_num")
+                        if sn is not None and int(sn) > max_seen:
+                            max_seen = int(sn)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return max_seen + 1
+
+
 # ── MongoDB-based HDF5 exporter (whole experiment) ────────────────────────────
 
 class _MongoHDF5Exporter(QThread):
@@ -1201,7 +1229,6 @@ class ExperimentsTab(QWidget):
         self._exp_created_at: float = 0.0
         self._exp_end_time: float   = 0.0
         self._next_scan_num: int      = 1
-        self._base_next_scan_num: int = 1
         self._queue_has_items: bool   = False
         self._detached_win     = None
         self._plot_placeholder = None
@@ -1830,8 +1857,7 @@ class ExperimentsTab(QWidget):
         self._shown_error_uids = set()
         self._exp_created_at   = 0.0
         self._exp_end_time     = 0.0
-        self._next_scan_num      = 1
-        self._base_next_scan_num = 1   # from plans_log.jsonl; floor for queue recalculation
+        self._next_scan_num = 1
         self._clear_sample()
         # Reset display labels — _set_active_experiment will re-populate them
         # if a saved experiment exists for this profile.
@@ -1890,9 +1916,10 @@ class ExperimentsTab(QWidget):
         merged = {**auto_md, **existing_md}   # user-supplied md wins
         # Lock in scan_num at queue time so custom_plans.py doesn't need to
         # read scans_log.json at execution time (avoids stale-file off-by-one).
-        if "scan_num" not in existing_md:
-            merged["scan_num"] = self._next_scan_num
-            self._next_scan_num += 1
+        if "scan_num" not in existing_md and self._active_exp_path:
+            next_num = _next_scan_num_for(self._active_exp_path)
+            merged["scan_num"] = next_num
+            self._next_scan_num = next_num + 1
             self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
         result_item.setdefault("kwargs", {})["md"] = merged
         return result_item
@@ -2123,19 +2150,6 @@ class ExperimentsTab(QWidget):
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 
-            # When a plan transitions into running state, advance _base_next_scan_num
-            # past its reserved scan_num immediately.  This prevents update_compact_queue
-            # from resetting _next_scan_num back to the pre-run value while the plan is
-            # running or aborting (before update_history has a chance to log it).
-            if uid and item:
-                running_scan_num = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
-                if running_scan_num is not None:
-                    needed = int(running_scan_num) + 1
-                    if needed > self._base_next_scan_num:
-                        self._base_next_scan_num = needed
-                    if needed > self._next_scan_num:
-                        self._next_scan_num = needed
-                        self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
 
         self._current_running_item = item or {}
         self._update_progress_bars()
@@ -3408,30 +3422,23 @@ class ExperimentsTab(QWidget):
                     return 0.0
             all_entries.sort(key=_ts_key)
 
-            # Renumber in time order: non-motion plans get sequential numbers 1, 2, 3…;
-            # motion-only plans (mv etc.) get scan_num = None.  Aborted scans count
-            # even when run_uids is empty (aborted before the bluesky start document).
-            scan_counter = 1
-            file_changed = True   # always write back after sort
+            # Stored scan_nums are authoritative — do not renumber on load.
+            # Compute next scan_num from the max stored value across both files.
+            max_scan = 0
             for e in all_entries:
-                is_mot = _is_motion_only(e.get("name", ""), e.get("kwargs", {}) or {})
-                new_num = None if is_mot else scan_counter
-                if e.get("scan_num") != new_num:
-                    e["scan_num"] = new_num
-                    file_changed = True
-                if not is_mot:
-                    scan_counter += 1
-            self._next_scan_num      = scan_counter  # next unused number
-            self._base_next_scan_num = scan_counter
-            self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+                sn = e.get("scan_num")
+                if sn is not None:
+                    try:
+                        if int(sn) > max_scan:
+                            max_scan = int(sn)
+                    except (TypeError, ValueError):
+                        pass
 
-            # Extend _next_scan_num past any scan numbers already reserved by
-            # queued plans (possibly from another client on the same experiment).
+            # Also scan queued_scans.jsonl for reservations from any client.
             self._queued_scan_lookup = {}
             queued_file = Path(exp_path) / "queued_scans.jsonl"
             if queued_file.exists():
                 try:
-                    max_queued = 0
                     with open(queued_file) as qf:
                         for qline in qf:
                             qline = qline.strip()
@@ -3443,23 +3450,15 @@ class ExperimentsTab(QWidget):
                                 sn   = qe.get("scan_num") or 0
                                 if iuid:
                                     self._queued_scan_lookup[iuid] = sn
-                                if sn > max_queued:
-                                    max_queued = sn
+                                if sn > max_scan:
+                                    max_scan = sn
                             except Exception:
                                 pass
-                    if max_queued >= self._next_scan_num:
-                        self._next_scan_num = max_queued + 1
-                        self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
                 except Exception:
                     pass
 
-            if file_changed:
-                try:
-                    with open(log_file, "w") as f:
-                        for e in all_entries:
-                            f.write(json.dumps(e) + "\n")
-                except Exception:
-                    pass
+            self._next_scan_num = max_scan + 1
+            self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
 
             # Show all entries in the file — no time-window cap.
             entries = all_entries
@@ -3576,12 +3575,8 @@ class ExperimentsTab(QWidget):
                 self._logged_uids.add(uid)
                 # Advance both counters so the next queued scan gets a fresh number
                 # even when this scan was aborted (with or without bluesky run_uids).
-                if not is_motion:
-                    if scan_num >= self._next_scan_num:
-                        self._next_scan_num = scan_num + 1
-                    if scan_num >= self._base_next_scan_num:
-                        self._base_next_scan_num = scan_num + 1
-                        self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
+                if not is_motion and scan_num >= self._next_scan_num:
+                    self._next_scan_num = scan_num + 1
                 changed = True
             except Exception:
                 pass
@@ -3638,17 +3633,6 @@ class ExperimentsTab(QWidget):
         n = len(items)
         self._queue_has_items = n > 0
         self.queue_count_label.setText(f"{n} item{'s' if n != 1 else ''}")
-
-        # Always recalculate next_scan_num from the queue so additions and removals
-        # are both reflected immediately.  Floor is _base_next_scan_num (completed scans + 1).
-        max_queued = max(
-            (item.get("kwargs", {}).get("md", {}).get("scan_num") or 0 for item in items),
-            default=0,
-        )
-        new_next = max(self._base_next_scan_num, max_queued + 1) if max_queued else self._base_next_scan_num
-        if new_next != self._next_scan_num:
-            self._next_scan_num = new_next
-            self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
 
         if n == 0 and not self._current_running_item:
             self._queue_done_events    = 0
