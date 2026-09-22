@@ -1259,6 +1259,8 @@ class ExperimentsTab(QWidget):
         self._acquire_time_cache: dict = {}
         self._running_item_uid         = ""
         self._running_item_num         = 0    # total points in running plan
+        self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
+        self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
         self._completed_points         = 0    # event docs received so far
         self._plan_event_intervals: deque = deque(maxlen=8)  # inter-event seconds
         self._plan_last_event_time     = 0.0
@@ -2168,11 +2170,45 @@ class ExperimentsTab(QWidget):
         sample = md.get("sample_name", "")
         if sample:
             parts.append(sample)
-        # Append any positional args (motor positions, num, etc.) briefly
         if args:
             parts.append(", ".join(str(a) for a in args[:3]))
         detail = f"  [{', '.join(parts)}]" if parts else ""
-        self._running_banner.setText(f"▶  Running: {name}{detail}")
+
+        # Detect foreign-client run: different host or different experiment folder.
+        running_host = md.get("client_host", "")
+        running_exp  = (md.get("exp_dir") or "").rstrip("/")
+        my_host      = socket.gethostname()
+        my_exp       = self._active_exp_path.rstrip("/")
+        foreign_host = running_host and running_host != my_host
+        foreign_exp  = running_exp and running_exp != my_exp
+
+        if foreign_host or foreign_exp:
+            notes = []
+            if foreign_host:
+                notes.append(f"queued from {running_host}")
+            if foreign_exp:
+                notes.append(f"experiment: {Path(running_exp).name}")
+            self._running_banner.setText(
+                f"▶  Running: {name}{detail}  ⚠ {', '.join(notes)}"
+            )
+            self._running_banner.setStyleSheet(
+                "background: #3a2e00; color: #e8c44a; font-size: 11px;"
+                "padding: 3px 6px; border-radius: 3px;"
+            )
+            if uid and uid != self._foreign_run_warned_uid:
+                self._foreign_run_warned_uid = uid
+                who = running_host if foreign_host else "another client"
+                where = f" for experiment '{Path(running_exp).name}'" if foreign_exp else ""
+                self._log(
+                    f"⚠ Running plan '{name}' was queued by {who}{where} — "
+                    f"live plot and plan log updates may not appear here"
+                )
+        else:
+            self._running_banner.setText(f"▶  Running: {name}{detail}")
+            self._running_banner.setStyleSheet(
+                "background: #1a3a1a; color: #6ddc6d; font-size: 11px;"
+                "padding: 3px 6px; border-radius: 3px;"
+            )
         self._running_banner.setVisible(True)
 
     # ── ETA estimation ──────────────────────────────────────────────────────────
@@ -2886,9 +2922,11 @@ class ExperimentsTab(QWidget):
             self._start_doi_polling()
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
-        self._logged_uids     = set()
-        self._shown_error_uids = set()  # reset so old errors don't re-appear
-        self._suppressed_uids = set()   # suppressions are per-experiment
+        self._logged_uids          = set()
+        self._shown_error_uids     = set()  # reset so old errors don't re-appear
+        self._suppressed_uids      = set()   # suppressions are per-experiment
+        self._foreign_run_warned_uid = ""
+        self._foreign_plan_msg_shown = False
         # Only show error dialogs for plans that finish AFTER this moment.
         # Plans already in RE Manager history when we connect (including those
         # that ran on another machine) are silently ignored.
@@ -3475,6 +3513,18 @@ class ExperimentsTab(QWidget):
             ).rstrip("/")
             if plan_exp_dir and plan_exp_dir != self._active_exp_path.rstrip("/"):
                 self._logged_uids.add(uid)
+                if not self._foreign_plan_msg_shown:
+                    self._foreign_plan_msg_shown = True
+                    other_name = Path(plan_exp_dir).name
+                    other_host = (
+                        ((item.get("kwargs") or {}).get("md") or {}).get("client_host") or ""
+                    )
+                    who = f" (queued from {other_host})" if other_host else ""
+                    self._log(
+                        f"⚠ Completed plan '{item.get('name', '?')}' belongs to "
+                        f"experiment '{other_name}'{who} — it will not appear in this "
+                        f"Plan Log. Switch to that experiment to see its results."
+                    )
                 continue
 
             # Use the scan number reserved at queue time when available.
