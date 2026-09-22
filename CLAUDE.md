@@ -211,21 +211,30 @@ in the log and therefore in the RE console widget.
 
 ## Experiments tab — scan numbering
 
-- **`_next_scan_num` / `_base_next_scan_num`**: `_load_plan_log` sets both from
-  `plans_log.jsonl` entry count (`scan_counter`). `_base_next_scan_num` is the floor
-  (completed scans + 1) and never changes during a session. `_next_scan_num` is
-  advanced past queued plan scan numbers in `update_compact_queue` every poll.
-- **scan_num injection**: `_inject_metadata` locks `scan_num = _next_scan_num` into
-  each plan's `md` at queue time, then increments `_next_scan_num` and updates the
-  label. `custom_plans.py` uses `md.get("scan_num") or _scan_num_from_log(_dir)`.
-- **"Now Running" banner**: `ZMQWorker.running_item_updated(dict)` emits
-  `queue["running_item"]` each poll. `ExperimentsTab.update_running_item` shows/hides
-  the green banner. `update_re_status` hides it when `re_state` is not running/paused.
+- **`_next_scan_num_for(exp_path)`** (module-level): reads `max(scan_num)` from both
+  `plans_log.jsonl` and `queued_scans.jsonl` fresh on every plan addition, returns
+  `max + 1`. No in-memory counter — eliminates drift when multiple clients share the
+  same RE Manager. `_base_next_scan_num` is removed.
+- **`queued_scans.jsonl`**: written by `_inject_metadata` at queue time with
+  `{item_uid, scan_num, name, client_host, queued_at}`. Reservation persists even if
+  the plan is later removed from the queue (intentional gap, same as an aborted scan).
+- **scan_num injection**: `_inject_metadata` calls `_next_scan_num_for(exp_path)`,
+  locks `scan_num` into `md`, then updates the "Next scan:" label. `custom_plans.py`
+  reads `md.get("scan_num") or _scan_num_from_log(dir)`.
+- **`_load_plan_log`**: reads max scan_num from stored values only — does **not**
+  rewrite `plans_log.jsonl` on load. Old experiments with existing scan_nums are fully
+  backward-compatible (values read as-is, no renumbering).
+- **`_offer_queue_metadata_update` removed**: queue items always run with the submitter's
+  metadata. Switching active experiments no longer offers to rewrite queued plans.
+- **"Now Running" banner**: `update_running_item` shows **green** for own plans, **amber**
+  (`#3a2e00` / `#e8c44a`) when `md.get("client_host") != socket.gethostname()`. Logs
+  a one-time console warning per foreign plan UID.
+- **`update_history` foreign-experiment warning**: logs a one-time console message when
+  a completed history item references a different experiment directory (silently skipped).
 - **Start queue guard**: `update_re_status` checks `manager_state == "idle"` in
   addition to `re_state` before enabling `btn_q_start`.
-- **directoryChanged NOT connected to `_update_next_scan_label`**: removed because
-  `_load_plan_log` rewrites `plans_log.jsonl`, triggering `directoryChanged` which was
-  resetting the label to the stale `scans_log.json` count.
+- **directoryChanged NOT connected to `_update_next_scan_label`**: `_load_plan_log` no
+  longer rewrites `plans_log.jsonl`, so the old reset loop is gone.
 - **`custom_plans.py` is uploaded manually** — never auto-deploy it; the user uploads
   it to the remote machine themselves.
 
