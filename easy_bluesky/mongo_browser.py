@@ -667,6 +667,7 @@ class MongoDataBrowserTab(QWidget):
         self._stats_cb          = None # checkbox reference (set in _build_ui)
         self._repro_btn         = None # Motor Repro button (set in _build_ui)
         self._map_mode       = False
+        self._2d_map_data    = None   # (xs, ys, zs, x_field, z_field, scan_labels)
         self._fetch_timer    = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._schedule_data_fetch)
@@ -909,6 +910,13 @@ class MongoDataBrowserTab(QWidget):
         self._btn_map_mode.setToolTip("Switch to 2D pixel-intensity map view")
         self._btn_map_mode.clicked.connect(self._toggle_map_mode)
         ctrl_bar.addWidget(self._btn_map_mode)
+
+        self._btn_save_2d = QPushButton("Save 2D…")
+        self._btn_save_2d.setFixedHeight(26)
+        self._btn_save_2d.setVisible(False)
+        self._btn_save_2d.setToolTip("Save multi-scan 2D map as CSV (x, scan_index, z)")
+        self._btn_save_2d.clicked.connect(self._save_2d_map)
+        ctrl_bar.addWidget(self._btn_save_2d)
 
         rlayout.addLayout(ctrl_bar)
 
@@ -1710,6 +1718,9 @@ class MongoDataBrowserTab(QWidget):
         if checked:
             self._populate_2d_columns()
             self._update_2d_plot()
+        else:
+            self._btn_save_2d.setVisible(False)
+            self._2d_map_data = None
 
     def _populate_2d_columns(self):
         """Populate TwoDMapWidget column combos from current run data."""
@@ -1727,37 +1738,132 @@ class MongoDataBrowserTab(QWidget):
         self._2d_widget.set_columns(cols, x_col=x_col, motors=motors, detectors=dets)
 
     def _update_2d_plot(self):
-        """Collect x/y/z data from the first selected run and send to TwoDMapWidget."""
+        """Route to single-scan intra-scan map or multi-scan stacked map."""
         if not PG_AVAILABLE or not self._run_data_list or not self._map_mode:
             return
-        stream = self._stream_combo.currentText()
-        x_field = self._x_combo.currentData() or self._x_combo.currentText()
-        y_field = self._2d_widget.get_y_signal()
-        z_field = self._2d_widget.get_z_signal()
-        if not y_field or not z_field:
-            return
-        rd = self._run_data_list[0]
-        sdata = rd["streams"].get(stream, {})
-        if not sdata:
-            return
-        if x_field == "time":
-            raw = sdata.get("time")
-            x_arr = (raw - raw[0]).astype(float) if raw is not None and len(raw) else None
-        elif x_field == "seq_num":
-            t = sdata.get("time")
-            x_arr = np.arange(1, len(t) + 1, dtype=float) if t is not None else None
+        if len(self._run_data_list) >= 2:
+            self._update_2d_map_multi_scan()
         else:
-            raw = sdata.get(x_field)
-            x_arr = raw.astype(float) if raw is not None else None
-        y_arr = sdata.get(y_field)
-        z_arr = sdata.get(z_field)
-        if x_arr is None or y_arr is None or z_arr is None:
+            self._btn_save_2d.setVisible(False)
+            stream  = self._stream_combo.currentText()
+            x_field = self._x_combo.currentData() or self._x_combo.currentText()
+            y_field = self._2d_widget.get_y_signal()
+            z_field = self._2d_widget.get_z_signal()
+            if not y_field or not z_field:
+                return
+            rd = self._run_data_list[0]
+            sdata = rd["streams"].get(stream, {})
+            if not sdata:
+                return
+            if x_field == "time":
+                raw = sdata.get("time")
+                x_arr = (raw - raw[0]).astype(float) if raw is not None and len(raw) else None
+            elif x_field == "seq_num":
+                t = sdata.get("time")
+                x_arr = np.arange(1, len(t) + 1, dtype=float) if t is not None else None
+            else:
+                raw = sdata.get(x_field)
+                x_arr = raw.astype(float) if raw is not None else None
+            y_arr = sdata.get(y_field)
+            z_arr = sdata.get(z_field)
+            if x_arr is None or y_arr is None or z_arr is None:
+                return
+            n = min(len(x_arr), len(y_arr), len(z_arr))
+            self._2d_widget.replot(
+                x_arr[:n], y_arr[:n].astype(float), z_arr[:n].astype(float),
+                x_label=x_field, y_label=y_field, z_label=z_field,
+            )
+
+    def _update_2d_map_multi_scan(self):
+        """Stack ≥2 selected scans into a 2D heatmap (X = x_field, Y = scan index)."""
+        stream  = self._stream_combo.currentText()
+        x_field = self._x_combo.currentData() or self._x_combo.currentText()
+        y_fields = [
+            self._y_list.item(i).text()
+            for i in range(self._y_list.count())
+            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        if not y_fields:
             return
-        n = min(len(x_arr), len(y_arr), len(z_arr))
-        self._2d_widget.replot(
-            x_arr[:n], y_arr[:n].astype(float), z_arr[:n].astype(float),
-            x_label=x_field, y_label=y_field, z_label=z_field,
+        z_field = y_fields[0]
+
+        missing = [
+            rd["label"] for rd in self._run_data_list
+            if x_field not in rd["streams"].get(stream, {})
+            or z_field not in rd["streams"].get(stream, {})
+        ]
+        if missing:
+            self._btn_map_mode.setChecked(False)
+            self._toggle_map_mode(False)
+            QMessageBox.warning(
+                self, "2D Map",
+                "Selected scans do not share the same motors/detectors — "
+                "2D map cannot be created."
+            )
+            return
+
+        xs_list, zs_list, scan_labels = [], [], []
+        for i, rd in enumerate(self._run_data_list):
+            sdata = rd["streams"].get(stream, {})
+            if x_field == "time":
+                raw = sdata.get("time")
+                x_arr = (raw - raw[0]).astype(float) if raw is not None and len(raw) else None
+            elif x_field == "seq_num":
+                t = sdata.get("time")
+                x_arr = np.arange(1, len(t) + 1, dtype=float) if t is not None else None
+            else:
+                raw = sdata.get(x_field)
+                x_arr = raw.astype(float) if raw is not None else None
+            z_raw = sdata.get(z_field)
+            if x_arr is None or z_raw is None:
+                continue
+            n = min(len(x_arr), len(z_raw))
+            xs_list.append(x_arr[:n])
+            zs_list.append(z_raw[:n].astype(float))
+            scan_labels.append(rd.get("label", str(i)))
+
+        if len(xs_list) < 2:
+            return
+
+        n_pts = int(np.median([len(x) for x in xs_list]))
+        x_min = float(max(x.min() for x in xs_list))
+        x_max = float(min(x.max() for x in xs_list))
+        if x_min >= x_max:
+            return
+        x_common = np.linspace(x_min, x_max, n_pts)
+
+        xs_flat, ys_flat, zs_flat = [], [], []
+        for i, (x_arr, z_arr) in enumerate(zip(xs_list, zs_list)):
+            z_interp = np.interp(x_common, x_arr, z_arr)
+            xs_flat.append(x_common)
+            ys_flat.append(np.full(n_pts, float(i)))
+            zs_flat.append(z_interp)
+
+        xs = np.concatenate(xs_flat)
+        ys = np.concatenate(ys_flat)
+        zs = np.concatenate(zs_flat)
+
+        self._2d_map_data = (xs, ys, zs, x_field, z_field, scan_labels)
+        self._2d_widget.replot(xs, ys, zs,
+                               x_label=x_field, y_label="scan index", z_label=z_field)
+        self._btn_save_2d.setVisible(True)
+
+    def _save_2d_map(self):
+        if not self._2d_map_data:
+            return
+        xs, ys, zs, x_field, z_field, _labels = self._2d_map_data
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save 2D Map", "", "CSV files (*.csv)"
         )
+        if not path:
+            return
+        try:
+            with open(path, "w") as fh:
+                fh.write(f"{x_field},scan_index,{z_field}\n")
+                for xi, yi, zi in zip(xs, ys, zs):
+                    fh.write(f"{xi:.8g},{int(yi)},{zi:.8g}\n")
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Error", str(exc))
 
     # ── Derivative transform ───────────────────────────────────────────────────
 

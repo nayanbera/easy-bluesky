@@ -135,7 +135,8 @@ class HDF5Viewer(QWidget):
         self._fit_datasets: list     = []     # datasets passed to the open dialog
         self._saved_fit_state: dict  = None   # {model_name, bg_name, params} — persists
         self._crosshair_cleanup = None
-        self._map_mode = False
+        self._map_mode    = False
+        self._2d_map_data = None   # (xs, ys, zs, x_field, z_field, scan_labels)
         self._build()
 
     # ── UI ─────────────────────────────────────────────────────────────────────
@@ -285,6 +286,12 @@ class HDF5Viewer(QWidget):
         self._btn_map_mode.setToolTip("Switch to 2D pixel-intensity map view")
         self._btn_map_mode.clicked.connect(self._toggle_map_mode)
         ctrl_bar.addWidget(self._btn_map_mode)
+
+        self._btn_save_2d = QPushButton("Save 2D…")
+        self._btn_save_2d.setVisible(False)
+        self._btn_save_2d.setToolTip("Save multi-scan 2D map as CSV (x, scan_index, z)")
+        self._btn_save_2d.clicked.connect(self._save_2d_map)
+        ctrl_bar.addWidget(self._btn_save_2d)
 
         ctrl_bar.addStretch()
         vlay.addLayout(ctrl_bar)
@@ -537,21 +544,103 @@ class HDF5Viewer(QWidget):
         if checked:
             self._update_2d_plot()
         else:
+            self._btn_save_2d.setVisible(False)
+            self._2d_map_data = None
             self._replot()
 
     def _update_2d_plot(self):
         if not self._dfs:
             return
-        df, _  = self._dfs[0]
-        x_col  = self.x_combo.currentText()
-        y_col  = self._2d_widget.get_y_signal()
-        z_col  = self._2d_widget.get_z_signal()
-        if not all(c in df.columns for c in (x_col, y_col, z_col)):
+        if len(self._dfs) >= 2:
+            self._update_2d_map_multi_scan()
+        else:
+            self._btn_save_2d.setVisible(False)
+            df, _  = self._dfs[0]
+            x_col  = self.x_combo.currentText()
+            y_col  = self._2d_widget.get_y_signal()
+            z_col  = self._2d_widget.get_z_signal()
+            if not all(c in df.columns for c in (x_col, y_col, z_col)):
+                return
+            self._2d_widget.replot(
+                df[x_col].values, df[y_col].values, df[z_col].values,
+                x_col, y_col, z_col,
+            )
+
+    def _update_2d_map_multi_scan(self):
+        """Stack ≥2 selected scans into a 2D heatmap (X = x_col, Y = scan index)."""
+        x_col = self.x_combo.currentText()
+        ycs   = [self.y_list.item(i).text()
+                 for i in range(self.y_list.count())
+                 if self.y_list.item(i).isSelected()]
+        if not x_col or not ycs:
             return
-        self._2d_widget.replot(
-            df[x_col].values, df[y_col].values, df[z_col].values,
-            x_col, y_col, z_col,
+        z_col = ycs[0]
+
+        missing = [
+            lbl for df, lbl in self._dfs
+            if x_col not in df.columns or z_col not in df.columns
+        ]
+        if missing:
+            self._btn_map_mode.setChecked(False)
+            self._toggle_map_mode(False)
+            QMessageBox.warning(
+                self, "2D Map",
+                "Selected scans do not share the same motors/detectors — "
+                "2D map cannot be created."
+            )
+            return
+
+        xs_list, zs_list, scan_labels = [], [], []
+        for df, lbl in self._dfs:
+            x_arr = df[x_col].values.astype(float)
+            z_arr = df[z_col].values.astype(float)
+            n = min(len(x_arr), len(z_arr))
+            xs_list.append(x_arr[:n])
+            zs_list.append(z_arr[:n])
+            scan_labels.append(lbl)
+
+        if len(xs_list) < 2:
+            return
+
+        n_pts = int(np.median([len(x) for x in xs_list]))
+        x_min = float(max(x.min() for x in xs_list))
+        x_max = float(min(x.max() for x in xs_list))
+        if x_min >= x_max:
+            return
+        x_common = np.linspace(x_min, x_max, n_pts)
+
+        xs_flat, ys_flat, zs_flat = [], [], []
+        for i, (x_arr, z_arr) in enumerate(zip(xs_list, zs_list)):
+            z_interp = np.interp(x_common, x_arr, z_arr)
+            xs_flat.append(x_common)
+            ys_flat.append(np.full(n_pts, float(i)))
+            zs_flat.append(z_interp)
+
+        xs = np.concatenate(xs_flat)
+        ys = np.concatenate(ys_flat)
+        zs = np.concatenate(zs_flat)
+
+        self._2d_map_data = (xs, ys, zs, x_col, z_col, scan_labels)
+        self._2d_widget.replot(xs, ys, zs,
+                               x_label=x_col, y_label="scan index", z_label=z_col)
+        self._btn_save_2d.setVisible(True)
+
+    def _save_2d_map(self):
+        if not self._2d_map_data:
+            return
+        xs, ys, zs, x_col, z_col, _labels = self._2d_map_data
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save 2D Map", "", "CSV files (*.csv)"
         )
+        if not path:
+            return
+        try:
+            with open(path, "w") as fh:
+                fh.write(f"{x_col},scan_index,{z_col}\n")
+                for xi, yi, zi in zip(xs, ys, zs):
+                    fh.write(f"{xi:.8g},{int(yi)},{zi:.8g}\n")
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Error", str(exc))
 
     def _replot(self):
         if not self._dfs or not PG_AVAILABLE:
