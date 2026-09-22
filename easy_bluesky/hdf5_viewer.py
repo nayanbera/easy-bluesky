@@ -487,9 +487,14 @@ class HDF5Viewer(QWidget):
             return [c for c in df.columns if df[c].dtype.kind in ("f", "i", "u")]
 
         col_sets = [set(numeric_cols(df)) for df, _ in self._dfs]
-        common   = col_sets[0].intersection(*col_sets[1:]) \
-                   if len(col_sets) > 1 else col_sets[0]
-        cols     = [c for c in numeric_cols(self._dfs[0][0]) if c in common]
+        all_cols = col_sets[0].union(*col_sets[1:]) if len(col_sets) > 1 else col_sets[0]
+        seen_cols: set = set()
+        cols: list = []
+        for df, _ in self._dfs:
+            for c in numeric_cols(df):
+                if c in all_cols and c not in seen_cols:
+                    cols.append(c)
+                    seen_cols.add(c)
 
         saved_x = self.x_combo.currentText()
         saved_y = {
@@ -596,22 +601,20 @@ class HDF5Viewer(QWidget):
             return
         z_col = ycs[0]
 
-        missing = [
-            lbl for df, lbl in self._dfs
-            if x_col not in df.columns or z_col not in df.columns
-        ]
-        if missing:
+        eligible = [(df, lbl) for df, lbl in self._dfs
+                    if x_col in df.columns and z_col in df.columns]
+        if len(eligible) < 2:
             self._btn_map_mode.setChecked(False)
             self._toggle_map_mode(False)
             QMessageBox.warning(
                 self, "2D Map",
-                "Selected scans do not share the same motors/detectors — "
-                "2D map cannot be created."
+                f"Fewer than 2 scans have both '{x_col}' and '{z_col}' — "
+                "2D map requires at least 2 compatible scans."
             )
             return
 
         xs_list, zs_list, scan_labels = [], [], []
-        for df, lbl in self._dfs:
+        for df, lbl in eligible:
             x_arr = df[x_col].values.astype(float)
             z_arr = df[z_col].values.astype(float)
             n = min(len(x_arr), len(z_arr))

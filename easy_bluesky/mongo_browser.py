@@ -1376,11 +1376,16 @@ class MongoDataBrowserTab(QWidget):
         if not runs_with_stream:
             return
         field_sets = [numeric_fields(rd) for rd in runs_with_stream]
-        common     = field_sets[0].intersection(*field_sets[1:])
+        all_fields = set().union(*field_sets)
 
-        first_sdata = runs_with_stream[0]["streams"].get(stream, {})
-        keys = [k for k in first_sdata
-                if k not in ("time", "data_keys") and k in common]
+        seen = set()
+        keys = []
+        for rd in runs_with_stream:
+            sdata = rd["streams"].get(stream, {})
+            for k in sdata:
+                if k not in ("time", "data_keys") and k in all_fields and k not in seen:
+                    keys.append(k)
+                    seen.add(k)
 
         # Save current selections before repopulating so they survive run switches
         cur_x = self._x_combo.currentData()
@@ -1787,24 +1792,24 @@ class MongoDataBrowserTab(QWidget):
             return
         z_field = y_fields[0]
 
-        missing = [
-            rd["label"] for rd in self._run_data_list
-            if (x_field not in ("time", "seq_num")
-                and x_field not in rd["streams"].get(stream, {}))
-            or z_field not in rd["streams"].get(stream, {})
+        eligible = [
+            rd for rd in self._run_data_list
+            if stream in rd["streams"]
+            and (x_field in ("time", "seq_num") or x_field in rd["streams"][stream])
+            and z_field in rd["streams"][stream]
         ]
-        if missing:
+        if len(eligible) < 2:
             self._btn_map_mode.setChecked(False)
             self._toggle_map_mode(False)
             QMessageBox.warning(
                 self, "2D Map",
-                "Selected scans do not share the same motors/detectors — "
-                "2D map cannot be created."
+                f"Fewer than 2 scans have both '{x_field}' and '{z_field}' — "
+                "2D map requires at least 2 compatible scans."
             )
             return
 
         xs_list, zs_list, scan_labels = [], [], []
-        for i, rd in enumerate(self._run_data_list):
+        for i, rd in enumerate(eligible):
             sdata = rd["streams"].get(stream, {})
             if x_field == "time":
                 raw = sdata.get("time")
