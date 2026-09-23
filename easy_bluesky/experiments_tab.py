@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
     QDialogButtonBox, QMainWindow, QLineEdit, QFormLayout, QGroupBox,
-    QMenu, QFrame, QCheckBox, QSpinBox, QProgressBar,
+    QMenu, QFrame, QCheckBox, QSpinBox, QProgressBar, QSizePolicy,
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QColor, QFont, QDesktopServices
@@ -1407,6 +1407,8 @@ class ExperimentsTab(QWidget):
 
         self._running_banner = QLabel("")
         self._running_banner.setWordWrap(False)
+        self._running_banner.setMinimumWidth(0)
+        self._running_banner.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._running_banner.setStyleSheet(
             "background: #1a3a1a; color: #6ddc6d; font-size: 11px;"
             "padding: 3px 6px; border-radius: 3px;"
@@ -2164,9 +2166,8 @@ class ExperimentsTab(QWidget):
         args   = item.get("args",   []) or []
         md     = kwargs.get("md", {}) or {}
         scan_n = md.get("scan_num")
+        scan_prefix = f"#{scan_n} · " if scan_n is not None else ""
         parts  = []
-        if scan_n is not None:
-            parts.append(f"scan #{scan_n}")
         sample = md.get("sample_name", "")
         if sample:
             parts.append(sample)
@@ -2189,7 +2190,7 @@ class ExperimentsTab(QWidget):
             if foreign_exp:
                 notes.append(f"experiment: {Path(running_exp).name}")
             self._running_banner.setText(
-                f"▶  Running: {name}{detail}  ⚠ {', '.join(notes)}"
+                f"{scan_prefix}▶  Running: {name}{detail}  ⚠ {', '.join(notes)}"
             )
             self._running_banner.setStyleSheet(
                 "background: #3a2e00; color: #e8c44a; font-size: 11px;"
@@ -2204,7 +2205,7 @@ class ExperimentsTab(QWidget):
                     f"live plot and plan log updates may not appear here"
                 )
         else:
-            self._running_banner.setText(f"▶  Running: {name}{detail}")
+            self._running_banner.setText(f"{scan_prefix}▶  Running: {name}{detail}")
             self._running_banner.setStyleSheet(
                 "background: #1a3a1a; color: #6ddc6d; font-size: 11px;"
                 "padding: 3px 6px; border-radius: 3px;"
