@@ -1785,7 +1785,6 @@ class MongoDataBrowserTab(QWidget):
             )
 
     def _update_2d_map_multi_scan(self):
-        """Stack ≥2 selected scans into a 2D heatmap (X = x_field, Y = scan index)."""
         stream  = self._stream_combo.currentText()
         x_field = (self._x_combo.currentData() or self._x_combo.currentText()).strip()
         if not x_field:
@@ -1801,12 +1800,14 @@ class MongoDataBrowserTab(QWidget):
         if not y_fields:
             return
         z_field = y_fields[0]
+        y_field = self._2d_widget.get_y_signal()
 
         eligible = [
             rd for rd in self._run_data_list
             if stream in rd["streams"]
             and (x_field in ("time", "seq_num") or x_field in rd["streams"][stream])
             and z_field in rd["streams"][stream]
+            and (not y_field or y_field in rd["streams"][stream])
         ]
         if len(eligible) < 2:
             self._btn_map_mode.setChecked(False)
@@ -1818,61 +1819,85 @@ class MongoDataBrowserTab(QWidget):
             )
             return
 
-        xs_list, zs_list, scan_labels = [], [], []
-        for i, rd in enumerate(eligible):
-            sdata = rd["streams"].get(stream, {})
+        def _get_x(sdata):
             if x_field == "time":
                 raw = sdata.get("time")
-                x_arr = (raw - raw[0]).astype(float) if raw is not None and len(raw) else None
-            elif x_field == "seq_num":
+                return (raw - raw[0]).astype(float) if raw is not None and len(raw) else None
+            if x_field == "seq_num":
                 t = sdata.get("time")
-                x_arr = np.arange(1, len(t) + 1, dtype=float) if t is not None else None
-            else:
-                raw = sdata.get(x_field)
-                x_arr = raw.astype(float) if raw is not None else None
-            z_raw = sdata.get(z_field)
-            if x_arr is None or z_raw is None:
-                continue
-            try:
-                z_arr = np.asarray(z_raw, dtype=float).ravel()
-            except (TypeError, ValueError):
-                continue
-            n = min(len(x_arr), len(z_arr))
-            xs_list.append(x_arr[:n])
-            zs_list.append(z_arr[:n])
-            scan_labels.append(rd.get("label", str(i)))
+                return np.arange(1, len(t) + 1, dtype=float) if t is not None else None
+            raw = sdata.get(x_field)
+            return raw.astype(float) if raw is not None else None
 
-        if len(xs_list) < 2:
-            return
-
-        n_pts = int(np.median([len(x) for x in xs_list]))
-        x_min = float(max(x.min() for x in xs_list))
-        x_max = float(min(x.max() for x in xs_list))
-        if x_min >= x_max:
-            return
-        x_common = np.linspace(x_min, x_max, n_pts)
-
-        xs_flat, ys_flat, zs_flat = [], [], []
-        for i, (x_arr, z_arr) in enumerate(zip(xs_list, zs_list)):
-            z_interp = np.interp(x_common, x_arr, z_arr)
-            xs_flat.append(x_common)
-            ys_flat.append(np.full(n_pts, float(i)))
-            zs_flat.append(z_interp)
-
-        xs = np.concatenate(xs_flat)
-        ys = np.concatenate(ys_flat)
-        zs = np.concatenate(zs_flat)
-
-        self._2d_map_data = (xs, ys, zs, x_field, z_field, scan_labels)
-        self._2d_widget.replot(xs, ys, zs,
-                               x_label=x_field, y_label="scan index", z_label=z_field)
-        self._2d_widget.set_y_ticks(len(xs_list), scan_labels)
+        if y_field:
+            xs_list, ys_list, zs_list = [], [], []
+            for rd in eligible:
+                sdata = rd["streams"].get(stream, {})
+                x_arr = _get_x(sdata)
+                y_raw = sdata.get(y_field)
+                z_raw = sdata.get(z_field)
+                if x_arr is None or y_raw is None or z_raw is None:
+                    continue
+                try:
+                    y_arr = np.asarray(y_raw, dtype=float).ravel()
+                    z_arr = np.asarray(z_raw, dtype=float).ravel()
+                except (TypeError, ValueError):
+                    continue
+                n = min(len(x_arr), len(y_arr), len(z_arr))
+                xs_list.append(x_arr[:n])
+                ys_list.append(y_arr[:n])
+                zs_list.append(z_arr[:n])
+            if len(xs_list) < 2:
+                return
+            all_x = np.concatenate(xs_list)
+            all_y = np.concatenate(ys_list)
+            all_z = np.concatenate(zs_list)
+            self._2d_map_data = (all_x, all_y, all_z, x_field, y_field, z_field, None)
+            self._2d_widget.replot(all_x, all_y, all_z,
+                                   x_label=x_field, y_label=y_field, z_label=z_field)
+        else:
+            xs_list, zs_list, scan_labels = [], [], []
+            for i, rd in enumerate(eligible):
+                sdata = rd["streams"].get(stream, {})
+                x_arr = _get_x(sdata)
+                z_raw = sdata.get(z_field)
+                if x_arr is None or z_raw is None:
+                    continue
+                try:
+                    z_arr = np.asarray(z_raw, dtype=float).ravel()
+                except (TypeError, ValueError):
+                    continue
+                n = min(len(x_arr), len(z_arr))
+                xs_list.append(x_arr[:n])
+                zs_list.append(z_arr[:n])
+                scan_labels.append(rd.get("label", str(i)))
+            if len(xs_list) < 2:
+                return
+            n_pts = int(np.median([len(x) for x in xs_list]))
+            x_min = float(max(x.min() for x in xs_list))
+            x_max = float(min(x.max() for x in xs_list))
+            if x_min >= x_max:
+                return
+            x_common = np.linspace(x_min, x_max, n_pts)
+            xs_flat, ys_flat, zs_flat = [], [], []
+            for i, (x_arr, z_arr) in enumerate(zip(xs_list, zs_list)):
+                z_interp = np.interp(x_common, x_arr, z_arr)
+                xs_flat.append(x_common)
+                ys_flat.append(np.full(n_pts, float(i)))
+                zs_flat.append(z_interp)
+            xs = np.concatenate(xs_flat)
+            ys = np.concatenate(ys_flat)
+            zs = np.concatenate(zs_flat)
+            self._2d_map_data = (xs, ys, zs, x_field, "scan_index", z_field, scan_labels)
+            self._2d_widget.replot(xs, ys, zs,
+                                   x_label=x_field, y_label="scan index", z_label=z_field)
+            self._2d_widget.set_y_ticks(len(xs_list), scan_labels)
         self._btn_save_2d.setVisible(True)
 
     def _save_2d_map(self):
         if not self._2d_map_data:
             return
-        xs, ys, zs, x_field, z_field, _labels = self._2d_map_data
+        xs, ys, zs, x_field, y_field, z_field, _labels = self._2d_map_data
         path, _ = QFileDialog.getSaveFileName(
             self, "Save 2D Map", "", "CSV files (*.csv)"
         )
@@ -1880,9 +1905,9 @@ class MongoDataBrowserTab(QWidget):
             return
         try:
             with open(path, "w") as fh:
-                fh.write(f"{x_field},scan_index,{z_field}\n")
+                fh.write(f"{x_field},{y_field},{z_field}\n")
                 for xi, yi, zi in zip(xs, ys, zs):
-                    fh.write(f"{xi:.8g},{int(yi)},{zi:.8g}\n")
+                    fh.write(f"{xi:.8g},{yi:.8g},{zi:.8g}\n")
         except Exception as exc:
             QMessageBox.warning(self, "Save Error", str(exc))
 
