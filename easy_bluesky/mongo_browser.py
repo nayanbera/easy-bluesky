@@ -1787,7 +1787,12 @@ class MongoDataBrowserTab(QWidget):
     def _update_2d_map_multi_scan(self):
         """Stack ≥2 selected scans into a 2D heatmap (X = x_field, Y = scan index)."""
         stream  = self._stream_combo.currentText()
-        x_field = self._x_combo.currentData() or self._x_combo.currentText()
+        x_field = (self._x_combo.currentData() or self._x_combo.currentText()).strip()
+        if not x_field:
+            self._btn_map_mode.setChecked(False)
+            self._toggle_map_mode(False)
+            QMessageBox.warning(self, "2D Map", "Please select an X field before creating a 2D map.")
+            return
         y_fields = [
             self._y_list.item(i).text()
             for i in range(self._y_list.count())
