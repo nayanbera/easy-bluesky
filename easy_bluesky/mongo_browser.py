@@ -22,9 +22,9 @@ from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSplitter,
-    QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
-    QVBoxLayout, QWidget,
+    QListWidgetItem, QMessageBox, QProgressDialog, QPushButton, QSizePolicy,
+    QSplitter, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
 
@@ -161,6 +161,7 @@ class _MultiRunDataFetcher(QThread):
     """Fetch event data for one or more runs; returns a list of stream dicts."""
     data_ready = pyqtSignal(list)   # list of {uid, label, streams}
     error      = pyqtSignal(str)
+    progress   = pyqtSignal(int, int)   # (done, total)
 
     def __init__(self, host, port, db_name, uid_labels, parent=None):
         super().__init__(parent)
@@ -177,10 +178,12 @@ class _MultiRunDataFetcher(QThread):
             )
             db      = client[self._db]
             results = []
-            for uid, label in self._uid_labels:
+            total   = len(self._uid_labels)
+            for i, (uid, label) in enumerate(self._uid_labels):
                 streams = _fetch_streams(db, uid)
                 if streams:
                     results.append({"uid": uid, "label": label, "streams": streams})
+                self.progress.emit(i + 1, total)
             client.close()
             self.data_ready.emit(results)
         except Exception as exc:
@@ -668,6 +671,7 @@ class MongoDataBrowserTab(QWidget):
         self._repro_btn         = None # Motor Repro button (set in _build_ui)
         self._map_mode       = False
         self._2d_map_data    = None   # (xs, ys, zs, x_field, z_field, scan_labels)
+        self._load_prog      = None
         self._fetch_timer    = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._schedule_data_fetch)
@@ -1260,15 +1264,8 @@ class MongoDataBrowserTab(QWidget):
         if not db:
             return
 
-        MAX_RUNS = 50
-        if len(rows) > MAX_RUNS:
-            self._set_status(
-                f"Too many runs selected ({len(rows)}). "
-                f"Loading data for the first {MAX_RUNS}.", busy=True
-            )
-            rows = rows[:MAX_RUNS]
-        else:
-            self._set_status(f"Loading data for {len(rows)} run(s)…", busy=True)
+        n = len(rows)
+        self._set_status(f"Loading data for {n} run(s)…", busy=True)
 
         uid_labels = []
         for idx in rows:
@@ -1292,9 +1289,32 @@ class MongoDataBrowserTab(QWidget):
         )
         self._data_fetcher.data_ready.connect(self._on_data_ready)
         self._data_fetcher.error.connect(self._on_fetch_error)
+        self._data_fetcher.progress.connect(self._on_load_progress)
+
+        if self._load_prog:
+            self._load_prog.hide()
+        self._load_prog = QProgressDialog(
+            f"Loading run 0 of {n}…", None, 0, n, self
+        )
+        self._load_prog.setWindowModality(Qt.WindowModality.WindowModal)
+        self._load_prog.setMinimumDuration(0)
+        self._load_prog.setAutoClose(True)
+        self._load_prog.setAutoReset(True)
+        self._load_prog.show()
+        QApplication.processEvents()
+
         self._data_fetcher.start()
 
+    def _on_load_progress(self, done: int, total: int):
+        if self._load_prog:
+            self._load_prog.setLabelText(f"Loading run {done} of {total}…")
+            self._load_prog.setValue(done)
+            QApplication.processEvents()
+
     def _on_data_ready(self, run_data_list: list):
+        if self._load_prog:
+            self._load_prog.setValue(self._load_prog.maximum())
+            self._load_prog = None
         self._run_data_list = run_data_list
         multi = len(run_data_list) >= 2
         if self._repro_btn:
@@ -1853,8 +1873,14 @@ class MongoDataBrowserTab(QWidget):
             all_y = np.concatenate(ys_list)
             all_z = np.concatenate(zs_list)
             self._2d_map_data = (all_x, all_y, all_z, x_field, y_field, z_field, None)
+            stitch_prog = QProgressDialog("Building 2D map…", None, 0, 0, self)
+            stitch_prog.setWindowModality(Qt.WindowModality.WindowModal)
+            stitch_prog.setMinimumDuration(0)
+            stitch_prog.show()
+            QApplication.processEvents()
             self._2d_widget.replot(all_x, all_y, all_z,
                                    x_label=x_field, y_label=y_field, z_label=z_field)
+            stitch_prog.hide()
         else:
             xs_list, zs_list, scan_labels = [], [], []
             for i, rd in enumerate(eligible):
@@ -1889,9 +1915,15 @@ class MongoDataBrowserTab(QWidget):
             ys = np.concatenate(ys_flat)
             zs = np.concatenate(zs_flat)
             self._2d_map_data = (xs, ys, zs, x_field, "scan_index", z_field, scan_labels)
+            stitch_prog = QProgressDialog("Building 2D map…", None, 0, 0, self)
+            stitch_prog.setWindowModality(Qt.WindowModality.WindowModal)
+            stitch_prog.setMinimumDuration(0)
+            stitch_prog.show()
+            QApplication.processEvents()
             self._2d_widget.replot(xs, ys, zs,
                                    x_label=x_field, y_label="scan index", z_label=z_field)
             self._2d_widget.set_y_ticks(len(xs_list), scan_labels)
+            stitch_prog.hide()
         self._btn_save_2d.setVisible(True)
 
     def _save_2d_map(self):
