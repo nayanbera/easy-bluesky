@@ -1769,13 +1769,18 @@ class MongoDataBrowserTab(QWidget):
             else:
                 raw = sdata.get(x_field)
                 x_arr = raw.astype(float) if raw is not None else None
-            y_arr = sdata.get(y_field)
-            z_arr = sdata.get(z_field)
-            if x_arr is None or y_arr is None or z_arr is None:
+            y_raw = sdata.get(y_field)
+            z_raw = sdata.get(z_field)
+            if x_arr is None or y_raw is None or z_raw is None:
+                return
+            try:
+                y_arr = np.asarray(y_raw, dtype=float).ravel()
+                z_arr = np.asarray(z_raw, dtype=float).ravel()
+            except (TypeError, ValueError):
                 return
             n = min(len(x_arr), len(y_arr), len(z_arr))
             self._2d_widget.replot(
-                x_arr[:n], y_arr[:n].astype(float), z_arr[:n].astype(float),
+                x_arr[:n], y_arr[:n], z_arr[:n],
                 x_label=x_field, y_label=y_field, z_label=z_field,
             )
 
@@ -1823,9 +1828,13 @@ class MongoDataBrowserTab(QWidget):
             z_raw = sdata.get(z_field)
             if x_arr is None or z_raw is None:
                 continue
-            n = min(len(x_arr), len(z_raw))
+            try:
+                z_arr = np.asarray(z_raw, dtype=float).ravel()
+            except (TypeError, ValueError):
+                continue
+            n = min(len(x_arr), len(z_arr))
             xs_list.append(x_arr[:n])
-            zs_list.append(z_raw[:n].astype(float))
+            zs_list.append(z_arr[:n])
             scan_labels.append(rd.get("label", str(i)))
 
         if len(xs_list) < 2:
