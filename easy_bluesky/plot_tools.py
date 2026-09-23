@@ -421,10 +421,20 @@ class TwoDMapWidget(QWidget):
                 padding=0.05,
             )
 
+    def set_y_ticks(self, n_scans, labels=None):
+        """Set integer-only Y-axis ticks; labels default to 0..n_scans-1."""
+        if not PG_AVAILABLE or self._plot is None:
+            return
+        if labels is None:
+            labels = [str(i) for i in range(n_scans)]
+        ticks = [(i, str(lbl)) for i, lbl in enumerate(labels[:n_scans])]
+        self._plot.getAxis('left').setTicks([ticks])
+
     def replot(self, xs, ys, zs, x_label="X", y_label="Y", z_label="Z"):
         """Build and display the 2D intensity map from flat (x, y, z) arrays."""
         if not PG_AVAILABLE or self._img_item is None or self._current_cmap is None:
             return
+        self._plot.getAxis('left').setTicks(None)
         try:
             img, x_vals, y_vals = build_2d_map(xs, ys, zs)
         except Exception:
@@ -509,3 +519,4 @@ class TwoDMapWidget(QWidget):
         if PG_AVAILABLE and self._img_item is not None:
             self._img_item.clear()
             self._plot.setTitle("")
+            self._plot.getAxis('left').setTicks(None)

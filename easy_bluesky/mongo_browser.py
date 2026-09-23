@@ -1866,6 +1866,7 @@ class MongoDataBrowserTab(QWidget):
         self._2d_map_data = (xs, ys, zs, x_field, z_field, scan_labels)
         self._2d_widget.replot(xs, ys, zs,
                                x_label=x_field, y_label="scan index", z_label=z_field)
+        self._2d_widget.set_y_ticks(len(xs_list), scan_labels)
         self._btn_save_2d.setVisible(True)
 
     def _save_2d_map(self):
