@@ -1260,7 +1260,7 @@ class MongoDataBrowserTab(QWidget):
         if not db:
             return
 
-        MAX_RUNS = 10
+        MAX_RUNS = 50
         if len(rows) > MAX_RUNS:
             self._set_status(
                 f"Too many runs selected ({len(rows)}). "
