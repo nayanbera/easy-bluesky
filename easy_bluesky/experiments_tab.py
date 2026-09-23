@@ -3188,14 +3188,26 @@ class ExperimentsTab(QWidget):
 
     def _populate_plan_log_from_scan_log(self, entries: list):
         """Repopulate the Plan Log list from scans_log.json entries."""
-        # Sort by start_time ascending; filter suppressed UIDs
         try:
             entries = sorted(entries, key=lambda e: e.get("start_time", 0))
         except Exception:
             pass
 
-        self.plan_log_list.clear()
+        # Forward pass: assign scan numbers oldest→newest so #1 = first scan.
         scan_counter = 1
+        for entry in entries:
+            uid = entry.get("uid", "")
+            if uid and uid in self._suppressed_uids:
+                entry["_scan_num"] = None
+                continue
+            motion = _is_motion_only(entry.get("plan_name", "?"), {})
+            if motion:
+                entry["_scan_num"] = None
+            else:
+                entry["_scan_num"] = scan_counter
+                scan_counter += 1
+
+        self.plan_log_list.clear()
         for entry in reversed(entries):
             uid = entry.get("uid", "")
             if uid and uid in self._suppressed_uids:
@@ -3216,12 +3228,9 @@ class ExperimentsTab(QWidget):
             dur     = entry.get("duration_s")
             dur_str = f"  ({dur:.1f}s)" if dur is not None else ""
 
-            # Scan number: only actual scans (non-motion) get a number.
-            # We count backwards from the reversed iteration.
-            scan_num = None if motion else scan_counter
+            scan_num = entry.get("_scan_num")
             prefix   = f"#{scan_num:<3} " if scan_num is not None else "     "
 
-            # Brief summary from motors / detectors / events
             motors    = entry.get("motors", []) or []
             detectors = entry.get("detectors", []) or []
             num_ev    = entry.get("num_events", 0) or 0
@@ -3252,8 +3261,6 @@ class ExperimentsTab(QWidget):
                 "scan_num":    scan_num,
             })
             self.plan_log_list.addItem(li)
-            if not motion:
-                scan_counter += 1
 
         self._next_scan_label.setText(f"Next scan: #{scan_counter}")
         self._filter_plan_log(self._plan_log_search.text())
