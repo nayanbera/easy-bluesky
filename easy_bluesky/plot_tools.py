@@ -8,7 +8,7 @@ except ImportError:
     PG_AVAILABLE = False
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox, QPushButton,
 )
 from PyQt6.QtCore import Qt, QObject, QEvent, QRectF, pyqtSignal
 
@@ -269,6 +269,8 @@ class TwoDMapWidget(QWidget):
         self._cbar          = None
         self._scan_x_range  = None   # (min, max) from plan parameters
         self._scan_y_range  = None
+        self._last_raw      = None   # (xs, ys, zs, x_label, y_label) from last replot
+        self._cl_overlay    = None   # pg.PlotDataItem for centerline overlay
         self._build()
 
     # ── Construction ──────────────────────────────────────────────────────────
@@ -307,6 +309,15 @@ class TwoDMapWidget(QWidget):
         self._log_z_cb = QCheckBox("Log Z")
         self._log_z_cb.stateChanged.connect(self.selection_changed)
         ctrl.addWidget(self._log_z_cb)
+
+        self._btn_centerline = QPushButton("Centerline…")
+        self._btn_centerline.setFixedHeight(26)
+        self._btn_centerline.setToolTip(
+            "Extract the channel centerline from the current 2D intensity map"
+        )
+        self._btn_centerline.setVisible(False)
+        self._btn_centerline.clicked.connect(self._open_centerline_dialog)
+        ctrl.addWidget(self._btn_centerline)
 
         ctrl.addStretch()
         self._ctrl_row = ctrl
@@ -443,6 +454,11 @@ class TwoDMapWidget(QWidget):
         """Build and display the 2D intensity map from flat (x, y, z) arrays."""
         if not PG_AVAILABLE or self._img_item is None or self._current_cmap is None:
             return
+        self._last_raw = (
+            np.asarray(xs, dtype=float), np.asarray(ys, dtype=float),
+            np.asarray(zs, dtype=float), x_label, y_label,
+        )
+        self._btn_centerline.setVisible(True)
         self._plot.getAxis('left').setTicks(None)
         try:
             img, x_vals, y_vals = build_2d_map(xs, ys, zs)
@@ -522,10 +538,45 @@ class TwoDMapWidget(QWidget):
         title = (f"log₁₀({z_label})" if self._log_z_cb.isChecked() else z_label)
         self._plot.setTitle(title, color='#aaaaaa', size='10pt')
 
+    def overlay_centerline(self, cx, cy):
+        """Draw (or replace) the centerline overlay on the 2D map."""
+        if not PG_AVAILABLE or self._plot is None:
+            return
+        if self._cl_overlay is not None:
+            try:
+                self._plot.removeItem(self._cl_overlay)
+            except Exception:
+                pass
+        self._cl_overlay = pg.PlotDataItem(
+            np.asarray(cx, dtype=float), np.asarray(cy, dtype=float),
+            pen=pg.mkPen('#ff4444', width=2),
+            symbol='o', symbolSize=6,
+            symbolBrush='#ff4444', symbolPen=None,
+        )
+        self._plot.addItem(self._cl_overlay)
+
+    def _open_centerline_dialog(self):
+        """Open the CenterlineDialog with the current map data."""
+        if self._last_raw is None:
+            return
+        xs, ys, zs, x_label, y_label = self._last_raw
+        from .centerline_dialog import CenterlineDialog
+        dlg = CenterlineDialog(xs, ys, zs, x_label, y_label, parent=self)
+        dlg.centerline_ready.connect(self.overlay_centerline)
+        dlg.exec()
+
     def clear(self):
         self._scan_x_range = None
         self._scan_y_range = None
+        self._last_raw = None
+        self._btn_centerline.setVisible(False)
         if PG_AVAILABLE and self._img_item is not None:
             self._img_item.clear()
             self._plot.setTitle("")
             self._plot.getAxis('left').setTicks(None)
+        if self._cl_overlay is not None:
+            try:
+                self._plot.removeItem(self._cl_overlay)
+            except Exception:
+                pass
+            self._cl_overlay = None
