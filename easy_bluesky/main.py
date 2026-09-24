@@ -1446,12 +1446,15 @@ class MainWindow(QMainWindow):
         def _run():
             from .ssh_manager import get_zmq_clients
             ips = get_zmq_clients(settings, ctrl_port, info_port)
-            if len(ips) > 1:
-                ip_list = ", ".join(ips)
-                self._thread_log.emit(
-                    f"[{self._ts()}] ⚠ Multiple clients connected to RE Manager: {ip_list}"
-                )
-                self._multi_client_signal.emit(ip_list)
+            try:
+                if len(ips) > 1:
+                    ip_list = ", ".join(ips)
+                    self._thread_log.emit(
+                        f"[{self._ts()}] ⚠ Multiple clients connected to RE Manager: {ip_list}"
+                    )
+                    self._multi_client_signal.emit(ip_list)
+            except RuntimeError:
+                pass  # window already closed
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1469,7 +1472,10 @@ class MainWindow(QMainWindow):
             from .ssh_manager import list_clients, register_client
             register_client(settings, profile, self._my_hostname)
             ips = list_clients(settings, profile, ctrl_port, info_port)
-            self._startup_clients_ready.emit(ips)
+            try:
+                self._startup_clients_ready.emit(ips)
+            except RuntimeError:
+                pass  # window already closed
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1524,16 +1530,19 @@ class MainWindow(QMainWindow):
             # Heartbeat refresh + client list in one SSH connection
             ips = list_clients(settings, profile, ctrl_port, info_port,
                                heartbeat_payload=hb)
-            self._clients_updated.emit(ips)
-            # Notify if count just exceeded 1 (new joiner detected)
-            if len(ips) > 1:
-                others = [ip for ip in ips
-                          if ip not in self._my_known_ips]
-                if others:
-                    ip_list = ", ".join(ips)
-                    self._thread_log.emit(
-                        f"[{self._ts()}] ⚠ Multiple clients connected: {ip_list}"
-                    )
+            try:
+                self._clients_updated.emit(ips)
+                # Notify if count just exceeded 1 (new joiner detected)
+                if len(ips) > 1:
+                    others = [ip for ip in ips
+                              if ip not in self._my_known_ips]
+                    if others:
+                        ip_list = ", ".join(ips)
+                        self._thread_log.emit(
+                            f"[{self._ts()}] ⚠ Multiple clients connected: {ip_list}"
+                        )
+            except RuntimeError:
+                pass  # window already closed before SSH call returned
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1640,9 +1649,12 @@ class MainWindow(QMainWindow):
         def _claim():
             from .ssh_manager import claim_operator_lock
             ok, msg = claim_operator_lock(settings, profile)
-            self._thread_lock_claimed.emit(ok)
-            if not ok:
-                self._thread_log.emit(f"[{self._ts()}] ⚠ Could not claim operator lock: {msg}")
+            try:
+                self._thread_lock_claimed.emit(ok)
+                if not ok:
+                    self._thread_log.emit(f"[{self._ts()}] ⚠ Could not claim operator lock: {msg}")
+            except RuntimeError:
+                pass  # window already closed
 
         threading.Thread(target=_claim, daemon=True).start()
 
@@ -2183,29 +2195,35 @@ class MainWindow(QMainWindow):
     def _ssh_stop_remote(self, settings: dict, profile: dict):
         from .ssh_manager import stop_re_manager
         ok, msg = stop_re_manager(settings, profile)
-        self._thread_log.emit(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
-        if ok:
-            self.worker.disconnect()
+        try:
+            self._thread_log.emit(f"[{self._ts()}] {'✓' if ok else '✗'} {msg}")
+            if ok:
+                self.worker.disconnect()
+        except RuntimeError:
+            pass  # window already closed
 
     def _ssh_restart_remote(self, settings: dict):
         from .ssh_manager import restart_re_manager, wait_for_port
         profile = get_active_profile(settings)
         ok, msg = restart_re_manager(settings, profile)
         ts = self._ts()
-        if not ok:
-            self._thread_log.emit(f"[{ts}] ✗ SSH restart failed: {msg}")
-            return
-        self._thread_log.emit(f"[{ts}] ✓ {msg} — waiting for port to open…")
-        ctrl, _, _ = make_zmq_addrs(settings)
-        port = int(ctrl.rsplit(":", 1)[-1])
-        ready = wait_for_port(settings["host"], port, timeout=30)
-        if ready:
-            self._thread_log.emit(f"[{self._ts()}] Port {port} open — reconnecting…")
-            self._thread_reconnect.emit()
-        else:
-            self._thread_log.emit(
-                f"[{self._ts()}] ✗ RE Manager did not open port {port} within 30 s"
-            )
+        try:
+            if not ok:
+                self._thread_log.emit(f"[{ts}] ✗ SSH restart failed: {msg}")
+                return
+            self._thread_log.emit(f"[{ts}] ✓ {msg} — waiting for port to open…")
+            ctrl, _, _ = make_zmq_addrs(settings)
+            port = int(ctrl.rsplit(":", 1)[-1])
+            ready = wait_for_port(settings["host"], port, timeout=30)
+            if ready:
+                self._thread_log.emit(f"[{self._ts()}] Port {port} open — reconnecting…")
+                self._thread_reconnect.emit()
+            else:
+                self._thread_log.emit(
+                    f"[{self._ts()}] ✗ RE Manager did not open port {port} within 30 s"
+                )
+        except RuntimeError:
+            pass  # window already closed
 
     def _auto_reconnect(self):
         self._log(f"[{self._ts()}] Auto-reconnecting…")
