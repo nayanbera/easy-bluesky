@@ -922,21 +922,8 @@ class MongoDataBrowserTab(QWidget):
 
         self._mode_tabs.addTab(_tab_1d, "1D Plot")
 
-        # Tab 1 — 2D Map controls
-        _tab_2d = QWidget()
-        _2d_bar = QHBoxLayout(_tab_2d)
-        _2d_bar.setContentsMargins(4, 2, 4, 2)
-        _2d_bar.setSpacing(4)
-
-        self._btn_save_2d = QPushButton("Save 2D…")
-        self._btn_save_2d.setFixedHeight(26)
-        self._btn_save_2d.setVisible(False)
-        self._btn_save_2d.setToolTip("Save multi-scan 2D map as CSV (x, scan_index, z)")
-        self._btn_save_2d.clicked.connect(self._save_2d_map)
-        _2d_bar.addWidget(self._btn_save_2d)
-        _2d_bar.addStretch()
-
-        self._mode_tabs.addTab(_tab_2d, "2D Map")
+        # Tab 1 — 2D Map (controls live inside TwoDMapWidget's own ctrl row)
+        self._mode_tabs.addTab(QWidget(), "2D Map")
         self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
         rlayout.addWidget(self._mode_tabs)
 
@@ -1002,6 +989,14 @@ class MongoDataBrowserTab(QWidget):
 
         self._2d_widget = TwoDMapWidget(parent=self)
         self._2d_widget.selection_changed.connect(self._update_2d_plot)
+
+        self._btn_save_2d = QPushButton("Save 2D…")
+        self._btn_save_2d.setFixedHeight(26)
+        self._btn_save_2d.setVisible(False)
+        self._btn_save_2d.setToolTip("Save multi-scan 2D map as CSV (x, scan_index, z)")
+        self._btn_save_2d.clicked.connect(self._save_2d_map)
+        self._2d_widget.add_to_ctrl_row(self._btn_save_2d)
+
         self._plot_stack = QStackedWidget()
         self._plot_stack.addWidget(self._vplot_splitter)  # index 0 → 1D
         self._plot_stack.addWidget(self._2d_widget)        # index 1 → 2D

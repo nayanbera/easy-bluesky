@@ -309,6 +309,7 @@ class TwoDMapWidget(QWidget):
         ctrl.addWidget(self._log_z_cb)
 
         ctrl.addStretch()
+        self._ctrl_row = ctrl
         lay.addLayout(ctrl)
 
         if PG_AVAILABLE:
@@ -409,6 +410,14 @@ class TwoDMapWidget(QWidget):
 
     def get_z_signal(self) -> str:
         return self._z_combo.currentText()
+
+    def add_to_ctrl_row(self, widget, prepend_spacing: int = 8):
+        """Insert *widget* into the control row, before the trailing stretch."""
+        idx = self._ctrl_row.count() - 1   # stretch occupies last slot
+        if prepend_spacing:
+            self._ctrl_row.insertSpacing(idx, prepend_spacing)
+            idx += 1
+        self._ctrl_row.insertWidget(idx, widget)
 
     def set_scan_range(self, x_min, x_max, y_min, y_max):
         """Lock the view to the planned motor extents (call once from start doc)."""

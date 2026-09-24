@@ -18,7 +18,7 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QAbstractItemView,
-    QMessageBox, QApplication, QSplitter, QSizePolicy, QStackedWidget,
+    QMessageBox, QApplication, QSplitter, QSizePolicy, QStackedWidget, QTabWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
@@ -173,19 +173,35 @@ class LiveViewer(QWidget):
         self.norm_combo.currentIndexChanged.connect(self._update_plot)
         ctrl.addWidget(self.norm_combo)
 
+        ctrl.addStretch()
+        self.run_label = QLabel("No active run")
+        self.run_label.setObjectName("dim_text")
+        ctrl.addWidget(self.run_label)
+        main.addLayout(ctrl)
+
+        # ── Mode tabs: 1D Plot / 2D Map ────────────────────────────────────────
+        self._mode_tabs = QTabWidget()
+        self._mode_tabs.setDocumentMode(True)
+
+        # Tab 0 — 1D Plot controls
+        _tab_1d = QWidget()
+        _1d_bar = QHBoxLayout(_tab_1d)
+        _1d_bar.setContentsMargins(4, 2, 4, 2)
+        _1d_bar.setSpacing(4)
+
         self._err_cb = QCheckBox("± Errors")
         self._err_cb.setToolTip(
             "Overlay Poisson √N error bars (propagated through normalization)"
         )
         self._err_cb.stateChanged.connect(self._on_err_toggled)
-        ctrl.addWidget(self._err_cb)
+        _1d_bar.addWidget(self._err_cb)
 
         btn_screenshot = QPushButton("Screenshot")
         btn_screenshot.setToolTip("Save the current plot as a PNG image")
         btn_screenshot.clicked.connect(self._save_screenshot)
-        ctrl.addWidget(btn_screenshot)
+        _1d_bar.addWidget(btn_screenshot)
 
-        ctrl.addSpacing(12)
+        _1d_bar.addSpacing(12)
         self._live_fit_cb = QCheckBox("Live Fit:")
         self._live_fit_cb.setToolTip(
             "Fit a model to data as the scan runs (first selected Y signal).\n"
@@ -196,7 +212,7 @@ class LiveViewer(QWidget):
             self._live_fit_cb.setToolTip("pip install lmfit to enable Live Fit")
         self._live_fit_cb.stateChanged.connect(self._on_live_fit_toggled)
         self._live_fit_cb.stateChanged.connect(lambda: self._run_live_fit(force=True))
-        ctrl.addWidget(self._live_fit_cb)
+        _1d_bar.addWidget(self._live_fit_cb)
 
         self._live_fit_model_combo = QComboBox()
         self._live_fit_model_combo.setFixedHeight(26)
@@ -212,11 +228,11 @@ class LiveViewer(QWidget):
         self._live_fit_model_combo.currentTextChanged.connect(
             lambda: self._run_live_fit(force=True)
         )
-        ctrl.addWidget(self._live_fit_model_combo)
+        _1d_bar.addWidget(self._live_fit_model_combo)
 
         bg_lbl = QLabel("+ BG:")
         bg_lbl.setStyleSheet("font-size: 11px;")
-        ctrl.addWidget(bg_lbl)
+        _1d_bar.addWidget(bg_lbl)
 
         self._live_fit_bg_combo = QComboBox()
         self._live_fit_bg_combo.setFixedHeight(26)
@@ -227,23 +243,16 @@ class LiveViewer(QWidget):
         self._live_fit_bg_combo.currentTextChanged.connect(
             lambda: self._run_live_fit(force=True)
         )
-        ctrl.addWidget(self._live_fit_bg_combo)
+        _1d_bar.addWidget(self._live_fit_bg_combo)
+        _1d_bar.addStretch()
 
-        ctrl.addStretch()
+        self._mode_tabs.addTab(_tab_1d, "1D Plot")
 
-        self._btn_map_mode = QPushButton("2D Map")
-        self._btn_map_mode.setCheckable(True)
-        self._btn_map_mode.setToolTip(
-            "Switch between 1D line plot and 2D pixel-intensity map.\n"
-            "Activates automatically when a grid scan with ≥ 2 motors is detected."
-        )
-        self._btn_map_mode.clicked.connect(self._toggle_map_mode)
-        ctrl.addWidget(self._btn_map_mode)
+        # Tab 1 — 2D Map (controls live inside TwoDMapWidget's own ctrl row)
+        self._mode_tabs.addTab(QWidget(), "2D Map")
 
-        self.run_label = QLabel("No active run")
-        self.run_label.setObjectName("dim_text")
-        ctrl.addWidget(self.run_label)
-        main.addLayout(ctrl)
+        self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
+        main.addWidget(self._mode_tabs)
 
         # Y list on the right of the plot (in a resizable splitter)
         self.y_list = QListWidget()
@@ -449,8 +458,7 @@ class LiveViewer(QWidget):
             # Auto-switch to 2D map when ≥ 2 motors detected in start doc
             if self._pending_2d and not self._map_mode:
                 self._pending_2d = False
-                self._btn_map_mode.setChecked(True)
-                self._toggle_map_mode(True)
+                self._mode_tabs.setCurrentIndex(1)
 
         elif name == "event":
             seq = doc.get("seq_num", 0)
@@ -610,6 +618,9 @@ class LiveViewer(QWidget):
             self._update_2d_plot()
 
     # ── Plot ───────────────────────────────────────────────────────────────────
+
+    def _on_mode_tab_changed(self, idx: int):
+        self._toggle_map_mode(idx == 1)
 
     def _toggle_map_mode(self, checked: bool):
         self._map_mode = checked
