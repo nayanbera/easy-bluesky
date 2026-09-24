@@ -4,7 +4,7 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-    QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QPushButton,
+    QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QPushButton,
     QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal
@@ -176,6 +176,10 @@ class CenterlineDialog(QDialog):
         self._btn_copy.setEnabled(False)
         self._btn_copy.clicked.connect(self._copy)
         btn_row.addWidget(self._btn_copy)
+        self._btn_save = QPushButton("Save CSV…")
+        self._btn_save.setEnabled(False)
+        self._btn_save.clicked.connect(self._save_csv)
+        btn_row.addWidget(self._btn_save)
         btn_row.addStretch()
         self._btn_overlay = QPushButton("Overlay on Map")
         self._btn_overlay.setEnabled(False)
@@ -304,6 +308,7 @@ class CenterlineDialog(QDialog):
 
         self._status_lbl.setText(f"{len(cx)} centerline points extracted.")
         self._btn_copy.setEnabled(True)
+        self._btn_save.setEnabled(True)
         self._btn_overlay.setEnabled(True)
 
         if self._cl_item is not None:
@@ -317,6 +322,20 @@ class CenterlineDialog(QDialog):
         lines = [f"{self._x_label}\t{self._y_label}"]
         lines += [f"{x:.6g}\t{y:.6g}" for x, y in zip(self._cx, self._cy)]
         QApplication.clipboard().setText("\n".join(lines))
+
+    def _save_csv(self):
+        if self._cx is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Centerline CSV", "centerline.csv", "CSV files (*.csv)"
+        )
+        if not path:
+            return
+        lines = [f"{self._x_label},{self._y_label}"]
+        lines += [f"{x:.6g},{y:.6g}" for x, y in zip(self._cx, self._cy)]
+        with open(path, "w") as f:
+            f.write("\n".join(lines))
+        self._status_lbl.setText(f"Saved {len(self._cx)} points to {path}")
 
     def _emit_overlay(self):
         if self._cx is not None and self._cy is not None:
