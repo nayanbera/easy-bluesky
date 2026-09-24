@@ -1,4 +1,19 @@
-"""centerline_dialog.py — Microfluidic channel centerline extraction from a 2D intensity map."""
+"""centerline_dialog.py — Microfluidic channel centerline extraction from a 2D intensity map.
+
+Algorithm
+---------
+1. Grid the flat (xs, ys, zs) scatter data to a regular 2D array via
+   scipy griddata (linear interpolation).
+2. Threshold to produce a binary channel mask.
+3. Skeletonize the mask with vectorized Zhang-Suen morphological thinning →
+   1-pixel-wide skeleton that follows the channel centre through every bend.
+4. Trace a connected path through the skeleton starting from the user-
+   supplied start point (click on the preview or type coordinates).
+   At branch points the algorithm prefers the direction that continues the
+   current heading, so it stays on track through U-turns.
+5. Optionally smooth the path with a uniform filter.
+6. Resample at equal arc-length spacing.
+"""
 
 import numpy as np
 
@@ -17,55 +32,119 @@ except ImportError:
 
 try:
     from scipy.interpolate import griddata as _griddata
-    from scipy.ndimage import uniform_filter1d as _smooth1d
+    from scipy.ndimage import uniform_filter1d as _smooth1d, binary_fill_holes
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
 
 
-# ── Arc-length resampling ────────────────────────────────────────────────────
+# ── Core algorithms ──────────────────────────────────────────────────────────
 
-def _resample_equal_spacing(cx: np.ndarray, cy: np.ndarray, spacing: float):
-    """Return (cx_r, cy_r) resampled at equal arc-length intervals *spacing*."""
+def _zhang_suen_thin(mask: np.ndarray) -> np.ndarray:
+    """Vectorized Zhang-Suen morphological thinning.
+
+    Returns a bool array (same shape as *mask*) where True marks the 1-px-
+    wide skeleton of the foreground region.
+    """
+    img = mask.astype(np.uint8, copy=True)
+    while True:
+        prev = img.copy()
+        for sub in range(2):
+            p = np.pad(img, 1)
+            P2 = p[:-2, 1:-1]; P3 = p[:-2, 2:]
+            P4 = p[1:-1, 2:];  P5 = p[2:, 2:]
+            P6 = p[2:, 1:-1];  P7 = p[2:, :-2]
+            P8 = p[1:-1, :-2]; P9 = p[:-2, :-2]
+            B = P2 + P3 + P4 + P5 + P6 + P7 + P8 + P9
+            ns = np.stack([P2, P3, P4, P5, P6, P7, P8, P9, P2], axis=-1)
+            A = ((ns[..., :-1] == 0) & (ns[..., 1:] == 1)).sum(-1)
+            cond = (img == 1) & (B >= 2) & (B <= 6) & (A == 1)
+            if sub == 0:
+                cond &= (P2 * P4 * P6 == 0) & (P4 * P6 * P8 == 0)
+            else:
+                cond &= (P2 * P4 * P8 == 0) & (P2 * P6 * P8 == 0)
+            img[cond] = 0
+        if np.array_equal(img, prev):
+            break
+    return img.astype(bool)
+
+
+def _trace_path(skel: np.ndarray, start_rc: tuple[int, int]) -> list[tuple[int, int]]:
+    """Trace a connected path through *skel* starting at the skeleton pixel
+    closest to *start_rc* = (row, col).
+
+    At branch points the algorithm continues in the direction most aligned
+    with the current heading so it follows a serpentine without doubling back.
+
+    Returns an ordered list of (row, col) tuples.
+    """
+    rows, cols = np.where(skel)
+    if len(rows) == 0:
+        return []
+
+    pixel_set: set[tuple[int, int]] = set(zip(rows.tolist(), cols.tolist()))
+
+    r0, c0 = start_rc
+    dists = (rows - r0) ** 2 + (cols - c0) ** 2
+    best = int(np.argmin(dists))
+    start = (int(rows[best]), int(cols[best]))
+
+    path = [start]
+    visited: set[tuple[int, int]] = {start}
+
+    while True:
+        r, c = path[-1]
+        nbrs = [
+            (r + dr, c + dc)
+            for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+            if (dr or dc)
+            and (r + dr, c + dc) in pixel_set
+            and (r + dr, c + dc) not in visited
+        ]
+        if not nbrs:
+            break
+        if len(nbrs) == 1:
+            nxt = nbrs[0]
+        else:
+            if len(path) >= 2:
+                # Prefer neighbor that best continues the current heading
+                dr0 = r - path[-2][0]
+                dc0 = c - path[-2][1]
+                scores = [dr0 * (nr - r) + dc0 * (nc - c) for nr, nc in nbrs]
+                nxt = nbrs[int(np.argmax(scores))]
+            else:
+                nxt = nbrs[0]
+        path.append(nxt)
+        visited.add(nxt)
+
+    return path
+
+
+def _resample_equal_spacing(cx: np.ndarray, cy: np.ndarray,
+                            spacing: float) -> tuple[np.ndarray, np.ndarray]:
+    """Resample (cx, cy) at equal arc-length intervals of *spacing*."""
     if len(cx) < 2 or spacing <= 0:
         return cx, cy
     ds = np.sqrt(np.diff(cx) ** 2 + np.diff(cy) ** 2)
     s = np.concatenate([[0.0], np.cumsum(ds)])
-    total = s[-1]
-    if total <= 0:
+    if s[-1] <= 0:
         return cx, cy
-    n_pts = max(2, int(total / spacing) + 1)
-    s_new = np.linspace(0.0, total, n_pts)
+    n = max(2, int(s[-1] / spacing) + 1)
+    s_new = np.linspace(0.0, s[-1], n)
     return np.interp(s_new, s, cx), np.interp(s_new, s, cy)
 
 
 # ── Dialog ───────────────────────────────────────────────────────────────────
 
 class CenterlineDialog(QDialog):
-    """Extract the centerline of a microfluidic channel from a 2D intensity map.
+    """Interactive dialog for extracting a channel centerline from a 2D map."""
 
-    Algorithm
-    ---------
-    1. Grid the flat (xs, ys, zs) scatter data to a regular 2D array via
-       scipy griddata (linear interpolation).
-    2. Threshold to produce a binary channel mask (bright or dark channel).
-    3. For every x-column of the grid, compute the intensity-weighted centroid
-       along y — this gives one (x, y_center) point per column.
-    4. Optionally smooth the y_center curve with a uniform filter.
-    5. Resample the resulting curve at equal arc-length spacing.
-
-    Signals
-    -------
-    centerline_ready(cx_array, cy_array) — emitted when "Overlay on Map" is
-        clicked, so the caller can draw the centerline on the 2D map widget.
-    """
-
-    centerline_ready = pyqtSignal(object, object)
+    centerline_ready = pyqtSignal(object, object)   # (cx_array, cy_array)
 
     def __init__(self, xs, ys, zs, x_label="X", y_label="Y", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Centerline Extraction")
-        self.resize(700, 580)
+        self.resize(720, 640)
         self._xs = np.asarray(xs, dtype=float).ravel()
         self._ys = np.asarray(ys, dtype=float).ravel()
         self._zs = np.asarray(zs, dtype=float).ravel()
@@ -75,11 +154,12 @@ class CenterlineDialog(QDialog):
         self._xi = self._yi = None
         self._zmin = self._zmax = 0.0
         self._cx = self._cy = None
+        self._prev_plot = None      # set in _setup_ui when PG_AVAILABLE
         self._setup_ui()
         self._compute_grid()
         self._update_preview()
 
-    # ── Construction ──────────────────────────────────────────────────────────
+    # ── UI construction ───────────────────────────────────────────────────────
 
     def _setup_ui(self):
         lay = QVBoxLayout(self)
@@ -87,113 +167,155 @@ class CenterlineDialog(QDialog):
 
         # ── Parameter group ───────────────────────────────────────────────
         grp = QGroupBox("Extraction parameters")
-        grp_lay = QVBoxLayout(grp)
-        grp_lay.setSpacing(4)
+        gl = QVBoxLayout(grp)
+        gl.setSpacing(4)
 
-        # Threshold row
-        thr = QHBoxLayout()
-        thr.addWidget(QLabel("Threshold:"))
+        # Row 1: threshold + polarity
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel("Threshold:"))
         self._thr_slider = QSlider(Qt.Orientation.Horizontal)
         self._thr_slider.setRange(0, 1000)
         self._thr_slider.setValue(500)
-        self._thr_slider.setMinimumWidth(160)
-        thr.addWidget(self._thr_slider, 1)
+        self._thr_slider.setMinimumWidth(150)
+        r1.addWidget(self._thr_slider, 1)
         self._thr_spin = QDoubleSpinBox()
         self._thr_spin.setDecimals(4)
         self._thr_spin.setMinimumWidth(110)
-        thr.addWidget(self._thr_spin)
-        thr.addSpacing(10)
-        thr.addWidget(QLabel("Channel is:"))
+        r1.addWidget(self._thr_spin)
+        r1.addSpacing(10)
+        r1.addWidget(QLabel("Channel is:"))
         self._sense_combo = QComboBox()
         self._sense_combo.addItems(["Brighter than threshold", "Darker than threshold"])
-        thr.addWidget(self._sense_combo)
-        grp_lay.addLayout(thr)
+        r1.addWidget(self._sense_combo)
+        gl.addLayout(r1)
 
-        # Smooth + spacing row
-        sp = QHBoxLayout()
+        # Row 2: start point
+        r2 = QHBoxLayout()
+        r2.addWidget(QLabel("Start point  X:"))
+        self._x_start = QDoubleSpinBox()
+        self._x_start.setDecimals(4)
+        self._x_start.setMinimumWidth(100)
+        r2.addWidget(self._x_start)
+        r2.addWidget(QLabel("Y:"))
+        self._y_start = QDoubleSpinBox()
+        self._y_start.setDecimals(4)
+        self._y_start.setMinimumWidth(100)
+        r2.addWidget(self._y_start)
+        hint = QLabel("  (or click on preview to set)")
+        hint.setStyleSheet("color: #888888; font-size: 11px;")
+        r2.addWidget(hint)
+        r2.addStretch()
+        gl.addLayout(r2)
+
+        # Row 3: smooth + spacing + Extract button
+        r3 = QHBoxLayout()
         self._smooth_cb = QCheckBox("Smooth")
         self._smooth_cb.setChecked(True)
-        sp.addWidget(self._smooth_cb)
+        r3.addWidget(self._smooth_cb)
         self._smooth_spin = QSpinBox()
         self._smooth_spin.setRange(1, 99)
         self._smooth_spin.setValue(5)
         self._smooth_spin.setSuffix(" pts")
-        sp.addWidget(self._smooth_spin)
-        sp.addSpacing(16)
-        sp.addWidget(QLabel("Output spacing:"))
+        r3.addWidget(self._smooth_spin)
+        r3.addSpacing(16)
+        r3.addWidget(QLabel("Output spacing:"))
         self._spacing_spin = QDoubleSpinBox()
         self._spacing_spin.setDecimals(5)
         self._spacing_spin.setRange(1e-9, 1e9)
         self._spacing_spin.setValue(0.1)
         self._spacing_spin.setMinimumWidth(100)
-        sp.addWidget(self._spacing_spin)
-        sp.addStretch()
+        r3.addWidget(self._spacing_spin)
+        r3.addStretch()
         btn_extract = QPushButton("Extract")
         btn_extract.setDefault(True)
         btn_extract.clicked.connect(self._extract)
-        sp.addWidget(btn_extract)
-        grp_lay.addLayout(sp)
+        r3.addWidget(btn_extract)
+        gl.addLayout(r3)
         lay.addWidget(grp)
 
-        # ── Preview: threshold mask + centerline overlay ───────────────────
+        # ── Preview: mask → skeleton + path overlay ───────────────────────
         if PG_AVAILABLE:
             self._glw = pg.GraphicsLayoutWidget()
             self._glw.setBackground('#1e1e1e')
-            self._glw.setMinimumHeight(210)
+            self._glw.setMinimumHeight(220)
             self._prev_plot = self._glw.addPlot()
             self._prev_plot.setAspectLocked(False)
+
             self._mask_item = pg.ImageItem()
             self._prev_plot.addItem(self._mask_item)
-            self._prev_plot.setLabel('bottom', self._x_label)
-            self._prev_plot.setLabel('left', self._y_label)
+
+            # Skeleton (cyan dots)
+            self._skel_scatter = pg.ScatterPlotItem(
+                size=2, pen=None, brush=pg.mkBrush('#00cccc')
+            )
+            self._prev_plot.addItem(self._skel_scatter)
+
+            # Traced path (red line + dots)
             self._cl_item = pg.PlotDataItem(
                 pen=pg.mkPen('#ff4444', width=2),
-                symbol='o', symbolSize=5,
+                symbol='o', symbolSize=4,
                 symbolBrush='#ff4444', symbolPen=None,
             )
             self._prev_plot.addItem(self._cl_item)
+
+            # Start marker (yellow circle)
+            self._start_marker = pg.ScatterPlotItem(
+                size=14, pen=pg.mkPen('#ffcc00', width=2), brush=None,
+            )
+            self._prev_plot.addItem(self._start_marker)
+
+            self._prev_plot.setLabel('bottom', self._x_label)
+            self._prev_plot.setLabel('left', self._y_label)
+
+            # Click → set start point
+            self._glw.scene().sigMouseClicked.connect(self._on_preview_click)
             lay.addWidget(self._glw, 1)
         else:
-            self._glw = self._mask_item = self._cl_item = None
+            self._glw = None
+            self._mask_item = self._skel_scatter = self._cl_item = self._start_marker = None
 
         # ── Result table ───────────────────────────────────────────────────
         res_grp = QGroupBox("Centerline points")
-        res_lay = QVBoxLayout(res_grp)
-        res_lay.setSpacing(2)
+        rl = QVBoxLayout(res_grp)
+        rl.setSpacing(2)
         self._table = QTableWidget(0, 2)
         self._table.setHorizontalHeaderLabels([self._x_label, self._y_label])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.setMaximumHeight(140)
-        res_lay.addWidget(self._table)
-        self._status_lbl = QLabel("Adjust threshold and click Extract.")
-        res_lay.addWidget(self._status_lbl)
+        self._table.setMaximumHeight(130)
+        rl.addWidget(self._table)
+        self._status_lbl = QLabel(
+            "Adjust threshold and start point, then click Extract."
+        )
+        rl.addWidget(self._status_lbl)
         lay.addWidget(res_grp)
 
         # ── Bottom buttons ─────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
+        br = QHBoxLayout()
         self._btn_copy = QPushButton("Copy to Clipboard")
         self._btn_copy.setEnabled(False)
         self._btn_copy.clicked.connect(self._copy)
-        btn_row.addWidget(self._btn_copy)
+        br.addWidget(self._btn_copy)
         self._btn_save = QPushButton("Save CSV…")
         self._btn_save.setEnabled(False)
         self._btn_save.clicked.connect(self._save_csv)
-        btn_row.addWidget(self._btn_save)
-        btn_row.addStretch()
+        br.addWidget(self._btn_save)
+        br.addStretch()
         self._btn_overlay = QPushButton("Overlay on Map")
         self._btn_overlay.setEnabled(False)
         self._btn_overlay.clicked.connect(self._emit_overlay)
-        btn_row.addWidget(self._btn_overlay)
+        br.addWidget(self._btn_overlay)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.accept)
-        btn_row.addWidget(btn_close)
-        lay.addLayout(btn_row)
+        br.addWidget(btn_close)
+        lay.addLayout(br)
 
-        # Wire threshold controls together
+        # Wire controls
         self._thr_slider.valueChanged.connect(self._on_slider_changed)
         self._thr_spin.valueChanged.connect(self._on_spin_changed)
         self._sense_combo.currentIndexChanged.connect(self._update_preview)
+        self._x_start.valueChanged.connect(self._update_start_marker)
+        self._y_start.valueChanged.connect(self._update_start_marker)
 
     # ── Computation ───────────────────────────────────────────────────────────
 
@@ -201,14 +323,16 @@ class CenterlineDialog(QDialog):
         xs, ys, zs = self._xs, self._ys, self._zs
         n_ux = len(np.unique(np.round(xs, 8)))
         n_uy = len(np.unique(np.round(ys, 8)))
-        nx = max(50, min(300, n_ux))
-        ny = max(50, min(300, n_uy))
+        nx = max(80, min(250, n_ux))
+        ny = max(80, min(250, n_uy))
         xi = np.linspace(xs.min(), xs.max(), nx)
         yi = np.linspace(ys.min(), ys.max(), ny)
         self._xi, self._yi = xi, yi
 
         if SCIPY_AVAILABLE:
-            grid = _griddata((xs, ys), zs, (xi[None, :], yi[:, None]), method='linear')
+            grid = _griddata(
+                (xs, ys), zs, (xi[None, :], yi[:, None]), method='linear'
+            )
             nan_mask = np.isnan(grid)
             if nan_mask.any():
                 grid[nan_mask] = float(np.nanmin(zs))
@@ -227,9 +351,19 @@ class CenterlineDialog(QDialog):
         self._thr_spin.setValue(mid)
         self._thr_spin.blockSignals(False)
 
-        # Default spacing = 1 % of x range
-        x_range = float(xs.max() - xs.min())
-        self._spacing_spin.setValue(max(1e-9, x_range / 100.0))
+        self._spacing_spin.setValue(max(1e-9, (xs.max() - xs.min()) / 100.0))
+
+        # Default start: left edge, vertical midpoint
+        for sp, lo, hi, val in [
+            (self._x_start, float(xs.min()), float(xs.max()), float(xs.min())),
+            (self._y_start, float(ys.min()), float(ys.max()),
+             float((ys.min() + ys.max()) / 2.0)),
+        ]:
+            sp.blockSignals(True)
+            sp.setRange(lo, hi)
+            sp.setSingleStep((hi - lo) / 100.0)
+            sp.setValue(val)
+            sp.blockSignals(False)
 
     def _threshold_mask(self) -> np.ndarray:
         thresh = self._thr_spin.value()
@@ -258,44 +392,72 @@ class CenterlineDialog(QDialog):
         xi, yi = self._xi, self._yi
         dx = (xi[-1] - xi[0]) / max(len(xi) - 1, 1)
         dy = (yi[-1] - yi[0]) / max(len(yi) - 1, 1)
-        # pg.ImageItem expects (nx, ny) → transpose the (ny, nx) mask
-        self._mask_item.setImage(mask.T.astype(np.uint8) * 200, autoLevels=True)
+        # ImageItem expects (nx, ny) → transpose (ny, nx) mask
+        self._mask_item.setImage(mask.T.astype(np.uint8) * 180, autoLevels=True)
         self._mask_item.setRect(QRectF(
-            float(xi[0]) - dx / 2,
-            float(yi[0]) - dy / 2,
-            float(xi[-1] - xi[0]) + dx,
-            float(yi[-1] - yi[0]) + dy,
+            float(xi[0]) - dx / 2, float(yi[0]) - dy / 2,
+            float(xi[-1] - xi[0]) + dx, float(yi[-1] - yi[0]) + dy,
         ))
+        # Clear skeleton/path when mask changes so stale overlays don't persist
+        if self._skel_scatter is not None:
+            self._skel_scatter.setData([], [])
+        if self._cl_item is not None:
+            self._cl_item.setData([], [])
+        self._update_start_marker()
+
+    def _update_start_marker(self):
+        if self._start_marker is None:
+            return
+        self._start_marker.setData([self._x_start.value()], [self._y_start.value()])
+
+    def _on_preview_click(self, event):
+        if self._prev_plot is None:
+            return
+        pos = event.scenePos()
+        if self._prev_plot.sceneBoundingRect().contains(pos):
+            pt = self._prev_plot.vb.mapSceneToView(pos)
+            self._x_start.setValue(pt.x())
+            self._y_start.setValue(pt.y())
 
     def _extract(self):
         if self._grid is None:
             return
+
         mask = self._threshold_mask()
-        xi, yi = self._xi, self._yi  # shapes (nx,), (ny,)
+        if SCIPY_AVAILABLE:
+            mask = binary_fill_holes(mask)
 
-        cx_list: list[float] = []
-        cy_list: list[float] = []
-        for j, x_val in enumerate(xi):
-            col = mask[:, j].astype(float)
-            total = col.sum()
-            if total < 2:
-                continue
-            # Intensity-weighted centroid along y
-            cy_list.append(float(np.dot(yi, col) / total))
-            cx_list.append(float(x_val))
+        self._status_lbl.setText("Skeletonizing…")
+        QApplication.processEvents()
+        skel = _zhang_suen_thin(mask)
 
-        if len(cx_list) < 2:
-            self._status_lbl.setText("No channel detected — adjust threshold.")
-            if self._cl_item is not None:
-                self._cl_item.setData([], [])
+        # Show skeleton as cyan scatter in preview
+        if self._skel_scatter is not None:
+            sr, sc = np.where(skel)
+            self._skel_scatter.setData(self._xi[sc], self._yi[sr])
+
+        # Locate start pixel
+        xi, yi = self._xi, self._yi
+        c0 = int(np.argmin(np.abs(xi - self._x_start.value())))
+        r0 = int(np.argmin(np.abs(yi - self._y_start.value())))
+
+        self._status_lbl.setText("Tracing path…")
+        QApplication.processEvents()
+        path = _trace_path(skel, (r0, c0))
+
+        if len(path) < 2:
+            self._status_lbl.setText(
+                "No path found — try a different threshold or start point."
+            )
             return
 
-        cx = np.array(cx_list)
-        cy = np.array(cy_list)
+        cx = np.array([xi[c] for _, c in path])
+        cy = np.array([yi[r] for r, _ in path])
 
         if self._smooth_cb.isChecked() and SCIPY_AVAILABLE:
             w = self._smooth_spin.value()
             if w > 1:
+                cx = _smooth1d(cx, size=w, mode='nearest')
                 cy = _smooth1d(cy, size=w, mode='nearest')
 
         cx, cy = _resample_equal_spacing(cx, cy, self._spacing_spin.value())
