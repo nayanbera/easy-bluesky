@@ -12,7 +12,9 @@ Algorithm
 5. "Center zone": keep only pixels where dist >= center_sensitivity * dist.max().
 6. Skeletonize the center zone with vectorized Zhang-Suen thinning.
 7. Prune short spur branches (iterative endpoint removal).
-8. Trace a connected path from the start point through the skeleton.
+8. Double-BFS path tracing (tree diameter): BFS from start → far end A;
+   BFS from A → far end B; reconstruct A→B path.  Finds the full
+   centerline in O(n) without getting stuck at U-bends or junctions.
 9. Smooth and resample at equal arc-length spacing.
 """
 
@@ -126,13 +128,42 @@ def _prune_spurs(skel: np.ndarray, n_iter: int) -> np.ndarray:
 
 # ── Path tracing ──────────────────────────────────────────────────────────────
 
+def _bfs(pixel_set: set, start: tuple[int, int]) -> tuple[dict, dict]:
+    """BFS from *start* within *pixel_set* (8-connected).
+
+    Returns (dist_map, parent_map) where dist_map[node] is the number of
+    steps from *start* and parent_map[node] is the preceding node.
+    """
+    from collections import deque
+    dist:   dict[tuple[int, int], int]             = {start: 0}
+    parent: dict[tuple[int, int], tuple | None]    = {start: None}
+    q = deque([start])
+    while q:
+        r, c = q.popleft()
+        d = dist[(r, c)]
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if not (dr or dc):
+                    continue
+                nxt = (r + dr, c + dc)
+                if nxt in pixel_set and nxt not in dist:
+                    dist[nxt] = d + 1
+                    parent[nxt] = (r, c)
+                    q.append(nxt)
+    return dist, parent
+
+
 def _trace_path(skel: np.ndarray,
                 start_rc: tuple[int, int]) -> list[tuple[int, int]]:
-    """Greedy connected-path trace from the skeleton pixel nearest to start_rc.
+    """Find the longest path (diameter) through the skeleton using double BFS.
 
-    At branch points the algorithm prefers the direction most aligned with the
-    current heading (dot product), so it follows serpentine turns without
-    reversing.
+    Algorithm (O(n), optimal for tree graphs):
+      1. BFS from the skeleton pixel nearest to *start_rc* → far endpoint A.
+      2. BFS from A → far endpoint B.  The A→B path is the diameter.
+      3. Orient the path so the end closest to *start_rc* is first.
+
+    This guarantees the full serpentine centerline is traced in one pass
+    without getting stuck at U-bends or branch junctions.
     """
     rows, cols = np.where(skel)
     if len(rows) == 0:
@@ -141,35 +172,30 @@ def _trace_path(skel: np.ndarray,
     pixel_set: set[tuple[int, int]] = set(zip(rows.tolist(), cols.tolist()))
     r0, c0 = start_rc
     dists = (rows - r0) ** 2 + (cols - c0) ** 2
-    best = int(np.argmin(dists))
-    start = (int(rows[best]), int(cols[best]))
+    seed = (int(rows[np.argmin(dists)]), int(cols[np.argmin(dists)]))
 
-    path = [start]
-    visited: set[tuple[int, int]] = {start}
+    # First BFS: find the far endpoint A
+    dist1, _ = _bfs(pixel_set, seed)
+    A = max(dist1, key=lambda k: dist1[k])
 
-    while True:
-        r, c = path[-1]
-        nbrs = [
-            (r + dr, c + dc)
-            for dr in (-1, 0, 1) for dc in (-1, 0, 1)
-            if (dr or dc)
-            and (r + dr, c + dc) in pixel_set
-            and (r + dr, c + dc) not in visited
-        ]
-        if not nbrs:
-            break
-        if len(nbrs) == 1:
-            nxt = nbrs[0]
-        else:
-            if len(path) >= 2:
-                dr0 = r - path[-2][0]
-                dc0 = c - path[-2][1]
-                scores = [dr0 * (nr - r) + dc0 * (nc - c) for nr, nc in nbrs]
-                nxt = nbrs[int(np.argmax(scores))]
-            else:
-                nxt = nbrs[0]
-        path.append(nxt)
-        visited.add(nxt)
+    # Second BFS from A: find endpoint B and reconstruct path
+    dist2, parent2 = _bfs(pixel_set, A)
+    B = max(dist2, key=lambda k: dist2[k])
+
+    # Reconstruct A→B path via parent pointers
+    path: list[tuple[int, int]] = []
+    node: tuple | None = B
+    while node is not None:
+        path.append(node)
+        node = parent2[node]
+    path.reverse()   # now path runs A → B
+
+    # Orient so the end nearest to start_rc comes first
+    if path:
+        st = np.array([r0, c0])
+        if (np.sum((np.array(path[-1]) - st) ** 2) <
+                np.sum((np.array(path[0])  - st) ** 2)):
+            path.reverse()
 
     return path
 
@@ -270,8 +296,8 @@ class CenterlineDialog(QDialog):
         r3 = QHBoxLayout()
         r3.addWidget(QLabel("Center sensitivity:"))
         self._dist_spin = QSpinBox()
-        self._dist_spin.setRange(5, 90)
-        self._dist_spin.setValue(30)
+        self._dist_spin.setRange(1, 90)
+        self._dist_spin.setValue(10)
         self._dist_spin.setSuffix(" %")
         self._dist_spin.setToolTip(
             "Keep only channel pixels farther than this % of the max channel-wall\n"
