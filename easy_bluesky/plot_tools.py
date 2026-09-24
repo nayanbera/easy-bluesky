@@ -266,7 +266,7 @@ class TwoDMapWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_cmap  = None
-        self._cbar          = None
+        self._hist          = None   # pg.HistogramLUTItem (replaces static colorbar)
         self._scan_x_range  = None   # (min, max) from plan parameters
         self._scan_y_range  = None
         self._last_raw      = None   # (xs, ys, zs, x_label, y_label) from last replot
@@ -330,12 +330,16 @@ class TwoDMapWidget(QWidget):
             self._plot.setAspectLocked(False)
             self._img_item = pg.ImageItem()
             self._plot.addItem(self._img_item)
+            # Histogram with draggable level handles for min/max clipping
             try:
-                self._cbar = pg.ColorBarItem(values=(0, 1), width=15,
-                                             interactive=False)
-                self._cbar.setImageItem(self._img_item, insert_in=self._plot)
+                self._hist = pg.HistogramLUTItem()
+                self._glw.addItem(self._hist, row=0, col=1)
+                self._hist.setImageItem(self._img_item)
+                # Limit the histogram column width so the image gets most space
+                self._glw.ci.layout.setColumnPreferredWidth(1, 120)
+                self._glw.ci.layout.setColumnMaximumWidth(1, 160)
             except Exception:
-                self._cbar = None
+                self._hist = None
             self._set_cmap(self._CMAPS[0])
             lay.addWidget(self._glw, 1)
         else:
@@ -361,9 +365,9 @@ class TwoDMapWidget(QWidget):
                 self._current_cmap = pg.colormap.get('viridis')
             except Exception:
                 return
-        if self._cbar is not None:
+        if self._hist is not None:
             try:
-                self._cbar.setColorMap(self._current_cmap)
+                self._hist.gradient.setColorMap(self._current_cmap)
             except Exception:
                 pass
 
@@ -478,30 +482,15 @@ class TwoDMapWidget(QWidget):
         if vmax == vmin:
             vmax = vmin + 1.0
 
-        # Sentinel value placed 10 % below the data minimum.
-        # The LUT's first ~23 entries are assigned the NaN colour so that the
-        # sentinel region is visually distinct from real data (which maps to the
-        # remaining ~233 entries of the colourmap).
-        sentinel      = vmin - 0.1 * (vmax - vmin)
-        idx_boundary  = max(1, int((vmin - sentinel) / (vmax - sentinel) * 255))
-
-        try:
-            n_cmap = max(1, 256 - idx_boundary)
-            lut_cmap = self._current_cmap.getLookupTable(0.0, 1.0, n_cmap,
-                                                          alpha=False)
-            nan_part = np.tile(self._NAN_COLOR, (idx_boundary, 1))
-            lut      = np.vstack([nan_part, lut_cmap])[:256]
-        except Exception:
-            lut = None
-
+        # Place NaN pixels just below the data minimum so they are clamped to
+        # the lowest LUT entry by the histogram's level handles.
+        sentinel          = vmin - 0.1 * (vmax - vmin)
         img_disp          = img.copy()
         img_disp[nan_mask] = sentinel
 
         # pg.ImageItem expects (nx, ny) — transpose from our (ny, nx) array
         self._img_item.setImage(img_disp.T, autoLevels=False,
                                 levels=(sentinel, vmax))
-        if lut is not None:
-            self._img_item.setLookupTable(lut)
 
         # Position the image in data-space coordinates
         nx, ny = len(x_vals), len(y_vals)
@@ -514,14 +503,16 @@ class TwoDMapWidget(QWidget):
             float(y_vals[-1]) - float(y_vals[0]) + dy,
         ))
 
-        if self._cbar is not None:
+        # Initialise histogram level handles at the actual data range.
+        # The histogram axis is zoomed to the data range to avoid the spike
+        # from NaN sentinel values appearing on the left edge.
+        if self._hist is not None:
             try:
-                self._cbar.setLevels(low=vmin, high=vmax)
+                pad = 0.05 * (vmax - vmin)
+                self._hist.setHistogramRange(vmin - pad, vmax + pad)
+                self._hist.setLevels(vmin, vmax)
             except Exception:
-                try:
-                    self._cbar.setLevels(values=(vmin, vmax))
-                except Exception:
-                    pass
+                pass
 
         # Use planned motor extents if available; otherwise auto-range to data
         if self._scan_x_range is not None and self._scan_y_range is not None:
