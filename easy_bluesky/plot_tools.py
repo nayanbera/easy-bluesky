@@ -319,6 +319,13 @@ class TwoDMapWidget(QWidget):
         self._btn_centerline.clicked.connect(self._open_centerline_dialog)
         ctrl.addWidget(self._btn_centerline)
 
+        self._btn_cl_toggle = QPushButton("Hide Centerline")
+        self._btn_cl_toggle.setFixedHeight(26)
+        self._btn_cl_toggle.setCheckable(True)
+        self._btn_cl_toggle.setVisible(False)
+        self._btn_cl_toggle.clicked.connect(self._toggle_centerline_visibility)
+        ctrl.addWidget(self._btn_cl_toggle)
+
         ctrl.addStretch()
         self._ctrl_row = ctrl
         lay.addLayout(ctrl)
@@ -545,6 +552,16 @@ class TwoDMapWidget(QWidget):
             symbolBrush='#ff4444', symbolPen=None,
         )
         self._plot.addItem(self._cl_overlay)
+        self._btn_cl_toggle.setChecked(False)
+        self._btn_cl_toggle.setText("Hide Centerline")
+        self._btn_cl_toggle.setVisible(True)
+
+    def _toggle_centerline_visibility(self, checked: bool):
+        """Hide or show the centerline overlay without removing it."""
+        if self._cl_overlay is None:
+            return
+        self._cl_overlay.setVisible(not checked)
+        self._btn_cl_toggle.setText("Show Centerline" if checked else "Hide Centerline")
 
     def _open_centerline_dialog(self):
         """Open the CenterlineDialog with the current map data."""
@@ -561,6 +578,9 @@ class TwoDMapWidget(QWidget):
         self._scan_y_range = None
         self._last_raw = None
         self._btn_centerline.setVisible(False)
+        self._btn_cl_toggle.setVisible(False)
+        self._btn_cl_toggle.setChecked(False)
+        self._btn_cl_toggle.setText("Hide Centerline")
         if PG_AVAILABLE and self._img_item is not None:
             self._img_item.clear()
             self._plot.setTitle("")
