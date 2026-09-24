@@ -22,7 +22,7 @@ from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressDialog, QPushButton, QSizePolicy,
+    QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QSizePolicy,
     QSplitter, QStackedWidget, QTabBar, QTabWidget, QTableWidget, QTableWidgetItem,
     QTextEdit, QVBoxLayout, QWidget,
 )
@@ -671,7 +671,7 @@ class MongoDataBrowserTab(QWidget):
         self._repro_btn         = None # Motor Repro button (set in _build_ui)
         self._map_mode       = False
         self._2d_map_data    = None   # (xs, ys, zs, x_field, z_field, scan_labels)
-        self._load_prog      = None
+        self._load_prog_bar  = None   # set in _build_ui
         self._fetch_timer    = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._schedule_data_fetch)
@@ -1030,6 +1030,12 @@ class MongoDataBrowserTab(QWidget):
         bot_bar.addWidget(self._repro_btn)
         rlayout.addLayout(bot_bar)
 
+        self._load_prog_bar = QProgressBar()
+        self._load_prog_bar.setFixedHeight(4)
+        self._load_prog_bar.setTextVisible(False)
+        self._load_prog_bar.setVisible(False)
+        rlayout.addWidget(self._load_prog_bar)
+
         splitter.addWidget(right)
         splitter.setSizes([400, 900])
         root.addWidget(splitter, 1)
@@ -1199,6 +1205,7 @@ class MongoDataBrowserTab(QWidget):
         self._set_status(f"{n} run{'s' if n != 1 else ''} loaded{suffix}.")
 
     def _on_fetch_error(self, msg: str):
+        self._load_prog_bar.setVisible(False)
         self._set_status(f"Error: {msg}", error=True)
 
     # ── Run selection (debounced) ──────────────────────────────────────────────
@@ -1302,30 +1309,19 @@ class MongoDataBrowserTab(QWidget):
         self._data_fetcher.error.connect(self._on_fetch_error)
         self._data_fetcher.progress.connect(self._on_load_progress)
 
-        if self._load_prog:
-            self._load_prog.hide()
-        self._load_prog = QProgressDialog(
-            f"Loading run 0 of {n}…", None, 0, n, self
-        )
-        self._load_prog.setWindowModality(Qt.WindowModality.WindowModal)
-        self._load_prog.setMinimumDuration(0)
-        self._load_prog.setAutoClose(True)
-        self._load_prog.setAutoReset(True)
-        self._load_prog.show()
-        QApplication.processEvents()
+        self._load_prog_bar.setRange(0, n)
+        self._load_prog_bar.setValue(0)
+        self._load_prog_bar.setVisible(True)
+        self._set_status(f"Loading run 0 of {n}…", busy=True)
 
         self._data_fetcher.start()
 
     def _on_load_progress(self, done: int, total: int):
-        if self._load_prog:
-            self._load_prog.setLabelText(f"Loading run {done} of {total}…")
-            self._load_prog.setValue(done)
-            QApplication.processEvents()
+        self._load_prog_bar.setValue(done)
+        self._set_status(f"Loading run {done} of {total}…", busy=True)
 
     def _on_data_ready(self, run_data_list: list):
-        if self._load_prog:
-            self._load_prog.setValue(self._load_prog.maximum())
-            self._load_prog = None
+        self._load_prog_bar.setVisible(False)
         self._run_data_list = run_data_list
         multi = len(run_data_list) >= 2
         if self._repro_btn:
@@ -1886,14 +1882,15 @@ class MongoDataBrowserTab(QWidget):
             all_y = np.concatenate(ys_list)
             all_z = np.concatenate(zs_list)
             self._2d_map_data = (all_x, all_y, all_z, x_field, y_field, z_field, None)
-            stitch_prog = QProgressDialog("Building 2D map…", None, 0, 0, self)
-            stitch_prog.setWindowModality(Qt.WindowModality.WindowModal)
-            stitch_prog.setMinimumDuration(0)
-            stitch_prog.show()
+            self._load_prog_bar.setRange(0, 0)
+            self._load_prog_bar.setVisible(True)
+            self._set_status("Building 2D map…", busy=True)
             QApplication.processEvents()
             self._2d_widget.replot(all_x, all_y, all_z,
                                    x_label=x_field, y_label=y_field, z_label=z_field)
-            stitch_prog.hide()
+            self._load_prog_bar.setVisible(False)
+            self._load_prog_bar.setRange(0, 100)
+            self._set_status("")
         else:
             xs_list, zs_list, scan_labels = [], [], []
             for i, rd in enumerate(eligible):
@@ -1928,15 +1925,16 @@ class MongoDataBrowserTab(QWidget):
             ys = np.concatenate(ys_flat)
             zs = np.concatenate(zs_flat)
             self._2d_map_data = (xs, ys, zs, x_field, "scan_index", z_field, scan_labels)
-            stitch_prog = QProgressDialog("Building 2D map…", None, 0, 0, self)
-            stitch_prog.setWindowModality(Qt.WindowModality.WindowModal)
-            stitch_prog.setMinimumDuration(0)
-            stitch_prog.show()
+            self._load_prog_bar.setRange(0, 0)
+            self._load_prog_bar.setVisible(True)
+            self._set_status("Building 2D map…", busy=True)
             QApplication.processEvents()
             self._2d_widget.replot(xs, ys, zs,
                                    x_label=x_field, y_label="scan index", z_label=z_field)
             self._2d_widget.set_y_ticks(len(xs_list), scan_labels)
-            stitch_prog.hide()
+            self._load_prog_bar.setVisible(False)
+            self._load_prog_bar.setRange(0, 100)
+            self._set_status("")
         self._btn_save_2d.setVisible(True)
 
     def _save_2d_map(self):
