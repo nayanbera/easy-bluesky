@@ -327,7 +327,7 @@ class TwoDMapWidget(QWidget):
             self._glw = pg.GraphicsLayoutWidget()
             self._glw.setBackground('#1e1e1e')
             self._plot = self._glw.addPlot(row=0, col=0)
-            self._plot.setAspectLocked(False)
+            self._plot.setAspectLocked(True)
             self._img_item = pg.ImageItem()
             self._plot.addItem(self._img_item)
             # Histogram with draggable level handles for min/max clipping

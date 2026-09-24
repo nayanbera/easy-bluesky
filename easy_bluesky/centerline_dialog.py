@@ -346,7 +346,7 @@ class CenterlineDialog(QDialog):
             self._glw.setBackground('#1e1e1e')
             self._glw.setMinimumHeight(250)
             self._prev_plot = self._glw.addPlot()
-            self._prev_plot.setAspectLocked(False)
+            self._prev_plot.setAspectLocked(True)
 
             # Intensity image (background — always shown)
             self._img_item = pg.ImageItem()
