@@ -18,7 +18,7 @@ except ImportError:
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QAbstractItemView,
-    QMessageBox, QApplication, QSplitter, QSizePolicy, QStackedWidget, QTabWidget,
+    QMessageBox, QApplication, QSplitter, QSizePolicy, QStackedWidget, QTabBar,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
@@ -180,7 +180,7 @@ class LiveViewer(QWidget):
         main.addLayout(ctrl)
 
         # ── Mode tabs: 1D Plot / 2D Map ────────────────────────────────────────
-        self._mode_tabs = QTabWidget()
+        self._mode_tabs = QTabBar()
         self._mode_tabs.setDocumentMode(True)
 
         # Tab 0 — 1D Plot controls
@@ -246,13 +246,12 @@ class LiveViewer(QWidget):
         _1d_bar.addWidget(self._live_fit_bg_combo)
         _1d_bar.addStretch()
 
-        self._mode_tabs.addTab(_tab_1d, "1D Plot")
-
-        # Tab 1 — 2D Map (controls live inside TwoDMapWidget's own ctrl row)
-        self._mode_tabs.addTab(QWidget(), "2D Map")
-
+        self._mode_tabs.addTab("1D Plot")
+        self._mode_tabs.addTab("2D Map")
         self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
         main.addWidget(self._mode_tabs)
+        self._1d_controls = _tab_1d
+        main.addWidget(self._1d_controls)
 
         # Y list on the right of the plot (in a resizable splitter)
         self.y_list = QListWidget()
@@ -620,6 +619,7 @@ class LiveViewer(QWidget):
     # ── Plot ───────────────────────────────────────────────────────────────────
 
     def _on_mode_tab_changed(self, idx: int):
+        self._1d_controls.setVisible(idx == 0)
         self._toggle_map_mode(idx == 1)
 
     def _toggle_map_mode(self, checked: bool):

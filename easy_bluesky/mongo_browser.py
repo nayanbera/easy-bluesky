@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QProgressDialog, QPushButton, QSizePolicy,
-    QSplitter, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem,
+    QSplitter, QStackedWidget, QTabBar, QTabWidget, QTableWidget, QTableWidgetItem,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -819,7 +819,7 @@ class MongoDataBrowserTab(QWidget):
         rlayout.addLayout(top_bar)
 
         # ── Mode tabs: 1D Plot / 2D Map ────────────────────────────────────────
-        self._mode_tabs = QTabWidget()
+        self._mode_tabs = QTabBar()
         self._mode_tabs.setDocumentMode(True)
 
         # Tab 0 — 1D Plot controls
@@ -920,12 +920,12 @@ class MongoDataBrowserTab(QWidget):
         _1d_bar.addWidget(self._btn_export_exp)
         _1d_bar.addStretch()
 
-        self._mode_tabs.addTab(_tab_1d, "1D Plot")
-
-        # Tab 1 — 2D Map (controls live inside TwoDMapWidget's own ctrl row)
-        self._mode_tabs.addTab(QWidget(), "2D Map")
+        self._mode_tabs.addTab("1D Plot")
+        self._mode_tabs.addTab("2D Map")
         self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
         rlayout.addWidget(self._mode_tabs)
+        self._1d_controls = _tab_1d
+        rlayout.addWidget(self._1d_controls)
 
         self._coord_label = QLabel("")
         self._coord_label.setObjectName("dim_text")
@@ -1749,6 +1749,7 @@ class MongoDataBrowserTab(QWidget):
             self._plot()
 
     def _on_mode_tab_changed(self, idx: int):
+        self._1d_controls.setVisible(idx == 0)
         self._toggle_map_mode(idx == 1)
 
     def _toggle_map_mode(self, checked: bool):

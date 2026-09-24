@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QAbstractItemView, QComboBox, QCheckBox,
     QFileDialog, QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox,
-    QTextEdit, QSizePolicy, QStackedWidget, QTabWidget,
+    QTextEdit, QSizePolicy, QStackedWidget, QTabBar, QTabWidget,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
@@ -223,7 +223,7 @@ class HDF5Viewer(QWidget):
         vlay.addLayout(top_bar)
 
         # ── Mode tabs: 1D Plot / 2D Map ────────────────────────────────────────
-        self._mode_tabs = QTabWidget()
+        self._mode_tabs = QTabBar()
         self._mode_tabs.setDocumentMode(True)
 
         # Tab 0 — 1D Plot controls
@@ -294,12 +294,12 @@ class HDF5Viewer(QWidget):
         _1d_bar.addWidget(btn_clear_fit)
         _1d_bar.addStretch()
 
-        self._mode_tabs.addTab(_tab_1d, "1D Plot")
-
-        # Tab 1 — 2D Map (controls live inside TwoDMapWidget's own ctrl row)
-        self._mode_tabs.addTab(QWidget(), "2D Map")
+        self._mode_tabs.addTab("1D Plot")
+        self._mode_tabs.addTab("2D Map")
         self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
         vlay.addWidget(self._mode_tabs)
+        self._1d_controls = _tab_1d
+        vlay.addWidget(self._1d_controls)
 
         # Y signal list on right of plot (in a resizable splitter)
         self.y_list = QListWidget()
@@ -575,6 +575,7 @@ class HDF5Viewer(QWidget):
             self._replot()
 
     def _on_mode_tab_changed(self, idx: int):
+        self._1d_controls.setVisible(idx == 0)
         self._toggle_map_mode(idx == 1)
 
     def _toggle_map_mode(self, checked: bool):
