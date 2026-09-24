@@ -649,6 +649,29 @@ class CenterlineDialog(QDialog):
             )
             return
 
+        # Trim the path so it starts at the skeleton pixel nearest to the
+        # user's start point and goes toward the far end of the channel.
+        # The double-BFS diameter goes from extreme-end A to extreme-end B;
+        # the start marker typically sits somewhere along the middle, so we
+        # find the closest path pixel and discard everything before it.
+        if len(path) > 1:
+            pa = np.array(path)                   # (n, 2) in (row, col)
+            st = np.array([r0, c0])
+            dists_to_start = np.sum((pa - st) ** 2, axis=1)
+            nearest = int(np.argmin(dists_to_start))
+            # Ensure the "near start" end is first: if nearest is in the
+            # second half, reverse so it becomes the beginning
+            if nearest > len(path) // 2:
+                path = list(reversed(path))
+                nearest = len(path) - 1 - nearest
+            path = path[nearest:]               # trim prefix before start
+
+        if len(path) < 2:
+            self._status_lbl.setText(
+                "Path too short after start-point trim — try a different start position."
+            )
+            return
+
         cx = np.array([xi[c] for _, c in path])
         cy = np.array([yi[r] for r, _ in path])
 
