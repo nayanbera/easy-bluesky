@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox,
     QTextEdit, QSizePolicy, QStackedWidget, QTabBar, QTabWidget,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 
 from .config import SUCCESS, DANGER, PLOT_COLORS
@@ -121,6 +121,7 @@ class ScanDetailDialog(QDialog):
 
 class HDF5Viewer(QWidget):
     COLORS = PLOT_COLORS
+    move_2d_requested = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -334,6 +335,7 @@ class HDF5Viewer(QWidget):
 
         self._2d_widget = TwoDMapWidget(parent=w)
         self._2d_widget.selection_changed.connect(self._update_2d_plot)
+        self._2d_widget.move_2d_requested.connect(self.move_2d_requested)
 
         self._btn_save_2d = QPushButton("Save 2D…")
         self._btn_save_2d.setVisible(False)

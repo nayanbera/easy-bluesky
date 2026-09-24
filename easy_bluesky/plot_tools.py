@@ -9,6 +9,7 @@ except ImportError:
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox, QPushButton,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt, QObject, QEvent, QRectF, pyqtSignal
 
@@ -258,7 +259,8 @@ class TwoDMapWidget(QWidget):
         w.replot(xs, ys, zs, x_label, y_label, z_label) # draw
     """
 
-    selection_changed = pyqtSignal()
+    selection_changed  = pyqtSignal()
+    move_2d_requested  = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
 
     _CMAPS     = ['viridis', 'inferno', 'plasma', 'coolwarm', 'gray']
     _NAN_COLOR = np.array([60, 60, 60], dtype=np.uint8)
@@ -347,6 +349,7 @@ class TwoDMapWidget(QWidget):
                 self._glw.ci.layout.setColumnMaximumWidth(1, 160)
             except Exception:
                 self._hist = None
+            self._glw.scene().sigMouseClicked.connect(self._on_map_clicked)
             self._set_cmap(self._CMAPS[0])
             lay.addWidget(self._glw, 1)
         else:
@@ -562,6 +565,31 @@ class TwoDMapWidget(QWidget):
             return
         self._cl_overlay.setVisible(not checked)
         self._btn_cl_toggle.setText("Show Centerline" if checked else "Hide Centerline")
+
+    def _on_map_clicked(self, event):
+        """Double-click on the 2D map → offer to move both motors to that position."""
+        if not event.double() or self._last_raw is None:
+            return
+        pos = event.scenePos()
+        if not self._plot.sceneBoundingRect().contains(pos):
+            return
+        pt = self._plot.vb.mapSceneToView(pos)
+        x_val, y_val = pt.x(), pt.y()
+        xs, ys, _, x_motor, y_motor = self._last_raw
+        # Ignore clicks outside the scanned area
+        if not (float(xs.min()) <= x_val <= float(xs.max()) and
+                float(ys.min()) <= y_val <= float(ys.max())):
+            return
+        r = QMessageBox.question(
+            self, "Move Motors",
+            f"Move motors to the selected position?\n\n"
+            f"  {x_motor}:  {x_val:.6g}\n"
+            f"  {y_motor}:  {y_val:.6g}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if r == QMessageBox.StandardButton.Yes:
+            self.move_2d_requested.emit(x_motor, x_val, y_motor, y_val)
 
     def _open_centerline_dialog(self):
         """Open the CenterlineDialog with the current map data."""

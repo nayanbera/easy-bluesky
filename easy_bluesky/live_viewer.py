@@ -123,7 +123,8 @@ class ZMQDocThread(QThread):
 
 class LiveViewer(QWidget):
     COLORS = PLOT_COLORS
-    move_requested        = pyqtSignal(str, float)   # (motor_name, target_position)
+    move_requested        = pyqtSignal(str, float)           # (motor_name, target_position) — 1D
+    move_2d_requested     = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
     scan_point_completed  = pyqtSignal(int)          # seq_num of each event doc
 
     def __init__(self, worker=None, parent=None):
@@ -289,6 +290,7 @@ class LiveViewer(QWidget):
 
         self._2d_widget = TwoDMapWidget(parent=self)
         self._2d_widget.selection_changed.connect(self._update_2d_plot)
+        self._2d_widget.move_2d_requested.connect(self.move_2d_requested)
 
         self._plot_stack = QStackedWidget()
         self._plot_stack.addWidget(plot_splitter)   # index 0 → 1D

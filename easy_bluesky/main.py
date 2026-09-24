@@ -1349,6 +1349,9 @@ class MainWindow(QMainWindow):
         self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
         self.mongo_browser.move_requested.connect(self._on_mongo_move_requested)
         self.experiments_tab.live_viewer.move_requested.connect(self._on_mongo_move_requested)
+        self.mongo_browser.move_2d_requested.connect(self._on_map_move_2d_requested)
+        self.experiments_tab.live_viewer.move_2d_requested.connect(self._on_map_move_2d_requested)
+        self.hdf5_viewer.move_2d_requested.connect(self._on_map_move_2d_requested)
 
         self._connect_requested.connect(self.worker.connect)
 
@@ -2599,6 +2602,28 @@ class MainWindow(QMainWindow):
                 self._mv_retry_deadline = time.monotonic() + 90.0
                 mstate = self.worker.last_manager_state()
                 self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying mv every 2 s for up to 90 s…")
+                QTimer.singleShot(2000, self._retry_mv)
+            else:
+                QMessageBox.warning(self, "Move Failed", msg)
+
+    def _on_map_move_2d_requested(self, x_motor: str, x_val: float,
+                                   y_motor: str, y_val: float):
+        """Execute mv(x_motor, x_val, y_motor, y_val) from a 2D map double-click."""
+        if not self.worker:
+            return
+        item = {"name": "mv",
+                "args": [x_motor, x_val, y_motor, y_val],
+                "kwargs": {}, "item_type": "plan"}
+        ok, msg = self.worker.execute_item(item)
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} "
+                  f"Move {x_motor}→{x_val:.6g}, {y_motor}→{y_val:.6g}: {msg}")
+        if not ok:
+            _m = msg.lower()
+            if "busy" in _m or "executing_task" in _m or "executing task" in _m:
+                self._pending_mv = item
+                self._mv_retry_deadline = time.monotonic() + 90.0
+                mstate = self.worker.last_manager_state()
+                self._log(f"[{self._ts()}]   ↻ RE Manager busy (state: {mstate}) — retrying for up to 90 s…")
                 QTimer.singleShot(2000, self._retry_mv)
             else:
                 QMessageBox.warning(self, "Move Failed", msg)
