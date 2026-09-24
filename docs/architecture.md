@@ -182,7 +182,7 @@ when `bg_name != "None"` — the caller passes a single flat `params` object for
 `_saved_fit_state` persists on the viewer instance (not on disk). The next Fit click
 restores the previous model, background, and all parameter values via `initial_params`.
 
-### Motor move from plot (MongoDB Browser or Live Viewer)
+### Motor move from 1D plot (MongoDB Browser or Live Viewer)
 
 ```
 User double-clicks plot
@@ -191,6 +191,51 @@ User double-clicks plot
 → move_requested.emit(motor, position)         [MongoDB Browser]
    OR worker.execute_item({"name": "mv", ...}) [Live Viewer, direct]
 → ZMQ execute_item() → RE Manager runs mv(motor, position)
+```
+
+### Motor move from 2D map (Live Viewer, MongoDB Browser, or HDF5 Viewer)
+
+```
+User double-clicks TwoDMapWidget
+→ TwoDMapWidget._on_map_clicked(event) checks event.double()
+→ maps scene coords → view coords (x_val, y_val)
+→ bounds check against last plotted xs/ys range
+→ QMessageBox.question (shows x_motor, x_val, y_motor, y_val)
+→ TwoDMapWidget.move_2d_requested.emit(x_motor, x_val, y_motor, y_val)
+→ viewer tab re-emits its own move_2d_requested signal
+→ main._on_map_move_2d_requested(x_motor, x_val, y_motor, y_val)
+→ worker.execute_item({"name": "mv", "args": [x_motor, x_val, y_motor, y_val], ...})
+→ ZMQ execute_item() → RE Manager runs mv(x_motor, x_val, y_motor, y_val)
+   (90 s busy-retry via QTimer.singleShot(2000) if RE Manager is busy)
+```
+
+### Microfluidics centerline extraction (CenterlineDialog)
+
+```
+User opens CenterlineDialog from a 2D map context
+→ Dialog loads intensity array from TwoDMapWidget._last_raw
+→ Preview: pg.ImageItem (viridis) + mask overlay + scatter items
+
+User clicks Auto (Otsu threshold):
+→ _otsu_threshold(arr) → threshold value
+
+User clicks Extract:
+→ _otsu_threshold or manual threshold → binary mask
+→ _preprocess_mask: binary_fill_holes + largest connected component
+→ distance_transform_edt → center zone (pixels at dist ≥ sensitivity% of max)
+→ _zhang_suen_thin(center_zone) → 1-px skeleton
+→ _prune_spurs(skel, n_iter) → clean skeleton
+→ _trace_path(skel, start_rc):
+     BFS from seed → far endpoint A
+     BFS from A → far endpoint B  (double-BFS tree diameter, O(n))
+     reconstruct A→B path, reverse if needed
+     trim prefix to pixel nearest start_rc
+→ _resample_equal_spacing(cx, cy, spacing)
+→ preview updated: cyan scatter (skeleton) + red scatter (path) + yellow start
+
+User accepts → overlay_centerline(x_pts, y_pts) called on TwoDMapWidget
+→ _cl_overlay (pg.ScatterPlotItem) updated
+→ _btn_cl_toggle shown; "Hide Centerline" / "Show Centerline" toggles visibility
 ```
 
 ### RE console output
