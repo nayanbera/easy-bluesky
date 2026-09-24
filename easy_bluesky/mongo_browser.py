@@ -783,12 +783,12 @@ class MongoDataBrowserTab(QWidget):
         rlayout.setContentsMargins(0, 0, 0, 0)
         rlayout.setSpacing(2)
 
-        # Single compact toolbar row — no GroupBox, labels inlined as text or tooltips
-        ctrl_bar = QHBoxLayout()
-        ctrl_bar.setContentsMargins(2, 2, 2, 2)
-        ctrl_bar.setSpacing(4)
+        # ── Shared top bar: Stream, X, Screenshot ─────────────────────────────
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(2, 2, 2, 2)
+        top_bar.setSpacing(4)
 
-        ctrl_bar.addWidget(QLabel("Stream:"))
+        top_bar.addWidget(QLabel("Stream:"))
         self._stream_combo = QComboBox()
         self._stream_combo.setMinimumWidth(90)
         self._stream_combo.setMaximumWidth(180)
@@ -796,10 +796,10 @@ class MongoDataBrowserTab(QWidget):
         self._stream_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._stream_combo.setToolTip("Event stream")
         self._stream_combo.currentIndexChanged.connect(self._on_stream_changed)
-        ctrl_bar.addWidget(self._stream_combo)
+        top_bar.addWidget(self._stream_combo)
 
-        ctrl_bar.addWidget(_vline())
-        ctrl_bar.addWidget(QLabel("X:"))
+        top_bar.addWidget(_vline())
+        top_bar.addWidget(QLabel("X:"))
         self._x_combo = QComboBox()
         self._x_combo.setMinimumWidth(120)
         self._x_combo.setMaximumWidth(240)
@@ -807,10 +807,28 @@ class MongoDataBrowserTab(QWidget):
         self._x_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._x_combo.setToolTip("X axis signal")
         self._x_combo.currentIndexChanged.connect(self._auto_plot)
-        ctrl_bar.addWidget(self._x_combo)
+        top_bar.addWidget(self._x_combo)
 
-        ctrl_bar.addWidget(_vline())
-        ctrl_bar.addWidget(QLabel("Norm:"))
+        top_bar.addWidget(_vline())
+        btn_screenshot = QPushButton("Screenshot")
+        btn_screenshot.setFixedHeight(26)
+        btn_screenshot.setToolTip("Copy plot to clipboard")
+        btn_screenshot.clicked.connect(self._save_screenshot)
+        top_bar.addWidget(btn_screenshot)
+        top_bar.addStretch()
+        rlayout.addLayout(top_bar)
+
+        # ── Mode tabs: 1D Plot / 2D Map ────────────────────────────────────────
+        self._mode_tabs = QTabWidget()
+        self._mode_tabs.setDocumentMode(True)
+
+        # Tab 0 — 1D Plot controls
+        _tab_1d = QWidget()
+        _1d_bar = QHBoxLayout(_tab_1d)
+        _1d_bar.setContentsMargins(4, 2, 4, 2)
+        _1d_bar.setSpacing(4)
+
+        _1d_bar.addWidget(QLabel("Norm:"))
         self._norm_combo = QComboBox()
         self._norm_combo.setMinimumWidth(100)
         self._norm_combo.setMaximumWidth(220)
@@ -819,7 +837,7 @@ class MongoDataBrowserTab(QWidget):
         self._norm_combo.setToolTip("Divide Y by this signal")
         self._norm_combo.addItem("None", userData=None)
         self._norm_combo.currentIndexChanged.connect(self._auto_plot)
-        ctrl_bar.addWidget(self._norm_combo)
+        _1d_bar.addWidget(self._norm_combo)
 
         # Log Y / Errors / Deriv live in the bottom bar beside the crosshair label.
         self._log_y_cb = QCheckBox("Log Y")
@@ -842,8 +860,8 @@ class MongoDataBrowserTab(QWidget):
         )
         self._deriv_combo.currentIndexChanged.connect(self._auto_plot)
 
-        ctrl_bar.addWidget(_vline())
-        ctrl_bar.addWidget(QLabel("Fit:"))
+        _1d_bar.addWidget(_vline())
+        _1d_bar.addWidget(QLabel("Fit:"))
         self._fit_model_combo = QComboBox()
         for m in _peak_fit.PEAK_MODELS:
             self._fit_model_combo.addItem(m)
@@ -852,11 +870,11 @@ class MongoDataBrowserTab(QWidget):
             self._fit_model_combo.addItem(m)
         self._fit_model_combo.setFixedHeight(26)
         self._fit_model_combo.setToolTip("Peak/step model for curve fitting")
-        ctrl_bar.addWidget(self._fit_model_combo)
+        _1d_bar.addWidget(self._fit_model_combo)
 
         bg_lbl = QLabel("+ BG:")
         bg_lbl.setStyleSheet("font-size: 11px;")
-        ctrl_bar.addWidget(bg_lbl)
+        _1d_bar.addWidget(bg_lbl)
         self._fit_bg_combo = QComboBox()
         self._fit_bg_combo.setFixedHeight(26)
         self._fit_bg_combo.setMinimumWidth(80)
@@ -864,27 +882,21 @@ class MongoDataBrowserTab(QWidget):
         for bg in _peak_fit.BACKGROUND_MODELS:
             self._fit_bg_combo.addItem(bg)
         self._fit_bg_combo.setToolTip("Background model added to the peak/step")
-        ctrl_bar.addWidget(self._fit_bg_combo)
+        _1d_bar.addWidget(self._fit_bg_combo)
 
         self._btn_fit = QPushButton("Fit")
         self._btn_fit.setFixedHeight(26)
         self._btn_fit.setToolTip("Fit a peak to the plotted data")
         self._btn_fit.clicked.connect(self._fit_peak)
-        ctrl_bar.addWidget(self._btn_fit)
+        _1d_bar.addWidget(self._btn_fit)
         self._btn_clear_fit = QPushButton("✕")
         self._btn_clear_fit.setFixedSize(26, 26)
         self._btn_clear_fit.setToolTip("Clear fit overlays")
         self._btn_clear_fit.setEnabled(False)
         self._btn_clear_fit.clicked.connect(self._clear_fit_overlays)
-        ctrl_bar.addWidget(self._btn_clear_fit)
+        _1d_bar.addWidget(self._btn_clear_fit)
 
-        ctrl_bar.addWidget(_vline())
-        btn_screenshot = QPushButton("Screenshot")
-        btn_screenshot.setFixedHeight(26)
-        btn_screenshot.setToolTip("Copy plot to clipboard")
-        btn_screenshot.clicked.connect(self._save_screenshot)
-        ctrl_bar.addWidget(btn_screenshot)
-
+        _1d_bar.addWidget(_vline())
         self._btn_export_hdf5 = QPushButton("Export HDF5…")
         self._btn_export_hdf5.setFixedHeight(26)
         self._btn_export_hdf5.setToolTip(
@@ -894,7 +906,7 @@ class MongoDataBrowserTab(QWidget):
         if not H5PY_AVAILABLE:
             self._btn_export_hdf5.setEnabled(False)
             self._btn_export_hdf5.setToolTip("pip install h5py to enable HDF5 export")
-        ctrl_bar.addWidget(self._btn_export_hdf5)
+        _1d_bar.addWidget(self._btn_export_hdf5)
 
         self._btn_export_exp = QPushButton("Export Exp…")
         self._btn_export_exp.setFixedHeight(26)
@@ -905,24 +917,28 @@ class MongoDataBrowserTab(QWidget):
         self._btn_export_exp.clicked.connect(self._export_experiment_hdf5)
         if not H5PY_AVAILABLE:
             self._btn_export_exp.setEnabled(False)
-        ctrl_bar.addWidget(self._btn_export_exp)
+        _1d_bar.addWidget(self._btn_export_exp)
+        _1d_bar.addStretch()
 
-        ctrl_bar.addWidget(_vline())
-        self._btn_map_mode = QPushButton("2D Map")
-        self._btn_map_mode.setCheckable(True)
-        self._btn_map_mode.setFixedHeight(26)
-        self._btn_map_mode.setToolTip("Switch to 2D pixel-intensity map view")
-        self._btn_map_mode.clicked.connect(self._toggle_map_mode)
-        ctrl_bar.addWidget(self._btn_map_mode)
+        self._mode_tabs.addTab(_tab_1d, "1D Plot")
+
+        # Tab 1 — 2D Map controls
+        _tab_2d = QWidget()
+        _2d_bar = QHBoxLayout(_tab_2d)
+        _2d_bar.setContentsMargins(4, 2, 4, 2)
+        _2d_bar.setSpacing(4)
 
         self._btn_save_2d = QPushButton("Save 2D…")
         self._btn_save_2d.setFixedHeight(26)
         self._btn_save_2d.setVisible(False)
         self._btn_save_2d.setToolTip("Save multi-scan 2D map as CSV (x, scan_index, z)")
         self._btn_save_2d.clicked.connect(self._save_2d_map)
-        ctrl_bar.addWidget(self._btn_save_2d)
+        _2d_bar.addWidget(self._btn_save_2d)
+        _2d_bar.addStretch()
 
-        rlayout.addLayout(ctrl_bar)
+        self._mode_tabs.addTab(_tab_2d, "2D Map")
+        self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
+        rlayout.addWidget(self._mode_tabs)
 
         self._coord_label = QLabel("")
         self._coord_label.setObjectName("dim_text")
@@ -1737,6 +1753,9 @@ class MongoDataBrowserTab(QWidget):
         else:
             self._plot()
 
+    def _on_mode_tab_changed(self, idx: int):
+        self._toggle_map_mode(idx == 1)
+
     def _toggle_map_mode(self, checked: bool):
         self._map_mode = checked
         self._plot_stack.setCurrentIndex(1 if checked else 0)
@@ -1808,8 +1827,7 @@ class MongoDataBrowserTab(QWidget):
         stream  = self._stream_combo.currentText()
         x_field = (self._x_combo.currentData() or self._x_combo.currentText()).strip()
         if not x_field:
-            self._btn_map_mode.setChecked(False)
-            self._toggle_map_mode(False)
+            self._mode_tabs.setCurrentIndex(0)
             QMessageBox.warning(self, "2D Map", "Please select an X field before creating a 2D map.")
             return
         y_fields = [
@@ -1830,8 +1848,7 @@ class MongoDataBrowserTab(QWidget):
             and (not y_field or y_field in rd["streams"][stream])
         ]
         if len(eligible) < 2:
-            self._btn_map_mode.setChecked(False)
-            self._toggle_map_mode(False)
+            self._mode_tabs.setCurrentIndex(0)
             QMessageBox.warning(
                 self, "2D Map",
                 f"Fewer than 2 scans have both '{x_field}' and '{z_field}' — "

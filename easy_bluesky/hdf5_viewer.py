@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QAbstractItemView, QComboBox, QCheckBox,
     QFileDialog, QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox,
-    QTextEdit, QSizePolicy, QStackedWidget,
+    QTextEdit, QSizePolicy, QStackedWidget, QTabWidget,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
@@ -200,21 +200,39 @@ class HDF5Viewer(QWidget):
         vlay.setContentsMargins(4, 8, 8, 8)
         vlay.setSpacing(6)
 
-        # Compact control bar
-        ctrl_bar = QHBoxLayout()
-        ctrl_bar.setSpacing(4)
+        # ── Shared top bar: X, run_label, Screenshot ──────────────────────────
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(2, 2, 2, 2)
+        top_bar.setSpacing(4)
 
-        ctrl_bar.addWidget(QLabel("X:"))
+        top_bar.addWidget(QLabel("X:"))
         self.x_combo = QComboBox()
         self.x_combo.setMinimumWidth(120)
         self.x_combo.setMaximumWidth(240)
         self.x_combo.setFixedHeight(26)
         self.x_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.x_combo.currentTextChanged.connect(self._replot)
-        ctrl_bar.addWidget(self.x_combo)
+        top_bar.addWidget(self.x_combo)
 
-        ctrl_bar.addSpacing(6)
-        ctrl_bar.addWidget(QLabel("Norm:"))
+        top_bar.addSpacing(6)
+        self.run_label = QLabel("")
+        self.run_label.setObjectName("dim_text")
+        self.run_label.setStyleSheet("font-size: 12px; padding: 0 4px;")
+        top_bar.addWidget(self.run_label)
+        top_bar.addStretch()
+        vlay.addLayout(top_bar)
+
+        # ── Mode tabs: 1D Plot / 2D Map ────────────────────────────────────────
+        self._mode_tabs = QTabWidget()
+        self._mode_tabs.setDocumentMode(True)
+
+        # Tab 0 — 1D Plot controls
+        _tab_1d = QWidget()
+        _1d_bar = QHBoxLayout(_tab_1d)
+        _1d_bar.setContentsMargins(4, 2, 4, 2)
+        _1d_bar.setSpacing(4)
+
+        _1d_bar.addWidget(QLabel("Norm:"))
         self.norm_combo = QComboBox()
         self.norm_combo.setMinimumWidth(100)
         self.norm_combo.setMaximumWidth(220)
@@ -222,25 +240,25 @@ class HDF5Viewer(QWidget):
         self.norm_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._replot)
-        ctrl_bar.addWidget(self.norm_combo)
+        _1d_bar.addWidget(self.norm_combo)
 
-        ctrl_bar.addSpacing(6)
+        _1d_bar.addSpacing(6)
         self._err_cb = QCheckBox("± Errors")
         self._err_cb.setToolTip(
             "Overlay Poisson √N error bars (propagated through normalization)"
         )
         self._err_cb.stateChanged.connect(self._replot)
-        ctrl_bar.addWidget(self._err_cb)
+        _1d_bar.addWidget(self._err_cb)
 
         btn_plot = QPushButton("Plot")
         btn_plot.setObjectName("btn_primary")
         btn_plot.setFixedHeight(26)
         btn_plot.clicked.connect(self._replot)
-        ctrl_bar.addWidget(btn_plot)
+        _1d_bar.addWidget(btn_plot)
 
-        ctrl_bar.addSpacing(10)
+        _1d_bar.addSpacing(10)
 
-        ctrl_bar.addWidget(QLabel("Fit:"))
+        _1d_bar.addWidget(QLabel("Fit:"))
         self._fit_model_combo = QComboBox()
         self._fit_model_combo.setFixedHeight(26)
         self._fit_model_combo.setMinimumWidth(110)
@@ -249,11 +267,11 @@ class HDF5Viewer(QWidget):
         self._fit_model_combo.insertSeparator(self._fit_model_combo.count())
         for m in _peak_fit.STEP_MODELS:
             self._fit_model_combo.addItem(m)
-        ctrl_bar.addWidget(self._fit_model_combo)
+        _1d_bar.addWidget(self._fit_model_combo)
 
         bg_lbl = QLabel("+ BG:")
         bg_lbl.setStyleSheet("font-size: 11px;")
-        ctrl_bar.addWidget(bg_lbl)
+        _1d_bar.addWidget(bg_lbl)
         self._fit_bg_combo = QComboBox()
         self._fit_bg_combo.setFixedHeight(26)
         self._fit_bg_combo.setMinimumWidth(80)
@@ -261,40 +279,39 @@ class HDF5Viewer(QWidget):
         for bg in _peak_fit.BACKGROUND_MODELS:
             self._fit_bg_combo.addItem(bg)
         self._fit_bg_combo.setToolTip("Background model added to the peak/step")
-        ctrl_bar.addWidget(self._fit_bg_combo)
+        _1d_bar.addWidget(self._fit_bg_combo)
 
         btn_fit = QPushButton("Fit")
         btn_fit.setFixedHeight(26)
         btn_fit.clicked.connect(self._fit_peak)
-        ctrl_bar.addWidget(btn_fit)
+        _1d_bar.addWidget(btn_fit)
 
         btn_clear_fit = QPushButton("✕")
         btn_clear_fit.setFixedHeight(26)
         btn_clear_fit.setFixedWidth(28)
         btn_clear_fit.setToolTip("Clear fit overlays")
         btn_clear_fit.clicked.connect(self._clear_fit_overlays)
-        ctrl_bar.addWidget(btn_clear_fit)
+        _1d_bar.addWidget(btn_clear_fit)
+        _1d_bar.addStretch()
 
-        ctrl_bar.addSpacing(8)
-        self.run_label = QLabel("")
-        self.run_label.setObjectName("dim_text")
-        self.run_label.setStyleSheet("font-size: 12px; padding: 0 4px;")
-        ctrl_bar.addWidget(self.run_label)
+        self._mode_tabs.addTab(_tab_1d, "1D Plot")
 
-        self._btn_map_mode = QPushButton("2D Map")
-        self._btn_map_mode.setCheckable(True)
-        self._btn_map_mode.setToolTip("Switch to 2D pixel-intensity map view")
-        self._btn_map_mode.clicked.connect(self._toggle_map_mode)
-        ctrl_bar.addWidget(self._btn_map_mode)
+        # Tab 1 — 2D Map controls
+        _tab_2d = QWidget()
+        _2d_bar = QHBoxLayout(_tab_2d)
+        _2d_bar.setContentsMargins(4, 2, 4, 2)
+        _2d_bar.setSpacing(4)
 
         self._btn_save_2d = QPushButton("Save 2D…")
         self._btn_save_2d.setVisible(False)
         self._btn_save_2d.setToolTip("Save multi-scan 2D map as CSV (x, scan_index, z)")
         self._btn_save_2d.clicked.connect(self._save_2d_map)
-        ctrl_bar.addWidget(self._btn_save_2d)
+        _2d_bar.addWidget(self._btn_save_2d)
+        _2d_bar.addStretch()
 
-        ctrl_bar.addStretch()
-        vlay.addLayout(ctrl_bar)
+        self._mode_tabs.addTab(_tab_2d, "2D Map")
+        self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
+        vlay.addWidget(self._mode_tabs)
 
         # Y signal list on right of plot (in a resizable splitter)
         self.y_list = QListWidget()
@@ -563,6 +580,9 @@ class HDF5Viewer(QWidget):
         else:
             self._replot()
 
+    def _on_mode_tab_changed(self, idx: int):
+        self._toggle_map_mode(idx == 1)
+
     def _toggle_map_mode(self, checked: bool):
         self._map_mode = checked
         self._plot_stack.setCurrentIndex(1 if checked else 0)
@@ -604,8 +624,7 @@ class HDF5Viewer(QWidget):
         eligible = [(df, lbl) for df, lbl in self._dfs
                     if x_col in df.columns and z_col in df.columns]
         if len(eligible) < 2:
-            self._btn_map_mode.setChecked(False)
-            self._toggle_map_mode(False)
+            self._mode_tabs.setCurrentIndex(0)
             QMessageBox.warning(
                 self, "2D Map",
                 f"Fewer than 2 scans have both '{x_col}' and '{z_col}' — "
