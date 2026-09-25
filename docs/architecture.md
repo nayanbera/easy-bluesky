@@ -25,7 +25,8 @@ easy-bluesky
 ├── Data Layer
 │   ├── MongoDB             — primary run store (via pymongo, written by RE Manager)
 │   ├── <uid>.jsonl files   — per-run JSONL fallback, always written by RE Manager
-│   ├── plans_log.jsonl     — lightweight experiment plan index (local)
+│   ├── plans_log.jsonl     — lightweight experiment plan index (local); UID→scan_num map
+│   ├── queued_scans.jsonl  — audit log of queued items (written; NOT read for scan_num)
 │   └── device_metadata.json— cached PV units/descriptions for sim mode
 │
 └── Config Layer
@@ -238,6 +239,98 @@ User accepts → overlay_centerline(x_pts, y_pts) called on TwoDMapWidget
 → _btn_cl_toggle shown; "Hide Centerline" / "Show Centerline" toggles visibility
 ```
 
+### Scan number assignment
+
+Scan numbers are assigned at queue time so filenames, MongoDB records, and the Plan Log
+all show the same value — including when a custom plan wrapper does not forward
+`md["scan_num"]` into the bluesky `run_start` document.
+
+```
+User clicks Add Plan (or Re-queue from history)
+→ _inject_metadata() strips any pre-existing "scan_num" from item md
+→ calls ExperimentsTab._compute_next_scan_num()
+      ├── _next_scan_num_for(exp_path)       — reads plans_log.jsonl (completed scans)
+      ├── self._current_queue_items           — scan_nums already in RE Manager queue
+      │   (covers plans queued in a prior session that haven't run yet)
+      └── self._queued_scan_lookup            — in-session map uid→scan_num
+          (covers plans added THIS session before the next 1 Hz poll cycle)
+→ merged["scan_num"] = next_num
+→ _next_scan_label.setText("Next scan: #N")
+
+Plan successfully added → add_item() returns item_uid
+→ _write_queued_scan(item, item_uid)
+      → appends to queued_scans.jsonl (audit trail only — not read for scan_num)
+      → _queued_scan_lookup[item_uid] = scan_num
+
+Queue poll fires (≤ 1 s later) → update_compact_queue(items)
+→ stale = [uid in _queued_scan_lookup but NOT in current queue]
+→ for each stale uid: del _queued_scan_lookup[uid]
+      (plan was removed without running — reservation released, no gap)
+→ if any stale: recompute and update "Next scan: #N" label
+
+Plan completes → update_history() writes plans_log.jsonl entry
+      scan_num read from item.kwargs.md["scan_num"]  (primary)
+      fallback: _queued_scan_lookup.get(uid)          (backward compat)
+→ _load_plan_log() called
+      → self._queued_scan_lookup = {}  (reset; completed scan now in plans_log)
+      → self._next_scan_num = _compute_next_scan_num()
+```
+
+MongoDB Browser shows consistent scan numbers via UID mapping:
+
+```
+_fetch_runs() → _read_exp_run_uids()
+      → reads plans_log.jsonl
+      → builds self._uid_scan_num = {uid: scan_num, …}
+→ _on_runs_ready(runs)
+      → for each run, _scan_num(run, row):
+            uid = run["start"]["uid"]
+            from_log = self._uid_scan_num.get(uid)  ← plans_log value (authoritative)
+            if from_log is not None: return from_log
+            return run["start"].get("scan_num") or (len(runs) - row)
+```
+
+### Operator lock
+
+The operator lock serialises all consequential actions — adding plans and all queue
+execution controls — across multiple clients sharing the same queue-server.
+
+```
+Client connects
+→ ssh_manager.read_operator_lock(host) → reads /tmp/.easy_bluesky_<slug>.operator
+→ if unclaimed: write_operator_lock(host, my_hostname)
+      → self._lock_claimed = True
+      → re_bar.update_lock_chip(claimed=True)        ← 🔓 Operator (green)
+      → worker.locked_out = False
+  if claimed by other:
+      → ShowLockConflictDialog (claim / observer)
+      → claimed: overwrite lock file, set _lock_claimed = True
+      → observer: _lock_claimed = False
+                  worker.locked_out = True           ← blocks add_item()
+                  re_bar.update_lock_chip(claimed=False, holder_host=other)
+                                                      ← 🔒 hostname (amber)
+
+30 s background poll (_poll_clients_async):
+→ reads operator lock file via SSH
+→ emits _lock_polled(holder: dict)
+→ _on_lock_polled(holder):
+      if holder["host"] != self._my_hostname and self._lock_claimed:
+          → QMessageBox.warning("Operator Control Lost")   ← takeover notification
+      → _update_lock_ui():
+            worker.locked_out = (holder["host"] != my_hostname)
+            worker.lock_holder = holder["host"]
+            re_bar.update_lock_chip(...)
+
+User clicks lock chip while locked out
+→ re_bar.lock_chip_clicked signal → _on_lock_chip_clicked()
+→ _locked_out_of_queue_control()  (same as initial conflict dialog)
+
+ZMQWorker.add_item(item):
+→ if self.locked_out:
+      return False, "Operator lock held by <holder>. Click 🔒 to take control."
+→ otherwise: rm.item_add(item)
+```
+
 ### RE console output
 
 ```
@@ -274,6 +367,25 @@ pyepics calls CA callbacks on a background CA thread. All callbacks immediately 
 ### Sim mode auto-detection
 
 `setup_epics_monitors(pv_map)` checks whether `pv_map` contains any PV names. If all devices are `ophyd.sim` objects, `get_device_pvnames()` returns empty dicts, and the function switches to sim-polling mode automatically.
+
+### Scan number source of truth
+
+`queued_scans.jsonl` is written for audit purposes but is **never read back** for
+scan-number calculation. The counter is derived live from three sources each time a plan
+is added: `plans_log.jsonl` (completed scans, disk-persistent), `_current_queue_items`
+(plans currently held in the RE Manager queue, covers cross-session continuity), and
+`_queued_scan_lookup` (in-session map for rapid back-to-back additions before the next
+poll cycle). When `update_compact_queue` observes a UID that has left the queue, it
+removes the entry from `_queued_scan_lookup` — so a plan that was queued and then removed
+releases its reservation immediately and creates no gap. `_load_plan_log` resets
+`_queued_scan_lookup = {}` whenever the plan log is reloaded (after a scan completes),
+so stale within-session entries also cannot persist beyond one completed scan.
+
+The MongoDB Browser uses `_uid_scan_num` (a `dict[uid, scan_num]` built from
+`plans_log.jsonl` by `_read_exp_run_uids`) as its primary scan-number source, falling
+back to `run_start["scan_num"]` and then to positional row index. This ensures the
+Browser's Scan # column matches the Plan Log even when a custom plan does not forward
+`md["scan_num"]` into the bluesky document store.
 
 ### MongoDB Browser auto-plot
 

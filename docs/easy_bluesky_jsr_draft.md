@@ -20,10 +20,13 @@ multi-client safety layer provides operator locking, real-time client visibility
 status disambiguation when multiple workstations share the same queue-server. Experiment
 Safety Assessment Form (ESAF) integration automates folder creation and injects proposal
 metadata into every plan. An integrated Visual Plan Composer assembles measurement
-sequences from graphical building blocks without requiring the user to write Python. An
-interactive curve-fitting module with per-dataset parameter memory supports rapid analysis
-within the same interface used for data collection. EasyBluesky is implemented in Python
-using PyQt6 and communicates with the queue-server via ZMQ. It is freely available at
+sequences from graphical building blocks without requiring the user to write Python. A
+Live Viewer displays scan data in real time as bluesky documents arrive over ZMQ; for
+two-dimensional scans it renders a colour-mapped intensity map with adjustable histogram
+LUT and supports direct motor moves by double-clicking a pixel. An interactive
+curve-fitting module with per-dataset parameter memory supports rapid analysis within the
+same interface used for data collection. EasyBluesky is implemented in Python using PyQt6
+and communicates with the queue-server via ZMQ. It is freely available at
 https://github.com/nayanbera/easy-bluesky under the BSD licence.
 
 **Keywords:** beamline control, data acquisition, Bluesky, graphical user interface,
@@ -207,7 +210,18 @@ Scan numbers are assigned at queue time rather than execution time: each plan's 
 is set from a counter that advances monotonically with the queue, so HDF5 filenames,
 MongoDB records, and the plans log are always consistent even if plans are reordered or
 removed before running. The current counter value is displayed as a **Next scan: #N**
-label in the Plan Log header and updates on every queue change.
+label in the Plan Log header and updates on every queue change. The counter is derived
+fresh on each addition from three live sources: completed scans in `plans_log.jsonl`,
+scan numbers embedded in plans currently held in the queue, and an in-session reservation
+table for plans added within the current poll interval. Plans removed from the queue before
+running do not consume a scan number: because no permanent reservation file is consulted,
+the counter retracts to the true next available value on the following queue update.
+
+The MongoDB Browser uses `plans_log.jsonl` as its authoritative scan-number source,
+matching each run by its bluesky UID rather than by row position. This ensures that the
+Scan # column is consistent with the Plan Log even when a custom plan wrapper does not
+forward `md["scan_num"]` into the bluesky `run_start` document, and regardless of how
+many runs from other experiments appear in the same MongoDB collection.
 
 A tabular data browser allows experimenters to open HDF5 archives from any completed run.
 Background filesystem monitoring detects if the active experiment folder is deleted or
@@ -314,12 +328,22 @@ file (`/tmp/.easy_bluesky_<profile>.operator`) is written to the remote machine 
 connect and read by every subsequent client. If the file belongs to a different host, the
 joining client is presented with a dialog offering either to claim exclusive control
 (with an explicit warning that the incumbent operator is not notified) or to continue in
-observer mode in which RunEngine Manager start and stop are disabled. Locks older than four
-hours are treated as abandoned and reclaimed automatically. The lock is released on
-disconnect or application quit.
+observer mode. Locks older than four hours are treated as abandoned and reclaimed
+automatically. The lock is released on disconnect or application quit.
 
-A **connected-clients chip** in the toolbar displays the live count of clients sharing the
-queue-server in real time, coloured green when the local machine is the sole operator and
+The operator lock covers all consequential actions: adding plans to the queue as well as
+queue execution controls (Start, Pause, Resume, Abort, and RunEngine Manager
+restart). A client operating in observer mode may still view live device status, browse
+historical data, and monitor the running scan, but cannot issue any command that affects
+the hardware state. A **lock chip** in the persistent toolbar conveys the lock state at
+a glance: it shows 🔓 Operator in green when the local client is in control, and
+🔒 *hostname* in amber when another client holds the lock; clicking the chip while
+locked out opens the takeover dialog. Lock state is re-read from the remote file every 30
+seconds; if another client claims the lock between polls, the incumbent operator receives
+a warning dialog immediately after the next poll cycle.
+
+A **connected-clients chip** in the same toolbar displays the live count of clients
+sharing the queue-server, coloured green when the local machine is the sole client and
 amber when multiple clients are active. Hovering over the chip shows the IP address of
 each connected client. The client list is determined every 30 seconds by combining two
 independent sources: short-lived heartbeat files written by each client to the remote
@@ -327,12 +351,11 @@ machine at each poll (`/tmp/.easy_bluesky_<slug>_client_<hostname>.json`, expiri
 90 seconds of inactivity), and active TCP connections to the ZMQ control and info ports
 observed via `ss -tn` on the remote host. Using both sources provides resilience: heartbeat
 files record clients that are connected but momentarily quiet; the `ss` query catches
-clients that missed a heartbeat but still hold an open socket.
-
-When a second client connects to an already-occupied queue-server, the first client is
-notified in the RE Console within one 30-second polling interval. At startup, the client
-count check runs before the experiment selection dialog so that the user is aware of any
-co-operators before choosing a measurement folder.
+clients that missed a heartbeat but still hold an open socket. New connections are logged
+to the RE Console once on first detection; the non-intrusive chip display avoids modal
+interruptions during data collection. At startup, the client count and lock checks run
+before the experiment selection dialog so that the user is aware of any co-operators
+before choosing a measurement folder.
 
 A further ambiguity arises when the `manager_state` field returned by the queue-server
 reports `executing_task` while `re_state` is idle. This state is entered whenever any
@@ -370,6 +393,46 @@ derivative and log-Y transforms applied to the data, so they remain correctly al
 after the view is changed. Fitted parameters and curves can be exported to CSV or copied
 to the clipboard.
 
+### 3.10 Live Data Visualization
+
+EasyBluesky includes a Live Viewer that renders scan data in real time as bluesky run
+documents arrive over a dedicated ZMQ PUB socket. The viewer subscribes independently of
+the queue-server poll loop so that live updates continue without interfering with queue
+operations or device monitoring.
+
+**1D scans.** Incoming event documents are accumulated into a buffer keyed by detector
+field name. Autodetection of the scan motor from the `hints` field of the `run_start`
+document selects the X axis without user configuration. The plot updates at each event;
+on receipt of a `stop` document the final curve is retained and can be interacted with
+using the standard pan/zoom tools. A crosshair readout follows the mouse cursor and
+displays the interpolated position and signal value. Double-clicking a point on the
+completed curve sends a motor-move command (`bps.mv`) to the queue-server, positioning
+the motor at the clicked X coordinate; this allows the operator to follow up a coarse
+survey scan with a targeted measurement at a feature of interest without re-entering
+coordinates manually.
+
+**2D scans.** When a scan with two independent motors is detected, the Live Viewer
+switches automatically to a pixel-map display (Fig. 2g). Intensity values are mapped to
+colour using a continuously adjustable histogram LUT (lookup table): a miniature
+histogram of pixel intensities is displayed alongside the colour scale, and the mapping
+window is set by dragging directly on the histogram. An **equal aspect ratio** toggle
+constrains the map axes to the physical motor step sizes, so the displayed geometry
+matches the sample geometry. The map can be shown and hidden independently of the 1D
+trace panel, and both panels can be open simultaneously for a two-detector scan. As with
+1D scans, double-clicking a pixel in the completed map issues a `bps.mv` command to move
+both motors to the clicked position, enabling point selection directly on the map without
+reading off motor coordinates.
+
+**Microfluidics centerline extraction.** A dedicated *Centerline* button in the 2D map
+toolbar opens a non-modal `CenterlineDialog` for microfluidic channel analysis. The user
+draws a rectangular region of interest (ROI) on the map; the dialog fits a 1D Gaussian
+profile perpendicular to the channel axis at each pixel column within the ROI and extracts
+the centre position and full width at half maximum (FWHM) as a function of position along
+the channel. The centroid trace and FWHM envelope are overlaid on the map; the extracted
+profile is exported as a CSV file. This workflow replaces manual peak-position reading and
+is particularly useful for positioning microfluidic mixers and capillaries before a SAXS
+or WAXS acquisition sequence.
+
 ---
 
 ## 4. Application at the ASWAXS Beamline
@@ -395,8 +458,9 @@ consistently below 200 ms.
 EasyBluesky provides a complete, self-contained graphical interface to the Bluesky
 queue-server that requires no Python knowledge to operate. By encapsulating SSH
 connectivity, RunEngine lifecycle management, EPICS device monitoring, experiment logging,
-Visual Plan Composer, and plan development in a single desktop application, it
-substantially lowers the barrier to autonomous operation of Bluesky-controlled beamlines.
+live data visualization, Visual Plan Composer, and plan development in a single desktop
+application, it substantially lowers the barrier to autonomous operation of
+Bluesky-controlled beamlines.
 The simulation mode enables beamtime preparation on personal hardware and supports user
 training independent of beamline availability.
 
@@ -405,9 +469,11 @@ beamline infrastructure through its multi-client safety layer. The combination o
 locking, live client-count display, and BUSY-state disambiguation makes concurrent ZMQ
 connections safe and transparent in a way that the queue-server protocol alone does not
 provide. ESAF integration reduces the manual overhead of experiment bookkeeping and ensures
-that proposal metadata is captured consistently in every run document. The integrated curve
-fitting module with per-dataset memory closes the analysis loop within the acquisition
-interface, reducing the time between scan completion and quantitative result.
+that proposal metadata is captured consistently in every run document. The Live Viewer provides
+real-time scan feedback in both 1D and 2D modes, with direct motor-move-on-click
+interaction that eliminates manual coordinate transcription between scans. The integrated
+curve-fitting module with per-dataset memory closes the analysis loop within the
+acquisition interface, reducing the time between scan completion and quantitative result.
 
 EasyBluesky is open source, actively maintained, and designed to be deployable at any
 facility running bluesky-queueserver 0.0.25 or later. Although developed at the ASWAXS
@@ -467,7 +533,9 @@ drag-and-drop scan blocks arranged into a multi-step sequence with inner and out
 loops; the right panel shows the generated Python code. *(f)* ESAF picker dialog showing
 the technique filter dropdown, client-side regex search field, and the selected ESAF record
 with PI name, proposal title, and user list; clicking Launch creates the experiment folder
-and registers the metadata.
+and registers the metadata. *(g)* Live Viewer in 2D map mode showing a colour-mapped
+pixel-intensity display for a two-motor scan with the histogram LUT panel open; the
+crosshair readout and motor-move-on-click controls are shown active.
 
 **Figure 3.** Representative motor scan acquired using EasyBluesky at the ASWAXS
 beamline. [*Motor name*] was stepped through [*range and units*] in [*N*] steps; the
