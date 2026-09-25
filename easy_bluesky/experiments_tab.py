@@ -115,30 +115,30 @@ def _is_motion_only(name: str, kwargs: dict) -> bool:
 
 
 def _next_scan_num_for(exp_path: str) -> int:
-    """Return the next scan_num to assign for an experiment by reading files.
+    """Return the next scan_num from plans_log.jsonl (completed scans only).
 
-    Takes max(plans_log.jsonl scan_nums, queued_scans.jsonl scan_nums) + 1.
-    Reading fresh from disk prevents in-memory counter drift across clients.
+    Callers that have access to the live queue state should use the instance
+    method ExperimentsTab._compute_next_scan_num() instead, which also checks
+    currently-queued items so rapid back-to-back additions don't collide.
     """
     max_seen = 0
-    for fname in ("plans_log.jsonl", "queued_scans.jsonl"):
-        p = Path(exp_path) / fname
-        if not p.exists():
-            continue
-        try:
-            with open(p) as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        sn = json.loads(line).get("scan_num")
-                        if sn is not None and int(sn) > max_seen:
-                            max_seen = int(sn)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    p = Path(exp_path) / "plans_log.jsonl"
+    if not p.exists():
+        return 1
+    try:
+        with open(p) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    sn = json.loads(line).get("scan_num")
+                    if sn is not None and int(sn) > max_seen:
+                        max_seen = int(sn)
+                except Exception:
+                    pass
+    except Exception:
+        pass
     return max_seen + 1
 
 
@@ -1904,6 +1904,35 @@ class ExperimentsTab(QWidget):
         md["client_host"] = socket.gethostname()
         return md
 
+    def _compute_next_scan_num(self) -> int:
+        """Return the next scan_num to assign, free of gaps from removed plans.
+
+        Sources in priority order (highest seen wins):
+          1. plans_log.jsonl  — completed scans (disk, persists across sessions)
+          2. _current_queue_items — plans already in the RE Manager queue
+             (covers items queued in a prior session that haven't run yet)
+          3. _queued_scan_lookup — plans added THIS session that the next poll
+             hasn't reflected in _current_queue_items yet (rapid back-to-back adds)
+        """
+        max_seen = 0
+        if self._active_exp_path:
+            max_seen = _next_scan_num_for(self._active_exp_path) - 1
+        for item in self._current_queue_items:
+            sn = item.get("kwargs", {}).get("md", {}).get("scan_num")
+            if sn is not None:
+                try:
+                    if int(sn) > max_seen:
+                        max_seen = int(sn)
+                except Exception:
+                    pass
+        for sn in self._queued_scan_lookup.values():
+            try:
+                if int(sn) > max_seen:
+                    max_seen = int(sn)
+            except Exception:
+                pass
+        return max_seen + 1
+
     def _inject_metadata(self, result_item: dict):
         """Inject experiment/sample metadata into a plan item's md key."""
         auto_md = self._build_metadata()
@@ -1925,7 +1954,7 @@ class ExperimentsTab(QWidget):
         # Lock in scan_num at queue time so custom_plans.py doesn't need to
         # read scans_log.json at execution time (avoids stale-file off-by-one).
         if self._active_exp_path:
-            next_num = _next_scan_num_for(self._active_exp_path)
+            next_num = self._compute_next_scan_num()
             merged["scan_num"] = next_num
             self._next_scan_num = next_num + 1
             self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
@@ -3409,41 +3438,13 @@ class ExperimentsTab(QWidget):
             all_entries.sort(key=_ts_key)
 
             # Stored scan_nums are authoritative — do not renumber on load.
-            # Compute next scan_num from the max stored value across both files.
-            max_scan = 0
-            for e in all_entries:
-                sn = e.get("scan_num")
-                if sn is not None:
-                    try:
-                        if int(sn) > max_scan:
-                            max_scan = int(sn)
-                    except (TypeError, ValueError):
-                        pass
-
-            # Also scan queued_scans.jsonl for reservations from any client.
+            # Reset in-session lookup so stale entries from removed plans don't
+            # inflate the counter. queued_scans.jsonl is NOT read here because it
+            # permanently retains entries for removed plans and creates spurious gaps.
+            # update_history (called before this) has already extracted any needed
+            # scan_nums from item.md, so clearing is safe.
             self._queued_scan_lookup = {}
-            queued_file = Path(exp_path) / "queued_scans.jsonl"
-            if queued_file.exists():
-                try:
-                    with open(queued_file) as qf:
-                        for qline in qf:
-                            qline = qline.strip()
-                            if not qline:
-                                continue
-                            try:
-                                qe = json.loads(qline)
-                                iuid = qe.get("item_uid", "")
-                                sn   = qe.get("scan_num") or 0
-                                if iuid:
-                                    self._queued_scan_lookup[iuid] = sn
-                                if sn > max_scan:
-                                    max_scan = sn
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-            self._next_scan_num = max_scan + 1
+            self._next_scan_num = self._compute_next_scan_num()
             self._next_scan_label.setText(f"Next scan: #{self._next_scan_num}")
 
             # Show all entries in the file — no time-window cap.
@@ -3539,8 +3540,9 @@ class ExperimentsTab(QWidget):
                     )
                 continue
 
-            # Use the scan number reserved at queue time when available.
-            # Fall back to _next_scan_num for plans queued before this session.
+            # Use the scan number that was injected into the item's md at queue
+            # time. Fall back to the in-session lookup for plans queued before
+            # _inject_metadata was introduced, then to _next_scan_num.
             # Motion-only plans (mv etc.) always get None — they don't appear in
             # MongoDB and shouldn't consume a scan slot.
             plan_name = item.get("name", "")
@@ -3548,8 +3550,8 @@ class ExperimentsTab(QWidget):
             if is_motion:
                 scan_num = None
             else:
-                reserved = self._queued_scan_lookup.get(uid)
-                scan_num = reserved if reserved is not None else self._next_scan_num
+                md_sn = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
+                scan_num = md_sn or self._queued_scan_lookup.get(uid) or self._next_scan_num
 
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
@@ -3598,6 +3600,17 @@ class ExperimentsTab(QWidget):
 
     def update_compact_queue(self, items: list):
         self._current_queue_items = items
+        # Prune lookup entries for plans no longer in the queue so they don't
+        # inflate the next scan_num and create gaps.
+        current_uids = {item.get("item_uid", "") for item in items}
+        stale = [uid for uid in self._queued_scan_lookup if uid not in current_uids]
+        if stale:
+            for uid in stale:
+                del self._queued_scan_lookup[uid]
+            next_num = self._compute_next_scan_num()
+            if next_num != self._next_scan_num:
+                self._next_scan_num = next_num
+                self._next_scan_label.setText(f"Next scan: #{next_num}")
         new_uids = [item.get("item_uid", "") for item in items]
         if new_uids == getattr(self, "_compact_queue_uids", None):
             self._update_progress_bars()
