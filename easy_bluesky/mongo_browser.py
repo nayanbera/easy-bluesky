@@ -137,7 +137,7 @@ class _RunListFetcher(QThread):
 
             starts = list(
                 db["run_start"].find(query, {
-                    "uid": 1, "scan_id": 1, "plan_name": 1,
+                    "uid": 1, "scan_id": 1, "scan_num": 1, "plan_name": 1,
                     "time": 1, "motors": 1, "detectors": 1, "hints": 1,
                     "exp_dir": 1, "sample_name": 1, "peak_stats": 1,
                 }).sort("time", -1).limit(self._limit)
@@ -1163,15 +1163,17 @@ class MongoDataBrowserTab(QWidget):
         self._runs = runs
         self._run_table.setRowCount(0)
 
+        def _scan_num(run: dict, row: int) -> int:
+            """Return scan_num from run metadata, falling back to positional."""
+            return run["start"].get("scan_num") or (len(runs) - row)
+
         for row, run in enumerate(runs):
             start = run["start"]
             stop  = run["stop"]
 
             self._run_table.insertRow(row)
 
-            # Sequential scan number: oldest run in the result set = #1,
-            # newest = #N.  The query sorts time desc so row 0 is newest.
-            seq_num = str(len(runs) - row)
+            seq_num = str(_scan_num(run, row))
             plan    = start.get("plan_name", "—")
             ts      = start.get("time", 0)
             dt_str  = (datetime.fromtimestamp(ts).strftime("%Y-%m-%d  %H:%M:%S")
@@ -1233,7 +1235,7 @@ class MongoDataBrowserTab(QWidget):
         if row >= len(self._runs):
             return
         run     = self._runs[row]
-        seq_num = len(self._runs) - row
+        seq_num = run["start"].get("scan_num") or (len(self._runs) - row)
         # Find matching run_data if already fetched
         uid = run["start"].get("uid", "")
         run_data = next(
@@ -1250,7 +1252,7 @@ class MongoDataBrowserTab(QWidget):
         start = run["start"]
         stop  = run["stop"]
 
-        seq_num  = len(self._runs) - row
+        seq_num  = start.get("scan_num") or (len(self._runs) - row)
         plan     = start.get("plan_name", "—")
         ts_start = start.get("time", 0)
         ts_stop  = stop.get("time", 0) if stop else 0
@@ -1294,7 +1296,7 @@ class MongoDataBrowserTab(QWidget):
                 continue
             start   = self._runs[row]["start"]
             uid     = start.get("uid", "")
-            seq_num = len(self._runs) - row
+            seq_num = start.get("scan_num") or (len(self._runs) - row)
             plan    = start.get("plan_name", "?")
             uid_labels.append((uid, f"#{seq_num} {plan}"))
 
@@ -1686,7 +1688,7 @@ class MongoDataBrowserTab(QWidget):
         rows = self._run_table.selectionModel().selectedRows()
         if rows and rows[0].row() < len(self._runs):
             start   = self._runs[rows[0].row()]["start"]
-            seq_num = len(self._runs) - rows[0].row()
+            seq_num = start.get("scan_num") or (len(self._runs) - rows[0].row())
             plan    = start.get("plan_name", "")
             title   = f"Scan {seq_num}  —  {plan}"
             if len(rows) > 1:
