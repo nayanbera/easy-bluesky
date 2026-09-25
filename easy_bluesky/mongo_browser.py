@@ -1145,7 +1145,14 @@ class MongoDataBrowserTab(QWidget):
         if not db:
             return
         if self._run_fetcher and self._run_fetcher.isRunning():
-            return
+            # Disconnect stale fetcher so its results don't populate the table
+            # after the experiment has already changed, then let it finish quietly.
+            try:
+                self._run_fetcher.runs_ready.disconnect(self._on_runs_ready)
+                self._run_fetcher.error.disconnect(self._on_fetch_error)
+            except Exception:
+                pass
+            self._run_fetcher = None
 
         show_all   = self._show_all_cb.isChecked()
         exp_filter = "" if show_all else self._active_exp_dir

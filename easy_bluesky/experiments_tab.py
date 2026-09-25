@@ -1917,10 +1917,14 @@ class ExperimentsTab(QWidget):
         if not any(p.get("name") == "md" for p in params):
             return result_item
         existing_md = result_item.get("kwargs", {}).get("md", {}) or {}
+        # Always strip scan_num from existing metadata — it belongs to whichever
+        # experiment originally queued the plan (history requeue, queue file load,
+        # etc.) and must be recalculated for the current active experiment.
+        existing_md.pop("scan_num", None)
         merged = {**auto_md, **existing_md}   # user-supplied md wins
         # Lock in scan_num at queue time so custom_plans.py doesn't need to
         # read scans_log.json at execution time (avoids stale-file off-by-one).
-        if "scan_num" not in existing_md and self._active_exp_path:
+        if self._active_exp_path:
             next_num = _next_scan_num_for(self._active_exp_path)
             merged["scan_num"] = next_num
             self._next_scan_num = next_num + 1
