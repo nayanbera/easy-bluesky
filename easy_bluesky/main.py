@@ -1493,7 +1493,8 @@ class MainWindow(QMainWindow):
             self._thread_log.emit(
                 f"[{self._ts()}] ⚠ Multiple clients connected: {ip_list}"
             )
-            self._show_multiple_clients_warning(ip_list)
+            # No modal dialog — the clients chip and lock chip in the toolbar
+            # already communicate multi-client state without blocking the UI.
         self.experiments_tab.prompt_experiment_on_startup()
 
     def _startup_experiment_fallback(self):
@@ -1544,15 +1545,16 @@ class MainWindow(QMainWindow):
             try:
                 self._clients_updated.emit(ips)
                 self._lock_polled.emit(holder)
-                # Notify if count just exceeded 1 (new joiner detected)
-                if len(ips) > 1:
-                    others = [ip for ip in ips
-                              if ip not in self._my_known_ips]
-                    if others:
-                        ip_list = ", ".join(ips)
-                        self._thread_log.emit(
-                            f"[{self._ts()}] ⚠ Multiple clients connected: {ip_list}"
-                        )
+                # Log only when the client set changes (new joiner)
+                new_ips = set(ips) - getattr(self, "_prev_client_ips", set())
+                foreign_new = [ip for ip in new_ips if ip not in self._my_known_ips]
+                if foreign_new:
+                    ip_list = ", ".join(ips)
+                    self._thread_log.emit(
+                        f"[{self._ts()}] ⚠ New client joined: {', '.join(foreign_new)} "
+                        f"(all clients: {ip_list})"
+                    )
+                self._prev_client_ips = set(ips)
             except RuntimeError:
                 pass  # window already closed before SSH call returned
 
