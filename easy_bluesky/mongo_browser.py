@@ -865,11 +865,14 @@ class MongoDataBrowserTab(QWidget):
         _1d_bar.addWidget(_vline())
         _1d_bar.addWidget(QLabel("Fit:"))
         self._fit_model_combo = QComboBox()
+        self._fit_model_combo.addItem("None")
+        self._fit_model_combo.insertSeparator(self._fit_model_combo.count())
         for m in _peak_fit.PEAK_MODELS:
             self._fit_model_combo.addItem(m)
         self._fit_model_combo.insertSeparator(self._fit_model_combo.count())
         for m in _peak_fit.STEP_MODELS:
             self._fit_model_combo.addItem(m)
+        self._fit_model_combo.setCurrentText(_peak_fit.PEAK_MODELS[0])
         self._fit_model_combo.setFixedHeight(26)
         self._fit_model_combo.setToolTip("Peak/step model for curve fitting")
         _1d_bar.addWidget(self._fit_model_combo)

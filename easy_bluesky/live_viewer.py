@@ -219,6 +219,10 @@ class LiveViewer(QWidget):
         self._live_fit_model_combo.setFixedHeight(26)
         self._live_fit_model_combo.setMinimumWidth(110)
         self._live_fit_model_combo.setMaximumWidth(180)
+        self._live_fit_model_combo.addItem("None")
+        self._live_fit_model_combo.insertSeparator(
+            self._live_fit_model_combo.count()
+        )
         for m in _peak_fit.PEAK_MODELS:
             self._live_fit_model_combo.addItem(m)
         self._live_fit_model_combo.insertSeparator(
@@ -226,6 +230,7 @@ class LiveViewer(QWidget):
         )
         for m in _peak_fit.STEP_MODELS:
             self._live_fit_model_combo.addItem(m)
+        self._live_fit_model_combo.setCurrentText(_peak_fit.PEAK_MODELS[0])
         self._live_fit_model_combo.currentTextChanged.connect(
             lambda: self._run_live_fit(force=True)
         )
@@ -910,7 +915,7 @@ class LiveViewer(QWidget):
         if len(x_) < 5:
             return None
         model_name = self._live_fit_model_combo.currentText()
-        if model_name not in _peak_fit.MODELS:
+        if model_name not in _peak_fit.SIGNAL_MODELS:
             return None
         return x_, y_, model_name
 
@@ -983,15 +988,20 @@ class LiveViewer(QWidget):
             else:
                 self._live_fit_curve.setData(x_fit, y_fit)
 
-            is_step = model_name.startswith("Step")
-            w_lbl   = "10–90% w" if is_step else "FWHM"
+            is_step      = model_name.startswith("Step")
+            w_lbl        = "10–90% w" if is_step else "FWHM"
+            display_name = info.get("model", model_name)
             cen  = info.get("x0", float("nan"))
             fwhm = info.get("fwhm", float("nan"))
             r2   = info.get("r2", 0.0)
-            title = (f"Live Fit: {model_name}"
-                     f"    cen = {cen:.5g}"
-                     f"    {w_lbl} = {fwhm:.4g}"
-                     f"    R² = {r2:.4f}")
+            if model_name == "None":
+                title = (f"Live Fit: {display_name}"
+                         f"    R² = {r2:.4f}")
+            else:
+                title = (f"Live Fit: {display_name}"
+                         f"    cen = {cen:.5g}"
+                         f"    {w_lbl} = {fwhm:.4g}"
+                         f"    R² = {r2:.4f}")
             self.plot_widget.setTitle(title, color="#ffcc44", size="11pt")
         except Exception:
             pass

@@ -263,11 +263,14 @@ class HDF5Viewer(QWidget):
         self._fit_model_combo = QComboBox()
         self._fit_model_combo.setFixedHeight(26)
         self._fit_model_combo.setMinimumWidth(110)
+        self._fit_model_combo.addItem("None")
+        self._fit_model_combo.insertSeparator(self._fit_model_combo.count())
         for m in _peak_fit.PEAK_MODELS:
             self._fit_model_combo.addItem(m)
         self._fit_model_combo.insertSeparator(self._fit_model_combo.count())
         for m in _peak_fit.STEP_MODELS:
             self._fit_model_combo.addItem(m)
+        self._fit_model_combo.setCurrentText(_peak_fit.PEAK_MODELS[0])
         _1d_bar.addWidget(self._fit_model_combo)
 
         bg_lbl = QLabel("+ BG:")
