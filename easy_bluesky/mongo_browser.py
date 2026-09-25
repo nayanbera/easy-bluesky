@@ -661,7 +661,8 @@ class MongoDataBrowserTab(QWidget):
         self._fit_key: str           = ""     # key identifying current dataset selection
         self._saved_fit_states: dict = {}     # {fit_key: {model_name, bg_name, params}}
         self._active_exp_dir = ""       # current experiment filter
-        self._uid_scan_num: dict = {}   # uid → scan_num from plans_log.jsonl
+        self._uid_scan_num: dict = {}          # uid → scan_num from plans_log.jsonl
+        self._running_uid_scan_num: dict = {}  # uid → scan_num for currently running scan
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
         self._crosshair_cleanup = None
@@ -1103,6 +1104,18 @@ class MongoDataBrowserTab(QWidget):
 
     # ── Experiment filter ──────────────────────────────────────────────────────
 
+    def set_running_item(self, item: dict) -> None:
+        """Track the currently running RE Manager item so its scan_num is available
+        before plans_log.jsonl is written (i.e. while the scan is still running)."""
+        # Clear previous entry whenever the running item changes
+        self._running_uid_scan_num = {}
+        if not item:
+            return
+        uid = item.get("item_uid", "")
+        scan_num = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
+        if uid and scan_num is not None:
+            self._running_uid_scan_num[uid] = int(scan_num)
+
     def set_active_experiment(self, exp_dir: str):
         """Called by the main window when the active experiment changes."""
         self._active_exp_dir = exp_dir
@@ -1190,15 +1203,16 @@ class MongoDataBrowserTab(QWidget):
         def _scan_num(run: dict, row: int) -> int:
             """Return scan_num consistent with the Plan Log.
 
-            Priority: plans_log.jsonl mapping (by UID) → run_start["scan_num"]
-            → positional fallback.  The plans_log source ensures the same number
-            appears here and in the Experiments tab Plan Log even when the custom
-            plan did not forward md["scan_num"] into the bluesky run_start doc.
+            Priority: plans_log.jsonl mapping (by UID) → running item md →
+            run_start["scan_num"] → positional fallback.
             """
             uid = run["start"].get("uid", "")
             from_log = self._uid_scan_num.get(uid)
             if from_log is not None:
                 return from_log
+            from_running = self._running_uid_scan_num.get(uid)
+            if from_running is not None:
+                return from_running
             return run["start"].get("scan_num") or (len(runs) - row)
 
         for row, run in enumerate(runs):
