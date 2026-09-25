@@ -661,6 +661,7 @@ class MongoDataBrowserTab(QWidget):
         self._fit_key: str           = ""     # key identifying current dataset selection
         self._saved_fit_states: dict = {}     # {fit_key: {model_name, bg_name, params}}
         self._active_exp_dir = ""       # current experiment filter
+        self._uid_scan_num: dict = {}   # uid → scan_num from plans_log.jsonl
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
         self._crosshair_cleanup = None
@@ -1114,7 +1115,12 @@ class MongoDataBrowserTab(QWidget):
     # ── Run list ───────────────────────────────────────────────────────────────
 
     def _read_exp_run_uids(self) -> list:
-        """Read run UIDs from the active experiment's plans_log.jsonl."""
+        """Read run UIDs from the active experiment's plans_log.jsonl.
+
+        Side-effect: populates self._uid_scan_num with uid→scan_num from the log
+        so _on_runs_ready can show the same number the Plan Log shows.
+        """
+        self._uid_scan_num = {}
         if not self._active_exp_dir:
             return []
         log_file = Path(self._active_exp_dir) / "plans_log.jsonl"
@@ -1130,7 +1136,11 @@ class MongoDataBrowserTab(QWidget):
                         continue
                     try:
                         entry = _json.loads(line)
-                        uids.extend(entry.get("run_uids", []))
+                        scan_num = entry.get("scan_num")
+                        for uid in entry.get("run_uids", []):
+                            uids.append(uid)
+                            if scan_num is not None:
+                                self._uid_scan_num[uid] = scan_num
                     except Exception:
                         pass
         except Exception:
@@ -1156,7 +1166,11 @@ class MongoDataBrowserTab(QWidget):
 
         show_all   = self._show_all_cb.isChecked()
         exp_filter = "" if show_all else self._active_exp_dir
-        run_uids   = [] if show_all else self._read_exp_run_uids()
+        if show_all:
+            self._uid_scan_num = {}
+            run_uids = []
+        else:
+            run_uids = self._read_exp_run_uids()   # also populates _uid_scan_num
         self._set_status("Fetching runs…", busy=True)
         self._run_fetcher = _RunListFetcher(
             host, int(port), db, limit=300,
@@ -1171,7 +1185,17 @@ class MongoDataBrowserTab(QWidget):
         self._run_table.setRowCount(0)
 
         def _scan_num(run: dict, row: int) -> int:
-            """Return scan_num from run metadata, falling back to positional."""
+            """Return scan_num consistent with the Plan Log.
+
+            Priority: plans_log.jsonl mapping (by UID) → run_start["scan_num"]
+            → positional fallback.  The plans_log source ensures the same number
+            appears here and in the Experiments tab Plan Log even when the custom
+            plan did not forward md["scan_num"] into the bluesky run_start doc.
+            """
+            uid = run["start"].get("uid", "")
+            from_log = self._uid_scan_num.get(uid)
+            if from_log is not None:
+                return from_log
             return run["start"].get("scan_num") or (len(runs) - row)
 
         for row, run in enumerate(runs):
