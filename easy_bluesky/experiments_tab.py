@@ -114,6 +114,21 @@ def _is_motion_only(name: str, kwargs: dict) -> bool:
     return name.lower() in _MOTION_PLANS
 
 
+def _same_experiment(path_a: str, path_b: str, n: int = 2) -> bool:
+    """Compare experiment directories across OS mount points.
+
+    Different clients may access the same NFS share under different mount paths
+    (e.g. /Volumes/data-2/... on Mac vs Y:\\... on Windows).  Comparing only the
+    last *n* path components case-insensitively avoids false foreign-experiment
+    warnings when the paths refer to the same physical directory.
+    """
+    def _tail(p: str) -> tuple:
+        parts = p.replace("\\", "/").rstrip("/").split("/")
+        return tuple(c.lower() for c in parts[-n:] if c)
+
+    return bool(path_a) and bool(path_b) and _tail(path_a) == _tail(path_b)
+
+
 def _next_scan_num_for(exp_path: str) -> int:
     """Return the next scan_num from plans_log.jsonl (completed scans only).
 
@@ -2210,11 +2225,12 @@ class ExperimentsTab(QWidget):
 
         # Detect foreign-client run: different host or different experiment folder.
         running_host = md.get("client_host", "")
-        running_exp  = (md.get("exp_dir") or "").rstrip("/")
+        running_exp  = md.get("exp_dir") or ""
         my_host      = socket.gethostname()
-        my_exp       = self._active_exp_path.rstrip("/")
         foreign_host = running_host and running_host != my_host
-        foreign_exp  = running_exp and running_exp != my_exp
+        foreign_exp  = bool(running_exp) and not _same_experiment(
+            running_exp, self._active_exp_path
+        )
 
         if foreign_host or foreign_exp:
             notes = []
@@ -3523,8 +3539,8 @@ class ExperimentsTab(QWidget):
             # primary guard against cross-client contamination in multi-client sessions.
             plan_exp_dir = (
                 ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
-            ).rstrip("/")
-            if plan_exp_dir and plan_exp_dir != self._active_exp_path.rstrip("/"):
+            )
+            if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
                 self._logged_uids.add(uid)
                 if not self._foreign_plan_msg_shown:
                     self._foreign_plan_msg_shown = True
