@@ -608,6 +608,8 @@ class ZMQWorker(QObject):
         self._last_manager_state = "idle"   # updated every poll; read on main thread
         self._current_task: str  = ""       # name of in-flight function_execute task
         self._rm_lock = threading.Lock()    # serialises all self.rm.* ZMQ calls
+        self.locked_out: bool = False       # True when another client holds operator lock
+        self.lock_holder: str = ""          # hostname of the current lock holder
 
     @pyqtSlot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -977,6 +979,12 @@ class ZMQWorker(QObject):
             return False, str(e)
 
     def add_item(self, item):
+        if self.locked_out:
+            holder = self.lock_holder or "another computer"
+            return False, (
+                f"Operator lock held by {holder}.\n"
+                f"Click the 🔒 lock icon in the toolbar to take control."
+            )
         try:
             with self._rm_lock:
                 r = self.rm.item_add(item=item)

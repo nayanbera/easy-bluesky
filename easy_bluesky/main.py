@@ -1011,6 +1011,7 @@ class MainWindow(QMainWindow):
     _multi_client_signal = pyqtSignal(str)       # IP list from background multi-client check
     _clients_updated     = pyqtSignal(list)      # live client IP list for toolbar chip
     _startup_clients_ready = pyqtSignal(list)   # result of startup client check
+    _lock_polled         = pyqtSignal(dict)      # lock file contents from 30 s poll thread
 
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
@@ -1235,6 +1236,8 @@ class MainWindow(QMainWindow):
         self._multi_client_signal.connect(self._show_multiple_clients_warning)
         self._clients_updated.connect(self.re_bar.update_clients)
         self._startup_clients_ready.connect(self._on_startup_clients_ready)
+        self._lock_polled.connect(self._on_lock_polled)
+        self.re_bar.lock_chip_clicked.connect(self._on_lock_chip_clicked)
 
         self.worker.status_updated.connect(self.re_bar.update_status)
         self.worker.queue_updated.connect(
@@ -1524,7 +1527,7 @@ class MainWindow(QMainWindow):
 
         def _run():
             import json as _json, socket as _socket
-            from .ssh_manager import list_clients
+            from .ssh_manager import list_clients, read_operator_lock
             try:
                 local_ip = _socket.gethostbyname(_socket.gethostname())
             except Exception:
@@ -1533,8 +1536,14 @@ class MainWindow(QMainWindow):
             # Heartbeat refresh + client list in one SSH connection
             ips = list_clients(settings, profile, ctrl_port, info_port,
                                heartbeat_payload=hb)
+            # Re-read the lock file to detect takeover by another client
+            try:
+                holder = read_operator_lock(settings, profile) or {}
+            except Exception:
+                holder = {}
             try:
                 self._clients_updated.emit(ips)
+                self._lock_polled.emit(holder)
                 # Notify if count just exceeded 1 (new joiner detected)
                 if len(ips) > 1:
                     others = [ip for ip in ips
@@ -1612,10 +1621,12 @@ class MainWindow(QMainWindow):
             # We already hold it (reconnect / profile switch)
             self._operator_lock_claimed = True
             self._operator_lock_holder = {}
+            self._update_lock_ui()
         else:
             # Another computer holds the lock
             self._operator_lock_claimed = False
             self._operator_lock_holder = holder
+            self._update_lock_ui()
             self._show_lock_conflict_dialog(holder)
 
     def _show_lock_conflict_dialog(self, holder: dict):
@@ -1624,8 +1635,9 @@ class MainWindow(QMainWindow):
         msg = (
             f"<b>{host}</b> has been operating this profile "
             f"since <b>{since} UTC</b>.<br><br>"
-            f"<b>Start queue, Pause, Resume, Abort, Restart RE Manager</b> and "
-            f"<b>Stop RE Manager</b> are all blocked until you take control.<br><br>"
+            f"<b>Adding plans, Start queue, Pause, Resume, Abort, "
+            f"Restart RE Manager</b> and <b>Stop RE Manager</b> are all blocked "
+            f"until you take control.<br><br>"
             f"<b>Warning:</b> {host} will <u>not</u> be notified if you take control. "
             f"Make sure the operator at {host} has stopped before proceeding."
         )
@@ -1634,7 +1646,7 @@ class MainWindow(QMainWindow):
         dlg.setText(msg)
         dlg.setIcon(QMessageBox.Icon.Warning)
         btn_take = dlg.addButton("Take Control", QMessageBox.ButtonRole.AcceptRole)
-        dlg.addButton("Continue (Restart/Stop blocked)", QMessageBox.ButtonRole.RejectRole)
+        dlg.addButton("Continue (all queue controls blocked)", QMessageBox.ButtonRole.RejectRole)
         dlg.exec()
         if dlg.clickedButton() is btn_take:
             self._claim_lock_async()
@@ -1666,6 +1678,61 @@ class MainWindow(QMainWindow):
         if ok:
             self._operator_lock_holder = {}
             self._log(f"[{self._ts()}] ✓ Operator lock claimed for this session")
+        self._update_lock_ui()
+
+    def _update_lock_ui(self):
+        """Sync the lock chip and worker.locked_out with the current lock state."""
+        settings  = self._conn_settings
+        profile   = get_active_profile(settings)
+        is_local  = profile.get("is_local", False) or is_local_host(settings)
+        holder    = self._operator_lock_holder.get("host", "")
+        self.re_bar.update_lock_chip(self._operator_lock_claimed, holder, is_local)
+        if is_local:
+            self.worker.locked_out = False
+            self.worker.lock_holder = ""
+        else:
+            self.worker.locked_out  = not self._operator_lock_claimed
+            self.worker.lock_holder = holder
+
+    def _on_lock_polled(self, holder: dict):
+        """Called every 30 s with the current lock file contents from the remote machine."""
+        if not holder:
+            # Lock file absent or unreadable — treat as free; only update if we lost
+            return
+        holder_host = holder.get("host", "")
+        if holder_host and holder_host != self._my_hostname:
+            # Someone else holds the lock
+            if self._operator_lock_claimed:
+                # We just lost control — notify the user
+                self._operator_lock_claimed = False
+                self._operator_lock_holder  = holder
+                self._update_lock_ui()
+                self._log(
+                    f"[{self._ts()}] ⚠ Operator lock taken by {holder_host} — "
+                    "adding plans and queue controls are now blocked."
+                )
+                QMessageBox.warning(
+                    self, "Operator Control Lost",
+                    f"<b>{holder_host}</b> has taken operator control.\n\n"
+                    "Adding plans and queue controls are now blocked on this client.\n\n"
+                    "Click the 🔒 lock icon in the toolbar to take control back.",
+                )
+            elif self._operator_lock_holder.get("host") != holder_host:
+                # Holder changed while we were already locked out
+                self._operator_lock_holder = holder
+                self._update_lock_ui()
+        elif holder_host == self._my_hostname and not self._operator_lock_claimed:
+            # Lock file says we own it but our flag is False — re-sync
+            self._operator_lock_claimed = True
+            self._operator_lock_holder  = {}
+            self._update_lock_ui()
+
+    def _on_lock_chip_clicked(self):
+        """User clicked the lock chip — show Take Control dialog or do nothing if already operator."""
+        if self._operator_lock_claimed:
+            return
+        # Reuse the existing locked-out dialog logic
+        self._locked_out_of_queue_control()
 
     def _locked_out_of_queue_control(self) -> bool:
         """Return True (and show a warning) when this client doesn't hold the operator lock.

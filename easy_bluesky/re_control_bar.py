@@ -2,7 +2,7 @@
 
 import time
 from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 from .themes import ACCENT, SUCCESS, DANGER, WARNING, THEMES, DEFAULT_THEME
 
 
@@ -16,6 +16,7 @@ class REControlBar(QFrame):
     reconnect_requested     = pyqtSignal()
     profile_changed         = pyqtSignal(str)   # emits the selected profile name
     ai_requested            = pyqtSignal()
+    lock_chip_clicked       = pyqtSignal()       # user clicked the lock chip
 
     _EXT_BUSY_DEBOUNCE = 1.5  # seconds before "BUSY (ext)" appears in the chip
 
@@ -169,6 +170,13 @@ class REControlBar(QFrame):
         self.clients_chip.hide()
         lay.addWidget(self.clients_chip)
 
+        # Operator lock chip — hidden on local profiles and when not connected
+        self.lock_chip = QLabel()
+        self.lock_chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lock_chip.hide()
+        self.lock_chip.mousePressEvent = lambda _e: self.lock_chip_clicked.emit()
+        lay.addWidget(self.lock_chip)
+
         lay.addWidget(self._separator())
 
         self.queue_label   = QLabel("Queue: —")
@@ -288,8 +296,40 @@ class REControlBar(QFrame):
         else:
             self.set_running_plan("")
 
+    def update_lock_chip(self, claimed: bool, holder_host: str = "", is_local: bool = False):
+        """Update the operator-lock chip.
+
+        claimed=True  → we are the operator (green 🔓).
+        claimed=False, holder_host set → locked by another client (amber 🔒, clickable).
+        is_local=True → hide (lock not used for local profiles).
+        """
+        if is_local:
+            self.lock_chip.hide()
+            return
+        if claimed:
+            self.lock_chip.setText("🔓 Operator")
+            self.lock_chip.setStyleSheet(
+                f"color: {SUCCESS}; background: #1a3a1a; border-radius: 4px;"
+                " padding: 2px 6px; font-size: 11px; font-weight: bold;"
+            )
+            self.lock_chip.setToolTip("You hold the operator lock.\nOther clients cannot add plans or control the queue.")
+        else:
+            host = holder_host or "another computer"
+            self.lock_chip.setText(f"🔒 {host}")
+            self.lock_chip.setStyleSheet(
+                "color: #e8c44a; background: #3a2e00; border-radius: 4px;"
+                " padding: 2px 6px; font-size: 11px; font-weight: bold;"
+            )
+            self.lock_chip.setToolTip(
+                f"Operator lock held by {host}.\n"
+                "Adding plans and queue controls are blocked.\n"
+                "Click to take control."
+            )
+        self.lock_chip.show()
+
     def set_disconnected(self):
         self.clients_chip.hide()
+        self.lock_chip.hide()
         self.re_chip.setText("● DISCONNECTED")
         self.re_chip.setStyleSheet(
             f"color: {DANGER}; background: #3a1a1a; border-radius: 4px;"
