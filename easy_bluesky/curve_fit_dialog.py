@@ -54,7 +54,7 @@ class FitParamsDialog(QDialog):
         self._y = self._datasets[0][1]
 
         self.model_name = (
-            initial_model if initial_model in _pf.MODELS else _pf.PEAK_MODELS[0]
+            initial_model if initial_model in _pf.SIGNAL_MODELS else _pf.PEAK_MODELS[0]
         )
         self.bg_name = (
             initial_bg_name if initial_bg_name in _pf.BACKGROUND_MODELS else "None"
@@ -99,6 +99,8 @@ class FitParamsDialog(QDialog):
         self._model_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
+        self._model_combo.addItem("None")
+        self._model_combo.insertSeparator(self._model_combo.count())
         for m in _pf.PEAK_MODELS:
             self._model_combo.addItem(m)
         self._model_combo.insertSeparator(self._model_combo.count())
@@ -253,10 +255,11 @@ class FitParamsDialog(QDialog):
     # ── Slots ──────────────────────────────────────────────────────────────────
 
     def _on_model_changed(self, name: str):
-        if name not in _pf.MODELS:
+        if name not in _pf.SIGNAL_MODELS:
             return
         self.model_name = name
-        # Step models can have multiple steps too (multi-edge XAS); keep spinbox enabled.
+        # "None" means background-only — peaks spinbox is irrelevant.
+        self._peaks_spin.setEnabled(name != "None")
         self._last_fits = None
         self._btn_export.setEnabled(False)
         self._update_param_table()
@@ -372,6 +375,12 @@ class FitParamsDialog(QDialog):
                 f"Not enough data points ({len(self._x)} — need ≥4)."
             )
             return
+        if self.model_name == "None" and self.bg_name == "None":
+            self._table.setRowCount(0)
+            self._detail_txt.setPlainText(
+                "Select at least a background model to fit without a signal peak."
+            )
+            return
 
         if self._pending_params is not None:
             params = self._pending_params
@@ -446,13 +455,18 @@ class FitParamsDialog(QDialog):
 
     def _read_params_from_table(self):
         """Read table values back into an lmfit Parameters object."""
-        composite = _pf.make_composite_model(self.model_name, self._n_peaks)
         bg_name = self._bg_combo.currentText()
-        if bg_name != "None":
+        if self.model_name == "None":
+            # Background-only: params come solely from the background model
             bg_model = _pf.make_background_model(bg_name)
-            params   = (composite + bg_model).make_params()
+            params   = bg_model.make_params()
         else:
-            params = composite.make_params()
+            composite = _pf.make_composite_model(self.model_name, self._n_peaks)
+            if bg_name != "None":
+                bg_model = _pf.make_background_model(bg_name)
+                params   = (composite + bg_model).make_params()
+            else:
+                params = composite.make_params()
 
         for row in range(self._table.rowCount()):
             name_item = self._table.item(row, 0)
@@ -509,13 +523,18 @@ class FitParamsDialog(QDialog):
         if not _pf.LMFIT_AVAILABLE or len(self._x) < 2:
             return
         try:
-            params    = self._read_params_from_table()
-            bg_name   = self._bg_combo.currentText()
-            composite = _pf.make_composite_model(self.model_name, self._n_peaks)
-            if bg_name != "None":
-                model = composite + _pf.make_background_model(bg_name)
+            params  = self._read_params_from_table()
+            bg_name = self._bg_combo.currentText()
+            if self.model_name == "None":
+                if bg_name == "None":
+                    return
+                model = _pf.make_background_model(bg_name)
             else:
-                model = composite
+                composite = _pf.make_composite_model(self.model_name, self._n_peaks)
+                if bg_name != "None":
+                    model = composite + _pf.make_background_model(bg_name)
+                else:
+                    model = composite
             x_fit = np.linspace(
                 float(self._x[0]), float(self._x[-1]),
                 max(500, len(self._x) * 5),
@@ -693,12 +712,15 @@ class FitParamsDialog(QDialog):
             return
 
         try:
-            bg_name   = self._bg_combo.currentText()
-            composite = _pf.make_composite_model(self.model_name, self._n_peaks)
-            if bg_name != "None":
-                model = composite + _pf.make_background_model(bg_name)
+            bg_name = self._bg_combo.currentText()
+            if self.model_name == "None":
+                model = _pf.make_background_model(bg_name)
             else:
-                model = composite
+                composite = _pf.make_composite_model(self.model_name, self._n_peaks)
+                if bg_name != "None":
+                    model = composite + _pf.make_background_model(bg_name)
+                else:
+                    model = composite
 
             is_step = self.model_name.startswith("Step")
             lines = [

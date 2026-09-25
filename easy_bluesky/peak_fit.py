@@ -20,6 +20,8 @@ except ImportError:
 PEAK_MODELS       = ["Gaussian", "Lorentzian", "Voigt", "Pseudo-Voigt", "Super-Gaussian"]
 STEP_MODELS       = ["Step (erf)", "Step (tanh)", "Step (arctan)", "Step (logistic)"]
 MODELS            = PEAK_MODELS + STEP_MODELS
+# SIGNAL_MODELS adds "None" at the top so the dialog can offer background-only fits.
+SIGNAL_MODELS     = ["None"] + MODELS
 BACKGROUND_MODELS = ["None", "Constant", "Linear", "Quadratic", "Cubic"]
 
 MINIMIZERS = [
@@ -141,9 +143,14 @@ def _guess_background(x, y, bg_name: str) -> dict:
 # ── Model factory ──────────────────────────────────────────────────────────────
 
 def make_lmfit_model(model_name: str):
-    """Return an lmfit Model instance for the given model name."""
+    """Return an lmfit Model instance for the given model name.
+
+    Returns None for model_name == "None" (background-only fit).
+    """
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed — pip install lmfit")
+    if model_name == "None":
+        return None
     if model_name == "Gaussian":
         return lmfit.Model(_gaussian_fn)
     elif model_name == "Lorentzian":
@@ -168,12 +175,28 @@ def make_lmfit_model(model_name: str):
 # ── Auto-guess parameters ──────────────────────────────────────────────────────
 
 def auto_guess(x, y, model_name: str, bg_name: str = "None"):
-    """Return lmfit.Parameters with auto-estimated initial values and bounds."""
+    """Return lmfit.Parameters with auto-estimated initial values and bounds.
+
+    When model_name is "None" returns background-only parameters.
+    """
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed — pip install lmfit")
 
-    x     = np.asarray(x, dtype=float)
-    y     = np.asarray(y, dtype=float)
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    # Background-only fit — no signal parameters
+    if model_name == "None":
+        if bg_name == "None":
+            raise ValueError("At least one of signal model or background must be set.")
+        bg_model  = make_background_model(bg_name)
+        bg_params = bg_model.make_params()
+        bg_guess  = _guess_background(x, y, bg_name)
+        for pname, val in bg_guess.items():
+            if pname in bg_params:
+                bg_params[pname].set(value=val, min=-np.inf, max=np.inf)
+        return bg_params
+
     model = make_lmfit_model(model_name)
 
     if model_name == "Gaussian":
@@ -286,9 +309,14 @@ def auto_guess(x, y, model_name: str, bg_name: str = "None"):
 # ── Main fitting entry point ───────────────────────────────────────────────────
 
 def run_fit(x, y, params, model_name, method="leastsq", bg_name="None"):
-    """Fit model to data. Returns (x_fit, y_fit, info_dict)."""
+    """Fit model to data. Returns (x_fit, y_fit, info_dict).
+
+    model_name may be "None" for a background-only fit (bg_name must then be set).
+    """
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed")
+    if model_name == "None" and bg_name == "None":
+        raise ValueError("At least one of signal model or background must be set.")
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     mask = np.isfinite(x) & np.isfinite(y)
@@ -296,12 +324,14 @@ def run_fit(x, y, params, model_name, method="leastsq", bg_name="None"):
     if len(x) < 4:
         raise ValueError(f"Need ≥4 finite points, got {len(x)}")
 
-    signal_model = make_lmfit_model(model_name)
-    if bg_name != "None":
-        bg_model = make_background_model(bg_name)
-        model    = signal_model + bg_model
+    if model_name == "None":
+        model = make_background_model(bg_name)
     else:
-        model = signal_model
+        signal_model = make_lmfit_model(model_name)
+        if bg_name != "None":
+            model = signal_model + make_background_model(bg_name)
+        else:
+            model = signal_model
     result = model.fit(y, params, x=x, method=method, nan_policy="omit")
 
     x_fit = np.linspace(float(x[0]), float(x[-1]), max(500, len(x) * 5))
@@ -315,22 +345,28 @@ def run_fit(x, y, params, model_name, method="leastsq", bg_name="None"):
 
     # FWHM or 10-90% width from derived parameter if present
     is_step = model_name.startswith("Step")
+    is_bg_only = (model_name == "None")
     if is_step and "width_1090" in result.params:
         fwhm = float(result.params["width_1090"].value)
-    elif not is_step and "fwhm" in result.params:
+    elif not is_step and not is_bg_only and "fwhm" in result.params:
         fwhm = float(result.params["fwhm"].value)
     else:
         fwhm = float("nan")
 
     # Center and annotation position
-    center_val = float(
-        result.params.get("center", list(result.params.values())[0]).value
-    )
-    if is_step:
-        amp_val = float(result.params["amplitude"].value)
-        ann_y   = amp_val / 2.0
+    if is_bg_only:
+        # Background-only: no centre parameter; annotate at data midpoint
+        center_val = float(np.mean(x))
+        ann_y      = float(result.eval(x=np.array([center_val]))[0])
     else:
-        ann_y = float(result.eval(x=np.array([center_val]))[0])
+        center_val = float(
+            result.params.get("center", list(result.params.values())[0]).value
+        )
+        if is_step:
+            amp_val = float(result.params["amplitude"].value)
+            ann_y   = amp_val / 2.0
+        else:
+            ann_y = float(result.eval(x=np.array([center_val]))[0])
 
     # R²
     y_pred = result.best_fit
@@ -338,8 +374,9 @@ def run_fit(x, y, params, model_name, method="leastsq", bg_name="None"):
     ss_tot = float(np.sum((y - np.mean(y)) ** 2))
     r2     = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
+    display_model = f"Background ({bg_name})" if is_bg_only else model_name
     info = {
-        "model":        model_name,
+        "model":        display_model,
         "x0":           center_val,
         "A":            ann_y,
         "fwhm":         fwhm,
@@ -412,9 +449,12 @@ def make_composite_model(model_name: str, n_peaks: int):
     """Return sum of n_peaks copies of model_name with prefixes p1_, p2_, …
 
     For n_peaks == 1 returns a plain (un-prefixed) model for backward compat.
+    Raises ValueError for model_name == "None" — callers must handle that case.
     """
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed — pip install lmfit")
+    if model_name == "None":
+        raise ValueError("make_composite_model called with model_name='None'; use background-only path.")
     if n_peaks == 1:
         return make_lmfit_model(model_name)
     composite = _make_one_model(model_name, "p1_")
@@ -426,11 +466,11 @@ def make_composite_model(model_name: str, n_peaks: int):
 def auto_guess_multi(x, y, model_name: str, n_peaks: int, bg_name: str = "None"):
     """Return lmfit.Parameters for a composite n-peak model.
 
-    For n_peaks == 1 delegates to auto_guess (preserves derived fwhm/width params).
+    For n_peaks == 1 or model_name == "None" delegates to auto_guess.
     """
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed — pip install lmfit")
-    if n_peaks == 1:
+    if n_peaks == 1 or model_name == "None":
         return auto_guess(x, y, model_name, bg_name)
 
     x = np.asarray(x, dtype=float)
@@ -515,12 +555,12 @@ def run_fit_multi(x, y, params, model_name: str, n_peaks: int,
                   method: str = "leastsq", bg_name: str = "None"):
     """Fit composite n-peak model to data. Returns (x_fit, y_fit, info_dict).
 
-    For n_peaks == 1 delegates to run_fit.
+    For n_peaks == 1 or model_name == "None" delegates to run_fit.
     info_dict includes 'peaks': list of per-peak {center, fwhm, A, amplitude}.
     """
     if not LMFIT_AVAILABLE:
         raise RuntimeError("lmfit not installed")
-    if n_peaks == 1:
+    if n_peaks == 1 or model_name == "None":
         return run_fit(x, y, params, model_name, method, bg_name)
 
     x = np.asarray(x, dtype=float)
