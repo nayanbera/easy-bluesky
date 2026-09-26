@@ -21,14 +21,16 @@ try:
 except ImportError:
     _PG_OK = False
 
+import datetime as _dt
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
-    QMessageBox, QPushButton, QSizePolicy, QSplitter, QStackedWidget,
-    QTabBar, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QListWidget, QMessageBox, QPushButton, QSizePolicy,
+    QSplitter, QStackedWidget, QTabBar, QTabWidget, QTableWidget,
+    QTableWidgetItem, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import peak_fit as _pf
@@ -179,82 +181,152 @@ class _MetaLoader(QThread):
 
 
 class _LocalRunDetailDialog(QDialog):
-    """Show start/stop doc metadata for a local JSONL run."""
+    """Tabbed run-detail dialog matching MongoDB Browser: Metadata / Data / Start Doc (raw)."""
 
-    def __init__(self, entry: dict, start_doc: dict, stop_doc: dict, parent=None):
+    def __init__(self, entry: dict, start_doc: dict, stop_doc: dict,
+                 df=None, parent=None):
         super().__init__(parent)
-        sn = entry.get("scan_num", start_doc.get("scan_num", "?"))
-        self.setWindowTitle(f"Run Details — #{sn}")
-        self.setMinimumWidth(520)
+        sn   = entry.get("scan_num", start_doc.get("scan_num", "?"))
+        plan = entry.get("name") or start_doc.get("plan_name", "?")
+        uid  = start_doc.get("uid") or (entry.get("run_uids") or [""])[0]
+        self.setWindowTitle(
+            f"Run #{sn}  —  {plan}  [{uid[:8]}…]" if uid else f"Run #{sn}  —  {plan}"
+        )
+        self.setMinimumSize(860, 620)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
 
-        vlay = QVBoxLayout(self)
+        mono = QFont("Courier", 10)
 
-        lines = []
-        plan = entry.get("name") or start_doc.get("plan_name", "—")
-        lines.append(f"Plan         : {plan}")
-        lines.append(f"Scan #       : {sn}")
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+        tabs = QTabWidget()
+        root.addWidget(tabs, 1)
 
-        import datetime as _dt
-        t_start = start_doc.get("time") or 0
-        t_stop  = stop_doc.get("time")  or 0
-        if t_start:
-            try:
-                lines.append(
-                    f"Start time   : {_dt.datetime.fromtimestamp(t_start):%Y-%m-%d %H:%M:%S}")
-            except Exception:
-                lines.append(f"Start time   : {t_start}")
-        if t_stop:
-            try:
-                lines.append(
-                    f"Stop time    : {_dt.datetime.fromtimestamp(t_stop):%Y-%m-%d %H:%M:%S}")
-            except Exception:
-                lines.append(f"Stop time    : {t_stop}")
+        # ── Tab 1: Metadata ───────────────────────────────────────────────────
+        meta_w = QWidget()
+        QVBoxLayout(meta_w)
+        self._meta_txt = QTextEdit()
+        self._meta_txt.setReadOnly(True)
+        self._meta_txt.setFont(mono)
+        self._meta_txt.setPlainText(self._format_metadata(start_doc, stop_doc, sn))
+        meta_w.layout().addWidget(self._meta_txt)
+        tabs.addTab(meta_w, "Metadata")
 
-        exit_status = stop_doc.get("exit_status") or entry.get("exit_status", "—")
-        lines.append(f"Exit status  : {exit_status}")
+        # ── Tab 2: Data table ─────────────────────────────────────────────────
+        data_w = QWidget()
+        data_l = QVBoxLayout(data_w)
+        if df is not None and not df.empty:
+            tbl = QTableWidget()
+            tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            tbl.setAlternatingRowColors(True)
+            tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            tbl.verticalHeader().setVisible(False)
+            cols = list(df.columns)
+            tbl.setColumnCount(len(cols))
+            tbl.setHorizontalHeaderLabels(cols)
+            tbl.setRowCount(len(df))
+            hh = tbl.horizontalHeader()
+            for i in range(len(cols)):
+                hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+            time_col = "time" in df.columns
+            for i, (_, row_ser) in enumerate(df.iterrows()):
+                for j, col in enumerate(cols):
+                    v = row_ser[col]
+                    if col == "time":
+                        try:
+                            txt = _dt.datetime.fromtimestamp(float(v)).strftime("%H:%M:%S.%f")[:-3]
+                        except Exception:
+                            txt = str(v)
+                    else:
+                        try:
+                            txt = f"{float(v):.6g}"
+                        except (TypeError, ValueError):
+                            txt = str(v)
+                    item = QTableWidgetItem(txt)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    tbl.setItem(i, j, item)
+            data_l.addWidget(tbl, 1)
+        else:
+            data_l.addWidget(QLabel(
+                "Data not loaded — select the scan in the table first, then double-click."
+            ))
+        tabs.addTab(data_w, "Data")
 
-        dets = start_doc.get("detectors", [])
-        lines.append(f"Detectors    : {', '.join(dets) if dets else '—'}")
+        # ── Tab 3: Start Doc (raw) ────────────────────────────────────────────
+        raw_w = QWidget()
+        QVBoxLayout(raw_w)
+        raw_txt = QTextEdit()
+        raw_txt.setReadOnly(True)
+        raw_txt.setFont(QFont("Courier", 9))
+        raw_txt.setPlainText(json.dumps(start_doc, indent=2, default=str))
+        raw_w.layout().addWidget(raw_txt)
+        tabs.addTab(raw_w, "Start Doc (raw)")
 
-        n_pts = stop_doc.get("num_events")
-        if isinstance(n_pts, dict):
-            total = sum(n_pts.values())
-            lines.append(f"Points       : {total if total else '—'}")
-        elif isinstance(n_pts, int):
-            lines.append(f"Points       : {n_pts if n_pts else '—'}")
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_row  = QHBoxLayout()
+        btn_copy = QPushButton("Copy metadata")
+        btn_copy.clicked.connect(
+            lambda: QApplication.clipboard().setText(self._meta_txt.toPlainText()))
+        btn_row.addWidget(btn_copy)
+        btn_row.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        btn_row.addWidget(btn_close)
+        root.addLayout(btn_row)
 
-        uid = (start_doc.get("uid") or
-               ((entry.get("run_uids") or [""])[0]))
-        if uid:
-            lines.append(f"UID          : {uid}")
-
-        plan_args = start_doc.get("plan_args", {})
+    @staticmethod
+    def _format_metadata(start: dict, stop: dict, seq_num) -> str:
+        ts_start = start.get("time", 0)
+        ts_stop  = stop.get("time",  0) if stop else 0
+        dur = f"{ts_stop - ts_start:.2f} s" if ts_start and ts_stop else "—"
+        try:
+            s_str = _dt.datetime.fromtimestamp(ts_start).strftime("%Y-%m-%d %H:%M:%S") if ts_start else "—"
+        except Exception:
+            s_str = str(ts_start)
+        try:
+            e_str = _dt.datetime.fromtimestamp(ts_stop).strftime("%Y-%m-%d %H:%M:%S") if ts_stop else "—"
+        except Exception:
+            e_str = str(ts_stop)
+        n_ev = stop.get("num_events", {}) if stop else {}
+        if isinstance(n_ev, dict):
+            n_pts = sum(n_ev.values()) or "—"
+        elif isinstance(n_ev, int):
+            n_pts = n_ev or "—"
+        else:
+            n_pts = "—"
+        lines = [
+            f"Scan #        : {seq_num}",
+            f"Plan          : {start.get('plan_name', '—')}",
+            f"UID           : {start.get('uid', '—')}",
+            f"Scan ID       : {start.get('scan_id', '—')}",
+            f"Status        : {(stop or {}).get('exit_status', 'running')}",
+            f"Start         : {s_str}",
+            f"Stop          : {e_str}",
+            f"Duration      : {dur}",
+            f"Num events    : {n_pts}",
+            f"Motors        : {', '.join(start.get('motors', [])) or '—'}",
+            f"Detectors     : {', '.join(start.get('detectors', [])) or '—'}",
+        ]
+        for key in ("sample_name", "exp_dir"):
+            val = start.get(key, "")
+            if val:
+                label = "Sample" if key == "sample_name" else "Exp dir"
+                lines.append(f"{label:<14}: {val}")
+        skip = {"uid", "time", "plan_name", "scan_id", "motors", "detectors",
+                "sample_name", "exp_dir", "hints", "plan_args", "plan_pattern",
+                "plan_type", "peak_stats", "scan_num"}
+        extras = {k: v for k, v in start.items() if k not in skip}
+        if extras:
+            lines += ["", "─── Extra metadata ───"]
+            for k, v in extras.items():
+                lines.append(f"{k:<14}: {v}")
+        plan_args = start.get("plan_args", {})
         if plan_args:
-            lines.append("")
-            lines.append("Plan arguments:")
+            lines += ["", "─── Plan arguments ───"]
             for k, v in plan_args.items():
-                lines.append(f"  {k}: {v}")
-
-        kwargs = start_doc.get("kwargs", {})
-        if kwargs:
-            lines.append("")
-            lines.append("Additional kwargs:")
-            for k, v in kwargs.items():
-                lines.append(f"  {k}: {v}")
-
-        txt = QTextBrowser()
-        txt.setPlainText("\n".join(lines))
-        from PyQt6.QtGui import QFont
-        mono = QFont("Menlo")
-        mono.setStyleHint(QFont.StyleHint.Monospace)
-        txt.setFont(mono)
-        txt.setMinimumHeight(300)
-        vlay.addWidget(txt)
-
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        bb.rejected.connect(self.close)
-        vlay.addWidget(bb)
+                lines.append(f"{k:<14}: {v}")
+        return "\n".join(lines)
 
 
 # ── Main widget ───────────────────────────────────────────────────────────────
@@ -785,21 +857,34 @@ class LocalDataBrowserTab(QWidget):
         self._scan_table.setItem(row, 5, _ro_r(dets_str))
 
     def _on_run_double_clicked(self, row: int, _col: int):
-        """Double-click a scan row → show run detail dialog."""
+        """Double-click a scan row → show tabbed run detail dialog."""
         if row >= self._scan_table.rowCount():
             return
         entry = self._scan_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         if entry is None:
             return
+        sn   = entry.get("scan_num", "?")
         uids = entry.get("run_uids", [])
         uid  = uids[0] if uids else ""
         start_doc: dict = {}
         stop_doc:  dict = {}
+        df = None
         if uid and self._exp_path:
             p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
             if p.exists():
                 start_doc, stop_doc = _read_jsonl_start_stop(str(p))
-        dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, parent=self)
+                # Re-use already-loaded DataFrame if this scan is currently selected
+                label = f"#{sn}"
+                for loaded_df, loaded_lbl in self._dfs:
+                    if loaded_lbl == label:
+                        df = loaded_df
+                        break
+                # Otherwise parse fresh (event data only, no blocking issue — dialog is modal-less)
+                if df is None and _PANDAS_OK:
+                    raw = _parse_jsonl_run(str(p))
+                    if raw:
+                        df = pd.DataFrame(raw)
+        dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, df=df, parent=self)
         dlg.show()
 
     def _filter_table(self, text: str):
