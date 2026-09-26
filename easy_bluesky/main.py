@@ -1011,40 +1011,33 @@ class _JsonlSyncThread(QThread):
             ssh = _get_client(p)
             self.message.emit(f"SSH connected to {host}")
 
-            # Build a UID→remote-path map using `find` so we're not
-            # tied to a single hardcoded fallback directory.
-            uid_args = " ".join(self._uid_list)
-            find_cmd = (
-                f"for uid in {uid_args}; do "
-                f"  path=$(find $HOME /tmp -name \"${{uid}}.jsonl\" 2>/dev/null | head -1); "
-                f"  echo \"$uid:$path\"; "
-                f"done"
-            )
+            # Single find over $HOME and /tmp — much faster than one find per UID.
+            # Collect all JSONL paths, then match against wanted UIDs in Python.
+            find_cmd = "find $HOME /tmp -maxdepth 6 -name '*.jsonl' 2>/dev/null"
             _, stdout, _ = ssh.exec_command(find_cmd)
             stdout.channel.recv_exit_status()
-            lines = stdout.read().decode().strip().splitlines()
+            all_remote = stdout.read().decode().strip().splitlines()
 
-            uid_to_remote = {}
-            for line in lines:
-                if ":" in line:
-                    uid, rpath = line.split(":", 1)
-                    uid, rpath = uid.strip(), rpath.strip()
-                    if uid and rpath:
-                        uid_to_remote[uid] = rpath
+            # Build basename→fullpath map
+            remote_map = {}
+            for rpath in all_remote:
+                basename = rpath.rsplit("/", 1)[-1]  # e.g. "abc123.jsonl"
+                remote_map[basename] = rpath
 
             self.message.emit(
-                f"find located {len(uid_to_remote)}/{len(self._uid_list)} "
-                f"JSONL file(s) on remote"
+                f"Remote has {len(all_remote)} JSONL file(s); "
+                f"need {len(self._uid_list)}"
             )
 
             sftp = ssh.open_sftp()
             os.makedirs(self._runs_dir, exist_ok=True)
             for uid in self._uid_list:
-                rpath = uid_to_remote.get(uid)
+                fname  = f"{uid}.jsonl"
+                rpath  = remote_map.get(fname)
                 if not rpath:
-                    self.message.emit(f"  ✗ {uid[:8]}… not found on remote")
+                    self.message.emit(f"  ✗ {uid[:8]}… not on remote")
                     continue
-                local_path = f"{self._runs_dir}/{uid}.jsonl"
+                local_path = f"{self._runs_dir}/{fname}"
                 try:
                     sftp.get(rpath, local_path)
                     n_copied += 1
@@ -2735,6 +2728,9 @@ class MainWindow(QMainWindow):
 
     def _sync_jsonl_from_beamline(self, uid_list: list, runs_dir: str):
         """Fetch missing JSONL run files from the beamline computer via SFTP."""
+        # Ignore if a sync is already in flight
+        if getattr(self, "_jsonl_sync_thread", None) and self._jsonl_sync_thread.isRunning():
+            return
         from .ssh_manager import _settings_for_profile
         settings = self._conn_settings
         if not settings.get("ssh_user"):
