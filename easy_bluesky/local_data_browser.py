@@ -211,6 +211,19 @@ def _repair_jsonl(path: str, primary_data: dict, stop_doc: dict | None = None):
         pass
 
 
+def _add_stop_to_jsonl(path: str, stop_doc: dict):
+    """Append a stop doc to a JSONL file that already has events but no stop.
+
+    Used for files partially repaired by earlier code that did not yet write
+    the stop doc.  Simple append — avoids rewriting the full file.
+    """
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(["stop", stop_doc]) + "\n")
+    except Exception:
+        pass
+
+
 def _read_jsonl_start_stop(path) -> tuple:
     """Read start and stop documents from a JSONL run file.
 
@@ -323,12 +336,21 @@ class _RunLoader(QThread):
             for path, uid, label in self._tasks:
                 data = _parse_jsonl_run(path)
                 if not data and self._mongo and uid:
+                    # No events in JSONL — full repair from MongoDB
                     data = _mongo_fetch_primary(self._mongo, uid)
                     if data:
                         n_from_mongo += 1
                         mongo_labels.append(label)
                         stop_doc = _mongo_fetch_stop(self._mongo, uid)
-                        _repair_jsonl(path, data, stop_doc)  # self-heals JSONL permanently
+                        _repair_jsonl(path, data, stop_doc)
+                elif data and self._mongo and uid:
+                    # Events present but stop doc may be missing (partial old repair)
+                    _, existing_stop = _read_jsonl_start_stop(path)
+                    if not existing_stop:
+                        stop_doc = _mongo_fetch_stop(self._mongo, uid)
+                        if stop_doc:
+                            _add_stop_to_jsonl(path, stop_doc)
+                            mongo_labels.append(label)  # trigger table refresh
                 if data and _PANDAS_OK:
                     df = pd.DataFrame(data)
                     if not df.empty:
@@ -1095,22 +1117,25 @@ class LocalDataBrowserTab(QWidget):
             p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
             if p.exists():
                 start_doc, stop_doc = _read_jsonl_start_stop(str(p))
+                # If stop doc missing, fetch from MongoDB immediately (handles partial repairs)
+                if not stop_doc and self._mongo_profile and uid:
+                    stop_from_mongo = _mongo_fetch_stop(self._mongo_profile, uid)
+                    if stop_from_mongo:
+                        _add_stop_to_jsonl(str(p), stop_from_mongo)
+                        stop_doc = stop_from_mongo
                 # Re-use already-loaded DataFrame if this scan is currently selected
                 label = f"#{sn}"
                 for loaded_df, loaded_lbl in self._dfs:
                     if loaded_lbl == label:
                         df = loaded_df
                         break
-                # Otherwise parse fresh (event data only, no blocking issue — dialog is modal-less)
+                # Otherwise parse fresh
                 if df is None and _PANDAS_OK:
                     raw = _parse_jsonl_run(str(p))
                     if not raw and self._mongo_profile and uid:
                         raw = _mongo_fetch_primary(self._mongo_profile, uid)
                         if raw:
-                            stop_from_mongo = _mongo_fetch_stop(self._mongo_profile, uid)
-                            _repair_jsonl(str(p), raw, stop_from_mongo)
-                            if not stop_doc and stop_from_mongo:
-                                stop_doc = stop_from_mongo  # use in this dialog immediately
+                            _repair_jsonl(str(p), raw, stop_doc or {})
                     df = pd.DataFrame(raw) if raw else pd.DataFrame()
         dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, df=df, parent=self)
         dlg.show()
