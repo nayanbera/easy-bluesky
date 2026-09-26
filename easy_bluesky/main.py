@@ -2735,22 +2735,18 @@ class MainWindow(QMainWindow):
 
     def _sync_jsonl_from_beamline(self, uid_list: list, runs_dir: str):
         """Fetch missing JSONL run files from the beamline computer via SFTP."""
-        # Prefer the active profile; if it has no SSH user, fall back to the
-        # first profile in the list that has both host and ssh_user configured.
-        active = get_active_profile(self._conn_settings)
-        if not active.get("ssh_user"):
-            all_profiles = self._conn_settings.get("profiles", [])
-            for p in all_profiles:
-                if p.get("host") and p.get("ssh_user"):
-                    active = p
-                    break
-        if not active.get("host") or not active.get("ssh_user"):
+        from .ssh_manager import _settings_for_profile
+        settings = self._conn_settings
+        if not settings.get("ssh_user"):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Not Connected",
-                                "No profile with SSH configured. "
-                                "Open Connection Settings and set Host and SSH User.")
+                                "SSH user not configured. "
+                                "Open Connection Settings and set SSH User.")
             return
-        self._jsonl_sync_thread = _JsonlSyncThread(active, uid_list, runs_dir, parent=self)
+        active   = get_active_profile(settings)
+        # Merge active profile's host override (if any) into the top-level settings
+        ssh_cfg  = _settings_for_profile(settings, active)
+        self._jsonl_sync_thread = _JsonlSyncThread(ssh_cfg, uid_list, runs_dir, parent=self)
         self._jsonl_sync_thread.message.connect(
             lambda msg: self._log(f"[{self._ts()}] [JSONL sync] {msg}")
         )
