@@ -99,6 +99,91 @@ def _mongo_fetch_primary(profile: dict, uid: str) -> dict:
         pass
     return {}
 
+
+def _repair_jsonl(path: str, primary_data: dict):
+    """Rewrite a JSONL file to include an event_page from MongoDB-fetched data.
+
+    Reads the existing start/descriptor/stop docs, inserts a synthesised
+    event_page immediately after the descriptor, then rewrites the file.
+    After this call _parse_jsonl_run will find event data and MongoDB is no
+    longer needed for this scan.
+
+    inf/nan values are replaced with null so json.dumps never raises.
+    """
+    import math
+
+    def _fix(obj):
+        if isinstance(obj, float):
+            return None if (math.isnan(obj) or math.isinf(obj)) else obj
+        if isinstance(obj, dict):
+            return {k: _fix(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_fix(v) for v in obj]
+        try:
+            import numpy as _np
+            if isinstance(obj, _np.floating):
+                v = float(obj)
+                return None if (math.isnan(v) or math.isinf(v)) else v
+            if isinstance(obj, _np.integer):
+                return int(obj)
+        except ImportError:
+            pass
+        return obj
+
+    # Read all existing docs
+    raw_docs = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        raw_docs.append(json.loads(line))
+                    except Exception:
+                        pass
+    except Exception:
+        return
+
+    # Find descriptor uid
+    desc_uid = ""
+    for doc_type, doc in raw_docs:
+        if doc_type == "descriptor":
+            desc_uid = doc.get("uid", "")
+            break
+
+    time_arr = primary_data.get("time", np.array([]))
+    n = len(time_arr)
+    if n == 0:
+        return
+
+    event_page: dict = {
+        "descriptor": desc_uid,
+        "seq_num":    list(range(1, n + 1)),
+        "time":       _fix(time_arr.tolist()),
+        "data":       {},
+        "timestamps": {},
+    }
+    for field, arr in primary_data.items():
+        if field == "time":
+            continue
+        event_page["data"][field]       = _fix(arr.tolist())
+        event_page["timestamps"][field] = _fix(time_arr.tolist())
+
+    # Rebuild: start → descriptor → event_page → stop (if present)
+    new_docs = []
+    for doc_type, doc in raw_docs:
+        new_docs.append((doc_type, doc))
+        if doc_type == "descriptor":
+            new_docs.append(("event_page", event_page))
+
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            for doc_type, doc in new_docs:
+                fh.write(json.dumps([doc_type, doc]) + "\n")
+    except Exception:
+        pass
+
+
 def _read_jsonl_start_stop(path) -> tuple:
     """Read start and stop documents from a JSONL run file.
 
@@ -213,6 +298,7 @@ class _RunLoader(QThread):
                     data = _mongo_fetch_primary(self._mongo, uid)
                     if data:
                         n_from_mongo += 1
+                        _repair_jsonl(path, data)  # write events back → JSONL self-heals
                 if data and _PANDAS_OK:
                     df = pd.DataFrame(data)
                     if not df.empty:
@@ -976,6 +1062,8 @@ class LocalDataBrowserTab(QWidget):
                     raw = _parse_jsonl_run(str(p))
                     if not raw and self._mongo_profile and uid:
                         raw = _mongo_fetch_primary(self._mongo_profile, uid)
+                        if raw:
+                            _repair_jsonl(str(p), raw)  # self-heal the JSONL file
                     df = pd.DataFrame(raw) if raw else pd.DataFrame()
         dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, df=df, parent=self)
         dlg.show()
