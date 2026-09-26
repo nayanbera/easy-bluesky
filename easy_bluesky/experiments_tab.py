@@ -1220,8 +1220,9 @@ class ExperimentsTab(QWidget):
       Right  — Live plot tab (detachable)
     """
 
-    experiment_changed = pyqtSignal(str)   # emits runs_dir path
-    scan_completed     = pyqtSignal()      # emits when a new scan is logged
+    experiment_changed  = pyqtSignal(str)        # emits runs_dir path
+    scan_completed      = pyqtSignal()           # emits when a new scan is logged
+    run_files_needed    = pyqtSignal(list, str)  # (uid_list, local_runs_dir) — fetch from beamline
     start_requested    = pyqtSignal()
     pause_requested    = pyqtSignal()
     resume_requested   = pyqtSignal()
@@ -3613,6 +3614,19 @@ class ExperimentsTab(QWidget):
         if changed:
             self._load_plan_log(self._active_exp_path, auto_select_newest=True)
             self.scan_completed.emit()
+            # Emit any run UIDs whose JSONL files are not yet in the local runs/ dir
+            if self._active_exp_path:
+                runs_dir = str(Path(self._active_exp_path) / "runs")
+                missing = [
+                    uid for uid in (
+                        ruid
+                        for item in items
+                        for ruid in (item.get("result") or {}).get("run_uids", [])
+                    )
+                    if uid and not (Path(runs_dir) / f"{uid}.jsonl").exists()
+                ]
+                if missing:
+                    self.run_files_needed.emit(missing, runs_dir)
 
     def update_compact_queue(self, items: list):
         self._current_queue_items = items

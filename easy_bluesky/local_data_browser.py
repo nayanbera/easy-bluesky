@@ -448,28 +448,20 @@ class LocalDataBrowserTab(QWidget):
         return missing
 
     def _auto_sync(self):
-        """Automatically fetch missing JSONL files from the beamline (silent)."""
+        """Emit sync_requested for any UIDs with no local JSONL file."""
         if not self._exp_path:
             return
         missing = self._missing_uids()
-        n_local = sum(
-            1 for e in self._entries
-            if (e.get("run_uids") or [""])[0]
-            and (Path(self._exp_path) / "runs" / f"{(e.get('run_uids') or [''])[0]}.jsonl").exists()
-        )
-        n_all = sum(1 for e in self._entries if (e.get("run_uids") or [""])[0])
-        if not missing:
-            self._status_label.setText(
-                f"{len(self._entries)} scans loaded  ·  "
-                f"{n_local}/{n_all} run files present locally"
-            )
-            return
-        runs_dir = str(Path(self._exp_path) / "runs")
+        n_all   = sum(1 for e in self._entries if (e.get("run_uids") or [""])[0])
+        n_local = n_all - len(missing)
         self._status_label.setText(
-            f"{len(self._entries)} scans loaded  ·  "
-            f"fetching {len(missing)} missing JSONL file(s) from beamline…"
+            f"{len(self._entries)} scans  ·  "
+            f"{n_local}/{n_all} run files local"
+            + (f"  ·  fetching {len(missing)} from beamline…" if missing else "")
         )
-        self.sync_requested.emit(missing, runs_dir)
+        if missing:
+            runs_dir = str(Path(self._exp_path) / "runs")
+            self.sync_requested.emit(missing, runs_dir)
 
     def _on_sync_clicked(self):
         """Manual re-fetch button — re-checks for missing files and emits sync_requested."""

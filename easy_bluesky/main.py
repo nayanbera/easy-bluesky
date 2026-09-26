@@ -1421,6 +1421,7 @@ class MainWindow(QMainWindow):
             )
         )
         self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
+        self.experiments_tab.run_files_needed.connect(self._sync_jsonl_from_beamline)
         self.mongo_browser.move_requested.connect(self._on_mongo_move_requested)
         self.experiments_tab.live_viewer.move_requested.connect(self._on_mongo_move_requested)
         self.mongo_browser.move_2d_requested.connect(self._on_map_move_2d_requested)
@@ -2749,7 +2750,7 @@ class MainWindow(QMainWindow):
         self._jsonl_sync_thread.done.connect(
             lambda n, t: self._log(
                 f"[{self._ts()}] ✓ JSONL sync: fetched {n}/{t} run file(s) from beamline"
-            )
+            ) if n > 0 else None
         )
         self._jsonl_sync_thread.start()
 
