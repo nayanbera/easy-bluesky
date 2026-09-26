@@ -431,11 +431,8 @@ class LocalDataBrowserTab(QWidget):
         if folder and Path(folder).is_dir():
             self._load_folder(folder)
 
-    def _on_sync_clicked(self):
-        """Collect UIDs whose JSONL files are missing locally, emit sync_requested."""
-        if not self._exp_path:
-            self._status_label.setText("Open an experiment folder first")
-            return
+    def _missing_uids(self) -> list:
+        """Return UIDs from plans_log that have no local JSONL file."""
         missing = []
         for entry in self._entries:
             uids = entry.get("run_uids", [])
@@ -444,6 +441,38 @@ class LocalDataBrowserTab(QWidget):
                 p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
                 if not p.exists():
                     missing.append(uid)
+        return missing
+
+    def _auto_sync(self):
+        """Automatically fetch missing JSONL files from the beamline (silent)."""
+        if not self._exp_path:
+            return
+        missing = self._missing_uids()
+        n_local = sum(
+            1 for e in self._entries
+            if (e.get("run_uids") or [""])[0]
+            and (Path(self._exp_path) / "runs" / f"{(e.get('run_uids') or [''])[0]}.jsonl").exists()
+        )
+        n_all = sum(1 for e in self._entries if (e.get("run_uids") or [""])[0])
+        if not missing:
+            self._status_label.setText(
+                f"{len(self._entries)} scans loaded  ·  "
+                f"{n_local}/{n_all} run files present locally"
+            )
+            return
+        runs_dir = str(Path(self._exp_path) / "runs")
+        self._status_label.setText(
+            f"{len(self._entries)} scans loaded  ·  "
+            f"fetching {len(missing)} missing JSONL file(s) from beamline…"
+        )
+        self.sync_requested.emit(missing, runs_dir)
+
+    def _on_sync_clicked(self):
+        """Manual re-fetch button — re-checks for missing files and emits sync_requested."""
+        if not self._exp_path:
+            self._status_label.setText("Open an experiment folder first")
+            return
+        missing = self._missing_uids()
         if not missing:
             self._status_label.setText("All run files already present locally — nothing to fetch")
             return
@@ -453,11 +482,56 @@ class LocalDataBrowserTab(QWidget):
 
     def on_sync_done(self, n_copied: int, n_total: int):
         """Called by main.py after SSH fetch completes."""
-        self._status_label.setText(
-            f"Fetched {n_copied}/{n_total} JSONL file(s) from beamline"
-        )
-        if n_copied > 0 and self._exp_path:
-            self._load_folder(self._exp_path)
+        if n_copied > 0:
+            self._status_label.setText(
+                f"Fetched {n_copied}/{n_total} JSONL file(s) from beamline"
+            )
+            # Reload table entries (plans_log unchanged, but files now exist locally)
+            if self._exp_path:
+                self._reload_after_sync()
+        else:
+            missing_still = self._missing_uids()
+            if missing_still:
+                self._status_label.setText(
+                    f"Could not fetch JSONL files — "
+                    f"check RE Console for details  "
+                    f"({n_total} file(s) not found in beamline fallback directory)"
+                )
+            else:
+                self._status_label.setText(
+                    f"{len(self._entries)} scans loaded  ·  all run files present locally"
+                )
+
+    def _reload_after_sync(self):
+        """Reload plan table and re-trigger any current scan selection."""
+        # Remember which scan rows are currently selected
+        selected_rows = sorted({idx.row() for idx in self._scan_table.selectedIndexes()})
+        # Reload so file-existence checks reflect newly copied files
+        log_file = Path(self._exp_path) / "plans_log.jsonl"
+        if not log_file.exists():
+            return
+        entries = []
+        try:
+            with open(log_file, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(json.loads(line))
+                        except Exception:
+                            pass
+        except Exception:
+            return
+        self._entries = entries
+        self._populate_table(entries)
+        # Restore selection
+        if selected_rows:
+            self._scan_table.blockSignals(True)
+            for row in selected_rows:
+                if row < self._scan_table.rowCount():
+                    self._scan_table.selectRow(row)
+            self._scan_table.blockSignals(False)
+            self._on_scan_selection_changed()
 
     def _load_folder(self, folder: str):
         self._exp_path = folder
@@ -491,9 +565,9 @@ class LocalDataBrowserTab(QWidget):
 
         self._entries = entries
         self._populate_table(entries)
-        self._status_label.setText(f"{len(entries)} scans loaded")
         self._dfs = []
         self._clear_plot()
+        self._auto_sync()
 
     # ── Scan table ────────────────────────────────────────────────────────────
 
