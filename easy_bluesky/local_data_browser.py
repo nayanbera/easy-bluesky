@@ -130,7 +130,7 @@ def _poisson_sigma(y_raw, norm_raw=None):
 
 class _RunLoader(QThread):
     """Load one or more JSONL run files in a background thread."""
-    done  = pyqtSignal(list)   # list of (pd.DataFrame, label)
+    done  = pyqtSignal(list, int)  # (list of (pd.DataFrame, label), n_no_event_files)
     error = pyqtSignal(str)
 
     def __init__(self, tasks, parent=None):
@@ -141,13 +141,16 @@ class _RunLoader(QThread):
     def run(self):
         try:
             result = []
+            n_no_events = 0
             for path, label in self._tasks:
                 data = _parse_jsonl_run(path)
                 if data and _PANDAS_OK:
                     df = pd.DataFrame(data)
                     if not df.empty:
                         result.append((df, label))
-            self.done.emit(result)
+                        continue
+                n_no_events += 1
+            self.done.emit(result, n_no_events)
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -247,6 +250,12 @@ class _LocalRunDetailDialog(QDialog):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     tbl.setItem(i, j, item)
             data_l.addWidget(tbl, 1)
+        elif df is not None:
+            data_l.addWidget(QLabel(
+                "No event data in this JSONL file.\n\n"
+                "This scan was recorded before the JSONL event writer was fully active.\n"
+                "Use MongoDB Browser to view its data."
+            ))
         else:
             data_l.addWidget(QLabel(
                 "Data not loaded — select the scan in the table first, then double-click."
@@ -882,8 +891,7 @@ class LocalDataBrowserTab(QWidget):
                 # Otherwise parse fresh (event data only, no blocking issue — dialog is modal-less)
                 if df is None and _PANDAS_OK:
                     raw = _parse_jsonl_run(str(p))
-                    if raw:
-                        df = pd.DataFrame(raw)
+                    df = pd.DataFrame(raw) if raw else pd.DataFrame()
         dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, df=df, parent=self)
         dlg.show()
 
@@ -954,11 +962,18 @@ class LocalDataBrowserTab(QWidget):
         self._loader.error.connect(self._on_load_error)
         self._loader.start()
 
-    def _on_load_done(self, dfs):
+    def _on_load_done(self, dfs, n_no_events: int):
         n = len(dfs)
         self._dfs = dfs
         if n == 0:
-            self._status_label.setText("No plottable data in selected scan(s)")
+            if n_no_events:
+                self._status_label.setText(
+                    "JSONL file(s) have no event data — "
+                    "these scans were recorded before the JSONL writer was active; "
+                    "use MongoDB Browser to view them"
+                )
+            else:
+                self._status_label.setText("No plottable data in selected scan(s)")
             self._clear_plot()
             return
         self._status_label.setText(
