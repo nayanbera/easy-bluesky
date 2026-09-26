@@ -744,6 +744,9 @@ class LiveViewer(QWidget):
                 with np.errstate(divide="ignore", invalid="ignore"):
                     y = np.log10(np.where(y > 0, y, np.nan))
 
+            mask = np.isfinite(x) & np.isfinite(y)
+            x, y, sigma = x[mask], y[mask], sigma[mask]
+
             curve_name = sig if not norm_key else f"{sig}/{norm_key}"
             color = self.COLORS[i % len(self.COLORS)]
             if curve_name not in self._curves:
