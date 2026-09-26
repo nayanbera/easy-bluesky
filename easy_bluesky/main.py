@@ -1133,6 +1133,7 @@ class MainWindow(QMainWindow):
         self.hdf5_viewer        = HDF5Viewer()
         self.local_data_browser = LocalDataBrowserTab()
         self.local_data_browser.sync_requested.connect(self._sync_jsonl_from_beamline)
+        self.local_data_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
         # Set initial profile so _load_active_experiment reads the right slot.
         initial_profile = get_active_profile_name(self._conn_settings)
@@ -2430,6 +2431,7 @@ class MainWindow(QMainWindow):
             self.re_bar.set_disconnected()
         self.experiments_tab.live_viewer.restart_zmq(doc)
         self.mongo_browser.update_settings(self._conn_settings)
+        self.local_data_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
         self.experiments_tab.set_profile(name)
         self.watchdog_tab.load_for_profile(name)
@@ -2712,6 +2714,7 @@ class MainWindow(QMainWindow):
         active = get_active_profile_name(self._conn_settings)
         self.re_bar.update_profiles(names, active)
         self.mongo_browser.update_settings(self._conn_settings)
+        self.local_data_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
         _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
         self.watchdog_tab.update_profiles(_all_names)

@@ -41,6 +41,64 @@ from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 
 # ── JSONL helpers ─────────────────────────────────────────────────────────────
 
+def _mongo_fetch_primary(profile: dict, uid: str) -> dict:
+    """Fetch the primary event stream for one UID from MongoDB.
+
+    Uses the same host/port/mongo_db fields as MongoDataBrowserTab.
+    Returns {field: np.array} or {} if MongoDB is unavailable or has no data.
+    """
+    host    = profile.get("mongo_host", "localhost")
+    port    = int(profile.get("mongo_port", 27017))
+    db_name = profile.get("mongo_db", "")
+    if not db_name or not uid:
+        return {}
+    try:
+        import pymongo
+        client = pymongo.MongoClient(host, port, serverSelectionTimeoutMS=4000)
+        db     = client[db_name]
+        descs  = list(db["event_descriptor"].find({"run_start": uid}))
+        for desc in descs:
+            if desc.get("name", "primary") != "primary":
+                continue
+            desc_uid  = desc["uid"]
+            data_keys = desc.get("data_keys", {})
+            if not data_keys:
+                continue
+            times      = []
+            field_data = {k: [] for k in data_keys}
+            pages = list(db["event_page"].find({"descriptor": desc_uid}))
+            if pages:
+                pages.sort(key=lambda p: (p.get("seq_num") or [0])[0])
+                for page in pages:
+                    times.extend(page.get("time", []))
+                    pdata = page.get("data", {})
+                    for field in data_keys:
+                        field_data[field].extend(pdata.get(field, []))
+            else:
+                for ev in db["event"].find(
+                        {"descriptor": desc_uid}).sort("seq_num", 1):
+                    times.append(ev.get("time", 0))
+                    edata = ev.get("data", {})
+                    for field in data_keys:
+                        field_data[field].append(edata.get(field))
+            client.close()
+            if not times:
+                return {}
+            result = {"time": np.array(times, dtype=float)}
+            for field, vals in field_data.items():
+                try:
+                    result[field] = np.array(vals, dtype=float)
+                except (TypeError, ValueError):
+                    result[field] = np.array(
+                        [float(v) if v is not None else float("nan") for v in vals],
+                        dtype=float,
+                    )
+            return result
+        client.close()
+    except Exception:
+        pass
+    return {}
+
 def _read_jsonl_start_stop(path) -> tuple:
     """Read start and stop documents from a JSONL run file.
 
@@ -129,28 +187,39 @@ def _poisson_sigma(y_raw, norm_raw=None):
 # ── Background loader ─────────────────────────────────────────────────────────
 
 class _RunLoader(QThread):
-    """Load one or more JSONL run files in a background thread."""
-    done  = pyqtSignal(list, int)  # (list of (pd.DataFrame, label), n_no_event_files)
+    """Load one or more JSONL run files in a background thread.
+
+    Falls back to MongoDB (if mongo_profile is set) when a JSONL file has no
+    event data.  Tasks are (jsonl_path, uid, label) tuples.
+    """
+    # (dfs, n_from_mongo, n_no_events)
+    done  = pyqtSignal(list, int, int)
     error = pyqtSignal(str)
 
-    def __init__(self, tasks, parent=None):
-        """tasks: list of (jsonl_path, label)"""
+    def __init__(self, tasks, mongo_profile=None, parent=None):
+        """tasks: list of (jsonl_path, uid, label)"""
         super().__init__(parent)
         self._tasks = tasks
+        self._mongo = mongo_profile  # profile dict or None
 
     def run(self):
         try:
-            result = []
-            n_no_events = 0
-            for path, label in self._tasks:
+            result      = []
+            n_from_mongo = 0
+            n_no_events  = 0
+            for path, uid, label in self._tasks:
                 data = _parse_jsonl_run(path)
+                if not data and self._mongo and uid:
+                    data = _mongo_fetch_primary(self._mongo, uid)
+                    if data:
+                        n_from_mongo += 1
                 if data and _PANDAS_OK:
                     df = pd.DataFrame(data)
                     if not df.empty:
                         result.append((df, label))
                         continue
                 n_no_events += 1
-            self.done.emit(result, n_no_events)
+            self.done.emit(result, n_from_mongo, n_no_events)
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -367,6 +436,7 @@ class LocalDataBrowserTab(QWidget):
         self._crosshair_cleanup = None
         self._map_mode          = False
         self._2d_map_data       = None
+        self._mongo_profile: dict | None = None  # active profile for MongoDB fallback
         self._build()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -653,6 +723,19 @@ class LocalDataBrowserTab(QWidget):
         if folder:
             self._load_folder(folder)
 
+    def update_settings(self, settings: dict):
+        """Called by main.py when connection settings change.
+
+        Extracts the active profile's MongoDB credentials so the browser can
+        fall back to MongoDB when a JSONL file has no event data.
+        """
+        from .connection_settings import get_active_profile
+        profile = get_active_profile(settings) or {}
+        if profile.get("mongo_db", "").strip():
+            self._mongo_profile = profile
+        else:
+            self._mongo_profile = None
+
     def open_folder(self, folder: str):
         """Public entry point — called from main.py when experiment changes."""
         if folder and Path(folder).is_dir():
@@ -891,6 +974,8 @@ class LocalDataBrowserTab(QWidget):
                 # Otherwise parse fresh (event data only, no blocking issue — dialog is modal-less)
                 if df is None and _PANDAS_OK:
                     raw = _parse_jsonl_run(str(p))
+                    if not raw and self._mongo_profile and uid:
+                        raw = _mongo_fetch_primary(self._mongo_profile, uid)
                     df = pd.DataFrame(raw) if raw else pd.DataFrame()
         dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, df=df, parent=self)
         dlg.show()
@@ -934,7 +1019,7 @@ class LocalDataBrowserTab(QWidget):
             if self._exp_path:
                 p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
                 if p.exists():
-                    tasks.append((str(p), label))
+                    tasks.append((str(p), uid, label))
                     labels.append(label)
                 else:
                     missing_files.append(p.name)
@@ -956,28 +1041,36 @@ class LocalDataBrowserTab(QWidget):
             self._loader.done.disconnect()
             self._loader.error.disconnect()
 
-        self._status_label.setText(f"Loading {len(tasks)} scan(s)…")
-        self._loader = _RunLoader(tasks, parent=self)
+        loading_msg = f"Loading {len(tasks)} scan(s)…"
+        if self._mongo_profile:
+            loading_msg += "  (will fall back to MongoDB if JSONL has no events)"
+        self._status_label.setText(loading_msg)
+        self._loader = _RunLoader(tasks, mongo_profile=self._mongo_profile, parent=self)
         self._loader.done.connect(self._on_load_done)
         self._loader.error.connect(self._on_load_error)
         self._loader.start()
 
-    def _on_load_done(self, dfs, n_no_events: int):
+    def _on_load_done(self, dfs, n_from_mongo: int, n_no_events: int):
         n = len(dfs)
         self._dfs = dfs
         if n == 0:
-            if n_no_events:
+            if n_no_events and not self._mongo_profile:
                 self._status_label.setText(
                     "JSONL file(s) have no event data — "
-                    "these scans were recorded before the JSONL writer was active; "
-                    "use MongoDB Browser to view them"
+                    "configure MongoDB in Settings to auto-load, "
+                    "or view in MongoDB Browser"
+                )
+            elif n_no_events:
+                self._status_label.setText(
+                    "No event data found in JSONL or MongoDB for selected scan(s)"
                 )
             else:
                 self._status_label.setText("No plottable data in selected scan(s)")
             self._clear_plot()
             return
+        mongo_note = f"  [{n_from_mongo} via MongoDB]" if n_from_mongo else ""
         self._status_label.setText(
-            f"{n} scan(s) loaded — "
+            f"{n} scan(s) loaded{mongo_note} — "
             f"{', '.join(lbl for _, lbl in dfs)}"
         )
         if dfs:
