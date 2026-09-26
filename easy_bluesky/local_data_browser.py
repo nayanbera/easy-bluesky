@@ -304,8 +304,8 @@ class _RunLoader(QThread):
     Falls back to MongoDB (if mongo_profile is set) when a JSONL file has no
     event data.  Tasks are (jsonl_path, uid, label) tuples.
     """
-    # (dfs, n_from_mongo, n_no_events)
-    done  = pyqtSignal(list, int, int)
+    # (dfs, n_from_mongo, n_no_events, mongo_labels)
+    done  = pyqtSignal(list, int, int, list)
     error = pyqtSignal(str)
 
     def __init__(self, tasks, mongo_profile=None, parent=None):
@@ -316,15 +316,17 @@ class _RunLoader(QThread):
 
     def run(self):
         try:
-            result      = []
+            result       = []
             n_from_mongo = 0
             n_no_events  = 0
+            mongo_labels = []
             for path, uid, label in self._tasks:
                 data = _parse_jsonl_run(path)
                 if not data and self._mongo and uid:
                     data = _mongo_fetch_primary(self._mongo, uid)
                     if data:
                         n_from_mongo += 1
+                        mongo_labels.append(label)
                         stop_doc = _mongo_fetch_stop(self._mongo, uid)
                         _repair_jsonl(path, data, stop_doc)  # self-heals JSONL permanently
                 if data and _PANDAS_OK:
@@ -333,7 +335,7 @@ class _RunLoader(QThread):
                         result.append((df, label))
                         continue
                 n_no_events += 1
-            self.done.emit(result, n_from_mongo, n_no_events)
+            self.done.emit(result, n_from_mongo, n_no_events, mongo_labels)
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -513,6 +515,20 @@ class _LocalRunDetailDialog(QDialog):
             lines += ["", "─── Extra metadata ───"]
             for k, v in extras.items():
                 lines.append(f"{k:<14}: {v}")
+        ps = start.get("peak_stats")
+        if ps:
+            def _fmt(v):
+                try:
+                    return f"{float(v):.4g}"
+                except (TypeError, ValueError):
+                    return "—"
+            lines += ["", "─── Peak stats ───"]
+            for sig, st in ps.items():
+                lines.append(
+                    f"{sig:<14}: cen={_fmt(st.get('cen'))}  FWHM={_fmt(st.get('fwhm'))}"
+                    f"  COM={_fmt(st.get('com'))}  max={_fmt(st.get('max_val'))}"
+                    f"@{_fmt(st.get('max_pos'))}"
+                )
         plan_args = start.get("plan_args", {})
         if plan_args:
             lines += ["", "─── Plan arguments ───"]
@@ -1169,9 +1185,42 @@ class LocalDataBrowserTab(QWidget):
         self._loader.error.connect(self._on_load_error)
         self._loader.start()
 
-    def _on_load_done(self, dfs, n_from_mongo: int, n_no_events: int):
+    def _refresh_meta_for_labels(self, labels: set):
+        """Re-run _MetaLoader for table rows whose label is in `labels`.
+
+        Called after MongoDB repair so Points/Status cells update without
+        requiring a full folder reload.
+        """
+        if not labels or not self._exp_path:
+            return
+        tasks = []
+        for row in range(self._scan_table.rowCount()):
+            item = self._scan_table.item(row, 0)
+            if item is None:
+                continue
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if entry is None:
+                continue
+            sn    = entry.get("scan_num", "?")
+            label = f"#{sn}"
+            if label not in labels:
+                continue
+            uids = entry.get("run_uids", [])
+            uid  = uids[0] if uids else ""
+            if uid:
+                p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
+                if p.exists():
+                    tasks.append((row, str(p)))
+        if tasks:
+            loader = _MetaLoader(tasks, parent=self)
+            loader.row_ready.connect(self._update_meta_row)
+            loader.start()
+
+    def _on_load_done(self, dfs, n_from_mongo: int, n_no_events: int, mongo_labels: list):
         n = len(dfs)
         self._dfs = dfs
+        if mongo_labels:
+            self._refresh_meta_for_labels(set(mongo_labels))
         if n == 0:
             if n_no_events and not self._mongo_profile:
                 self._status_label.setText(
