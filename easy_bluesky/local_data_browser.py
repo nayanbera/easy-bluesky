@@ -24,10 +24,11 @@ except ImportError:
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton,
-    QSizePolicy, QSplitter, QStackedWidget, QTabBar, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+    QMessageBox, QPushButton, QSizePolicy, QSplitter, QStackedWidget,
+    QTabBar, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QWidget,
 )
 
 from . import peak_fit as _pf
@@ -37,6 +38,35 @@ from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 
 
 # ── JSONL helpers ─────────────────────────────────────────────────────────────
+
+def _read_jsonl_start_stop(path) -> tuple:
+    """Read start and stop documents from a JSONL run file.
+
+    Returns (start_doc, stop_doc) — either may be {} if not found.
+    Reads the whole file but stops accumulating once both are found.
+    """
+    start_doc: dict = {}
+    stop_doc:  dict = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    doc_type, doc = json.loads(line)
+                except Exception:
+                    continue
+                if doc_type == "start" and not start_doc:
+                    start_doc = dict(doc)
+                elif doc_type == "stop" and not stop_doc:
+                    stop_doc = dict(doc)
+                if start_doc and stop_doc:
+                    break
+    except Exception:
+        pass
+    return start_doc, stop_doc
+
 
 def _parse_jsonl_run(path) -> dict:
     """Parse a bluesky suitcase JSONL run file → {field: numpy_array}.
@@ -120,6 +150,113 @@ class _RunLoader(QThread):
             self.error.emit(str(exc))
 
 
+class _MetaLoader(QThread):
+    """Read start/stop docs from JSONL files in background → populate Points/Detectors."""
+    row_ready = pyqtSignal(int, str, str)  # (table_row, n_points_str, detectors_str)
+
+    def __init__(self, tasks, parent=None):
+        """tasks: list of (row_index, jsonl_path)"""
+        super().__init__(parent)
+        self._tasks = tasks
+
+    def run(self):
+        for row_idx, path in self._tasks:
+            start_doc, stop_doc = _read_jsonl_start_stop(path)
+
+            dets = start_doc.get("detectors", [])
+            dets_str = ", ".join(dets) if dets else "—"
+
+            n_pts = stop_doc.get("num_events", None)
+            if isinstance(n_pts, dict):
+                total = sum(n_pts.values())
+                n_pts_str = str(total) if total else "—"
+            elif isinstance(n_pts, int):
+                n_pts_str = str(n_pts) if n_pts else "—"
+            else:
+                n_pts_str = "—"
+
+            self.row_ready.emit(row_idx, n_pts_str, dets_str)
+
+
+class _LocalRunDetailDialog(QDialog):
+    """Show start/stop doc metadata for a local JSONL run."""
+
+    def __init__(self, entry: dict, start_doc: dict, stop_doc: dict, parent=None):
+        super().__init__(parent)
+        sn = entry.get("scan_num", start_doc.get("scan_num", "?"))
+        self.setWindowTitle(f"Run Details — #{sn}")
+        self.setMinimumWidth(520)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        vlay = QVBoxLayout(self)
+
+        lines = []
+        plan = entry.get("name") or start_doc.get("plan_name", "—")
+        lines.append(f"Plan         : {plan}")
+        lines.append(f"Scan #       : {sn}")
+
+        import datetime as _dt
+        t_start = start_doc.get("time") or 0
+        t_stop  = stop_doc.get("time")  or 0
+        if t_start:
+            try:
+                lines.append(
+                    f"Start time   : {_dt.datetime.fromtimestamp(t_start):%Y-%m-%d %H:%M:%S}")
+            except Exception:
+                lines.append(f"Start time   : {t_start}")
+        if t_stop:
+            try:
+                lines.append(
+                    f"Stop time    : {_dt.datetime.fromtimestamp(t_stop):%Y-%m-%d %H:%M:%S}")
+            except Exception:
+                lines.append(f"Stop time    : {t_stop}")
+
+        exit_status = stop_doc.get("exit_status") or entry.get("exit_status", "—")
+        lines.append(f"Exit status  : {exit_status}")
+
+        dets = start_doc.get("detectors", [])
+        lines.append(f"Detectors    : {', '.join(dets) if dets else '—'}")
+
+        n_pts = stop_doc.get("num_events")
+        if isinstance(n_pts, dict):
+            total = sum(n_pts.values())
+            lines.append(f"Points       : {total if total else '—'}")
+        elif isinstance(n_pts, int):
+            lines.append(f"Points       : {n_pts if n_pts else '—'}")
+
+        uid = (start_doc.get("uid") or
+               ((entry.get("run_uids") or [""])[0]))
+        if uid:
+            lines.append(f"UID          : {uid}")
+
+        plan_args = start_doc.get("plan_args", {})
+        if plan_args:
+            lines.append("")
+            lines.append("Plan arguments:")
+            for k, v in plan_args.items():
+                lines.append(f"  {k}: {v}")
+
+        kwargs = start_doc.get("kwargs", {})
+        if kwargs:
+            lines.append("")
+            lines.append("Additional kwargs:")
+            for k, v in kwargs.items():
+                lines.append(f"  {k}: {v}")
+
+        txt = QTextBrowser()
+        txt.setPlainText("\n".join(lines))
+        from PyQt6.QtGui import QFont
+        mono = QFont("Menlo")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        txt.setFont(mono)
+        txt.setMinimumHeight(300)
+        vlay.addWidget(txt)
+
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(self.close)
+        vlay.addWidget(bb)
+
+
 # ── Main widget ───────────────────────────────────────────────────────────────
 
 class LocalDataBrowserTab(QWidget):
@@ -145,6 +282,7 @@ class LocalDataBrowserTab(QWidget):
         self._fit_dlg           = None
         self._saved_fit_state   = None
         self._loader            = None
+        self._meta_loader       = None
         self._crosshair_cleanup = None
         self._map_mode          = False
         self._2d_map_data       = None
@@ -202,13 +340,16 @@ class LocalDataBrowserTab(QWidget):
         vlay.addWidget(self._search)
 
         self._scan_table = QTableWidget()
-        self._scan_table.setColumnCount(4)
-        self._scan_table.setHorizontalHeaderLabels(["#", "Plan", "Date / Time", "Status"])
+        self._scan_table.setColumnCount(6)
+        self._scan_table.setHorizontalHeaderLabels(
+            ["#", "Plan", "Date / Time", "Status", "Points", "Detectors"])
         hh = self._scan_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self._scan_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows)
         self._scan_table.setSelectionMode(
@@ -220,6 +361,7 @@ class LocalDataBrowserTab(QWidget):
         self._scan_table.setAlternatingRowColors(True)
         self._scan_table.itemSelectionChanged.connect(
             self._on_scan_selection_changed)
+        self._scan_table.cellDoubleClicked.connect(self._on_run_double_clicked)
         vlay.addWidget(self._scan_table, 1)
 
         self._status_label = QLabel("Open an experiment folder to begin")
@@ -583,6 +725,8 @@ class LocalDataBrowserTab(QWidget):
             "running":  "#1f77b4",
         }
 
+        meta_tasks = []   # (row_index, jsonl_path) for background meta loading
+
         for entry in reversed(entries):   # newest first
             sn     = entry.get("scan_num", "")
             name   = entry.get("name", "?")
@@ -606,7 +750,57 @@ class LocalDataBrowserTab(QWidget):
                 st_it.setForeground(QColor(STATUS_COLOR[status]))
             self._scan_table.setItem(row, 3, st_it)
 
+            # Points and Detectors — placeholder until _MetaLoader fills them
+            self._scan_table.setItem(row, 4, _ro("—", Qt.AlignmentFlag.AlignRight))
+            self._scan_table.setItem(row, 5, _ro("—"))
+
+            uids = entry.get("run_uids", [])
+            uid  = uids[0] if uids else ""
+            if uid and self._exp_path:
+                p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
+                if p.exists():
+                    meta_tasks.append((row, str(p)))
+
         self._scan_table.resizeColumnsToContents()
+
+        # Launch background thread to fill Points / Detectors columns
+        if meta_tasks:
+            if self._meta_loader and self._meta_loader.isRunning():
+                self._meta_loader.terminate()
+                self._meta_loader.wait(200)
+            self._meta_loader = _MetaLoader(meta_tasks, parent=self)
+            self._meta_loader.row_ready.connect(self._update_meta_row)
+            self._meta_loader.start()
+
+    def _update_meta_row(self, row: int, n_pts_str: str, dets_str: str):
+        """Slot called by _MetaLoader — fill Points and Detectors cells."""
+        if row >= self._scan_table.rowCount():
+            return
+        def _ro_r(text, align=Qt.AlignmentFlag.AlignLeft):
+            it = QTableWidgetItem(text)
+            it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            it.setTextAlignment(align | Qt.AlignmentFlag.AlignVCenter)
+            return it
+        self._scan_table.setItem(row, 4, _ro_r(n_pts_str, Qt.AlignmentFlag.AlignRight))
+        self._scan_table.setItem(row, 5, _ro_r(dets_str))
+
+    def _on_run_double_clicked(self, row: int, _col: int):
+        """Double-click a scan row → show run detail dialog."""
+        if row >= self._scan_table.rowCount():
+            return
+        entry = self._scan_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if entry is None:
+            return
+        uids = entry.get("run_uids", [])
+        uid  = uids[0] if uids else ""
+        start_doc: dict = {}
+        stop_doc:  dict = {}
+        if uid and self._exp_path:
+            p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
+            if p.exists():
+                start_doc, stop_doc = _read_jsonl_start_stop(str(p))
+        dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, parent=self)
+        dlg.show()
 
     def _filter_table(self, text: str):
         text = text.lower()
@@ -615,7 +809,7 @@ class LocalDataBrowserTab(QWidget):
                 not text
                 or any(
                     text in (self._scan_table.item(row, c).text() or "").lower()
-                    for c in range(4)
+                    for c in range(6)
                 )
             )
             self._scan_table.setRowHidden(row, not visible)
