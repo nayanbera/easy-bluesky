@@ -36,6 +36,7 @@ from .devices_plans_tab import DevicesPlansTab
 from .pv_watchdog import PVWatchdogTab
 from .mongo_browser import MongoDataBrowserTab
 from .hdf5_viewer import HDF5Viewer
+from .local_data_browser import LocalDataBrowserTab
 from .re_console import REConsoleWidget
 from .ai_assistant import AIAssistantWindow
 
@@ -1069,6 +1070,7 @@ class MainWindow(QMainWindow):
         self.watchdog_tab       = PVWatchdogTab()
         self.mongo_browser      = MongoDataBrowserTab(self._conn_settings)
         self.hdf5_viewer        = HDF5Viewer()
+        self.local_data_browser = LocalDataBrowserTab()
         self.experiments_tab.update_settings(self._conn_settings)
         # Set initial profile so _load_active_experiment reads the right slot.
         initial_profile = get_active_profile_name(self._conn_settings)
@@ -1087,6 +1089,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
         self.tabs.addTab(self.watchdog_tab,      "🔭  PV Watchdog")
         self.tabs.addTab(self.mongo_browser,     "📊  MongoDB Browser")
+        self.tabs.addTab(self.local_data_browser,"📂  Local Data")
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
         self.tabs.addTab(self.re_console,        "🖥  RE Console")
 
@@ -2657,6 +2660,7 @@ class MainWindow(QMainWindow):
         self._refresh_recent_menu()
         exp_dir = str(Path(runs_dir).parent)
         self.mongo_browser.set_active_experiment(exp_dir)
+        self.local_data_browser.open_folder(exp_dir)
         self.queue_mgr.set_current_experiment(exp_dir)
 
     def _on_mongo_move_requested(self, motor: str, position: float):
