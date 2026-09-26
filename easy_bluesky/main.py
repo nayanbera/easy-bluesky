@@ -1011,39 +1011,44 @@ class _JsonlSyncThread(QThread):
             ssh = _get_client(p)
             self.message.emit(f"SSH connected to {host}")
 
-            # Reliably get remote home via shell — getcwd() returns None in paramiko
-            _, stdout, _ = ssh.exec_command("echo $HOME")
+            # Build a UID→remote-path map using `find` so we're not
+            # tied to a single hardcoded fallback directory.
+            uid_args = " ".join(self._uid_list)
+            find_cmd = (
+                f"for uid in {uid_args}; do "
+                f"  path=$(find $HOME /tmp -name \"${{uid}}.jsonl\" 2>/dev/null | head -1); "
+                f"  echo \"$uid:$path\"; "
+                f"done"
+            )
+            _, stdout, _ = ssh.exec_command(find_cmd)
             stdout.channel.recv_exit_status()
-            remote_home = stdout.read().decode().strip()
-            if not remote_home:
-                # Last resort: use /home/<user>
-                remote_home = f"/home/{user}"
-            self.message.emit(f"Remote home: {remote_home}")
+            lines = stdout.read().decode().strip().splitlines()
 
-            remote_runs = f"{remote_home}/.easy_bluesky/data/runs"
-            self.message.emit(f"Looking in {remote_runs} for {len(self._uid_list)} file(s)")
+            uid_to_remote = {}
+            for line in lines:
+                if ":" in line:
+                    uid, rpath = line.split(":", 1)
+                    uid, rpath = uid.strip(), rpath.strip()
+                    if uid and rpath:
+                        uid_to_remote[uid] = rpath
+
+            self.message.emit(
+                f"find located {len(uid_to_remote)}/{len(self._uid_list)} "
+                f"JSONL file(s) on remote"
+            )
 
             sftp = ssh.open_sftp()
-
-            # Try to list the directory so we know what's there
-            try:
-                remote_files = set(sftp.listdir(remote_runs))
-                self.message.emit(f"Found {len(remote_files)} file(s) in remote runs dir")
-            except Exception as le:
-                remote_files = set()
-                self.message.emit(f"Cannot list {remote_runs}: {le}")
-
             os.makedirs(self._runs_dir, exist_ok=True)
             for uid in self._uid_list:
-                fname = f"{uid}.jsonl"
-                if fname not in remote_files:
-                    self.message.emit(f"  ✗ {uid[:8]}… not in remote dir")
+                rpath = uid_to_remote.get(uid)
+                if not rpath:
+                    self.message.emit(f"  ✗ {uid[:8]}… not found on remote")
                     continue
-                local_path  = f"{self._runs_dir}/{fname}"
+                local_path = f"{self._runs_dir}/{uid}.jsonl"
                 try:
-                    sftp.get(f"{remote_runs}/{fname}", local_path)
+                    sftp.get(rpath, local_path)
                     n_copied += 1
-                    self.message.emit(f"  ✓ copied {uid[:8]}…")
+                    self.message.emit(f"  ✓ {uid[:8]}… ← {rpath}")
                 except Exception as exc:
                     self.message.emit(f"  ✗ {uid[:8]}… copy failed: {exc}")
             sftp.close()
