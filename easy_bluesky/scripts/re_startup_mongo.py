@@ -548,8 +548,14 @@ class _JSONLRunWriter(_CallableCB):
 
 
 def _jsonl_run_factory(name, doc):
+    import re as _re
     uid     = doc.get("uid", "unknown")
     exp_dir = doc.get("exp_dir", "")
+    # Windows-style paths (Y:\... or Y:/...) are invalid on Linux and would
+    # create junk subdirectories under $HOME — treat them as unset.
+    if exp_dir and _re.match(r'^[A-Za-z]:[/\\]', exp_dir):
+        print(f"[re_startup_mongo] JSONL: Windows path in exp_dir ({exp_dir!r}) — using fallback")
+        exp_dir = ""
     if exp_dir:
         try:
             runs_dir = _P(exp_dir) / "runs"
