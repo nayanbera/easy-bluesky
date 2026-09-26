@@ -1002,16 +1002,13 @@ class _JsonlSyncThread(QThread):
         self._runs_dir = runs_dir
 
     def run(self):
-        import paramiko, os
-        p        = self._profile
-        host     = p.get("host", "")
-        user     = p.get("ssh_user", "")
-        key_path = str(Path(p.get("ssh_key_path", "~/.ssh/id_ed25519")).expanduser())
+        import os
+        from .ssh_manager import _get_client
+        p    = self._profile
+        host = p.get("host", "")
         n_copied = 0
         try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(host, username=user, key_filename=key_path, timeout=15)
+            ssh = _get_client(p)
             self.message.emit(f"SSH connected to {host}")
 
             # Reliably get remote home via shell — getcwd() returns None in paramiko
