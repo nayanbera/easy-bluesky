@@ -732,60 +732,50 @@ class LocalDataBrowserTab(QWidget):
 
     def _update_2d_map_multi_scan(self):
         x_col = self.x_combo.currentText()
-        ycs   = [self.y_list.item(i).text()
-                 for i in range(self.y_list.count())
-                 if self.y_list.item(i).isSelected()]
-        if not x_col or not ycs:
+        y_col = self._2d_widget.get_y_signal()
+        z_col = self._2d_widget.get_z_signal()
+        if not x_col or not z_col:
             return
-        z_col = ycs[0]
 
         eligible = [(df, lbl) for df, lbl in self._dfs
-                    if x_col in df.columns and z_col in df.columns]
+                    if x_col in df.columns and z_col in df.columns
+                    and (not y_col or y_col in df.columns)]
         if len(eligible) < 2:
             self._mode_tabs.setCurrentIndex(0)
             QMessageBox.warning(
                 self, "2D Map",
-                f"Fewer than 2 scans have both '{x_col}' and '{z_col}' — "
+                f"Fewer than 2 scans have '{x_col}' and '{z_col}' — "
                 "2D map requires at least 2 compatible scans."
             )
             return
 
-        xs_list, zs_list = [], []
-        for df, _lbl in eligible:
+        xs_list, ys_list, zs_list = [], [], []
+        for i, (df, _lbl) in enumerate(eligible):
             x_arr = df[x_col].values.astype(float)
             z_arr = df[z_col].values.astype(float)
-            n = min(len(x_arr), len(z_arr))
+            y_arr = (df[y_col].values.astype(float) if y_col
+                     else np.full(len(x_arr), float(i)))
+            n = min(len(x_arr), len(y_arr), len(z_arr))
             xs_list.append(x_arr[:n])
+            ys_list.append(y_arr[:n])
             zs_list.append(z_arr[:n])
 
-        n_pts  = int(np.median([len(x) for x in xs_list]))
-        x_min  = float(max(x.min() for x in xs_list))
-        x_max  = float(min(x.max() for x in xs_list))
-        if x_min >= x_max:
-            return
-        x_common = np.linspace(x_min, x_max, n_pts)
-
-        xs_flat, ys_flat, zs_flat = [], [], []
-        for i, (x_arr, z_arr) in enumerate(zip(xs_list, zs_list)):
-            z_interp = np.interp(x_common, x_arr, z_arr)
-            xs_flat.append(x_common)
-            ys_flat.append(np.full(n_pts, float(i)))
-            zs_flat.append(z_interp)
-
-        xs = np.concatenate(xs_flat)
-        ys = np.concatenate(ys_flat)
-        zs = np.concatenate(zs_flat)
+        xs = np.concatenate(xs_list)
+        ys = np.concatenate(ys_list)
+        zs = np.concatenate(zs_list)
 
         scan_labels = [lbl for _, lbl in eligible]
-        self._2d_map_data = (xs, ys, zs, x_col, z_col, scan_labels)
+        self._2d_map_data = (xs, ys, zs, x_col, y_col or "scan index", z_col, scan_labels)
         self._2d_widget.replot(xs, ys, zs,
-                               x_label=x_col, y_label="scan index", z_label=z_col)
+                               x_label=x_col,
+                               y_label=y_col or "scan index",
+                               z_label=z_col)
         self._btn_save_2d.setVisible(True)
 
     def _save_2d_map(self):
         if not self._2d_map_data:
             return
-        xs, ys, zs, x_col, z_col, _labels = self._2d_map_data
+        xs, ys, zs, x_col, y_col, z_col, _labels = self._2d_map_data
         path, _ = QFileDialog.getSaveFileName(
             self, "Save 2D Map", "", "CSV files (*.csv)"
         )
@@ -793,7 +783,7 @@ class LocalDataBrowserTab(QWidget):
             return
         try:
             with open(path, "w") as fh:
-                fh.write(f"{x_col},scan_index,{z_col}\n")
+                fh.write(f"{x_col},{y_col},{z_col}\n")
                 for x, y, z in zip(xs, ys, zs):
                     fh.write(f"{x},{y},{z}\n")
         except Exception as exc:
