@@ -126,6 +126,7 @@ class LocalDataBrowserTab(QWidget):
     """Offline experiment data browser — reads plans_log.jsonl + runs/*.jsonl."""
 
     COLORS = PLOT_COLORS
+    sync_requested = pyqtSignal(list, str)   # (uid_list, runs_dir_path)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -171,6 +172,14 @@ class LocalDataBrowserTab(QWidget):
         self._btn_open.setObjectName("btn_primary")
         self._btn_open.clicked.connect(self._open_folder)
         vlay.addWidget(self._btn_open)
+
+        self._btn_sync = QPushButton("⟳ Fetch JSONL from Beamline")
+        self._btn_sync.setToolTip(
+            "Copy missing run JSONL files from the beamline computer\n"
+            "via SSH — requires active connection to RE Manager"
+        )
+        self._btn_sync.clicked.connect(self._on_sync_clicked)
+        vlay.addWidget(self._btn_sync)
 
         self._exp_label = QLabel("No folder open")
         self._exp_label.setObjectName("dim_text")
@@ -421,6 +430,34 @@ class LocalDataBrowserTab(QWidget):
         """Public entry point — called from main.py when experiment changes."""
         if folder and Path(folder).is_dir():
             self._load_folder(folder)
+
+    def _on_sync_clicked(self):
+        """Collect UIDs whose JSONL files are missing locally, emit sync_requested."""
+        if not self._exp_path:
+            self._status_label.setText("Open an experiment folder first")
+            return
+        missing = []
+        for entry in self._entries:
+            uids = entry.get("run_uids", [])
+            uid  = uids[0] if uids else ""
+            if uid:
+                p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
+                if not p.exists():
+                    missing.append(uid)
+        if not missing:
+            self._status_label.setText("All run files already present locally — nothing to fetch")
+            return
+        runs_dir = str(Path(self._exp_path) / "runs")
+        self._status_label.setText(f"Fetching {len(missing)} JSONL file(s) from beamline…")
+        self.sync_requested.emit(missing, runs_dir)
+
+    def on_sync_done(self, n_copied: int, n_total: int):
+        """Called by main.py after SSH fetch completes."""
+        self._status_label.setText(
+            f"Fetched {n_copied}/{n_total} JSONL file(s) from beamline"
+        )
+        if n_copied > 0 and self._exp_path:
+            self._load_folder(self._exp_path)
 
     def _load_folder(self, folder: str):
         self._exp_path = folder

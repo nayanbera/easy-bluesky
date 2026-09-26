@@ -990,6 +990,49 @@ class _OperatorLockChecker(QThread):
         self.result.emit(holder)
 
 
+class _JsonlSyncThread(QThread):
+    """Background thread: SFTP-copy missing JSONL run files from the remote machine."""
+    done = pyqtSignal(int, int)   # (n_copied, n_total)
+
+    def __init__(self, profile: dict, uid_list: list, runs_dir: str, parent=None):
+        super().__init__(parent)
+        self._profile  = profile
+        self._uid_list = uid_list
+        self._runs_dir = runs_dir
+
+    def run(self):
+        import paramiko, os
+        p   = self._profile
+        host     = p.get("host", "")
+        user     = p.get("ssh_user", "")
+        key_path = str(Path(p.get("ssh_key_path", "~/.ssh/id_ed25519")).expanduser())
+        n_copied = 0
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(host, username=user, key_filename=key_path, timeout=15)
+
+            # discover remote home
+            _, stdout, _ = ssh.exec_command("echo $HOME")
+            remote_home  = stdout.read().decode().strip() or "~"
+            remote_runs  = f"{remote_home}/.easy_bluesky/data/runs"
+
+            sftp = ssh.open_sftp()
+            os.makedirs(self._runs_dir, exist_ok=True)
+            for uid in self._uid_list:
+                try:
+                    sftp.get(f"{remote_runs}/{uid}.jsonl",
+                             f"{self._runs_dir}/{uid}.jsonl")
+                    n_copied += 1
+                except Exception:
+                    pass
+            sftp.close()
+            ssh.close()
+        except Exception:
+            pass
+        self.done.emit(n_copied, len(self._uid_list))
+
+
 def _ai_settings(conn: dict) -> dict:
     return {
         "provider":          conn.get("ai_provider", "anthropic"),
@@ -1071,6 +1114,7 @@ class MainWindow(QMainWindow):
         self.mongo_browser      = MongoDataBrowserTab(self._conn_settings)
         self.hdf5_viewer        = HDF5Viewer()
         self.local_data_browser = LocalDataBrowserTab()
+        self.local_data_browser.sync_requested.connect(self._sync_jsonl_from_beamline)
         self.experiments_tab.update_settings(self._conn_settings)
         # Set initial profile so _load_active_experiment reads the right slot.
         initial_profile = get_active_profile_name(self._conn_settings)
@@ -2662,6 +2706,23 @@ class MainWindow(QMainWindow):
         self.mongo_browser.set_active_experiment(exp_dir)
         self.local_data_browser.open_folder(exp_dir)
         self.queue_mgr.set_current_experiment(exp_dir)
+
+    def _sync_jsonl_from_beamline(self, uid_list: list, runs_dir: str):
+        """Fetch missing JSONL run files from the beamline computer via SFTP."""
+        active = get_active_profile(self._conn_settings)
+        if not active.get("host"):
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Not Connected",
+                                "Configure SSH connection settings first.")
+            return
+        self._jsonl_sync_thread = _JsonlSyncThread(active, uid_list, runs_dir, parent=self)
+        self._jsonl_sync_thread.done.connect(self.local_data_browser.on_sync_done)
+        self._jsonl_sync_thread.done.connect(
+            lambda n, t: self._log(
+                f"[{self._ts()}] ✓ Fetched {n}/{t} JSONL run file(s) from beamline"
+            )
+        )
+        self._jsonl_sync_thread.start()
 
     def _on_mongo_move_requested(self, motor: str, position: float):
         if not self.worker:
