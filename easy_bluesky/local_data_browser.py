@@ -26,14 +26,14 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton,
-    QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QSizePolicy, QSplitter, QStackedWidget, QTabBar, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import peak_fit as _pf
 from .curve_fit_dialog import FitParamsDialog
 from .config import PLOT_COLORS
-from .plot_tools import setup_crosshair, smart_legend_position
+from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 
 
 # ── JSONL helpers ─────────────────────────────────────────────────────────────
@@ -141,6 +141,8 @@ class LocalDataBrowserTab(QWidget):
         self._saved_fit_state   = None
         self._loader            = None
         self._crosshair_cleanup = None
+        self._map_mode          = False
+        self._2d_map_data       = None
         self._build()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -246,41 +248,35 @@ class LocalDataBrowserTab(QWidget):
         top_bar.addWidget(btn_ss)
         vlay.addLayout(top_bar)
 
-        # ── Controls bar: Norm, Errors, Log Y, Deriv, Fit ────────────────────
-        ctrl_bar = QHBoxLayout()
-        ctrl_bar.setContentsMargins(2, 2, 2, 2)
-        ctrl_bar.setSpacing(4)
+        # ── Mode tabs: 1D Plot / 2D Map ────────────────────────────────────────
+        self._mode_tabs = QTabBar()
+        self._mode_tabs.setDocumentMode(True)
 
-        ctrl_bar.addWidget(QLabel("Norm:"))
+        # 1D controls bar (Norm, ±Errors, Fit)
+        _tab_1d = QWidget()
+        _1d_bar = QHBoxLayout(_tab_1d)
+        _1d_bar.setContentsMargins(4, 2, 4, 2)
+        _1d_bar.setSpacing(4)
+
+        _1d_bar.addWidget(QLabel("Norm:"))
         self.norm_combo = QComboBox()
         self.norm_combo.setMinimumWidth(100)
-        self.norm_combo.setMaximumWidth(200)
+        self.norm_combo.setMaximumWidth(220)
         self.norm_combo.setFixedHeight(26)
         self.norm_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.norm_combo.addItem("None", userData=None)
         self.norm_combo.currentIndexChanged.connect(self._replot)
-        ctrl_bar.addWidget(self.norm_combo)
+        _1d_bar.addWidget(self.norm_combo)
 
+        _1d_bar.addSpacing(6)
         self._err_cb = QCheckBox("± Errors")
-        self._err_cb.setToolTip("Poisson √N error bars")
+        self._err_cb.setToolTip("Overlay Poisson √N error bars")
         self._err_cb.stateChanged.connect(self._replot)
-        ctrl_bar.addWidget(self._err_cb)
+        _1d_bar.addWidget(self._err_cb)
 
-        self._log_y_cb = QCheckBox("Log Y")
-        self._log_y_cb.stateChanged.connect(self._replot)
-        ctrl_bar.addWidget(self._log_y_cb)
-
-        ctrl_bar.addWidget(QLabel("Deriv:"))
-        self._deriv_combo = QComboBox()
-        self._deriv_combo.setFixedHeight(26)
-        self._deriv_combo.setFixedWidth(80)
-        self._deriv_combo.addItems(["—", "dy/dx", "d²y/dx²"])
-        self._deriv_combo.currentIndexChanged.connect(self._replot)
-        ctrl_bar.addWidget(self._deriv_combo)
-
-        ctrl_bar.addSpacing(10)
-        ctrl_bar.addWidget(QLabel("Fit:"))
+        _1d_bar.addSpacing(10)
+        _1d_bar.addWidget(QLabel("Fit:"))
 
         self._fit_model_combo = QComboBox()
         self._fit_model_combo.setFixedHeight(26)
@@ -293,75 +289,122 @@ class LocalDataBrowserTab(QWidget):
         for m in _pf.STEP_MODELS:
             self._fit_model_combo.addItem(m)
         self._fit_model_combo.setCurrentText(_pf.PEAK_MODELS[0])
-        ctrl_bar.addWidget(self._fit_model_combo)
+        _1d_bar.addWidget(self._fit_model_combo)
 
+        bg_lbl = QLabel("+ BG:")
+        bg_lbl.setStyleSheet("font-size: 11px;")
+        _1d_bar.addWidget(bg_lbl)
         self._fit_bg_combo = QComboBox()
         self._fit_bg_combo.setFixedHeight(26)
         self._fit_bg_combo.setMinimumWidth(80)
+        self._fit_bg_combo.setMaximumWidth(110)
         self._fit_bg_combo.addItems(_pf.BACKGROUND_MODELS)
-        ctrl_bar.addWidget(self._fit_bg_combo)
+        _1d_bar.addWidget(self._fit_bg_combo)
 
         btn_fit = QPushButton("Fit…")
         btn_fit.setObjectName("btn_primary")
         btn_fit.setFixedHeight(26)
         btn_fit.clicked.connect(self._open_fit_dialog)
-        ctrl_bar.addWidget(btn_fit)
+        _1d_bar.addWidget(btn_fit)
 
         btn_clear = QPushButton("✕")
         btn_clear.setFixedSize(28, 26)
         btn_clear.setToolTip("Clear fit overlays")
         btn_clear.clicked.connect(self._clear_fit_overlays)
-        ctrl_bar.addWidget(btn_clear)
+        _1d_bar.addWidget(btn_clear)
+        _1d_bar.addStretch()
 
-        ctrl_bar.addStretch()
-        vlay.addLayout(ctrl_bar)
+        self._mode_tabs.addTab("1D Plot")
+        self._mode_tabs.addTab("2D Map")
+        self._mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
+        vlay.addWidget(self._mode_tabs)
+        self._1d_controls = _tab_1d
+        vlay.addWidget(self._1d_controls)
 
-        # ── Inner splitter: Y field list | plot ───────────────────────────────
-        inner = QSplitter(Qt.Orientation.Horizontal)
-
-        y_panel = QWidget()
-        y_lay   = QVBoxLayout(y_panel)
-        y_lay.setContentsMargins(0, 0, 0, 0)
-        y_lay.setSpacing(2)
-        y_lay.addWidget(QLabel("Y fields:"))
+        # ── Y signal list on right side of plot ───────────────────────────────
         self.y_list = QListWidget()
         self.y_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.y_list.setMinimumWidth(100)
         self.y_list.itemSelectionChanged.connect(self._replot)
-        y_lay.addWidget(self.y_list)
-        y_panel.setMaximumWidth(200)
-        inner.addWidget(y_panel)
+
+        y_lbl = QLabel("Y signals")
+        y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        y_lbl.setObjectName("dim_text")
+        y_container = QWidget()
+        y_layout = QVBoxLayout(y_container)
+        y_layout.setSpacing(2)
+        y_layout.setContentsMargins(4, 0, 0, 0)
+        y_layout.addWidget(y_lbl)
+        y_layout.addWidget(self.y_list, 1)
+
+        # coord label created before crosshair setup
+        self._coord_label = QLabel("")
+        self._coord_label.setObjectName("dim_text")
+        self._coord_label.setStyleSheet(
+            "font-size: 11px; padding: 4px; font-family: Menlo, Consolas, Monaco, 'Courier New';")
 
         if _PG_OK:
-            pg.setConfigOptions(antialias=True, foreground="k", background="w")
-            self.plot_widget = pg.PlotWidget()
+            self.plot_widget = pg.PlotWidget(background="#1e1e1e")
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.addLegend()
-            self._coord_label = QLabel("")
-            self._coord_label.setStyleSheet("font-size: 10px;")
-            self._crosshair_cleanup = setup_crosshair(
-                self.plot_widget, self._coord_label,
-                get_curves_fn=lambda: list(self._curves.values()),
-            )
-            inner.addWidget(self.plot_widget)
+            plot_area = self.plot_widget
         else:
             self.plot_widget = QLabel(
                 "pyqtgraph not installed — pip install pyqtgraph")
             self.plot_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._coord_label = QLabel("")
-            inner.addWidget(self.plot_widget)
+            plot_area = self.plot_widget
 
-        inner.setSizes([160, 900])
-        vlay.addWidget(inner, 1)
+        plot_splitter = QSplitter(Qt.Orientation.Horizontal)
+        plot_splitter.addWidget(plot_area)
+        plot_splitter.addWidget(y_container)
+        plot_splitter.setSizes([880, 180])
+        plot_splitter.setStretchFactor(0, 1)
+        plot_splitter.setStretchFactor(1, 0)
 
-        # ── Bottom bar: coord + stats ─────────────────────────────────────────
-        bot_bar = QHBoxLayout()
-        bot_bar.addWidget(self._coord_label)
-        bot_bar.addStretch()
+        self._2d_widget = TwoDMapWidget(parent=w)
+        self._2d_widget.selection_changed.connect(self._update_2d_plot)
+
+        self._btn_save_2d = QPushButton("Save 2D…")
+        self._btn_save_2d.setVisible(False)
+        self._btn_save_2d.setToolTip("Save multi-scan 2D map as CSV")
+        self._btn_save_2d.clicked.connect(self._save_2d_map)
+        self._2d_widget.add_to_ctrl_row(self._btn_save_2d)
+
+        self._plot_stack = QStackedWidget()
+        self._plot_stack.addWidget(plot_splitter)
+        self._plot_stack.addWidget(self._2d_widget)
+        vlay.addWidget(self._plot_stack, 1)
+
+        # ── Bottom bar: coord + stats + Log Y + Deriv ─────────────────────────
+        bot = QHBoxLayout()
+        bot.setContentsMargins(0, 0, 0, 0)
+        bot.setSpacing(6)
+        bot.addWidget(self._coord_label, 1)
+
+        self._log_y_cb = QCheckBox("Log Y")
+        self._log_y_cb.stateChanged.connect(self._replot)
+        bot.addWidget(self._log_y_cb)
+
+        bot.addWidget(QLabel("Deriv:"))
+        self._deriv_combo = QComboBox()
+        self._deriv_combo.addItems(["—", "dy/dx", "d²y/dx²"])
+        self._deriv_combo.setFixedHeight(22)
+        self._deriv_combo.setFixedWidth(90)
+        self._deriv_combo.currentIndexChanged.connect(self._replot)
+        bot.addWidget(self._deriv_combo)
+
         self.stats_label = QLabel("")
+        self.stats_label.setObjectName("dim_text")
         self.stats_label.setStyleSheet("font-size: 10px;")
-        bot_bar.addWidget(self.stats_label)
-        vlay.addLayout(bot_bar)
+        bot.addWidget(self.stats_label)
+        vlay.addLayout(bot)
+
+        if _PG_OK:
+            self._crosshair_cleanup = setup_crosshair(
+                self.plot_widget, self._coord_label,
+                get_curves_fn=lambda: self._curves,
+            )
 
         return w
 
@@ -477,8 +520,10 @@ class LocalDataBrowserTab(QWidget):
         if not rows:
             return
 
-        tasks = []
-        labels = []
+        tasks        = []
+        labels       = []
+        missing_files = []
+        no_uid_count  = 0
         for row in rows:
             if self._scan_table.isRowHidden(row):
                 continue
@@ -489,14 +534,27 @@ class LocalDataBrowserTab(QWidget):
             uid  = uids[0] if uids else ""
             sn   = entry.get("scan_num", "?")
             label = f"#{sn}"
-            if uid and self._exp_path:
+            if not uid:
+                no_uid_count += 1
+                continue
+            if self._exp_path:
                 p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
                 if p.exists():
                     tasks.append((str(p), label))
                     labels.append(label)
+                else:
+                    missing_files.append(p.name)
 
         if not tasks:
-            self._status_label.setText("No run data found for selected scan(s)")
+            if missing_files:
+                self._status_label.setText(
+                    f"Run file(s) not found in {Path(self._exp_path).name}/runs/  "
+                    f"— data may be on the beamline computer"
+                )
+            elif no_uid_count:
+                self._status_label.setText("Selected scan(s) have no bluesky run data (motion-only plans)")
+            else:
+                self._status_label.setText("No run data found for selected scan(s)")
             return
 
         # Cancel any running loader
@@ -523,10 +581,116 @@ class LocalDataBrowserTab(QWidget):
         )
         if dfs:
             self._update_field_combos(dfs[0][0])
-        self._replot()
+        if self._map_mode:
+            self._update_2d_plot()
+        else:
+            self._replot()
 
     def _on_load_error(self, msg: str):
         self._status_label.setText(f"Load error: {msg}")
+
+    # ── Mode tab / 2D map ─────────────────────────────────────────────────────
+
+    def _on_mode_tab_changed(self, idx: int):
+        self._1d_controls.setVisible(idx == 0)
+        self._toggle_map_mode(idx == 1)
+
+    def _toggle_map_mode(self, checked: bool):
+        self._map_mode = checked
+        self._plot_stack.setCurrentIndex(1 if checked else 0)
+        if checked:
+            self._update_2d_plot()
+        else:
+            self._btn_save_2d.setVisible(False)
+            self._2d_map_data = None
+            self._replot()
+
+    def _update_2d_plot(self):
+        if not self._dfs:
+            return
+        if len(self._dfs) >= 2:
+            self._update_2d_map_multi_scan()
+        else:
+            self._btn_save_2d.setVisible(False)
+            df, _  = self._dfs[0]
+            x_col  = self.x_combo.currentText()
+            y_col  = self._2d_widget.get_y_signal()
+            z_col  = self._2d_widget.get_z_signal()
+            if not all(c in df.columns for c in (x_col, y_col, z_col)):
+                return
+            self._2d_widget.replot(
+                df[x_col].values, df[y_col].values, df[z_col].values,
+                x_col, y_col, z_col,
+            )
+
+    def _update_2d_map_multi_scan(self):
+        x_col = self.x_combo.currentText()
+        ycs   = [self.y_list.item(i).text()
+                 for i in range(self.y_list.count())
+                 if self.y_list.item(i).isSelected()]
+        if not x_col or not ycs:
+            return
+        z_col = ycs[0]
+
+        eligible = [(df, lbl) for df, lbl in self._dfs
+                    if x_col in df.columns and z_col in df.columns]
+        if len(eligible) < 2:
+            self._mode_tabs.setCurrentIndex(0)
+            QMessageBox.warning(
+                self, "2D Map",
+                f"Fewer than 2 scans have both '{x_col}' and '{z_col}' — "
+                "2D map requires at least 2 compatible scans."
+            )
+            return
+
+        xs_list, zs_list = [], []
+        for df, _lbl in eligible:
+            x_arr = df[x_col].values.astype(float)
+            z_arr = df[z_col].values.astype(float)
+            n = min(len(x_arr), len(z_arr))
+            xs_list.append(x_arr[:n])
+            zs_list.append(z_arr[:n])
+
+        n_pts  = int(np.median([len(x) for x in xs_list]))
+        x_min  = float(max(x.min() for x in xs_list))
+        x_max  = float(min(x.max() for x in xs_list))
+        if x_min >= x_max:
+            return
+        x_common = np.linspace(x_min, x_max, n_pts)
+
+        xs_flat, ys_flat, zs_flat = [], [], []
+        for i, (x_arr, z_arr) in enumerate(zip(xs_list, zs_list)):
+            z_interp = np.interp(x_common, x_arr, z_arr)
+            xs_flat.append(x_common)
+            ys_flat.append(np.full(n_pts, float(i)))
+            zs_flat.append(z_interp)
+
+        xs = np.concatenate(xs_flat)
+        ys = np.concatenate(ys_flat)
+        zs = np.concatenate(zs_flat)
+
+        scan_labels = [lbl for _, lbl in eligible]
+        self._2d_map_data = (xs, ys, zs, x_col, z_col, scan_labels)
+        self._2d_widget.replot(xs, ys, zs,
+                               x_label=x_col, y_label="scan index", z_label=z_col)
+        self._btn_save_2d.setVisible(True)
+
+    def _save_2d_map(self):
+        if not self._2d_map_data:
+            return
+        xs, ys, zs, x_col, z_col, _labels = self._2d_map_data
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save 2D Map", "", "CSV files (*.csv)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w") as fh:
+                fh.write(f"{x_col},scan_index,{z_col}\n")
+                for x, y, z in zip(xs, ys, zs):
+                    fh.write(f"{x},{y},{z}\n")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Error", str(exc))
 
     # ── Field combos ─────────────────────────────────────────────────────────
 
@@ -577,6 +741,9 @@ class LocalDataBrowserTab(QWidget):
         if prev_norm and prev_norm in cols:
             self.norm_combo.setCurrentText(prev_norm)
         self.norm_combo.blockSignals(False)
+
+        x_col = self.x_combo.currentText()
+        self._2d_widget.set_columns(cols, x_col, [], cols)
 
     # ── Plotting ──────────────────────────────────────────────────────────────
 
