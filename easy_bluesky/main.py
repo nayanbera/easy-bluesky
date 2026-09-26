@@ -1012,38 +1012,47 @@ class _JsonlSyncThread(QThread):
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(host, username=user, key_filename=key_path, timeout=15)
+            self.message.emit(f"SSH connected to {host}")
 
-            # Open SFTP first; its cwd is the remote home directory
+            # Reliably get remote home via shell — getcwd() returns None in paramiko
+            _, stdout, _ = ssh.exec_command("echo $HOME")
+            stdout.channel.recv_exit_status()
+            remote_home = stdout.read().decode().strip()
+            if not remote_home:
+                # Last resort: use /home/<user>
+                remote_home = f"/home/{user}"
+            self.message.emit(f"Remote home: {remote_home}")
+
+            remote_runs = f"{remote_home}/.easy_bluesky/data/runs"
+            self.message.emit(f"Looking in {remote_runs} for {len(self._uid_list)} file(s)")
+
             sftp = ssh.open_sftp()
-            remote_cwd = sftp.getcwd() or ""
 
-            # Fall back to running "echo $HOME" if getcwd() returned nothing
-            if not remote_cwd:
-                _, stdout, _ = ssh.exec_command("echo $HOME")
-                stdout.channel.recv_exit_status()
-                remote_cwd = stdout.read().decode().strip()
-
-            if not remote_cwd:
-                self.message.emit("⚠ Could not determine remote home directory")
-                self.done.emit(0, len(self._uid_list))
-                return
-
-            remote_runs = f"{remote_cwd}/.easy_bluesky/data/runs"
-            self.message.emit(f"Looking for JSONL files in {remote_runs}")
+            # Try to list the directory so we know what's there
+            try:
+                remote_files = set(sftp.listdir(remote_runs))
+                self.message.emit(f"Found {len(remote_files)} file(s) in remote runs dir")
+            except Exception as le:
+                remote_files = set()
+                self.message.emit(f"Cannot list {remote_runs}: {le}")
 
             os.makedirs(self._runs_dir, exist_ok=True)
             for uid in self._uid_list:
-                remote_path = f"{remote_runs}/{uid}.jsonl"
-                local_path  = f"{self._runs_dir}/{uid}.jsonl"
+                fname = f"{uid}.jsonl"
+                if fname not in remote_files:
+                    self.message.emit(f"  ✗ {uid[:8]}… not in remote dir")
+                    continue
+                local_path  = f"{self._runs_dir}/{fname}"
                 try:
-                    sftp.get(remote_path, local_path)
+                    sftp.get(f"{remote_runs}/{fname}", local_path)
                     n_copied += 1
+                    self.message.emit(f"  ✓ copied {uid[:8]}…")
                 except Exception as exc:
-                    self.message.emit(f"  ✗ {uid[:8]}…: {exc}")
+                    self.message.emit(f"  ✗ {uid[:8]}… copy failed: {exc}")
             sftp.close()
             ssh.close()
         except Exception as exc:
-            self.message.emit(f"SSH error: {exc}")
+            self.message.emit(f"SSH/SFTP error: {exc}")
         self.done.emit(n_copied, len(self._uid_list))
 
 
@@ -2732,6 +2741,9 @@ class MainWindow(QMainWindow):
         self._jsonl_sync_thread = _JsonlSyncThread(active, uid_list, runs_dir, parent=self)
         self._jsonl_sync_thread.message.connect(
             lambda msg: self._log(f"[{self._ts()}] [JSONL sync] {msg}")
+        )
+        self._jsonl_sync_thread.message.connect(
+            self.local_data_browser.set_sync_message
         )
         self._jsonl_sync_thread.done.connect(self.local_data_browser.on_sync_done)
         self._jsonl_sync_thread.done.connect(

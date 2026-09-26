@@ -128,6 +128,10 @@ class LocalDataBrowserTab(QWidget):
     COLORS = PLOT_COLORS
     sync_requested = pyqtSignal(list, str)   # (uid_list, runs_dir_path)
 
+    def set_sync_message(self, msg: str):
+        """Called by main.py to show SSH progress in this tab's status bar."""
+        self._status_label.setText(msg)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._exp_path   = ""
