@@ -32,7 +32,8 @@ from PyQt6.QtWidgets import (
 
 from . import peak_fit as _pf
 from .curve_fit_dialog import FitParamsDialog
-from .plot_tools import PLOT_COLORS, setup_crosshair, smart_legend_position
+from .config import PLOT_COLORS
+from .plot_tools import setup_crosshair, smart_legend_position
 
 
 # ── JSONL helpers ─────────────────────────────────────────────────────────────
