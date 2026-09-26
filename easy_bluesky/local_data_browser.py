@@ -713,63 +713,44 @@ class LocalDataBrowserTab(QWidget):
             self._replot()
 
     def _update_2d_plot(self):
+        """Build 2D map from all selected scans — 1 scan or N scans, same path."""
         if not self._dfs:
             return
-        if len(self._dfs) >= 2:
-            self._update_2d_map_multi_scan()
-        else:
-            self._btn_save_2d.setVisible(False)
-            df, _  = self._dfs[0]
-            x_col  = self.x_combo.currentText()
-            y_col  = self._2d_widget.get_y_signal()
-            z_col  = self._2d_widget.get_z_signal()
-            if not all(c in df.columns for c in (x_col, y_col, z_col)):
-                return
-            self._2d_widget.replot(
-                df[x_col].values, df[y_col].values, df[z_col].values,
-                x_col, y_col, z_col,
-            )
-
-    def _update_2d_map_multi_scan(self):
         x_col = self.x_combo.currentText()
         y_col = self._2d_widget.get_y_signal()
         z_col = self._2d_widget.get_z_signal()
         if not x_col or not z_col:
             return
 
-        eligible = [(df, lbl) for df, lbl in self._dfs
-                    if x_col in df.columns and z_col in df.columns
-                    and (not y_col or y_col in df.columns)]
-        if len(eligible) < 2:
-            self._mode_tabs.setCurrentIndex(0)
-            QMessageBox.warning(
-                self, "2D Map",
-                f"Fewer than 2 scans have '{x_col}' and '{z_col}' — "
-                "2D map requires at least 2 compatible scans."
-            )
-            return
-
         xs_list, ys_list, zs_list = [], [], []
-        for i, (df, _lbl) in enumerate(eligible):
+        for i, (df, _lbl) in enumerate(self._dfs):
+            if x_col not in df.columns or z_col not in df.columns:
+                continue
             x_arr = df[x_col].values.astype(float)
             z_arr = df[z_col].values.astype(float)
-            y_arr = (df[y_col].values.astype(float) if y_col
+            y_arr = (df[y_col].values.astype(float)
+                     if y_col and y_col in df.columns
                      else np.full(len(x_arr), float(i)))
             n = min(len(x_arr), len(y_arr), len(z_arr))
             xs_list.append(x_arr[:n])
             ys_list.append(y_arr[:n])
             zs_list.append(z_arr[:n])
 
+        if not xs_list:
+            self._status_label.setText(
+                f"No scans contain both '{x_col}' and '{z_col}'"
+            )
+            return
+
         xs = np.concatenate(xs_list)
         ys = np.concatenate(ys_list)
         zs = np.concatenate(zs_list)
 
-        scan_labels = [lbl for _, lbl in eligible]
-        self._2d_map_data = (xs, ys, zs, x_col, y_col or "scan index", z_col, scan_labels)
+        y_label = y_col or "scan index"
+        self._2d_map_data = (xs, ys, zs, x_col, y_label, z_col,
+                             [lbl for _, lbl in self._dfs])
         self._2d_widget.replot(xs, ys, zs,
-                               x_label=x_col,
-                               y_label=y_col or "scan index",
-                               z_label=z_col)
+                               x_label=x_col, y_label=y_label, z_label=z_col)
         self._btn_save_2d.setVisible(True)
 
     def _save_2d_map(self):
