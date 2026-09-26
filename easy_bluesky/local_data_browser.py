@@ -100,7 +100,26 @@ def _mongo_fetch_primary(profile: dict, uid: str) -> dict:
     return {}
 
 
-def _repair_jsonl(path: str, primary_data: dict):
+def _mongo_fetch_stop(profile: dict, uid: str) -> dict:
+    """Fetch the run_stop document for one UID from MongoDB."""
+    host    = profile.get("mongo_host", "localhost")
+    port    = int(profile.get("mongo_port", 27017))
+    db_name = profile.get("mongo_db", "")
+    if not db_name or not uid:
+        return {}
+    try:
+        import pymongo
+        client = pymongo.MongoClient(host, port, serverSelectionTimeoutMS=4000)
+        doc = client[db_name]["run_stop"].find_one(
+            {"run_start": uid}, {"_id": 0}
+        ) or {}
+        client.close()
+        return dict(doc)
+    except Exception:
+        return {}
+
+
+def _repair_jsonl(path: str, primary_data: dict, stop_doc: dict | None = None):
     """Rewrite a JSONL file to include an event_page from MongoDB-fetched data.
 
     Reads the existing start/descriptor/stop docs, inserts a synthesised
@@ -169,12 +188,20 @@ def _repair_jsonl(path: str, primary_data: dict):
         event_page["data"][field]       = _fix(arr.tolist())
         event_page["timestamps"][field] = _fix(time_arr.tolist())
 
-    # Rebuild: start → descriptor → event_page → stop (if present)
+    # Find existing stop doc in file (may be absent for truncated runs)
+    existing_stop = next((doc for dt, doc in raw_docs if dt == "stop"), None)
+    final_stop    = existing_stop or stop_doc  # MongoDB stop preferred as fallback
+
+    # Rebuild: start → descriptor → event_page → stop
     new_docs = []
     for doc_type, doc in raw_docs:
+        if doc_type == "stop":
+            continue  # added at end after event_page
         new_docs.append((doc_type, doc))
         if doc_type == "descriptor":
             new_docs.append(("event_page", event_page))
+    if final_stop:
+        new_docs.append(("stop", final_stop))
 
     try:
         with open(path, "w", encoding="utf-8") as fh:
@@ -298,7 +325,8 @@ class _RunLoader(QThread):
                     data = _mongo_fetch_primary(self._mongo, uid)
                     if data:
                         n_from_mongo += 1
-                        _repair_jsonl(path, data)  # write events back → JSONL self-heals
+                        stop_doc = _mongo_fetch_stop(self._mongo, uid)
+                        _repair_jsonl(path, data, stop_doc)  # self-heals JSONL permanently
                 if data and _PANDAS_OK:
                     df = pd.DataFrame(data)
                     if not df.empty:
@@ -1063,7 +1091,10 @@ class LocalDataBrowserTab(QWidget):
                     if not raw and self._mongo_profile and uid:
                         raw = _mongo_fetch_primary(self._mongo_profile, uid)
                         if raw:
-                            _repair_jsonl(str(p), raw)  # self-heal the JSONL file
+                            stop_from_mongo = _mongo_fetch_stop(self._mongo_profile, uid)
+                            _repair_jsonl(str(p), raw, stop_from_mongo)
+                            if not stop_doc and stop_from_mongo:
+                                stop_doc = stop_from_mongo  # use in this dialog immediately
                     df = pd.DataFrame(raw) if raw else pd.DataFrame()
         dlg = _LocalRunDetailDialog(entry, start_doc, stop_doc, df=df, parent=self)
         dlg.show()
