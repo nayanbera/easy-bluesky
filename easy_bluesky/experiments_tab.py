@@ -3661,7 +3661,7 @@ class ExperimentsTab(QWidget):
             if self.queue_compact.item(i).isSelected()
         }
         self.queue_compact.clear()
-        for i, item in enumerate(items):
+        for i, item in enumerate(self._current_queue_items):
             name    = item.get("name", "unknown")
             args    = item.get("args", []) or []
             kwargs  = item.get("kwargs", {}) or {}
