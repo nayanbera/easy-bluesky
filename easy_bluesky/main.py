@@ -1422,6 +1422,8 @@ class MainWindow(QMainWindow):
         self.worker.running_item_updated.connect(self.mongo_browser.set_running_item)
         self.experiments_tab.live_viewer.scan_point_completed.connect(
             self.experiments_tab.on_scan_point_completed)
+        self.experiments_tab.live_viewer.scan_total_points.connect(
+            self.experiments_tab.on_scan_started)
         self.worker.disconnected.connect(self.queue_mgr.on_disconnected)
         self.worker.disconnected.connect(self.experiments_tab.on_disconnected)
 

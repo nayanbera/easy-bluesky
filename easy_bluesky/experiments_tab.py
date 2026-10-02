@@ -1305,13 +1305,14 @@ class ExperimentsTab(QWidget):
         self._velocity_cache: dict     = {}
         self._acquire_time_cache: dict = {}
         self._running_item_uid         = ""
-        self._running_item_num         = 0    # total points in running plan
+        self._running_item_total_points: int = 0  # num_points from start doc
         self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
         self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
         self._completed_points         = 0    # event docs received so far
         self._plan_event_intervals: deque = deque(maxlen=8)  # inter-event seconds
         self._plan_last_event_time     = 0.0
         self._queue_done_events        = 0    # events from plans already finished
+        self._queue_done_plans         = 0    # plans completed this session
         self._prev_queue_was_empty     = True
         self._current_running_item: dict = {}
         self._current_queue_items: list  = []
@@ -2226,9 +2227,10 @@ class ExperimentsTab(QWidget):
         if uid != self._running_item_uid:
             if self._running_item_uid:
                 self._queue_done_events += self._completed_points
-            self._running_item_uid  = uid
-            self._running_item_num  = int((item or {}).get("kwargs", {}).get("num") or 0)
-            self._completed_points  = 0
+                self._queue_done_plans  += 1
+            self._running_item_uid          = uid
+            self._running_item_total_points = 0  # reset; on_scan_started sets from start doc
+            self._completed_points          = 0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 
@@ -2399,6 +2401,13 @@ class ExperimentsTab(QWidget):
         motor_time = max(per_step_times) * num if per_step_times else 0.0
         return acq_total + motor_time
 
+    def on_scan_started(self, num_points: int) -> None:
+        """Called when a start document arrives — sets total point count for the plan bar."""
+        if not self._running_item_uid:
+            return
+        self._running_item_total_points = num_points
+        self._update_progress_bars()
+
     def on_scan_point_completed(self, seq_num: int) -> None:
         """Called each time an event document arrives from the ZMQ doc stream."""
         if not self._running_item_uid:
@@ -2415,43 +2424,46 @@ class ExperimentsTab(QWidget):
     def _update_progress_bars(self) -> None:
         running = self._current_running_item
         done    = self._completed_points
-        num     = self._running_item_num
+        total   = self._running_item_total_points  # from start doc; 0 if unknown
 
         avg_interval = (sum(self._plan_event_intervals) / len(self._plan_event_intervals)
                         if self._plan_event_intervals else None)
 
-        # Plan progress bar
-        if running and num > 0:
-            self._plan_bar.setMaximum(num)
+        # ── Plan progress bar ──────────────────────────────────────────────────
+        if running and total > 0:
+            self._plan_bar.setRange(0, total)
             self._plan_bar.setValue(done)
-            if avg_interval is not None and done < num:
-                secs = (num - done) * avg_interval
-                self._plan_bar.setFormat(f"Plan: %v/%m  (~{self._format_duration(secs)} left)")
+            if avg_interval is not None and done < total:
+                secs = (total - done) * avg_interval
+                self._plan_bar.setFormat(
+                    f"Plan: %v/%m events  (~{self._format_duration(secs)} left)")
             else:
-                self._plan_bar.setFormat("Plan: %v/%m")
+                self._plan_bar.setFormat("Plan: %v/%m events")
             self._plan_bar.setVisible(True)
         elif running:
-            self._plan_bar.setMaximum(0)
-            self._plan_bar.setFormat(f"Plan: point {done}" if done > 0 else "Plan: running…")
+            # total unknown (missed start doc, or plan doesn't publish num_points)
+            self._plan_bar.setRange(0, 100)
+            self._plan_bar.setValue(0)
+            self._plan_bar.setFormat(
+                f"Plan: #{done} events" if done > 0 else "Plan: running…")
             self._plan_bar.setVisible(True)
         else:
             self._plan_bar.setVisible(False)
 
-        # Queue progress bar — total events across running + queued items
-        queued = self._current_queue_items
-        queue_events = sum(int(item.get("kwargs", {}).get("num") or 1) for item in queued)
-        total_events   = self._queue_done_events + num + queue_events
-        current_done   = self._queue_done_events + done
-
-        if running and total_events > 0:
-            self._queue_bar.setMaximum(total_events)
-            self._queue_bar.setValue(current_done)
-            remaining_events = total_events - current_done
-            if avg_interval is not None and remaining_events > 0:
-                secs = remaining_events * avg_interval
-                self._queue_bar.setFormat(f"Queue: %v/%m  (~{self._format_duration(secs)} left)")
+        # ── Queue progress bar — plan-count based ─────────────────────────────
+        if running:
+            n_done      = self._queue_done_plans
+            n_remaining = len(self._current_queue_items)
+            n_total     = n_done + 1 + n_remaining  # completed + running + queued
+            self._queue_bar.setRange(0, n_total)
+            self._queue_bar.setValue(n_done)
+            if total > 0 and avg_interval is not None and n_remaining > 0:
+                events_left = max(0, total - done) + n_remaining * total
+                secs = events_left * avg_interval
+                self._queue_bar.setFormat(
+                    f"Queue: {n_done}/{n_total} plans  (~{self._format_duration(secs)} left)")
             else:
-                self._queue_bar.setFormat("Queue: %v/%m")
+                self._queue_bar.setFormat(f"Queue: {n_done}/{n_total} plans")
             self._queue_bar.setVisible(True)
         else:
             self._queue_bar.setVisible(False)
@@ -3701,6 +3713,7 @@ class ExperimentsTab(QWidget):
 
         if n == 0 and not self._current_running_item:
             self._queue_done_events    = 0
+            self._queue_done_plans     = 0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 

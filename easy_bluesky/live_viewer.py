@@ -126,6 +126,7 @@ class LiveViewer(QWidget):
     move_requested        = pyqtSignal(str, float)           # (motor_name, target_position) — 1D
     move_2d_requested     = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
     scan_point_completed  = pyqtSignal(int)          # seq_num of each event doc
+    scan_total_points     = pyqtSignal(int)          # num_points from start doc (0 if unknown)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -359,6 +360,7 @@ class LiveViewer(QWidget):
 
     def _on_doc(self, name, doc):
         if name == "start":
+            self.scan_total_points.emit(int(doc.get("num_points") or 0))
             # Save current selections before resetting so they can be restored
             # when the new run's descriptor arrives (if signals match).
             self._saved_x = self._x_signal or ""
