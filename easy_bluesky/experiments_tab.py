@@ -3455,7 +3455,10 @@ class ExperimentsTab(QWidget):
                 return
         try:
             # Read ALL raw entries without timestamp filtering.
+            # Deduplicate by uid — a second client may have appended the same
+            # entry before our multi-client guard was applied (keep last write).
             all_entries = []
+            _seen_uids: set = set()
             with open(log_file) as f:
                 for line in f:
                     line = line.strip()
@@ -3463,10 +3466,13 @@ class ExperimentsTab(QWidget):
                         continue
                     try:
                         entry = json.loads(line)
-                        all_entries.append(entry)
                         uid = entry.get("uid", "")
                         if uid:
+                            if uid in _seen_uids:
+                                continue   # skip duplicate written by a second client
+                            _seen_uids.add(uid)
                             self._logged_uids.add(uid)
+                        all_entries.append(entry)
                     except Exception:
                         pass
 
@@ -3608,6 +3614,26 @@ class ExperimentsTab(QWidget):
                 "scan_num":    scan_num,
             }
             try:
+                # Guard against multi-client double-writes: _logged_uids is
+                # rebuilt from the file on each _load_plan_log call, so it can
+                # be stale if another client wrote this UID since the last reload.
+                # Re-scan the file just before appending to catch that race.
+                already = False
+                if log_file.exists():
+                    try:
+                        with open(log_file) as _chk:
+                            for _line in _chk:
+                                try:
+                                    if json.loads(_line.strip()).get("uid") == uid:
+                                        already = True
+                                        break
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                if already:
+                    self._logged_uids.add(uid)
+                    continue
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
