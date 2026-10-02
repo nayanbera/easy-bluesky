@@ -1969,28 +1969,37 @@ class ExperimentsTab(QWidget):
             base = self._running_scan_num
         next_num = base + 1
 
+        new_items = []
         for item in items:
             name   = item.get("name", "")
             kwargs = item.get("kwargs", {}) or {}
 
             if _is_motion_only(name, kwargs):
+                new_items.append(item)
                 continue
 
             plan_info = self._plans.get(name, {})
             params    = plan_info.get("parameters", []) if plan_info else []
             if not any(p.get("name") == "md" for p in params):
+                new_items.append(item)
                 continue
 
-            uid        = item.get("item_uid", "")
             current_sn = (kwargs.get("md") or {}).get("scan_num")
 
             if current_sn != next_num:
                 patched = _copy.deepcopy(item)
                 patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = next_num
                 self.worker.update_item(patched)
+                new_items.append(patched)
+            else:
+                new_items.append(item)
 
             next_num += 1
 
+        # Update _current_queue_items immediately so the display rebuild in
+        # update_compact_queue uses the corrected scan_nums without waiting
+        # for the next poll to confirm the update_item calls.
+        self._current_queue_items = new_items
         self._next_scan_num = next_num
 
     def _inject_metadata(self, result_item: dict):
@@ -3641,7 +3650,7 @@ class ExperimentsTab(QWidget):
         if self._needs_renumber:
             self._needs_renumber = False
             self._renumber_queue()
-            return  # _renumber_queue sets _next_scan_num; full redraw on next poll
+            self._compact_queue_uids = None  # force display rebuild with corrected scan_nums
         if new_uids == getattr(self, "_compact_queue_uids", None):
             self._update_progress_bars()
             return  # nothing changed — skip full rebuild
