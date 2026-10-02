@@ -132,9 +132,8 @@ def _same_experiment(path_a: str, path_b: str, n: int = 2) -> bool:
 def _next_scan_num_for(exp_path: str) -> int:
     """Return the next scan_num from plans_log.jsonl (completed scans only).
 
-    Callers that have access to the live queue state should use the instance
-    method ExperimentsTab._compute_next_scan_num() instead, which also checks
-    currently-queued items so rapid back-to-back additions don't collide.
+    Callers with live queue access can rely on _renumber_queue() firing on the
+    next poll to assign final scan_nums after any queue mutation.
     """
     max_seen = 0
     p = Path(exp_path) / "plans_log.jsonl"
@@ -1290,7 +1289,7 @@ class ExperimentsTab(QWidget):
         self.history_widget    = _HistoryWidgetStub()
         self._console_log      = None   # open file handle for <exp_dir>/console.log
         self._doi_value: str   = ""     # empty until DOI is fetched and confirmed
-        self._queued_scan_lookup: dict = {}  # item_uid -> reserved scan_num
+        self._running_scan_num: int    = 0   # scan_num of currently executing plan
         self._doi_poller       = None   # _ESAFDoiPoller instance
         self._doi_timer        = QTimer()
         self._doi_timer.setInterval(3_600_000)   # re-poll every hour
@@ -1949,34 +1948,11 @@ class ExperimentsTab(QWidget):
         md["client_host"] = socket.gethostname()
         return md
 
-    def _compute_next_scan_num(self) -> int:
-        """Return the next scan_num to assign.
-
-        Sources (highest seen wins):
-          1. scan_num.json — last_completed on disk, shared across all clients
-          2. _queued_scan_lookup — plans added THIS session not yet in the queue
-             poll (rapid back-to-back additions in the same session)
-        The live RE Manager queue is intentionally NOT read here: scan_nums in
-        queued items are ephemeral (plans can be cancelled).  _renumber_queue()
-        re-assigns them from scan_num.json whenever a client opens an experiment.
-        """
-        max_seen = 0
-        if self._active_exp_path:
-            max_seen = _read_scan_num_json(self._active_exp_path)
-        for sn in self._queued_scan_lookup.values():
-            try:
-                if int(sn) > max_seen:
-                    max_seen = int(sn)
-            except Exception:
-                pass
-        return max_seen + 1
-
     def _renumber_queue(self):
-        """Re-number pending queue items sequentially from last_completed + 1.
+        """Re-number pending queue items sequentially.
 
-        Called once after each experiment load via the _needs_renumber flag so
-        that any scan_nums pre-assigned by another client are replaced with a
-        clean sequence rooted at the authoritative scan_num.json value.
+        Base = max(scan_num.json, currently-running scan_num) so that queued
+        plans always follow on from whatever is executing or last completed.
         Motion-only plans (mv, sleep, …) are skipped — they never carry a
         scan_num.  Items that already have the correct number are left untouched
         (no unnecessary update_item calls).
@@ -1988,8 +1964,10 @@ class ExperimentsTab(QWidget):
             return
 
         import copy as _copy
-        next_num = _read_scan_num_json(self._active_exp_path) + 1
-        self._queued_scan_lookup = {}
+        base     = _read_scan_num_json(self._active_exp_path)
+        if self._running_scan_num > base:
+            base = self._running_scan_num
+        next_num = base + 1
 
         for item in items:
             name   = item.get("name", "")
@@ -2006,7 +1984,6 @@ class ExperimentsTab(QWidget):
             uid        = item.get("item_uid", "")
             current_sn = (kwargs.get("md") or {}).get("scan_num")
 
-            self._queued_scan_lookup[uid] = next_num
             if current_sn != next_num:
                 patched = _copy.deepcopy(item)
                 patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = next_num
@@ -2037,9 +2014,8 @@ class ExperimentsTab(QWidget):
         # Lock in scan_num at queue time so custom_plans.py doesn't need to
         # read scans_log.json at execution time (avoids stale-file off-by-one).
         if self._active_exp_path:
-            next_num = self._compute_next_scan_num()
-            merged["scan_num"] = next_num
-            self._next_scan_num = next_num + 1
+            merged["scan_num"] = self._next_scan_num
+            self._next_scan_num += 1
         result_item.setdefault("kwargs", {})["md"] = merged
         return result_item
 
@@ -2051,22 +2027,11 @@ class ExperimentsTab(QWidget):
             item = self._inject_metadata(dlg.result_item)
             ok, result = self.worker.add_item(item)
             if ok:
-                self._register_queued_scan(item, result)
+                self._needs_renumber = True
                 self._log("✓ Add plan: queued")
             else:
                 self._log(f"✗ Add plan: {result}")
 
-    def _register_queued_scan(self, item: dict, item_uid: str):
-        """Record a just-queued plan's scan_num in the in-session lookup.
-
-        This prevents rapid back-to-back additions from assigning the same
-        number before the next queue poll reflects the new item.
-        """
-        if not item_uid:
-            return
-        scan_num = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
-        if scan_num is not None:
-            self._queued_scan_lookup[item_uid] = scan_num
 
     def _on_compact_queue_reorder(self, parent, start, end, dest, row):
         self._compact_queue_uids = None  # force re-render after drag-reorder
@@ -2260,6 +2225,13 @@ class ExperimentsTab(QWidget):
 
 
         self._current_running_item = item or {}
+        # Cache running scan_num so _renumber_queue bases queued plans after it.
+        run_sn = ((item or {}).get("kwargs", {}) or {}).get("md", {}).get("scan_num")
+        if run_sn is not None:
+            try:
+                self._running_scan_num = int(run_sn)
+            except (ValueError, TypeError):
+                pass
         self._update_progress_bars()
 
         if not item:
@@ -2542,7 +2514,7 @@ class ExperimentsTab(QWidget):
             queued = self._inject_metadata(dlg.result_item)
             ok, result = self.worker.add_item(queued)
             if ok:
-                self._register_queued_scan(queued, result)
+                self._needs_renumber = True
                 self._log("✓ AI plan: queued")
             else:
                 self._log(f"✗ AI plan: {result}")
@@ -3486,10 +3458,11 @@ class ExperimentsTab(QWidget):
                     return 0.0
             all_entries.sort(key=_ts_key)
 
-            # Reset in-session lookup; _renumber_queue (triggered by _needs_renumber
-            # in update_compact_queue) will repopulate it from the live queue.
-            self._queued_scan_lookup = {}
-            self._next_scan_num = self._compute_next_scan_num()
+            # Trigger a renumber so queued scan_nums stay in sync after any
+            # plan log change (completion, removal, experiment switch, etc.).
+            base = _read_scan_num_json(self._active_exp_path) if self._active_exp_path else 0
+            self._next_scan_num = base + 1
+            self._needs_renumber = True
 
             # Show all entries in the file — no time-window cap.
             entries = all_entries
@@ -3595,7 +3568,7 @@ class ExperimentsTab(QWidget):
                 scan_num = None
             else:
                 md_sn = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
-                scan_num = md_sn or self._queued_scan_lookup.get(uid) or self._next_scan_num
+                scan_num = md_sn or self._next_scan_num
 
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
@@ -3659,22 +3632,16 @@ class ExperimentsTab(QWidget):
                     self.run_files_needed.emit(missing, runs_dir)
 
     def update_compact_queue(self, items: list):
+        old_order = [it.get("item_uid", "") for it in self._current_queue_items]
         self._current_queue_items = items
+        new_uids = [item.get("item_uid", "") for item in items]
+        # Trigger renumber whenever items are added, removed, or reordered.
+        if old_order != new_uids:
+            self._needs_renumber = True
         if self._needs_renumber:
             self._needs_renumber = False
             self._renumber_queue()
             return  # _renumber_queue sets _next_scan_num; full redraw on next poll
-        # Prune lookup entries for plans no longer in the queue so they don't
-        # inflate the next scan_num and create gaps.
-        current_uids = {item.get("item_uid", "") for item in items}
-        stale = [uid for uid in self._queued_scan_lookup if uid not in current_uids]
-        if stale:
-            for uid in stale:
-                del self._queued_scan_lookup[uid]
-            next_num = self._compute_next_scan_num()
-            if next_num != self._next_scan_num:
-                self._next_scan_num = next_num
-        new_uids = [item.get("item_uid", "") for item in items]
         if new_uids == getattr(self, "_compact_queue_uids", None):
             self._update_progress_bars()
             return  # nothing changed — skip full rebuild
@@ -3740,7 +3707,7 @@ class ExperimentsTab(QWidget):
             item = self._inject_metadata(item)
             ok, result = self.worker.add_item(item)
             if ok:
-                self._register_queued_scan(item, result)
+                self._needs_renumber = True
                 added += 1
             else:
                 self._log(f"✗ Re-queue '{item['name']}': {result}")
@@ -3764,7 +3731,7 @@ class ExperimentsTab(QWidget):
             item = self._inject_metadata(dlg.result_item)
             ok, result = self.worker.add_item(item)
             if ok:
-                self._register_queued_scan(item, result)
+                self._needs_renumber = True
                 self._log(f"✓ Re-queue '{base['name']}': queued")
             else:
                 self._log(f"✗ Re-queue '{base['name']}': {result}")
