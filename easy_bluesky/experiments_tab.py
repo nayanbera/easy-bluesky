@@ -3644,9 +3644,24 @@ class ExperimentsTab(QWidget):
         old_order = [it.get("item_uid", "") for it in self._current_queue_items]
         self._current_queue_items = items
         new_uids = [item.get("item_uid", "") for item in items]
-        # Trigger renumber whenever items are added, removed, or reordered.
+        # Trigger renumber on queue changes, but NOT when the only change is the
+        # running plan moving out of the queue to the execution slot — those
+        # remaining plans already have correct scan_nums and renumbering from
+        # scan_num.json (which isn't updated until the plan completes) would
+        # assign scan_num.json+1 to the first queued plan, colliding with the
+        # running plan that is still consuming that number.
         if old_order != new_uids:
-            self._needs_renumber = True
+            running_uid = (self._current_running_item or {}).get("item_uid", "")
+            removed     = set(old_order) - set(new_uids)
+            added       = set(new_uids) - set(old_order)
+            execution_departure = (
+                bool(running_uid)
+                and removed == {running_uid}
+                and not added
+                and old_order[1:] == new_uids  # remaining order is unchanged
+            )
+            if not execution_departure:
+                self._needs_renumber = True
         if self._needs_renumber:
             self._needs_renumber = False
             self._renumber_queue()
