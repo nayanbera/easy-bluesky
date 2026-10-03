@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
     QAbstractItemView, QPlainTextEdit, QComboBox, QLineEdit, QMessageBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
-    QFileDialog, QCheckBox, QInputDialog, QMenu,
+    QFileDialog, QCheckBox, QInputDialog, QMenu, QDialog, QTextBrowser,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QThread
 from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox
@@ -1421,6 +1421,76 @@ class _RemoteFileSaver(QThread):
         self.done.emit(ok, msg)
 
 
+# ── _DiffDialog ───────────────────────────────────────────────────────────────
+
+class _DiffDialog(QDialog):
+    """Show a unified diff of a local editor buffer vs a remote copy."""
+
+    def __init__(self, local_text: str, remote_text: str, filename: str, parent=None):
+        super().__init__(parent)
+        import difflib
+        self.setWindowTitle(f"↔  Compare: {filename}")
+        self.resize(900, 640)
+
+        lay = QVBoxLayout(self)
+
+        header = QHBoxLayout()
+        header.addWidget(QLabel(f"<b>Local</b> ← {filename}"))
+        header.addStretch()
+        header.addWidget(QLabel(f"<b>Remote</b> → {filename}"))
+        lay.addLayout(header)
+
+        browser = QTextBrowser()
+        browser.setFont(QFont("Courier New", 12))
+        browser.setOpenLinks(False)
+
+        local_lines  = local_text.splitlines(keepends=True)
+        remote_lines = remote_text.splitlines(keepends=True)
+        diff = list(difflib.unified_diff(
+            remote_lines, local_lines,
+            fromfile=f"remote/{filename}",
+            tofile=f"local/{filename}",
+        ))
+
+        if not diff:
+            browser.setPlainText("Files are identical.")
+        else:
+            html_parts = []
+            for line in diff:
+                line_esc = (line.rstrip("\n")
+                            .replace("&", "&amp;")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;"))
+                if line.startswith("---") or line.startswith("+++"):
+                    style = "color:#888; font-style:italic;"
+                elif line.startswith("@@"):
+                    style = "color:#4d9fe8; background:#1a2a3a;"
+                elif line.startswith("+"):
+                    style = "color:#2ecc71; background:#0d2b1a;"
+                elif line.startswith("-"):
+                    style = "color:#e74c3c; background:#2b0d0d;"
+                else:
+                    style = "color:#ccc;"
+                html_parts.append(
+                    f'<div style="margin:0;padding:0;white-space:pre;{style}">'
+                    f'{line_esc}</div>'
+                )
+            browser.setHtml(
+                '<html><body style="background:#1e1e1e;font-family:Courier New,monospace;">'
+                + "".join(html_parts)
+                + "</body></html>"
+            )
+
+        lay.addWidget(browser, 1)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        btns.addWidget(btn_close)
+        lay.addLayout(btns)
+
+
 # ── PlanFileTreePanel ─────────────────────────────────────────────────────────
 
 class PlanFileTreePanel(QWidget):
@@ -1432,17 +1502,19 @@ class PlanFileTreePanel(QWidget):
     display however it likes.
     """
 
-    file_open_requested = pyqtSignal(str, str)   # (tier, name_or_path)
-    output_message      = pyqtSignal(str)
-    local_plans_added   = pyqtSignal()           # folder added — triggers env restart
-    local_plans_removed = pyqtSignal(str)        # folder removed (path) — env restart needed
+    file_open_requested  = pyqtSignal(str, str)   # (tier, name_or_path)
+    output_message       = pyqtSignal(str)
+    local_plans_added    = pyqtSignal()           # folder added — triggers env restart
+    local_plans_removed  = pyqtSignal(str)        # folder removed (path) — env restart needed
+    remote_file_names_ready = pyqtSignal(set)     # emitted when remote list arrives
 
     def __init__(self, show_new_remote_btn: bool = True, parent=None):
         super().__init__(parent)
-        self._conn_settings:  dict = {}
-        self._profile_name:   str  = ""
-        self._active_threads: list = []
+        self._conn_settings:    dict = {}
+        self._profile_name:     str  = ""
+        self._active_threads:   list = []
         self._show_new_remote = show_new_remote_btn
+        self._remote_file_names: set = set()
         self._build()
 
     def _build(self) -> None:
@@ -1527,17 +1599,41 @@ class PlanFileTreePanel(QWidget):
             empty = QTreeWidgetItem(["  (empty — use ＋ Remote File to create)"])
             empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._remote_header.addChild(empty)
-            return
-        for fn in files:
-            item = QTreeWidgetItem([f"  {fn}"])
-            item.setData(0, Qt.ItemDataRole.UserRole, {"tier": "remote", "name": fn})
-            self._remote_header.addChild(item)
+        else:
+            for fn in files:
+                item = QTreeWidgetItem([f"  {fn}"])
+                item.setData(0, Qt.ItemDataRole.UserRole, {"tier": "remote", "name": fn})
+                self._remote_header.addChild(item)
+        self._remote_file_names = set(files)
+        self._update_local_indicators()
+        self.remote_file_names_ready.emit(self._remote_file_names)
 
     def _on_remote_error(self, msg: str) -> None:
         self._remote_header.takeChildren()
         err = QTreeWidgetItem([f"  ⚠ {msg}"])
         err.setFlags(err.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self._remote_header.addChild(err)
+
+    def _update_local_indicators(self) -> None:
+        """Mark local file items with ↕ when they also exist on the remote."""
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            top = root.child(i)
+            top_data = top.data(0, Qt.ItemDataRole.UserRole) or {}
+            if top_data.get("tier") != "header_local":
+                continue
+            for j in range(top.childCount()):
+                child = top.child(j)
+                cdata = child.data(0, Qt.ItemDataRole.UserRole) or {}
+                if cdata.get("tier") != "local":
+                    continue
+                fn = cdata.get("name", "")
+                if fn in self._remote_file_names:
+                    child.setText(0, f"  ↕ {fn}")
+                    child.setToolTip(0, "Also exists on beamline computer")
+                else:
+                    child.setText(0, f"  {fn}")
+                    child.setToolTip(0, "")
 
     def _add_local_dir(self, dir_path: str) -> None:
         bold = QFont()
@@ -1555,9 +1651,12 @@ class PlanFileTreePanel(QWidget):
             empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             header.addChild(empty)
         for f in py_files:
-            item = QTreeWidgetItem([f"  {f.name}"])
+            label = f"  ↕ {f.name}" if f.name in self._remote_file_names else f"  {f.name}"
+            tooltip = "Also exists on beamline computer" if f.name in self._remote_file_names else ""
+            item = QTreeWidgetItem([label])
             item.setData(0, Qt.ItemDataRole.UserRole,
                          {"tier": "local", "name": f.name, "path": str(f)})
+            item.setToolTip(0, tooltip)
             header.addChild(item)
 
     # ── interactions ───────────────────────────────────────────────────────────
@@ -1688,12 +1787,13 @@ class PlanBuilder(QWidget):
         self.plans   = {}
         self.devices = {}
         self._env_reload_attempts = 0
-        self._conn_settings: dict = {}
-        self._profile_name:  str  = ""
-        self._file_tier:     str  = ""
-        self._file_name:     str  = ""
-        self._dirty:         bool = False
-        self._active_threads: list = []
+        self._conn_settings:    dict = {}
+        self._profile_name:     str  = ""
+        self._file_tier:        str  = ""
+        self._file_name:        str  = ""
+        self._dirty:            bool = False
+        self._active_threads:   list = []
+        self._remote_file_names: set = set()
         self._build()
 
     def _build(self):
@@ -1777,16 +1877,21 @@ class PlanBuilder(QWidget):
         btn_check.setToolTip("Check for syntax errors, undefined names, and missing imports")
         btn_upload = QPushButton("⬆  Upload to RE Manager")
         btn_reload = QPushButton("↺  Reload RE env")
+        self._btn_compare = QPushButton("↔  Compare with Remote")
+        self._btn_compare.setToolTip("Show diff of local file vs version on beamline computer")
+        self._btn_compare.setVisible(False)
         btn_open.clicked.connect(self._open_script)
         btn_save.clicked.connect(self._save_script)
         btn_check.clicked.connect(self._check_plan)
         btn_upload.clicked.connect(self._upload_script)
         btn_reload.clicked.connect(self._reload_environment)
+        self._btn_compare.clicked.connect(self._compare_with_remote)
         e_btns.addWidget(btn_open)
         e_btns.addWidget(btn_save)
         e_btns.addWidget(btn_check)
         e_btns.addWidget(btn_upload)
         e_btns.addWidget(btn_reload)
+        e_btns.addWidget(self._btn_compare)
         lay.addLayout(e_btns)
 
         lbl_out = QLabel("OUTPUT")
@@ -1807,6 +1912,7 @@ class PlanBuilder(QWidget):
         self._file_panel.output_message.connect(self.output.appendPlainText)
         self._file_panel.local_plans_added.connect(self._on_local_plans_added)
         self._file_panel.local_plans_removed.connect(self._on_local_plans_removed)
+        self._file_panel.remote_file_names_ready.connect(self._on_remote_names_ready)
         splitter.addWidget(self._file_panel)
         splitter.setSizes([620, 260])
 
@@ -2185,6 +2291,7 @@ class PlanBuilder(QWidget):
         self._file_name = filename
         self._dirty = False
         self._editor_file_lbl.setText(filename)
+        self._btn_compare.setVisible(False)
         ts = datetime.now().strftime("%H:%M:%S")
         self.output.appendPlainText(f"[{ts}] Opened remote:{filename}")
 
@@ -2200,11 +2307,41 @@ class PlanBuilder(QWidget):
             self._file_name = path
             self._dirty = False
             self._editor_file_lbl.setText(Path(path).name)
+            self._update_compare_btn()
             ts = datetime.now().strftime("%H:%M:%S")
             self.output.appendPlainText(f"[{ts}] Opened {path}")
         except Exception as e:
             ts = datetime.now().strftime("%H:%M:%S")
             self.output.appendPlainText(f"[{ts}] ✗ Cannot open {path}: {e}")
+
+    def _on_remote_names_ready(self, names: set) -> None:
+        self._remote_file_names = names
+        self._update_compare_btn()
+
+    def _update_compare_btn(self) -> None:
+        """Show Compare button only when a local file is open and also exists on remote."""
+        if self._file_tier != "local" or not self._file_name:
+            self._btn_compare.setVisible(False)
+            return
+        fn = Path(self._file_name).name
+        has_remote = bool(self._conn_settings) and fn in self._remote_file_names
+        self._btn_compare.setVisible(has_remote)
+
+    def _compare_with_remote(self) -> None:
+        if not self._file_name or self._file_tier != "local":
+            return
+        fn = Path(self._file_name).name
+        local_text = self.editor.toPlainText()
+        from .connection_settings import get_active_profile
+        profile = get_active_profile(self._conn_settings)
+        t = _RemoteFileReader(self._conn_settings, profile, fn, self)
+        t.result.connect(lambda _fn, content: _DiffDialog(
+            local_text, content, fn, parent=self).exec())
+        t.error.connect(lambda _fn, msg: self.output.appendPlainText(
+            f"  ✗ Cannot fetch remote {fn}: {msg}"))
+        t.start()
+        self._active_threads.append(t)
+        self.output.appendPlainText(f"  Fetching remote copy of {fn}…")
 
     def _on_editor_changed(self) -> None:
         if not self._dirty:
