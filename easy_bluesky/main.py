@@ -1466,6 +1466,7 @@ class MainWindow(QMainWindow):
         self.watchdog_tab.log_message.connect(self._on_console_line)
 
         self.worker_thread.start()
+        self._setup_sleep_wake_detection()
 
     def _connect(self):
         # Only start poll thread here when discovery didn't already start it.
@@ -2428,6 +2429,33 @@ class MainWindow(QMainWindow):
         else:
             self.re_bar.set_disconnected()
             self._log(f"[{self._ts()}] ✗ Reconnect failed — RE Manager may still be starting")
+
+    # ── Sleep / wake detection ─────────────────────────────────────────────────
+
+    def _setup_sleep_wake_detection(self):
+        """Detect system sleep/wake via a periodic timer.
+        If the timer fires more than 20 s late the system was asleep.
+        Works on macOS and Windows without platform-specific dependencies."""
+        self._wake_check_time = time.time()
+        self._wake_timer = QTimer(self)
+        self._wake_timer.setInterval(5_000)
+        self._wake_timer.timeout.connect(self._check_for_wake)
+        self._wake_timer.start()
+
+    def _check_for_wake(self):
+        now = time.time()
+        gap = now - self._wake_check_time - 5.0   # excess over expected 5 s interval
+        self._wake_check_time = now
+        if gap > 20.0:
+            self._log(f"[{self._ts()}] System woke from sleep — reconnecting in 5 s…")
+            QTimer.singleShot(5_000, self._reconnect_after_wake)
+
+    def _reconnect_after_wake(self):
+        if self.worker.rm is not None:
+            return   # still connected — nothing to do
+        if not self._conn_settings:
+            return
+        self._auto_reconnect()
 
     def _on_profile_changed(self, name: str):
         # Block switch if another instance already holds this profile

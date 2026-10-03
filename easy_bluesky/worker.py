@@ -648,6 +648,8 @@ class ZMQWorker(QObject):
             self.rm = REManagerAPI(
                 zmq_control_addr=ctrl_addr,
                 zmq_info_addr=zmq_info or ZMQ_INFO,
+                timeout_recv=5,
+                n_retries=1,
             )
             status = self.rm.status()
             self.connected.emit()
