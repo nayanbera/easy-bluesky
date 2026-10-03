@@ -1306,6 +1306,7 @@ class ExperimentsTab(QWidget):
         self._acquire_time_cache: dict = {}
         self._running_item_uid         = ""
         self._running_item_total_points: int = 0  # num_points from start doc
+        self._running_item_start_time: float = 0.0  # wall time when current plan started
         self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
         self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
         self._completed_points         = 0    # event docs received so far
@@ -1313,6 +1314,7 @@ class ExperimentsTab(QWidget):
         self._plan_last_event_time     = 0.0
         self._queue_done_events        = 0    # events from plans already finished
         self._queue_done_plans         = 0    # plans completed this session
+        self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log
         self._prev_queue_was_empty     = True
         self._current_running_item: dict = {}
         self._current_queue_items: list  = []
@@ -2230,6 +2232,7 @@ class ExperimentsTab(QWidget):
                 self._queue_done_plans  += 1
             self._running_item_uid          = uid
             self._running_item_total_points = 0  # reset; on_scan_started sets from start doc
+            self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
@@ -2422,30 +2425,48 @@ class ExperimentsTab(QWidget):
         self._update_progress_bars()
 
     def _update_progress_bars(self) -> None:
-        running = self._current_running_item
-        done    = self._completed_points
-        total   = self._running_item_total_points  # from start doc; 0 if unknown
-
+        running  = self._current_running_item
+        done     = self._completed_points
+        total    = self._running_item_total_points       # from start doc; 0 if unknown
+        elapsed  = (time.time() - self._running_item_start_time
+                    if self._running_item_start_time else 0.0)
+        plan_name = (running or {}).get("name", "")
+        avg_dur   = self._plan_duration_cache.get(plan_name)  # avg seconds from log
         avg_interval = (sum(self._plan_event_intervals) / len(self._plan_event_intervals)
                         if self._plan_event_intervals else None)
 
         # ── Plan progress bar ──────────────────────────────────────────────────
         if running and total > 0:
+            # We know exactly how many events the plan will produce.
             self._plan_bar.setRange(0, total)
             self._plan_bar.setValue(done)
+            elapsed_str = f"  {self._format_duration(elapsed)} elapsed" if elapsed > 5 else ""
             if avg_interval is not None and done < total:
                 secs = (total - done) * avg_interval
                 self._plan_bar.setFormat(
-                    f"Plan: %v/%m events  (~{self._format_duration(secs)} left)")
+                    f"Plan: %v/%m events  (~{self._format_duration(secs)} left{elapsed_str})")
             else:
-                self._plan_bar.setFormat("Plan: %v/%m events")
+                self._plan_bar.setFormat(f"Plan: %v/%m events{elapsed_str}")
+            self._plan_bar.setVisible(True)
+        elif running and avg_dur and avg_dur > 0:
+            # No start-doc total, but we have historical duration for this plan type.
+            # Fill the bar proportionally using elapsed / avg_dur.
+            frac = min(elapsed / avg_dur, 1.0)
+            self._plan_bar.setRange(0, 1000)
+            self._plan_bar.setValue(int(frac * 1000))
+            remaining = max(0.0, avg_dur - elapsed)
+            event_str = f"  #{done} events" if done > 0 else ""
+            self._plan_bar.setFormat(
+                f"Plan:{event_str}  ~{self._format_duration(remaining)} left"
+                f"  ({self._format_duration(elapsed)} elapsed)")
             self._plan_bar.setVisible(True)
         elif running:
-            # total unknown (missed start doc, or plan doesn't publish num_points)
+            # No information at all — show event count, no fill.
             self._plan_bar.setRange(0, 100)
             self._plan_bar.setValue(0)
+            elapsed_str = f"  {self._format_duration(elapsed)} elapsed" if elapsed > 5 else ""
             self._plan_bar.setFormat(
-                f"Plan: #{done} events" if done > 0 else "Plan: running…")
+                f"Plan: #{done} events{elapsed_str}" if done > 0 else "Plan: running…")
             self._plan_bar.setVisible(True)
         else:
             self._plan_bar.setVisible(False)
@@ -2455,15 +2476,30 @@ class ExperimentsTab(QWidget):
             n_done      = self._queue_done_plans
             n_remaining = len(self._current_queue_items)
             n_total     = n_done + 1 + n_remaining  # completed + running + queued
-            self._queue_bar.setRange(0, n_total)
-            self._queue_bar.setValue(n_done)
-            if total > 0 and avg_interval is not None and n_remaining > 0:
-                events_left = max(0, total - done) + n_remaining * total
-                secs = events_left * avg_interval
-                self._queue_bar.setFormat(
-                    f"Queue: {n_done}/{n_total} plans  (~{self._format_duration(secs)} left)")
+
+            # Fraction of the current plan completed (0.0 – 1.0).
+            if total > 0 and total >= done:
+                cur_frac = done / total
+            elif avg_dur and avg_dur > 0:
+                cur_frac = min(elapsed / avg_dur, 1.0)
             else:
-                self._queue_bar.setFormat(f"Queue: {n_done}/{n_total} plans")
+                cur_frac = 0.0
+
+            # Express queue progress as fractional plans (n_done + cur_frac).
+            self._queue_bar.setRange(0, n_total * 1000)
+            self._queue_bar.setValue(int((n_done + cur_frac) * 1000))
+
+            # Time estimate: remaining fraction of current plan + queued plans.
+            if avg_dur and avg_dur > 0:
+                secs_left = max(0.0, avg_dur * (1.0 - cur_frac)) + n_remaining * avg_dur
+                time_str  = f"  (~{self._format_duration(secs_left)} left)"
+            elif total > 0 and avg_interval is not None:
+                events_left = max(0, total - done) + n_remaining * total
+                secs_left   = events_left * avg_interval
+                time_str    = f"  (~{self._format_duration(secs_left)} left)"
+            else:
+                time_str = ""
+            self._queue_bar.setFormat(f"Queue: {n_done}/{n_total} plans{time_str}")
             self._queue_bar.setVisible(True)
         else:
             self._queue_bar.setVisible(False)
@@ -3484,6 +3520,18 @@ class ExperimentsTab(QWidget):
                 except Exception:
                     return 0.0
             all_entries.sort(key=_ts_key)
+
+            # Rebuild per-plan average duration cache (last 5 completions each).
+            _dur_lists: dict = {}
+            for _e in all_entries:
+                _n = _e.get("name", "")
+                _d = _e.get("duration_s")
+                if _n and isinstance(_d, (int, float)) and _d > 0:
+                    _dur_lists.setdefault(_n, []).append(float(_d))
+            self._plan_duration_cache = {
+                _n: sum(_ds[-5:]) / len(_ds[-5:])
+                for _n, _ds in _dur_lists.items()
+            }
 
             # Trigger a renumber so queued scan_nums stay in sync after any
             # plan log change (completion, removal, experiment switch, etc.).
