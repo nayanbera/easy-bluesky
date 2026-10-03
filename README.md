@@ -1766,6 +1766,16 @@ easy-bluesky/
 
 ## Changelog
 
+### 2026-10-02 / 2026-10-03
+
+- **Fix: Scan number collisions after queue reorder or plan completion** — Replaced the `_queued_scan_lookup` reservation table with a queue-mutation-triggered renumber. Any add, remove, or reorder now fires `_renumber_queue()` which reassigns `scan_num` to every queued plan starting from `max(last_completed, running_scan_num) + 1`. Plans retain their numbers through the rest of execution without drift.
+- **Fix: Scan number assigned to executing plan when queue next plan starts** — When the running plan departs the queue (execution, not user removal), a clean departure check (`old_order[1:] == new_uids`) suppresses the renumber that would have re-used the executing plan's number.
+- **Fix: 2-second display lag after queue changes** — `_renumber_queue()` now patches `_current_queue_items` in-place and clears the display cache immediately so the corrected scan numbers appear in the same poll cycle, not the next one.
+- **Fix: Scan numbers flickering back and forth on reorder** — The display rebuild loop now reads `self._current_queue_items` (patched by `_renumber_queue`) instead of the raw RE Manager response (which still carried the old numbers).
+- **Fix: Duplicate plan log entries in multi-client sessions** — Two clients sharing an NFS-mounted `plans_log.jsonl` could each independently write the same completed plan. Root cause: `_logged_uids` is rebuilt from file state at `_load_plan_log` time; if Client B's last rebuild predated Client A's write, Client B's `_logged_uids` had no knowledge of the UID. Fix: scan the file for the UID immediately before every append; if already present, skip. Also deduplicates on read — pre-fix files are cleaned up automatically in the display.
+- **Feat: Progress bars filled using historical plan duration** — Plan and queue progress bars now show visual fill even when the bluesky start document's `num_points` was missed (e.g. late-connecting client). A `_plan_duration_cache` (built from the last 5 completions of each plan type in `plans_log.jsonl`) provides average duration; the plan bar fills by `elapsed / avg_dur` and shows "~N min left". The queue bar fills fractionally as `(plans_done + current_fraction) / total_plans` with a time estimate. Cache is rebuilt on each plan log reload — no file I/O in the 1-second hot path.
+- **Feat: Sleep/wake auto-reconnect** — A 5-second QTimer compares wall-clock elapsed time against the expected 5-second interval. A gap > 20 seconds indicates the system was sleeping. Five seconds after wake (giving the OS time to re-establish the network), the app automatically calls reconnect if the ZMQ worker is disconnected. No platform-specific dependencies — works identically on macOS and Windows.
+
 ### 2026-09-24
 
 - **Feat: 2D map histogram LUT** — `TwoDMapWidget` now uses `pg.HistogramLUTItem` instead of a static `ColorBarItem`. The histogram panel (max 160 px wide) shows the intensity distribution with draggable min/max handles for interactive contrast adjustment — useful for suppressing hot-pixel artefacts without re-running the scan. Applied in Live Viewer, MongoDB Browser, and HDF5 Viewer.
