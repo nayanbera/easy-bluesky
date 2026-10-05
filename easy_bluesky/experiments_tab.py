@@ -3053,13 +3053,10 @@ class ExperimentsTab(QWidget):
         self._exp_end_time = self._compute_exp_end_time()
 
         name = info.get("name", Path(path).name)
-        display_path = path if len(path) <= 60 else "…" + path[-59:]
         self.exp_name_label.setText(name)
-        self.exp_path_label.setText(display_path)
+        self.exp_path_label.setText(path)
         if self._remote_exp_dir:
-            remote_display = (self._remote_exp_dir if len(self._remote_exp_dir) <= 55
-                              else "…" + self._remote_exp_dir[-54:])
-            self.exp_remote_label.setText(f"Remote: {remote_display}")
+            self.exp_remote_label.setText(f"Remote: {self._remote_exp_dir}")
         else:
             self.exp_remote_label.setText("")
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
