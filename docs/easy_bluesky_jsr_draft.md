@@ -1,7 +1,8 @@
 # EasyBluesky: A Graphical Interface for Bluesky-based Beamline Control at Synchrotron Facilities
 
-**Mrinal Bera**
-*[Your institution — e.g., Advanced Photon Source, Argonne National Laboratory / University of Chicago]*
+**Jiajun Tian and Mrinal Bera**
+
+*NSF's ChemMatCARS, Pritzker School of Molecular Engineering, University of Chicago, IL-60439, USA*
 
 ---
 
@@ -39,8 +40,8 @@ Python, queue-server, synchrotron, EPICS
 Modern synchrotron beamlines generate data at rates and volumes that demand automated,
 reproducible data acquisition workflows. The Bluesky ecosystem (Allan *et al.*, 2019)
 has emerged as a community standard for this purpose, offering a run engine that
-orchestrates hardware through ophyd device abstractions (Brookhaven National Laboratory,
-2014) and records provenance-rich experimental metadata. The bluesky-queueserver extension
+orchestrates hardware through ophyd device abstractions (Brookhaven National Laboratory, 2014) 
+and records provenance-rich experimental metadata. The bluesky-queueserver extension
 (Contribute *et al.*, 2021) further decouples the RunEngine from the user interface,
 exposing it over a ZMQ network interface that permits remote control from any machine on
 the network.
