@@ -1020,6 +1020,16 @@ class MCAViewerWindow(QMainWindow):
 
     _HDF_MODE_NAMES = {0: "Single", 1: "Capture", 2: "Stream"}
 
+    @staticmethod
+    def _decode_epics_str(value) -> str:
+        """EPICS char-waveform PVs arrive as int arrays — decode to ASCII string."""
+        if isinstance(value, str):
+            return value.rstrip('\x00').strip()
+        try:
+            return bytes(int(v) for v in value if v).decode('ascii', errors='replace').strip()
+        except Exception:
+            return str(value)
+
     def _on_hdf_connect(self):
         prefix = self._hdf_prefix_edit.text().strip()
         if not prefix:
@@ -1063,11 +1073,11 @@ class MCAViewerWindow(QMainWindow):
 
     def _on_hdf_pv_update(self, field: str, value):
         if field == "FilePath_RBV":
-            path = str(value).rstrip('\x00').strip()
+            path = self._decode_epics_str(value)
             self._hdf_path_lbl.setText(path or "—")
             self._hdf_path_lbl.setToolTip(path)
         elif field == "FileName_RBV":
-            name = str(value).rstrip('\x00').strip()
+            name = self._decode_epics_str(value)
             self._hdf_name_lbl.setText(name or "—")
             self._hdf_name_lbl.setToolTip(name)
         elif field == "FileWriteMode_RBV":
