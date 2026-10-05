@@ -947,13 +947,14 @@ class MCAViewerWindow(QMainWindow):
         hi = min(len(counts), center + half_win)
         x = np.arange(lo, hi, dtype=float)
         y = counts[lo:hi].astype(float)
-        if y.max() < 10:
+        if y.max() < 5:
             return None, None
         try:
             def _gauss(x, amp, mu, sig):
                 return amp * np.exp(-0.5 * ((x - mu) / sig) ** 2)
             p0 = [y.max(), float(center), 10.0]
-            popt, _ = _curve_fit(_gauss, x, y, p0=p0, maxfev=2000)
+            bounds = ([0, lo, 0.5], [y.max() * 2, hi, half_win])
+            popt, _ = _curve_fit(_gauss, x, y, p0=p0, bounds=bounds, maxfev=5000)
             return float(popt[1]), popt
         except Exception:
             return None, None
@@ -966,8 +967,9 @@ class MCAViewerWindow(QMainWindow):
             self._set_status("⚠ No spectrum loaded", "#e05050")
             return
         counts = self._last_counts
-        peaks, props = _find_peaks(counts, height=counts.max() * 0.1,
-                                   distance=20, prominence=counts.max() * 0.05)
+        # Use relaxed thresholds — Mn Kβ is only ~13.5 % of Kα intensity
+        peaks, props = _find_peaks(counts, height=counts.max() * 0.05,
+                                   distance=20, prominence=counts.max() * 0.02)
         if len(peaks) < 2:
             self._set_status("⚠ Could not find two peaks for Fe-55 calibration",
                              "#e05050")
@@ -978,10 +980,18 @@ class MCAViewerWindow(QMainWindow):
         ka_ch, kb_ch = sorted(top2)
         ka_fit, ka_popt = self._fit_gaussian_centroid(counts, ka_ch)
         kb_fit, kb_popt = self._fit_gaussian_centroid(counts, kb_ch)
+
+        # Block spinbox signals while updating both values to avoid
+        # _on_cal_channels_changed firing with a partially-updated state
+        self._spin_ka.blockSignals(True)
+        self._spin_kb.blockSignals(True)
         if ka_fit is not None:
             self._spin_ka.setValue(ka_fit)
         if kb_fit is not None:
             self._spin_kb.setValue(kb_fit)
+        self._spin_ka.blockSignals(False)
+        self._spin_kb.blockSignals(False)
+        self._on_cal_channels_changed()   # fire once with both values set
 
         self._fit_params = []
         if ka_popt is not None:
