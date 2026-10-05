@@ -401,6 +401,11 @@ class MCAViewerWindow(QMainWindow):
         btn_fit.clicked.connect(self._on_autofit_fe55)
         gcl.addWidget(btn_fit)
 
+        self._chk_show_fit = QCheckBox("Show fit overlay")
+        self._chk_show_fit.setChecked(True)
+        self._chk_show_fit.toggled.connect(self._on_show_fit_toggled)
+        gcl.addWidget(self._chk_show_fit)
+
         self._cal_result_lbl = QLabel("Gain:   —\nOffset: —")
         self._cal_result_lbl.setStyleSheet("color:#aaa; font-size:11px;")
         gcl.addWidget(self._cal_result_lbl)
@@ -1004,6 +1009,10 @@ class MCAViewerWindow(QMainWindow):
                 pass
         self._fit_curve_items.clear()
 
+    def _on_show_fit_toggled(self, checked: bool):
+        for item in self._fit_curve_items:
+            item.setVisible(checked)
+
     def _draw_fit_curves(self):
         if not _HAS_PG:
             return
@@ -1031,6 +1040,10 @@ class MCAViewerWindow(QMainWindow):
                 pen=pg.mkPen(color=(r, g, b, 255), width=1.5))
             self._plot_widget.addItem(vline, ignoreBounds=True)
             self._fit_curve_items.append(vline)
+
+        visible = self._chk_show_fit.isChecked()
+        for item in self._fit_curve_items:
+            item.setVisible(visible)
 
     def _on_cal_channels_changed(self):
         ka_ch = self._spin_ka.value()
