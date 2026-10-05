@@ -748,6 +748,8 @@ class MCAViewerWindow(QMainWindow):
             return
         mp = vb.mapSceneToView(pos)
         x = mp.x()
+        x_min, x_max = vb.viewRange()[0]
+        x = max(x_min, min(x_max, x))
         self._cursor_line.setPos(x)
 
         counts_str = ""
