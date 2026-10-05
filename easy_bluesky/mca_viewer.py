@@ -410,6 +410,11 @@ class MCAViewerWindow(QMainWindow):
         self._cal_result_lbl.setStyleSheet("color:#aaa; font-size:11px;")
         gcl.addWidget(self._cal_result_lbl)
 
+        self._fit_report_lbl = QLabel("")
+        self._fit_report_lbl.setStyleSheet("color:#888; font-size:10px;")
+        self._fit_report_lbl.setWordWrap(True)
+        gcl.addWidget(self._fit_report_lbl)
+
         row = QHBoxLayout()
         self._btn_apply_cal = QPushButton("Apply")
         self._btn_apply_cal.setEnabled(False)
@@ -999,6 +1004,20 @@ class MCAViewerWindow(QMainWindow):
         if kb_popt is not None:
             self._fit_params.append((kb_popt, self._color_for_channel(kb_fit)))
         self._draw_fit_curves()
+        self._update_fit_report(ka_popt, kb_popt)
+
+    def _update_fit_report(self, ka_popt, kb_popt):
+        _FWHM = 2.3548  # 2*sqrt(2*ln2)
+        lines = []
+        for label, popt in (("Kα", ka_popt), ("Kβ", kb_popt)):
+            if popt is None:
+                lines.append(f"Mn {label}: fit failed")
+                continue
+            amp, mu, sig = popt
+            sig = abs(sig)
+            fwhm = _FWHM * sig
+            lines.append(f"Mn {label}:  μ={mu:.1f} ch  σ={sig:.1f} ch  FWHM={fwhm:.1f} ch")
+        self._fit_report_lbl.setText("\n".join(lines))
 
     def _color_for_channel(self, ch: float) -> tuple:
         """Return (r, g, b) of the ROI region that contains ch, else a fallback."""
@@ -1094,6 +1113,7 @@ class MCAViewerWindow(QMainWindow):
         self._btn_write_ioc.setEnabled(False)
         self._fit_params.clear()
         self._clear_fit_curves()
+        self._fit_report_lbl.setText("")
         # Revert to IOC calibration
         self._calo = self._calo_ioc
         self._cals = self._cals_ioc
