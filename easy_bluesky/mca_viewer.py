@@ -1054,7 +1054,7 @@ class MCAViewerWindow(QMainWindow):
 
         _fields = [
             "FilePath_RBV",
-            "FileName_RBV",
+            "FullFileName_RBV",
             "FileWriteMode_RBV",
             "Capture_RBV",
             "NumCaptured_RBV",
@@ -1076,7 +1076,7 @@ class MCAViewerWindow(QMainWindow):
             path = self._decode_epics_str(value)
             self._hdf_path_lbl.setText(path or "—")
             self._hdf_path_lbl.setToolTip(path)
-        elif field == "FileName_RBV":
+        elif field == "FullFileName_RBV":
             name = self._decode_epics_str(value)
             self._hdf_name_lbl.setText(name or "—")
             self._hdf_name_lbl.setToolTip(name)
