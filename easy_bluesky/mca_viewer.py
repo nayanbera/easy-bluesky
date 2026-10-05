@@ -1010,16 +1010,27 @@ class MCAViewerWindow(QMainWindow):
         self._clear_fit_curves()
         for popt, rgb in self._fit_params:
             amp, mu_ch, sigma_ch = popt
+            r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+
+            # Gaussian envelope
             half_win = max(60, abs(sigma_ch) * 4)
             ch_x = np.linspace(mu_ch - half_win, mu_ch + half_win, 300)
             y = amp * np.exp(-0.5 * ((ch_x - mu_ch) / sigma_ch) ** 2)
             x = self._channels_or_kev(ch_x)
-            r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
-            pen = pg.mkPen(color=(r, g, b, 220), width=1.5,
-                           style=Qt.PenStyle.DashLine)
-            item = pg.PlotCurveItem(x, y, pen=pen)
-            self._plot_widget.addItem(item, ignoreBounds=True)
-            self._fit_curve_items.append(item)
+            curve = pg.PlotCurveItem(
+                x, y,
+                pen=pg.mkPen(color=(r, g, b, 220), width=1.5,
+                             style=Qt.PenStyle.DashLine))
+            self._plot_widget.addItem(curve, ignoreBounds=True)
+            self._fit_curve_items.append(curve)
+
+            # Vertical line at peak centroid
+            mu_x = float(self._channels_or_kev(np.array([mu_ch]))[0])
+            vline = pg.InfiniteLine(
+                pos=mu_x, angle=90, movable=False,
+                pen=pg.mkPen(color=(r, g, b, 255), width=1.5))
+            self._plot_widget.addItem(vline, ignoreBounds=True)
+            self._fit_curve_items.append(vline)
 
     def _on_cal_channels_changed(self):
         ka_ch = self._spin_ka.value()
