@@ -154,6 +154,10 @@ class MCAViewerWindow(QMainWindow):
         self._roi_visible: dict = {}              # idx → bool (default True)
         self._roi_colors: dict = {}               # idx → (r, g, b)
 
+        # Fitted Gaussian curves — list of (popt_channels, (r,g,b))
+        self._fit_params: list = []
+        self._fit_curve_items: list = []
+
         # Energy calibration (eV): E = _calo + _cals * channel
         self._calo: float = 0.0
         self._cals: float = 0.0   # 0 = uncalibrated
@@ -457,6 +461,8 @@ class MCAViewerWindow(QMainWindow):
         self._pvs.clear()
         self._roi_pv_idx.clear()
         self._regions.clear()
+        self._fit_params.clear()
+        self._fit_curve_items.clear()
         if _HAS_PG:
             self._plot_widget.clear()
             self._plot_widget.addItem(self._curve)
@@ -860,6 +866,8 @@ class MCAViewerWindow(QMainWindow):
         if self._last_counts is not None:
             self._on_new_spectrum(self._last_counts)
         self._refresh_rois()
+        if self._fit_params:
+            self._draw_fit_curves()
         label = "Energy (keV)" if _checked else "Channel"
         if _HAS_PG:
             self._plot_widget.setLabel('bottom', label)
@@ -927,21 +935,23 @@ class MCAViewerWindow(QMainWindow):
     # ── Fe-55 calibration ─────────────────────────────────────────────────────
 
     def _fit_gaussian_centroid(self, counts: np.ndarray, center: int,
-                               half_win: int = 60) -> float | None:
+                               half_win: int = 60) -> tuple:
+        """Return (centroid_ch, popt) or (None, None) on failure.
+        popt = [amplitude, mu_ch, sigma_ch]."""
         lo = max(0, center - half_win)
         hi = min(len(counts), center + half_win)
         x = np.arange(lo, hi, dtype=float)
         y = counts[lo:hi].astype(float)
         if y.max() < 10:
-            return None
+            return None, None
         try:
             def _gauss(x, amp, mu, sig):
                 return amp * np.exp(-0.5 * ((x - mu) / sig) ** 2)
             p0 = [y.max(), float(center), 10.0]
             popt, _ = _curve_fit(_gauss, x, y, p0=p0, maxfev=2000)
-            return float(popt[1])
+            return float(popt[1]), popt
         except Exception:
-            return None
+            return None, None
 
     def _on_autofit_fe55(self):
         if not _HAS_SCIPY:
@@ -961,12 +971,55 @@ class MCAViewerWindow(QMainWindow):
         heights = props['peak_heights']
         top2 = peaks[np.argsort(heights)[-2:]]
         ka_ch, kb_ch = sorted(top2)
-        ka_fit = self._fit_gaussian_centroid(counts, ka_ch)
-        kb_fit = self._fit_gaussian_centroid(counts, kb_ch)
+        ka_fit, ka_popt = self._fit_gaussian_centroid(counts, ka_ch)
+        kb_fit, kb_popt = self._fit_gaussian_centroid(counts, kb_ch)
         if ka_fit is not None:
             self._spin_ka.setValue(ka_fit)
         if kb_fit is not None:
             self._spin_kb.setValue(kb_fit)
+
+        self._fit_params = []
+        if ka_popt is not None:
+            self._fit_params.append((ka_popt, self._color_for_channel(ka_fit)))
+        if kb_popt is not None:
+            self._fit_params.append((kb_popt, self._color_for_channel(kb_fit)))
+        self._draw_fit_curves()
+
+    def _color_for_channel(self, ch: float) -> tuple:
+        """Return (r, g, b) of the ROI region that contains ch, else a fallback."""
+        for idx, roi in enumerate(self._rois):
+            lo, hi = roi['lo'], roi['hi']
+            if lo < hi and lo <= ch <= hi:
+                rgb = self._roi_colors.get(idx, _ROI_COLORS[idx % len(_ROI_COLORS)])
+                return rgb[:3]
+        return (255, 220, 50)   # golden fallback
+
+    def _clear_fit_curves(self):
+        if not _HAS_PG:
+            return
+        for item in self._fit_curve_items:
+            try:
+                self._plot_widget.removeItem(item)
+            except Exception:
+                pass
+        self._fit_curve_items.clear()
+
+    def _draw_fit_curves(self):
+        if not _HAS_PG:
+            return
+        self._clear_fit_curves()
+        for popt, rgb in self._fit_params:
+            amp, mu_ch, sigma_ch = popt
+            half_win = max(60, abs(sigma_ch) * 4)
+            ch_x = np.linspace(mu_ch - half_win, mu_ch + half_win, 300)
+            y = amp * np.exp(-0.5 * ((ch_x - mu_ch) / sigma_ch) ** 2)
+            x = self._channels_or_kev(ch_x)
+            r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+            pen = pg.mkPen(color=(r, g, b, 220), width=1.5,
+                           style=Qt.PenStyle.DashLine)
+            item = pg.PlotCurveItem(x, y, pen=pen)
+            self._plot_widget.addItem(item, ignoreBounds=True)
+            self._fit_curve_items.append(item)
 
     def _on_cal_channels_changed(self):
         ka_ch = self._spin_ka.value()
@@ -1005,6 +1058,8 @@ class MCAViewerWindow(QMainWindow):
         self._cal_result_lbl.setText("Gain:   —\nOffset: —")
         self._btn_apply_cal.setEnabled(False)
         self._btn_write_ioc.setEnabled(False)
+        self._fit_params.clear()
+        self._clear_fit_curves()
         # Revert to IOC calibration
         self._calo = self._calo_ioc
         self._cals = self._cals_ioc
