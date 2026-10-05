@@ -119,6 +119,7 @@ class MCAViewerWindow(QMainWindow):
     _roi_cb_received   = pyqtSignal(int, object)      # idx, partial dict
     _status_received   = pyqtSignal(float, float, bool)  # ertm, eltm, acqg
     _cal_received      = pyqtSignal(float, float)     # calo (eV), cals (eV/ch)
+    _hdf_pv_received   = pyqtSignal(str, object)      # field, value
 
     def __init__(self, device_name: str, mca_prefix: str = "",
                  pv_map: dict | None = None, parent=None):
@@ -135,6 +136,9 @@ class MCAViewerWindow(QMainWindow):
 
         # CA PV handles — strong references to prevent GC
         self._pvs: list = []
+        self._hdf_pvs: list = []
+        self._hdf_prefix: str = ""
+        self._hdf_num_capture: int = 0
 
         # Per-ROI reverse lookup: pvname → (idx, field)
         self._roi_pv_idx: dict = {}   # pvname → (idx, 'lo'|'hi'|'nm'|'counts')
@@ -170,6 +174,7 @@ class MCAViewerWindow(QMainWindow):
         self._roi_cb_received.connect(self._on_roi_update)
         self._status_received.connect(self._on_status_update)
         self._cal_received.connect(self._on_cal_update)
+        self._hdf_pv_received.connect(self._on_hdf_pv_update)
 
         self._build_ui()
         self._restore_settings()
@@ -299,9 +304,68 @@ class MCAViewerWindow(QMainWindow):
         lay.addWidget(btn_add)
 
         lay.addWidget(self._build_calibration_panel())
+        lay.addWidget(self._build_hdf_panel())
 
         lay.addStretch()
         return panel
+
+    def _build_hdf_panel(self) -> QGroupBox:
+        gh = QGroupBox("HDF File")
+        ghl = QVBoxLayout(gh)
+        ghl.setSpacing(3)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Prefix:"))
+        self._hdf_prefix_edit = QLineEdit()
+        self._hdf_prefix_edit.setPlaceholderText("e.g. IOC:HDF1:")
+        self._hdf_prefix_edit.returnPressed.connect(self._on_hdf_connect)
+        row.addWidget(self._hdf_prefix_edit)
+        ghl.addLayout(row)
+
+        btn_hdf = QPushButton("Connect HDF")
+        btn_hdf.clicked.connect(self._on_hdf_connect)
+        ghl.addWidget(btn_hdf)
+
+        dim = "color:#aaa; font-size:10px;"
+        lbl_style = "font-size:10px;"
+
+        ghl.addWidget(QLabel("Path:"))
+        self._hdf_path_lbl = QLabel("—")
+        self._hdf_path_lbl.setStyleSheet(dim)
+        self._hdf_path_lbl.setWordWrap(True)
+        ghl.addWidget(self._hdf_path_lbl)
+
+        ghl.addWidget(QLabel("File:"))
+        self._hdf_name_lbl = QLabel("—")
+        self._hdf_name_lbl.setStyleSheet(dim)
+        self._hdf_name_lbl.setWordWrap(True)
+        ghl.addWidget(self._hdf_name_lbl)
+
+        r2 = QHBoxLayout()
+        r2.addWidget(QLabel("Mode:"))
+        self._hdf_mode_lbl = QLabel("—")
+        self._hdf_mode_lbl.setStyleSheet(lbl_style)
+        r2.addWidget(self._hdf_mode_lbl)
+        r2.addStretch()
+        ghl.addLayout(r2)
+
+        r3 = QHBoxLayout()
+        r3.addWidget(QLabel("Status:"))
+        self._hdf_status_lbl = QLabel("—")
+        self._hdf_status_lbl.setStyleSheet(lbl_style)
+        r3.addWidget(self._hdf_status_lbl)
+        r3.addStretch()
+        ghl.addLayout(r3)
+
+        r4 = QHBoxLayout()
+        r4.addWidget(QLabel("Saved:"))
+        self._hdf_captured_lbl = QLabel("—")
+        self._hdf_captured_lbl.setStyleSheet(lbl_style)
+        r4.addWidget(self._hdf_captured_lbl)
+        r4.addStretch()
+        ghl.addLayout(r4)
+
+        return gh
 
     def _build_calibration_panel(self) -> QGroupBox:
         gc = QGroupBox("Calibrate — Fe-55")
@@ -844,14 +908,19 @@ class MCAViewerWindow(QMainWindow):
             self._spin_preset.setValue(float(saved['preset']))
         if saved.get('log_y'):
             self._chk_logy.setChecked(True)
+        hdf_prefix = saved.get('hdf_prefix', '')
+        if hdf_prefix:
+            self._hdf_prefix_edit.setText(hdf_prefix)
+            QTimer.singleShot(300, lambda: self._connect_hdf(hdf_prefix))
 
     def _save_settings(self):
         settings = _load_settings()
         settings.setdefault(self._device_name, {}).update({
-            'prefix':  self._prefix,
-            'preset':  self._spin_preset.value(),
-            'log_y':   self._chk_logy.isChecked(),
-            'show_kev': self._chk_kev.isChecked(),
+            'prefix':     self._prefix,
+            'preset':     self._spin_preset.value(),
+            'log_y':      self._chk_logy.isChecked(),
+            'show_kev':   self._chk_kev.isChecked(),
+            'hdf_prefix': self._hdf_prefix,
         })
         _save_settings(settings)
 
@@ -947,6 +1016,90 @@ class MCAViewerWindow(QMainWindow):
             self._on_new_spectrum(self._last_counts)
         self._refresh_rois()
 
+    # ── HDF file info ─────────────────────────────────────────────────────────
+
+    _HDF_MODE_NAMES = {0: "Single", 1: "Capture", 2: "Stream"}
+
+    def _on_hdf_connect(self):
+        prefix = self._hdf_prefix_edit.text().strip()
+        if not prefix:
+            return
+        self._connect_hdf(prefix)
+
+    def _connect_hdf(self, prefix: str):
+        for pv in self._hdf_pvs:
+            try:
+                pv.clear_callbacks()
+                pv.disconnect()
+            except Exception:
+                pass
+        self._hdf_pvs.clear()
+        self._hdf_prefix = prefix
+        self._hdf_num_capture = 0
+
+        try:
+            import epics
+        except ImportError:
+            return
+
+        _fields = [
+            "FilePath_RBV",
+            "FileName_RBV",
+            "FileWriteMode_RBV",
+            "Capture_RBV",
+            "NumCaptured_RBV",
+            "NumCapture",
+        ]
+        for field in _fields:
+            pvname = prefix + field
+
+            def _cb(pvname='', value=None, field=field, **kw):
+                if not self._alive or value is None:
+                    return
+                self._hdf_pv_received.emit(field, value)
+
+            pv = epics.PV(pvname, auto_monitor=True, callback=_cb)
+            self._hdf_pvs.append(pv)
+
+    def _on_hdf_pv_update(self, field: str, value):
+        if field == "FilePath_RBV":
+            path = str(value).rstrip('\x00').strip()
+            self._hdf_path_lbl.setText(path or "—")
+            self._hdf_path_lbl.setToolTip(path)
+        elif field == "FileName_RBV":
+            name = str(value).rstrip('\x00').strip()
+            self._hdf_name_lbl.setText(name or "—")
+            self._hdf_name_lbl.setToolTip(name)
+        elif field == "FileWriteMode_RBV":
+            try:
+                mode = int(value)
+            except (TypeError, ValueError):
+                mode = -1
+            self._hdf_mode_lbl.setText(self._HDF_MODE_NAMES.get(mode, str(value)))
+        elif field == "Capture_RBV":
+            capturing = bool(int(value))
+            if capturing:
+                self._hdf_status_lbl.setText("● Capturing")
+                self._hdf_status_lbl.setStyleSheet("color:#6ddc6d; font-size:10px;")
+            else:
+                self._hdf_status_lbl.setText("Idle")
+                self._hdf_status_lbl.setStyleSheet("font-size:10px;")
+        elif field == "NumCapture":
+            try:
+                self._hdf_num_capture = int(value)
+            except (TypeError, ValueError):
+                self._hdf_num_capture = 0
+            self._hdf_captured_lbl.setText(
+                f"— / {self._hdf_num_capture}" if self._hdf_num_capture else "—")
+        elif field == "NumCaptured_RBV":
+            try:
+                n = int(value)
+            except (TypeError, ValueError):
+                n = 0
+            total = self._hdf_num_capture
+            self._hdf_captured_lbl.setText(
+                f"{n} / {total}" if total else str(n))
+
     # ── Status label ─────────────────────────────────────────────────────────
 
     def _set_status(self, msg: str, color: str = "#888888"):
@@ -957,13 +1110,14 @@ class MCAViewerWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self._alive = False
-        for pv in self._pvs:
+        for pv in self._pvs + self._hdf_pvs:
             try:
                 pv.clear_callbacks()
                 pv.disconnect()
             except Exception:
                 pass
         self._pvs.clear()
+        self._hdf_pvs.clear()
         self._save_settings()
         super().closeEvent(event)
 
