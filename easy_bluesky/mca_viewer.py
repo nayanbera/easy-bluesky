@@ -205,7 +205,7 @@ class MCAViewerWindow(QMainWindow):
             # Cursor line
             self._cursor_line = pg.InfiniteLine(pos=0, angle=90, movable=False,
                                                 pen=pg.mkPen('#888888', width=1, style=Qt.PenStyle.DashLine))
-            self._plot_widget.addItem(self._cursor_line)
+            self._plot_widget.addItem(self._cursor_line, ignoreBounds=True)
             self._plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
             right_split.addWidget(self._plot_widget)
