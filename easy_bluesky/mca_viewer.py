@@ -396,7 +396,7 @@ class MCAViewerWindow(QMainWindow):
         if _HAS_PG:
             self._plot_widget.clear()
             self._plot_widget.addItem(self._curve)
-            self._plot_widget.addItem(self._cursor_line)
+            self._plot_widget.addItem(self._cursor_line, ignoreBounds=True)
 
         self._prefix = prefix
         self._prefix_edit.setText(prefix)
