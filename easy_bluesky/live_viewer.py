@@ -262,7 +262,7 @@ class LiveViewer(QWidget):
 
         # Y list on the right of the plot (in a resizable splitter)
         self.y_list = QListWidget()
-        self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.y_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.y_list.setMinimumWidth(100)
         self.y_list.setToolTip("Y signals — click to select/deselect")
         self.y_list.itemSelectionChanged.connect(self._update_plot)

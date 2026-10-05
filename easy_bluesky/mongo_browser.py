@@ -943,8 +943,9 @@ class MongoDataBrowserTab(QWidget):
         # Y list on the right of the plot (in a resizable splitter)
         self._y_list = QListWidget()
         self._y_list.setMinimumWidth(100)
-        self._y_list.setToolTip("Y signals — check to plot")
-        self._y_list.itemChanged.connect(self._auto_plot)
+        self._y_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._y_list.setToolTip("Y signals — click to select, Ctrl+click to add/remove, Shift+click to range-select")
+        self._y_list.itemSelectionChanged.connect(self._auto_plot)
         y_lbl = QLabel("Y signals")
         y_lbl.setObjectName("dim_text")
         y_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1473,7 +1474,7 @@ class MongoDataBrowserTab(QWidget):
         cur_y = {
             self._y_list.item(i).text()
             for i in range(self._y_list.count())
-            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+            if self._y_list.item(i).isSelected()
         }
         if cur_y:
             self._saved_y = cur_y
@@ -1527,22 +1528,17 @@ class MongoDataBrowserTab(QWidget):
         self._y_list.blockSignals(True)
         self._y_list.clear()
         for k in sorted(keys):
-            item = QListWidgetItem(k)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            is_motor = any(k == m or k.startswith(m) for m in motor_names)
-            item.setCheckState(
-                Qt.CheckState.Unchecked if is_motor else Qt.CheckState.Checked
-            )
-            self._y_list.addItem(item)
+            self._y_list.addItem(QListWidgetItem(k))
 
-        # Restore saved Y if any saved field is present in the new run
-        if self._saved_y & key_set:
-            for i in range(self._y_list.count()):
-                item = self._y_list.item(i)
-                item.setCheckState(
-                    Qt.CheckState.Checked if item.text() in self._saved_y
-                    else Qt.CheckState.Unchecked
-                )
+        # Restore saved Y if any saved field is present; otherwise select all non-motors
+        for i in range(self._y_list.count()):
+            item = self._y_list.item(i)
+            k = item.text()
+            if self._saved_y & key_set:
+                item.setSelected(k in self._saved_y)
+            else:
+                is_motor = any(k == m or k.startswith(m) for m in motor_names)
+                item.setSelected(not is_motor)
         self._y_list.blockSignals(False)
 
         # ── Norm by ───────────────────────────────────────────────────────────
@@ -1572,7 +1568,7 @@ class MongoDataBrowserTab(QWidget):
         y_fields   = [
             self._y_list.item(i).text()
             for i in range(self._y_list.count())
-            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+            if self._y_list.item(i).isSelected()
         ]
         norm_field = self._norm_combo.currentData()
 
@@ -1877,7 +1873,7 @@ class MongoDataBrowserTab(QWidget):
         y_fields = [
             self._y_list.item(i).text()
             for i in range(self._y_list.count())
-            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+            if self._y_list.item(i).isSelected()
         ]
         if not y_fields:
             return
@@ -2263,7 +2259,7 @@ class MongoDataBrowserTab(QWidget):
         y_fields = [
             self._y_list.item(i).text()
             for i in range(self._y_list.count())
-            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+            if self._y_list.item(i).isSelected()
         ]
         norm_field = self._norm_combo.currentData()
 
@@ -2434,7 +2430,7 @@ class MongoDataBrowserTab(QWidget):
         y_fields   = [
             self._y_list.item(i).text()
             for i in range(self._y_list.count())
-            if self._y_list.item(i).checkState() == Qt.CheckState.Checked
+            if self._y_list.item(i).isSelected()
         ]
         norm_field = self._norm_combo.currentData()
         log_y      = self._log_y_cb.isChecked()
