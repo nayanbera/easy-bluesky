@@ -58,7 +58,6 @@ from .themes import (
 from .worker import ZMQWorker
 from .registry import fetch_registry, merge_into_profiles, probe_all_instances
 from .re_control_bar import REControlBar
-from .queue_manager import QueueManager
 from .plan_builder import PlanBuilder
 from .experiments_tab import ExperimentsTab
 from .devices_plans_tab import DevicesPlansTab
@@ -1153,7 +1152,6 @@ class MainWindow(QMainWindow):
         set_global_catalog(self._plan_catalog)
 
         self.experiments_tab    = ExperimentsTab(self.worker)
-        self.queue_mgr          = QueueManager(self.worker)
         self.plan_builder       = PlanBuilder(self.worker)
         self.devices_plans_tab  = DevicesPlansTab()
         self.devices_plans_tab.set_plan_catalog(self._plan_catalog)
@@ -1176,7 +1174,6 @@ class MainWindow(QMainWindow):
         )
 
         self.tabs.addTab(self.experiments_tab,   "🧪  Experiments")
-        self.tabs.addTab(self.queue_mgr,         "⚙  Queue Manager")
         self.tabs.addTab(self.plan_builder,      "🔧  Plan Builder")
         self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
         self.tabs.addTab(self.watchdog_tab,      "🔭  PV Watchdog")
@@ -1339,10 +1336,8 @@ class MainWindow(QMainWindow):
             lambda items: self.re_bar.update_queue_count(len(items))
         )
 
-        self.worker.queue_updated.connect(self.queue_mgr.update_queue)
-        self.worker.history_updated.connect(self.queue_mgr.update_history)
-
         self.worker.history_updated.connect(self.experiments_tab.update_history)
+        self.worker.history_updated.connect(self.experiments_tab.update_re_history_display)
         self.worker.queue_updated.connect(self.experiments_tab.update_compact_queue)
 
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
@@ -1404,19 +1399,12 @@ class MainWindow(QMainWindow):
         self.worker.plans_updated.connect(self._on_plans_updated)
         self.worker.devices_updated.connect(self._on_devices_updated)
 
-        self.queue_mgr.start_requested.connect(self._on_start_requested)
-        self.queue_mgr.pause_requested.connect(self._on_pause_requested)
-        self.queue_mgr.resume_requested.connect(self._on_resume_requested)
-        self.queue_mgr.abort_requested.connect(self._on_abort_requested)
-        self.queue_mgr.stop_requested.connect(self._on_stop_requested)
-
         self.experiments_tab.start_requested.connect(self._on_start_requested)
         self.experiments_tab.pause_requested.connect(self._on_pause_requested)
         self.experiments_tab.resume_requested.connect(self._on_resume_requested)
         self.experiments_tab.abort_requested.connect(self._on_abort_requested)
         self.experiments_tab.stop_requested.connect(self._on_stop_requested)
 
-        self.worker.status_updated.connect(self.queue_mgr.update_re_status)
         self.worker.status_updated.connect(self.experiments_tab.update_re_status)
         self.worker.running_item_updated.connect(self.experiments_tab.update_running_item)
         self.worker.running_item_updated.connect(self.mongo_browser.set_running_item)
@@ -1424,11 +1412,8 @@ class MainWindow(QMainWindow):
             self.experiments_tab.on_scan_point_completed)
         self.experiments_tab.live_viewer.scan_total_points.connect(
             self.experiments_tab.on_scan_started)
-        self.worker.disconnected.connect(self.queue_mgr.on_disconnected)
         self.worker.disconnected.connect(self.experiments_tab.on_disconnected)
 
-        self.queue_mgr.auto_start_toggled.connect(self._on_auto_start_toggled)
-        self.queue_mgr.loop_count_changed.connect(self._on_loop_count_changed)
         self.experiments_tab.auto_start_toggled.connect(self._on_auto_start_toggled)
         self.experiments_tab.loop_count_changed.connect(self._on_loop_count_changed)
         self.worker.status_updated.connect(self._on_status_for_loop_and_autostart)
@@ -1881,7 +1866,6 @@ class MainWindow(QMainWindow):
         self._log(f"[{self._ts()}] ✗ Disconnected from '{profile.get('name', 'Default')}' RE Manager")
 
     def _log(self, msg: str):
-        self.queue_mgr.append_console(msg)
         self.experiments_tab.append_console(msg)
 
     def _on_plan_file_open(self, tier: str, name_or_path: str) -> None:
@@ -1911,11 +1895,9 @@ class MainWindow(QMainWindow):
             )
 
     def _on_plans_updated(self, plans):
-        self.queue_mgr.plans = plans
         self.plan_builder.update_plans(plans)
 
     def _on_devices_updated(self, devices):
-        self.queue_mgr.devices = devices
         self.plan_builder.update_devices(devices)
 
     def _on_env_opened_schedule_reupload(self, from_closed: bool):
@@ -2074,13 +2056,11 @@ class MainWindow(QMainWindow):
         self._queue_loop_cancelled = False
         self._loop_iteration = 0
         if self._loop_enabled:
-            self._loop_snapshot = self.queue_mgr.get_queue_items()
-            spin_val = self.queue_mgr.spin_loop.value()
-            self.queue_mgr.set_loop_iteration(1, spin_val)
+            self._loop_snapshot = list(self.experiments_tab._current_queue_items)
+            spin_val = self.experiments_tab.spin_loop.value()
             self.experiments_tab.set_loop_iteration(1, spin_val)
         else:
             self._loop_snapshot = []
-            self.queue_mgr.clear_loop_iteration()
             self.experiments_tab.clear_loop_iteration()
 
     def _on_pause_requested(self):
@@ -2142,7 +2122,6 @@ class MainWindow(QMainWindow):
     def _on_stop_requested(self):
         # Cancel loop regardless of whether the stop succeeds
         self._queue_loop_cancelled = True
-        self.queue_mgr.clear_loop_iteration()
         self.experiments_tab.clear_loop_iteration()
         ok, msg = self.worker.re_stop()
         if ok:
@@ -2171,44 +2150,37 @@ class MainWindow(QMainWindow):
 
     def _on_auto_start_toggled(self, enabled: bool) -> None:
         self._auto_start_enabled = enabled
-        # Sync both widgets without re-firing the signal
-        for w in (self.queue_mgr.chk_auto_start, self.experiments_tab.chk_auto_start):
-            if w.isChecked() != enabled:
-                w.blockSignals(True)
-                w.setChecked(enabled)
-                w.blockSignals(False)
+        w = self.experiments_tab.chk_auto_start
+        if w.isChecked() != enabled:
+            w.blockSignals(True)
+            w.setChecked(enabled)
+            w.blockSignals(False)
 
     def _on_loop_count_changed(self, count: int) -> None:
         # count == -1 means loop disabled (checkbox unchecked)
         if count == -1:
             self._loop_enabled = False
-            self.queue_mgr.clear_loop_iteration()
             self.experiments_tab.clear_loop_iteration()
-            # Uncheck the other widget if it's still checked
-            for w in (self.queue_mgr.chk_loop, self.experiments_tab.chk_loop):
-                if w.isChecked():
-                    w.blockSignals(True)
-                    w.setChecked(False)
-                    w.blockSignals(False)
+            chk = self.experiments_tab.chk_loop
+            if chk.isChecked():
+                chk.blockSignals(True)
+                chk.setChecked(False)
+                chk.blockSignals(False)
         else:
             self._loop_enabled = True
             self._loop_count = count
-            # Sync the spinbox on the other widget
-            for spin in (self.queue_mgr.spin_loop, self.experiments_tab.spin_loop):
-                if spin.value() != count:
-                    spin.blockSignals(True)
-                    spin.setValue(count)
-                    spin.blockSignals(False)
-            # Ensure both checkboxes are checked
-            for w in (self.queue_mgr.chk_loop, self.experiments_tab.chk_loop):
-                if not w.isChecked():
-                    w.blockSignals(True)
-                    w.setChecked(True)
-                    w.blockSignals(False)
-            # Ensure spinboxes are enabled on both
-            for spin in (self.queue_mgr.spin_loop, self.experiments_tab.spin_loop):
-                if not spin.isEnabled():
-                    spin.setEnabled(True)
+            spin = self.experiments_tab.spin_loop
+            if spin.value() != count:
+                spin.blockSignals(True)
+                spin.setValue(count)
+                spin.blockSignals(False)
+            chk = self.experiments_tab.chk_loop
+            if not chk.isChecked():
+                chk.blockSignals(True)
+                chk.setChecked(True)
+                chk.blockSignals(False)
+            if not spin.isEnabled():
+                spin.setEnabled(True)
 
     def _on_queue_for_autostart(self, items: list) -> None:
         n = len(items)
@@ -2241,23 +2213,20 @@ class MainWindow(QMainWindow):
         if not snapshot:
             return
         # Read live spinbox value — user may have changed it during run
-        spin_val = self.queue_mgr.spin_loop.value()
+        spin_val = self.experiments_tab.spin_loop.value()
         if spin_val > 0:
             new_val = spin_val - 1
-            for spin in (self.queue_mgr.spin_loop, self.experiments_tab.spin_loop):
-                spin.blockSignals(True)
-                spin.setValue(new_val)
-                spin.blockSignals(False)
+            sp = self.experiments_tab.spin_loop
+            sp.blockSignals(True)
+            sp.setValue(new_val)
+            sp.blockSignals(False)
             if new_val == 0:
                 # Last finite iteration exhausted — stop looping
-                self.queue_mgr.chk_loop.setChecked(False)
-                self.queue_mgr.clear_loop_iteration()
                 self.experiments_tab.chk_loop.setChecked(False)
                 self.experiments_tab.clear_loop_iteration()
                 return
         # spin_val == 0 means infinite → keep looping
         self._loop_iteration += 1
-        self.queue_mgr.set_loop_iteration(self._loop_iteration + 1, spin_val)
         self.experiments_tab.set_loop_iteration(self._loop_iteration + 1, spin_val)
         for item in snapshot:
             item_copy = {k: v for k, v in item.items() if k != 'item_uid'}
@@ -2786,7 +2755,6 @@ class MainWindow(QMainWindow):
         exp_dir = str(Path(runs_dir).parent)
         self.mongo_browser.set_active_experiment(exp_dir)
         self.local_data_browser.open_folder(exp_dir)
-        self.queue_mgr.set_current_experiment(exp_dir)
 
     def _sync_jsonl_from_beamline(self, uid_list: list, runs_dir: str):
         """Fetch missing JSONL run files from the beamline computer via SFTP."""

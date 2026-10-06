@@ -1322,6 +1322,9 @@ class ExperimentsTab(QWidget):
         self._watcher_debounce.setSingleShot(True)
         self._watcher_debounce.setInterval(500)
         self._watcher_debounce.timeout.connect(self._check_exp_dir_health)
+        self._all_re_history: list = []
+        self._last_re_history_fp   = None
+        self._detail_visible: bool = False
         self._build()
         if worker:
             worker.scan_log_ready.connect(self._on_scan_log_fetched)
@@ -1441,7 +1444,7 @@ class ExperimentsTab(QWidget):
         vlay.addWidget(sample_grp)
 
         log_header = QHBoxLayout()
-        lbl_log = QLabel("PLAN LOG")
+        lbl_log = QLabel("HISTORY")
         lbl_log.setObjectName("section_title")
         log_header.addWidget(lbl_log)
         log_header.addStretch()
@@ -1463,11 +1466,21 @@ class ExperimentsTab(QWidget):
         self._running_banner.setVisible(False)
         vlay.addWidget(self._running_banner)
 
+        # ── History sub-tabs ───────────────────────────────────────────────────
+        hist_tabs = QTabWidget()
+        hist_tabs.setDocumentMode(True)
+
+        # -- Tab 0: Plans Log --------------------------------------------------
+        plans_log_w = QWidget()
+        plans_log_lay = QVBoxLayout(plans_log_w)
+        plans_log_lay.setContentsMargins(0, 4, 0, 0)
+        plans_log_lay.setSpacing(4)
+
         self._plan_log_search = QLineEdit()
         self._plan_log_search.setPlaceholderText("🔍  Search plan log…")
         self._plan_log_search.setClearButtonEnabled(True)
         self._plan_log_search.textChanged.connect(self._filter_plan_log)
-        vlay.addWidget(self._plan_log_search)
+        plans_log_lay.addWidget(self._plan_log_search)
 
         self.plan_log_list = QListWidget()
         self.plan_log_list.setSelectionMode(
@@ -1476,7 +1489,8 @@ class ExperimentsTab(QWidget):
         self.plan_log_list.itemDoubleClicked.connect(self._on_plan_log_double_clicked)
         self.plan_log_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.plan_log_list.customContextMenuRequested.connect(self._plan_log_context_menu)
-        vlay.addWidget(self.plan_log_list, 1)
+        self.plan_log_list.currentItemChanged.connect(self._on_plan_log_selection_for_detail)
+        plans_log_lay.addWidget(self.plan_log_list, 1)
 
         self._btn_requeue = QPushButton("↑  Add Selected to Queue")
         self._btn_requeue.setEnabled(False)
@@ -1485,7 +1499,7 @@ class ExperimentsTab(QWidget):
             "Double-click a single entry to edit it before queuing."
         )
         self._btn_requeue.clicked.connect(self._requeue_selected)
-        vlay.addWidget(self._btn_requeue)
+        plans_log_lay.addWidget(self._btn_requeue)
 
         self._btn_export_h5 = QPushButton("Export HDF5…")
         self._btn_export_h5.setObjectName("btn_primary")
@@ -1494,7 +1508,68 @@ class ExperimentsTab(QWidget):
         if not H5PY_AVAILABLE:
             self._btn_export_h5.setEnabled(False)
             self._btn_export_h5.setToolTip("pip install h5py to enable HDF5 export")
-        vlay.addWidget(self._btn_export_h5)
+        plans_log_lay.addWidget(self._btn_export_h5)
+
+        hist_tabs.addTab(plans_log_w, "Plans Log")
+
+        # -- Tab 1: RE History -------------------------------------------------
+        re_hist_w = QWidget()
+        re_hist_lay = QVBoxLayout(re_hist_w)
+        re_hist_lay.setContentsMargins(0, 4, 0, 0)
+        re_hist_lay.setSpacing(4)
+
+        re_hist_hdr = QHBoxLayout()
+        self._hist_range = QLineEdit("0-100")
+        self._hist_range.setFixedWidth(72)
+        self._hist_range.setToolTip(
+            "Range of history entries to show (newest-first).\n"
+            "0-100 = most recent 100 items.\n"
+            "100-200 = next 100 older items.\n"
+            "Press Enter to apply."
+        )
+        self._hist_range.returnPressed.connect(self._apply_re_history_range)
+        self._hist_range.editingFinished.connect(self._apply_re_history_range)
+        self._hist_count_lbl = QLabel("of 0")
+        self._hist_count_lbl.setObjectName("dim_text")
+        self._hist_count_lbl.setToolTip("Total history entries available in the RE Manager")
+        btn_clr_hist = QPushButton("Clear")
+        btn_clr_hist.clicked.connect(self._clear_re_history)
+        re_hist_hdr.addWidget(self._hist_range)
+        re_hist_hdr.addWidget(self._hist_count_lbl)
+        re_hist_hdr.addStretch()
+        re_hist_hdr.addWidget(btn_clr_hist)
+        re_hist_lay.addLayout(re_hist_hdr)
+
+        self._re_history_search = QLineEdit()
+        self._re_history_search.setPlaceholderText("🔍  Search RE history…")
+        self._re_history_search.setClearButtonEnabled(True)
+        self._re_history_search.textChanged.connect(self._filter_re_history)
+        re_hist_lay.addWidget(self._re_history_search)
+
+        self.re_history_list = QListWidget()
+        self.re_history_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.re_history_list.customContextMenuRequested.connect(self._re_history_context_menu)
+        self.re_history_list.itemDoubleClicked.connect(self._requeue_from_re_history_dialog)
+        self.re_history_list.currentItemChanged.connect(self._on_re_history_selection)
+        re_hist_lay.addWidget(self.re_history_list, 1)
+
+        hist_tabs.addTab(re_hist_w, "RE History")
+        vlay.addWidget(hist_tabs, 1)
+
+        # ── Collapsible detail panel ───────────────────────────────────────────
+        self._btn_toggle_detail = QPushButton("▶  Details")
+        self._btn_toggle_detail.setCheckable(False)
+        self._btn_toggle_detail.setStyleSheet("text-align: left; font-size: 11px;")
+        self._btn_toggle_detail.clicked.connect(self._toggle_detail_panel)
+        vlay.addWidget(self._btn_toggle_detail)
+
+        self._detail_text = QPlainTextEdit()
+        self._detail_text.setReadOnly(True)
+        self._detail_text.setFont(QFont("Courier New", 10))
+        self._detail_text.setPlaceholderText("Select a queue item or history entry to see details…")
+        self._detail_text.setFixedHeight(120)
+        self._detail_text.setVisible(False)
+        vlay.addWidget(self._detail_text)
 
         return w
 
@@ -1552,6 +1627,9 @@ class ExperimentsTab(QWidget):
         self.queue_compact.setToolTip("Double-click to edit plan; Ctrl/Shift-click to select multiple; drag to reorder")
         self.queue_compact.itemDoubleClicked.connect(self._on_queue_item_clicked)
         self.queue_compact.model().rowsMoved.connect(self._on_compact_queue_reorder)
+        self.queue_compact.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.queue_compact.customContextMenuRequested.connect(self._queue_compact_context_menu)
+        self.queue_compact.currentItemChanged.connect(self._on_queue_compact_selection)
         vlay.addWidget(self.queue_compact, 1)
 
         # ── Queue execution buttons (Start / Pause / Resume / Abort / Stop) ──────
@@ -2155,6 +2233,195 @@ class ExperimentsTab(QWidget):
             updated = self._inject_metadata(dlg.result_item)
             ok, msg = self.worker.update_item(updated)
             self._log(f"{'✓' if ok else '✗'} Update plan: {msg}")
+
+    # ── Queue compact context menu ─────────────────────────────────────────────
+
+    def _queue_compact_context_menu(self, pos):
+        li = self.queue_compact.itemAt(pos)
+        if not li:
+            return
+        menu = QMenu(self)
+        menu.addAction("Edit",            lambda: self._on_queue_item_clicked(li))
+        menu.addAction("Remove",          self._remove_plan)
+        menu.addSeparator()
+        menu.addAction("Move to top",    lambda: self._move_compact_item("front"))
+        menu.addAction("Move to bottom", lambda: self._move_compact_item("back"))
+        menu.exec(self.queue_compact.viewport().mapToGlobal(pos))
+
+    def _move_compact_item(self, dest):
+        cur = self.queue_compact.currentItem()
+        if not cur:
+            return
+        uid = cur.data(Qt.ItemDataRole.UserRole)
+        if uid and self.worker:
+            self.worker.move_item(uid, dest)
+
+    def _on_queue_compact_selection(self, current, _previous):
+        if not current:
+            return
+        item = current.data(Qt.ItemDataRole.UserRole + 1)
+        if item:
+            self._detail_text.setPlainText(json.dumps(item, indent=2, default=str))
+
+    # ── Detail panel toggle ────────────────────────────────────────────────────
+
+    def _toggle_detail_panel(self):
+        self._detail_visible = not self._detail_visible
+        self._detail_text.setVisible(self._detail_visible)
+        self._btn_toggle_detail.setText(
+            "▼  Details" if self._detail_visible else "▶  Details"
+        )
+
+    # ── RE History tab methods ─────────────────────────────────────────────────
+
+    def update_re_history_display(self, items: list):
+        """Called by worker.history_updated — cache and refresh the RE History tab."""
+        new_fp = (len(items), items[-1].get("item_uid", "") if items else "")
+        if new_fp == self._last_re_history_fp:
+            return
+        self._last_re_history_fp = new_fp
+        self._all_re_history = items
+        n = len(items)
+        self._hist_count_lbl.setText(f"of {n}")
+        self._apply_re_history_range()
+
+    def _apply_re_history_range(self):
+        text = self._hist_range.text().strip()
+        try:
+            lo, hi = [int(p.strip()) for p in text.split("-", 1)]
+            if lo < 0 or hi <= lo:
+                raise ValueError
+        except Exception:
+            lo, hi = 0, 100
+
+        items_rev = list(reversed(self._all_re_history))
+        visible   = items_rev[lo:hi]
+
+        cur = self._active_exp_path
+        try:
+            cur_resolved = str(Path(cur).resolve()) if cur else ""
+        except Exception:
+            cur_resolved = cur
+
+        self.re_history_list.clear()
+        for item in visible:
+            name   = item.get("name", "unknown")
+            args   = item.get("args", []) or []
+            kwargs = item.get("kwargs", {}) or {}
+            result = item.get("result", {}) or {}
+            status = result.get("exit_status", "?")
+            t_stop  = result.get("time_stop",  0)
+            t_start = result.get("time_start", 0)
+            t_str   = datetime.fromtimestamp(t_stop).strftime("%H:%M:%S") if t_stop else "?"
+            dur_str = f"  ({t_stop - t_start:.1f}s)" if (t_stop and t_start) else ""
+            ok_     = status in ("completed", "success")
+            motion  = _is_motion_only(name, kwargs)
+            icon    = "✓" if ok_ else "✗"
+
+            item_exp = (kwargs.get("md") or {}).get("exp_dir", "")
+            try:
+                is_cur = bool(cur_resolved and item_exp and
+                              str(Path(item_exp).resolve()) == cur_resolved)
+            except Exception:
+                is_cur = False
+
+            if motion:
+                color = _NEUTRAL_COLOR if is_cur else "#666666"
+            elif ok_:
+                color = SUCCESS if is_cur else "#5588aa"
+            else:
+                color = DANGER if is_cur else "#aa6644"
+
+            summary = self._plan_summary(name, kwargs, args)
+            label   = f"{icon}  {t_str}  {name}{summary}{dur_str}"
+            li = QListWidgetItem(label)
+            li.setForeground(QColor(color))
+            li.setData(Qt.ItemDataRole.UserRole, item)
+            li.setToolTip(
+                f"Exit: {status}"
+                + ("" if is_cur else "  [other experiment]")
+                + "\nDouble-click to edit & re-queue  |  Right-click for more options"
+            )
+            self.re_history_list.addItem(li)
+        self._filter_re_history(self._re_history_search.text())
+
+    def _filter_re_history(self, text: str):
+        q = text.strip().lower()
+        for i in range(self.re_history_list.count()):
+            item = self.re_history_list.item(i)
+            item.setHidden(bool(q and q not in item.text().lower()))
+
+    def _clear_re_history(self):
+        if self.worker:
+            ok, msg = self.worker.clear_history()
+            self._log(f"{'✓' if ok else '✗'} Clear RE history: {msg}")
+
+    def _on_re_history_selection(self, current, _previous):
+        if not current:
+            return
+        item = current.data(Qt.ItemDataRole.UserRole)
+        if item:
+            self._detail_text.setPlainText(json.dumps(item, indent=2, default=str))
+
+    def _re_history_context_menu(self, pos):
+        li = self.re_history_list.itemAt(pos)
+        if not li:
+            return
+        menu = QMenu(self)
+        menu.addAction("Edit & Re-queue",   lambda: self._requeue_from_re_history_dialog(li))
+        menu.addAction("Re-queue directly", lambda: self._direct_requeue_re_history(li))
+        menu.addSeparator()
+        menu.addAction("View Details",      lambda: self._show_re_run_detail(li))
+        menu.exec(self.re_history_list.viewport().mapToGlobal(pos))
+
+    def _requeue_from_re_history_dialog(self, li: QListWidgetItem):
+        item = li.data(Qt.ItemDataRole.UserRole)
+        if not item:
+            return
+        base = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
+        base.setdefault("item_type", "plan")
+        name = item.get("name", "?")
+        if name in (self._plans or {}):
+            dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
+                ok, result = self.worker.add_item(dlg.result_item)
+                self._log(f"✓ Re-queue '{name}': queued" if ok else f"✗ Re-queue '{name}': {result}")
+        else:
+            r = QMessageBox.question(
+                self, "Re-queue",
+                f"Plan '{name}' is not in the current allowed plans list "
+                f"(RE environment may be closed).\n\nRe-queue with original arguments anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if r == QMessageBox.StandardButton.Yes:
+                ok, result = self.worker.add_item(base)
+                self._log(f"✓ Re-queue '{name}': queued" if ok else f"✗ Re-queue '{name}': {result}")
+
+    def _direct_requeue_re_history(self, li: QListWidgetItem):
+        item = li.data(Qt.ItemDataRole.UserRole)
+        if not item:
+            return
+        base = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
+        base.setdefault("item_type", "plan")
+        ok, result = self.worker.add_item(base)
+        self._log(f"✓ Re-queue '{item.get('name', '?')}': queued" if ok
+                  else f"✗ Re-queue '{item.get('name', '?')}': {result}")
+
+    def _show_re_run_detail(self, li: QListWidgetItem):
+        item = li.data(Qt.ItemDataRole.UserRole)
+        if not item:
+            return
+        dlg = RunDetailDialog(item, worker=self.worker,
+                              plans=self._plans, devices=self._devices, parent=self)
+        dlg.exec()
+
+    def _on_plan_log_selection_for_detail(self, current, _previous):
+        """Update the detail panel when a Plans Log item is selected."""
+        if not current:
+            return
+        raw = current.data(Qt.ItemDataRole.UserRole)
+        if raw:
+            self._detail_text.setPlainText(json.dumps(raw, indent=2, default=str))
 
     # ── Console ────────────────────────────────────────────────────────────────
 
@@ -3061,6 +3328,7 @@ class ExperimentsTab(QWidget):
             self.exp_remote_label.setText("")
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
         self._load_plan_log(path)
+        self._apply_re_history_range()
 
     def _on_exp_dir_changed(self, _changed_path: str):
         """Called by QFileSystemWatcher when the experiment directory changes.
