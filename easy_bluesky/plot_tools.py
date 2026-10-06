@@ -14,7 +14,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Qt, QObject, QEvent, QRectF, Signal
 
 
-_COORD_PLACEHOLDER = "X: —        Y: —"
+_COORD_PLACEHOLDER = "  X: ————————   Y: ————————"
 
 
 class _LeaveFilter(QObject):
@@ -62,6 +62,9 @@ def setup_crosshair(plot_widget, coord_label, get_curves_fn=None):
         item.hide()
 
     coord_label.setText(_COORD_PLACEHOLDER)
+    coord_label.setMinimumWidth(coord_label.fontMetrics().horizontalAdvance(
+        "  X: -0.000000   Y: -0.000000"
+    ))
 
     def on_mouse_moved(pos):
         if not plot_widget.sceneBoundingRect().contains(pos):
@@ -75,7 +78,7 @@ def setup_crosshair(plot_widget, coord_label, get_curves_fn=None):
 
         vline.setPos(x); vline.show()
         hline.setPos(y); hline.show()
-        coord_label.setText(f"  X: {x:.5g}   Y: {y:.5g}")
+        coord_label.setText(f"  X: {x:.6f}   Y: {y:.6f}")
 
         if get_curves_fn is None:
             tooltip.hide()
@@ -119,7 +122,7 @@ def setup_crosshair(plot_widget, coord_label, get_curves_fn=None):
 
             if best:
                 sig, px, py = best
-                tooltip.setText(f"{sig}\n({px:.5g}, {py:.5g})")
+                tooltip.setText(f"{sig}\n({px:.6f}, {py:.6f})")
                 tooltip.setPos(px, py)
                 tooltip.show()
             else:

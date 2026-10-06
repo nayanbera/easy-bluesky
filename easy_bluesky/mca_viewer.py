@@ -232,6 +232,10 @@ class MCAViewerWindow(QMainWindow):
         self._status_lbl = QLabel("○ Not connected")
         self.statusBar().addWidget(self._status_lbl, 1)
         self._cursor_lbl = QLabel("")
+        self._cursor_lbl.setStyleSheet("font-family: Menlo, Consolas, Monaco, 'Courier New'; font-size: 11px;")
+        self._cursor_lbl.setMinimumWidth(
+            self._cursor_lbl.fontMetrics().horizontalAdvance("ch: 99999  keV: -0.000000  counts: 9999999")
+        )
         self.statusBar().addPermanentWidget(self._cursor_lbl)
 
     def _build_ctrl(self) -> QWidget:
@@ -842,12 +846,12 @@ class MCAViewerWindow(QMainWindow):
         show_kev = self._chk_kev.isChecked() and abs(self._cals) > 1e-9
         if show_kev:
             ch = int(round(self._x_to_ch(x)))
-            self._cursor_lbl.setText(f"ch: {ch}  keV: {x:.3f}{counts_str}")
+            self._cursor_lbl.setText(f"ch: {ch}  keV: {x:.6f}{counts_str}")
         else:
             ch = int(round(x))
             kev_str = ""
             if abs(self._cals) > 1e-9:
-                kev_str = f"  keV: {self._ch_to_x(ch):.3f}"
+                kev_str = f"  keV: {self._ch_to_x(ch):.6f}"
             self._cursor_lbl.setText(f"ch: {ch}{kev_str}{counts_str}")
 
     # ── Display toggles ───────────────────────────────────────────────────────
