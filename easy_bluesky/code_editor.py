@@ -8,12 +8,12 @@ try:
 except ImportError:
     JEDI_AVAILABLE = False
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QPlainTextEdit, QCompleter, QAbstractItemView, QWidget, QTextEdit,
     QLineEdit, QLabel, QPushButton, QCheckBox, QHBoxLayout, QVBoxLayout,
 )
-from PyQt6.QtCore import Qt, QStringListModel, QRect, QSize, QEvent, QTimer, pyqtSignal
-from PyQt6.QtGui import (
+from qtpy.QtCore import Qt, QStringListModel, QRect, QSize, QEvent, QTimer, Signal
+from qtpy.QtGui import (
     QTextCursor, QKeyEvent, QFont, QPainter, QColor,
     QTextCharFormat, QPalette, QTextDocument,
 )
@@ -395,7 +395,7 @@ def _jedi_thread(source: str, line: int, col: int, prefix: str,
 class CodeEditor(QPlainTextEdit):
     """QPlainTextEdit with line numbers, current-line highlight, auto-indentation, and auto-completion."""
 
-    _jedi_done = pyqtSignal(list, str)   # (word_list, prefix_that_triggered it)
+    _jedi_done = Signal(list, str)   # (word_list, prefix_that_triggered it)
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -3,14 +3,14 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QPlainTextEdit, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QMessageBox, QMenu, QDialog, QTabWidget, QHeaderView,
     QLineEdit, QFileDialog, QFrame, QCheckBox, QSpinBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtGui import QColor, QFont
 from .config import SUCCESS, DANGER, DATA_RUNS_DIR, EXPERIMENTS_DIR
 from .widgets import PlanDialog
 
@@ -281,13 +281,13 @@ class RunDetailDialog(QDialog):
 
 
 class QueueManager(QWidget):
-    start_requested    = pyqtSignal()
-    pause_requested    = pyqtSignal()
-    resume_requested   = pyqtSignal()
-    abort_requested    = pyqtSignal()
-    stop_requested     = pyqtSignal()
-    auto_start_toggled = pyqtSignal(bool)
-    loop_count_changed = pyqtSignal(int)   # 0 = ∞; -1 = loop disabled
+    start_requested    = Signal()
+    pause_requested    = Signal()
+    resume_requested   = Signal()
+    abort_requested    = Signal()
+    stop_requested     = Signal()
+    auto_start_toggled = Signal(bool)
+    loop_count_changed = Signal(int)   # 0 = ∞; -1 = loop disabled
 
     def __init__(self, worker, parent=None):
         super().__init__(parent)

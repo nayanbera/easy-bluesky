@@ -17,9 +17,9 @@ try:
 except ImportError:
     H5PY_AVAILABLE = False
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QThread, QTimer, Signal
+from qtpy.QtGui import QColor, QFont
+from qtpy.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QSizePolicy,
@@ -100,8 +100,8 @@ def _fetch_streams(db, uid: str) -> dict:
 
 class _RunListFetcher(QThread):
     """Fetch the most recent N runs from MongoDB, optionally filtered by experiment."""
-    runs_ready = pyqtSignal(list)
-    error      = pyqtSignal(str)
+    runs_ready = Signal(list)
+    error      = Signal(str)
 
     def __init__(self, host, port, db_name, limit=300,
                  exp_dir_filter="", run_uids=None, parent=None):
@@ -159,9 +159,9 @@ class _RunListFetcher(QThread):
 
 class _MultiRunDataFetcher(QThread):
     """Fetch event data for one or more runs; returns a list of stream dicts."""
-    data_ready = pyqtSignal(list)   # list of {uid, label, streams}
-    error      = pyqtSignal(str)
-    progress   = pyqtSignal(int, int)   # (done, total)
+    data_ready = Signal(list)   # list of {uid, label, streams}
+    error      = Signal(str)
+    progress   = Signal(int, int)   # (done, total)
 
     def __init__(self, host, port, db_name, uid_labels, parent=None):
         super().__init__(parent)
@@ -192,9 +192,9 @@ class _MultiRunDataFetcher(QThread):
 
 class _HDF5Exporter(QThread):
     """Export selected runs from MongoDB to an HDF5 file readable by HDF5Viewer."""
-    progress = pyqtSignal(int, int)   # (done, total)
-    done     = pyqtSignal(str)        # output path
-    error    = pyqtSignal(str)
+    progress = Signal(int, int)   # (done, total)
+    done     = Signal(str)        # output path
+    error    = Signal(str)
 
     def __init__(self, host, port, db_name, runs, path, parent=None):
         super().__init__(parent)
@@ -274,7 +274,7 @@ class _HDF5Exporter(QThread):
 
 class _FullStartFetcher(QThread):
     """Fetches the complete run_start document (no field projection) for one UID."""
-    ready = pyqtSignal(dict)
+    ready = Signal(dict)
 
     def __init__(self, host, port, db_name, uid, parent=None):
         super().__init__(parent)
@@ -638,8 +638,8 @@ class MongoDataBrowserTab(QWidget):
 
     COLORS = PLOT_COLORS
 
-    move_requested    = pyqtSignal(str, float)           # (motor_name, target_position) — 1D
-    move_2d_requested = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
+    move_requested    = Signal(str, float)           # (motor_name, target_position) — 1D
+    move_2d_requested = Signal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -2826,7 +2826,7 @@ class _PeakFitReportDialog(QDialog):
 
         txt = QTextEdit()
         txt.setReadOnly(True)
-        from PyQt6.QtGui import QFont
+        from qtpy.QtGui import QFont
         mono = QFont("Menlo")
         mono.setStyleHint(QFont.StyleHint.Monospace)
         mono.setPointSize(11)

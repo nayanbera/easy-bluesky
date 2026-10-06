@@ -7,11 +7,11 @@ try:
 except ImportError:
     PG_AVAILABLE = False
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox, QPushButton,
     QMessageBox,
 )
-from PyQt6.QtCore import Qt, QObject, QEvent, QRectF, pyqtSignal
+from qtpy.QtCore import Qt, QObject, QEvent, QRectF, Signal
 
 
 _COORD_PLACEHOLDER = "X: —        Y: —"
@@ -259,8 +259,8 @@ class TwoDMapWidget(QWidget):
         w.replot(xs, ys, zs, x_label, y_label, z_label) # draw
     """
 
-    selection_changed  = pyqtSignal()
-    move_2d_requested  = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
+    selection_changed  = Signal()
+    move_2d_requested  = Signal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
 
     _CMAPS     = ['viridis', 'inferno', 'plasma', 'coolwarm', 'gray']
     _NAN_COLOR = np.array([60, 60, 60], dtype=np.uint8)

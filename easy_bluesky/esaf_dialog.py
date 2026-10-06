@@ -1,4 +1,4 @@
-"""esaf_dialog.py — PyQt6 dialogs for ESAF management.
+"""esaf_dialog.py — Qt dialogs for ESAF management.
 
 All dialogs are self-contained; the only easy_bluesky import is .esaf.
 """
@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QThread, QTimer, Signal
+from qtpy.QtGui import QColor, QFont
+from qtpy.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
@@ -78,8 +78,8 @@ def _conf_color(conf: float) -> str:
 
 class _FetchWorker(QThread):
     """Fetch an ESAFRecord from the server or cache in a background thread."""
-    done  = pyqtSignal(object, dict)   # (ESAFRecord, confidence)
-    error = pyqtSignal(str)
+    done  = Signal(object, dict)   # (ESAFRecord, confidence)
+    error = Signal(str)
 
     def __init__(self, esaf_id: str, settings: dict, parent=None):
         super().__init__(parent)
@@ -99,8 +99,8 @@ class _FetchWorker(QThread):
 
 class _ParsePDFWorker(QThread):
     """Parse an ESAF PDF in a background thread (local or server)."""
-    done  = pyqtSignal(object, dict)   # (ESAFRecord, confidence)
-    error = pyqtSignal(str)
+    done  = Signal(object, dict)   # (ESAFRecord, confidence)
+    error = Signal(str)
 
     def __init__(self, pdf_bytes: bytes, use_server: bool, settings: dict, parent=None):
         super().__init__(parent)
@@ -126,8 +126,8 @@ class _ParsePDFWorker(QThread):
 
 class _ServerSyncWorker(QThread):
     """Fetch all ESAFs from the shared server and merge into local cache."""
-    done  = pyqtSignal(int)   # number of records synced
-    error = pyqtSignal(str)
+    done  = Signal(int)   # number of records synced
+    error = Signal(str)
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -158,7 +158,7 @@ class PIGroupPickerWidget(QWidget):
     placeholder/new-group entry is active).
     """
 
-    group_selected = pyqtSignal(object)   # PIGroup or None
+    group_selected = Signal(object)   # PIGroup or None
 
     _NEW_LABEL = "＋ New group…"
     _NONE_LABEL = "(none)"
@@ -169,7 +169,7 @@ class PIGroupPickerWidget(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
 
-        from PyQt6.QtWidgets import QComboBox
+        from qtpy.QtWidgets import QComboBox
         self._combo = QComboBox()
         self._combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._combo.currentIndexChanged.connect(self._on_index_changed)
@@ -921,7 +921,7 @@ class ESAFImportDialog(QDialog):
         lay.addWidget(grp_box)
 
         # ── Shared server sync ─────────────────────────────────────────────────
-        from PyQt6.QtWidgets import QCheckBox
+        from qtpy.QtWidgets import QCheckBox
         if self._has_server:
             server_url = (self._settings.get("esaf_server_url") or "").strip()
             host = server_url.split("//")[-1].split("/")[0]
@@ -1068,7 +1068,7 @@ class _ExtraFieldsDialog(QDialog):
 
         server_url = (settings.get("esaf_server_url") or "").strip()
         if server_url:
-            from PyQt6.QtWidgets import QCheckBox
+            from qtpy.QtWidgets import QCheckBox
             self._cb_push = QCheckBox(f"Push to server  ({server_url})")
             self._cb_push.setChecked(True)
             lay.addWidget(self._cb_push)
@@ -1156,7 +1156,7 @@ class ESAFPickerWidget(QWidget):
     Signal ``esaf_selected`` emits the chosen ESAFRecord (or None).
     """
 
-    esaf_selected = pyqtSignal(object)   # ESAFRecord or None
+    esaf_selected = Signal(object)   # ESAFRecord or None
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -1171,7 +1171,7 @@ class ESAFPickerWidget(QWidget):
         # Top row: combo + buttons
         top_row = QHBoxLayout()
 
-        from PyQt6.QtWidgets import QComboBox
+        from qtpy.QtWidgets import QComboBox
         self._combo = QComboBox()
         self._combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._combo.currentIndexChanged.connect(self._on_index_changed)

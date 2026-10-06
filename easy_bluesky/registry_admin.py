@@ -1,8 +1,8 @@
 """registry_admin.py — Password-protected admin window for the RE instance registry."""
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QThread, Signal
+from qtpy.QtGui import QColor
+from qtpy.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QPushButton, QScrollArea, QSpinBox, QStackedWidget, QVBoxLayout,
@@ -18,8 +18,8 @@ from .registry import (
 
 class _FetchWorker(QThread):
     """Background thread: SSH-fetch registry then TCP-probe all instances."""
-    done  = pyqtSignal(dict, dict)   # (registry_dict, {name: running_bool})
-    error = pyqtSignal(str)
+    done  = Signal(dict, dict)   # (registry_dict, {name: running_bool})
+    error = Signal(str)
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -741,7 +741,7 @@ class RegistryAdminWindow(QDialog):
                         used.add(v)
 
         self._ports_note.setText(f"Checking {host} via SSH…")
-        from PyQt6.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         QApplication.processEvents()
 
         from .connection_settings import find_free_ports_remote
@@ -776,7 +776,7 @@ class RegistryAdminWindow(QDialog):
 
         self._save_status.setText("Saving…")
         self._save_status.setStyleSheet("color: #888;")
-        from PyQt6.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         QApplication.processEvents()
         try:
             save_registry(self._settings, self._registry)

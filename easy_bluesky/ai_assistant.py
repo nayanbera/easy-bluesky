@@ -12,13 +12,13 @@ except ImportError:
     _ant = None
     ANTHROPIC_AVAILABLE = False
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QScrollArea, QLabel, QPushButton, QTextEdit, QFrame,
     QMessageBox, QSizePolicy,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer, QEvent
-from PyQt6.QtGui import QKeyEvent  # noqa: F401  (used implicitly via event.key())
+from qtpy.QtCore import Signal, Qt, QThread, QTimer, QEvent
+from qtpy.QtGui import QKeyEvent  # noqa: F401  (used implicitly via event.key())
 
 _MODEL_ANTHROPIC = "claude-haiku-4-5-20251001"
 _MODEL_OAI       = "llama-3.3-70b-versatile"
@@ -171,8 +171,8 @@ class ExperimentSummary:
 # ── Background API thread ──────────────────────────────────────────────────────
 
 class _AIThread(QThread):
-    result_ready   = pyqtSignal(str, list)
-    error_occurred = pyqtSignal(str)
+    result_ready   = Signal(str, list)
+    error_occurred = Signal(str)
 
     def __init__(self, ai_settings: dict, system: str, messages: list, parent=None):
         super().__init__(parent)
@@ -289,7 +289,7 @@ class _AIThread(QThread):
 # ── Chat card widgets ──────────────────────────────────────────────────────────
 
 class _PlanCard(QFrame):
-    open_requested = pyqtSignal(str, dict)
+    open_requested = Signal(str, dict)
 
     def __init__(self, plan_name: str, kwargs: dict, explanation: str, parent=None):
         super().__init__(parent)
@@ -341,8 +341,8 @@ class _PlanCard(QFrame):
 
 
 class _MemoryCard(QFrame):
-    approved  = pyqtSignal(dict)
-    dismissed = pyqtSignal()
+    approved  = Signal(dict)
+    dismissed = Signal()
 
     def __init__(self, category: str, content: str, tags: list, parent=None):
         super().__init__(parent)

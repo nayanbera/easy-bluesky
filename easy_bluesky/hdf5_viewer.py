@@ -16,14 +16,14 @@ try:
 except ImportError:
     H5PY_AVAILABLE = False
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QAbstractItemView, QComboBox, QCheckBox,
     QFileDialog, QDialog, QPlainTextEdit, QDialogButtonBox, QMessageBox,
     QTextEdit, QSizePolicy, QStackedWidget, QTabBar, QTabWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from qtpy.QtCore import Qt, Signal
+from qtpy.QtGui import QColor, QFont
 
 from .config import SUCCESS, DANGER, PLOT_COLORS
 
@@ -121,7 +121,7 @@ class ScanDetailDialog(QDialog):
 
 class HDF5Viewer(QWidget):
     COLORS = PLOT_COLORS
-    move_2d_requested = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
+    move_2d_requested = Signal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
 
     def __init__(self, parent=None):
         super().__init__(parent)

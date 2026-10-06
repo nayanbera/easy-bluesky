@@ -2,15 +2,15 @@
 
 import csv
 import json
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QDialog, QDialogButtonBox, QFormLayout, QScrollArea,
     QListWidget, QListWidgetItem, QComboBox, QLineEdit, QDoubleSpinBox,
     QSpinBox, QCheckBox, QLabel, QVBoxLayout, QHBoxLayout, QGroupBox,
     QAbstractItemView, QMessageBox, QPushButton, QFileDialog,
     QTreeView, QTreeWidget, QTreeWidgetItem,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QBrush, QColor
+from qtpy.QtCore import Qt
+from qtpy.QtGui import QBrush, QColor
 
 
 class NoScrollSpinBox(QSpinBox):

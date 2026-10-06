@@ -17,16 +17,16 @@ try:
 except ImportError:
     H5PY_AVAILABLE = False
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QInputDialog, QFileDialog, QMessageBox,
     QAbstractItemView, QTabWidget, QComboBox, QPlainTextEdit, QDialog,
     QDialogButtonBox, QMainWindow, QLineEdit, QFormLayout, QGroupBox,
     QMenu, QFrame, QCheckBox, QSpinBox, QProgressBar, QSizePolicy,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, QTimer, QFileSystemWatcher
-from PyQt6.QtGui import QColor, QFont, QDesktopServices
-from PyQt6.QtCore import QUrl
+from qtpy.QtCore import Signal, Qt, QThread, QTimer, QFileSystemWatcher
+from qtpy.QtGui import QColor, QFont, QDesktopServices
+from qtpy.QtCore import QUrl
 
 from .config import (
     SUCCESS, DANGER, WARNING, ACCENT,
@@ -191,9 +191,9 @@ def _write_scan_num_json(exp_path: str, scan_num: int):
 
 class _MongoHDF5Exporter(QThread):
     """Export all runs for an experiment from MongoDB to one HDF5 file."""
-    progress = pyqtSignal(int, int)   # (done, total)
-    done     = pyqtSignal(str)
-    error    = pyqtSignal(str)
+    progress = Signal(int, int)   # (done, total)
+    done     = Signal(str)
+    error    = Signal(str)
 
     def __init__(self, host, port, db_name, exp_dir, entries, path, parent=None):
         super().__init__(parent)
@@ -327,9 +327,9 @@ def _parse_jsonl_run(path) -> dict:
 
 class _JSONLHDFExporter(QThread):
     """Export all runs for an experiment from JSONL run files to one HDF5 file."""
-    progress = pyqtSignal(int, int)   # (done, total)
-    done     = pyqtSignal(str)
-    error    = pyqtSignal(str)
+    progress = Signal(int, int)   # (done, total)
+    done     = Signal(str)
+    error    = Signal(str)
 
     def __init__(self, exp_path, entries, path, parent=None):
         super().__init__(parent)
@@ -409,7 +409,7 @@ class _HistoryWidgetStub:
 
 class _ESAFHealthWorker(QThread):
     """Background check of ESAF server health — non-blocking UI."""
-    result = pyqtSignal(str, str)   # (status, detail)  status: ok_mongo|ok_sqlite|error|unconfigured
+    result = Signal(str, str)   # (status, detail)  status: ok_mongo|ok_sqlite|error|unconfigured
 
     def __init__(self, url: str, api_key: str, parent=None):
         super().__init__(parent)
@@ -435,8 +435,8 @@ class _ESAFHealthWorker(QThread):
 
 class _ESAFDoiPoller(QThread):
     """One-shot background fetch of DOI + full ESAF record from the server."""
-    doi_found  = pyqtSignal(str, dict)  # (doi, full_record)
-    no_doi     = pyqtSignal(dict)       # (full_record) — server reached but no DOI yet
+    doi_found  = Signal(str, dict)  # (doi, full_record)
+    no_doi     = Signal(dict)       # (full_record) — server reached but no DOI yet
 
     def __init__(self, esaf_id: str, server_url: str, parent=None):
         super().__init__(parent)
@@ -483,8 +483,8 @@ class _ESAFDoiPoller(QThread):
 
 class _APSESAFFetchWorker(QThread):
     """Fetch ESAF list from aps-esaf-fetcher /api/esafs endpoint."""
-    done  = pyqtSignal(list)   # list of dicts
-    error = pyqtSignal(str)
+    done  = Signal(list)   # list of dicts
+    error = Signal(str)
 
     def __init__(self, server_url: str, year=None, status="", parent=None):
         super().__init__(parent)
@@ -1250,16 +1250,16 @@ class ExperimentsTab(QWidget):
       Right  — Live plot tab (detachable)
     """
 
-    experiment_changed  = pyqtSignal(str)        # emits runs_dir path
-    scan_completed      = pyqtSignal()           # emits when a new scan is logged
-    run_files_needed    = pyqtSignal(list, str)  # (uid_list, local_runs_dir) — fetch from beamline
-    start_requested    = pyqtSignal()
-    pause_requested    = pyqtSignal()
-    resume_requested   = pyqtSignal()
-    abort_requested    = pyqtSignal()
-    stop_requested     = pyqtSignal()
-    auto_start_toggled = pyqtSignal(bool)
-    loop_count_changed = pyqtSignal(int)   # 0 = ∞; -1 = loop disabled
+    experiment_changed  = Signal(str)        # emits runs_dir path
+    scan_completed      = Signal()           # emits when a new scan is logged
+    run_files_needed    = Signal(list, str)  # (uid_list, local_runs_dir) — fetch from beamline
+    start_requested    = Signal()
+    pause_requested    = Signal()
+    resume_requested   = Signal()
+    abort_requested    = Signal()
+    stop_requested     = Signal()
+    auto_start_toggled = Signal(bool)
+    loop_count_changed = Signal(int)   # 0 = ∞; -1 = loop disabled
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -1825,8 +1825,8 @@ class ExperimentsTab(QWidget):
         url = (self._settings.get("esaf_server_url") or "").strip()
         if not url:
             return
-        from PyQt6.QtCore import QUrl
-        from PyQt6.QtGui import QDesktopServices
+        from qtpy.QtCore import QUrl
+        from qtpy.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl(url))
 
     def _check_esaf_server(self):

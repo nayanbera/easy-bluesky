@@ -13,9 +13,9 @@ try:
 except ImportError:
     PYFLAKES_AVAILABLE = False
 
-from PyQt6.QtCore import pyqtSignal, QObject
-from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Signal, QObject
+from qtpy.QtGui import QFont
+from qtpy.QtWidgets import (
     QComboBox, QDialog, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QVBoxLayout,
 )
@@ -26,7 +26,7 @@ from .code_editor import CodeEditor
 
 
 class _Signals(QObject):
-    done = pyqtSignal(bool, str, str)   # success, content, message
+    done = Signal(bool, str, str)   # success, content, message
 
 
 class DevicesEditorDialog(QDialog):
@@ -120,7 +120,7 @@ class DevicesEditorDialog(QDialog):
 
     def _extend_completions(self):
         """Add ophyd device classes and common kwargs to the editor's word list."""
-        from PyQt6.QtCore import QStringListModel
+        from qtpy.QtCore import QStringListModel
         from .code_editor import _ALL_WORDS
         ophyd_words = [
             # imports

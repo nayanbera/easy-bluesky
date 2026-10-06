@@ -29,9 +29,9 @@ def save_ad_settings(settings: dict):
         _AD_SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
     except Exception:
         pass
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QThread, QTimer, Signal
+from qtpy.QtGui import QCloseEvent
+from qtpy.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
@@ -78,9 +78,9 @@ _MIN_INTERVAL = 1.0 / _MAX_FPS
 class _PVAMonitorThread(QThread):
     """Background thread that owns a p4p Context and emits frame signals."""
 
-    new_frame          = pyqtSignal(object, object)   # (np.ndarray, dict)
-    connection_changed = pyqtSignal(bool)
-    error_occurred     = pyqtSignal(str)
+    new_frame          = Signal(object, object)   # (np.ndarray, dict)
+    connection_changed = Signal(bool)
+    error_occurred     = Signal(str)
 
     def __init__(self, pva_pv: str, pva_host: str = "", parent=None):
         super().__init__(parent)
@@ -153,7 +153,7 @@ class _CAInitThread(QThread):
     All blocking pv.get() calls run here so the main thread is never stalled.
     Retries up to _MAX_ATTEMPTS times (≈15 s total) before giving up.
     """
-    init_done = pyqtSignal(object, object, dict)  # (exp_time, exp_period, mode_info)
+    init_done = Signal(object, object, dict)  # (exp_time, exp_period, mode_info)
 
     _MAX_ATTEMPTS = 10
 
@@ -245,8 +245,8 @@ class ADViewerWindow(QMainWindow):
     """Floating live-view window for one EPICS area detector via PVAccess."""
 
     # CA-thread → main-thread signals for ROI1 RBV and Stats1 live values
-    _sig_roi1_rbv = pyqtSignal(int, int, int, int)  # minx, miny, sizex, sizey
-    _sig_stats1   = pyqtSignal(dict)                 # {stat_key: float}
+    _sig_roi1_rbv = Signal(int, int, int, int)  # minx, miny, sizex, sizey
+    _sig_stats1   = Signal(dict)                 # {stat_key: float}
 
     def __init__(
         self,

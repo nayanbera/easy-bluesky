@@ -1,6 +1,6 @@
 """devices_plans_tab.py — Devices & Plans browser tab."""
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QTreeWidget, QTreeWidgetItem,
     QPlainTextEdit, QPushButton, QDoubleSpinBox, QLineEdit, QComboBox, QMenu, QToolButton,
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import threading
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, QTimer
-from PyQt6.QtGui import QBrush, QColor, QFont
+from qtpy.QtCore import Qt, Signal, QObject, QThread, QTimer
+from qtpy.QtGui import QBrush, QColor, QFont
 
 from .config import ACCENT
 from .plans_manager import (
@@ -180,7 +180,7 @@ def _fmt_value(val) -> str:
 
 class _EpicsInstaller(QThread):
     """Installs pyepics via pip in a background thread."""
-    done = pyqtSignal(bool, str)   # success, message
+    done = Signal(bool, str)   # success, message
 
     def run(self):
         import subprocess, sys, importlib
@@ -223,14 +223,14 @@ class _CAStderrFilter:
 class _EPICSMonitor(QObject):
     """
     Wraps pyepics PV monitors and forwards value-change callbacks to Qt signals.
-    Callbacks arrive on a CA background thread; emitting a pyqtSignal queues
+    Callbacks arrive on a CA background thread; emitting a Signal queues
     the update safely onto the main-thread event loop.
     """
-    value_changed      = pyqtSignal(str, str, object, str)  # dev, sig, value, units
-    connection_changed = pyqtSignal(str, str, bool)          # dev, sig, connected
-    desc_changed       = pyqtSignal(str, str, str)           # dev, sig, desc
+    value_changed      = Signal(str, str, object, str)  # dev, sig, value, units
+    connection_changed = Signal(str, str, bool)          # dev, sig, connected
+    desc_changed       = Signal(str, str, str)           # dev, sig, desc
     # Internal: emitted from CA thread, received in main thread to do a safe get()
-    _fetch_on_connect  = pyqtSignal(str)                     # pvname
+    _fetch_on_connect  = Signal(str)                     # pvname
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -394,11 +394,11 @@ class _EPICSMonitor(QObject):
 class DevicesPlansTab(QWidget):
     """Two-panel tab: live device tree (left) | plans + details (right)."""
 
-    fetch_pvnames_requested   = pyqtSignal()
-    reload_devices_requested  = pyqtSignal()   # full device+plan reload from RE env
-    poll_sim_values_requested = pyqtSignal()
-    set_sim_device_requested  = pyqtSignal(str, float)
-    plan_file_open_requested  = pyqtSignal(str, str)   # (tier, name_or_path)
+    fetch_pvnames_requested   = Signal()
+    reload_devices_requested  = Signal()   # full device+plan reload from RE env
+    poll_sim_values_requested = Signal()
+    set_sim_device_requested  = Signal(str, float)
+    plan_file_open_requested  = Signal(str, str)   # (tier, name_or_path)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1469,8 +1469,8 @@ class DevicesPlansTab(QWidget):
     # ── Device context menu (AD Viewer + XRF Viewer) ────────────────────────────
 
     def _on_device_context_menu(self, pos):
-        from PyQt6.QtGui import QClipboard
-        from PyQt6.QtWidgets import QApplication
+        from qtpy.QtGui import QClipboard
+        from qtpy.QtWidgets import QApplication
 
         item = self.devices_tree.itemAt(pos)
         if item is None:
@@ -1738,7 +1738,7 @@ class DevicesPlansTab(QWidget):
                                   self._pv_map_cache[ad_devices[0]],
                                   force_dialog=False)
             return
-        from PyQt6.QtWidgets import QInputDialog
+        from qtpy.QtWidgets import QInputDialog
         name, ok = QInputDialog.getItem(
             self, "Open AD Viewer", "Select area detector:", ad_devices, 0, False)
         if ok and name:
@@ -1759,7 +1759,7 @@ class DevicesPlansTab(QWidget):
                                    self._pv_map_cache[xrf_devices[0]],
                                    force_dialog=False)
             return
-        from PyQt6.QtWidgets import QInputDialog
+        from qtpy.QtWidgets import QInputDialog
         name, ok = QInputDialog.getItem(
             self, "Open XRF Viewer", "Select XRF detector:", xrf_devices, 0, False)
         if ok and name:

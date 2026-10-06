@@ -4,16 +4,16 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
     QAbstractItemView, QPlainTextEdit, QComboBox, QLineEdit, QMessageBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
     QFileDialog, QCheckBox, QInputDialog, QMenu, QDialog, QTextBrowser,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QThread
+from qtpy.QtCore import Qt, QTimer, Signal, QMimeData, QThread
 from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox
-from PyQt6.QtGui import QFont, QColor, QDrag
+from qtpy.QtGui import QFont, QColor, QDrag
 
 from .highlighter import PythonHighlighter
 from .code_editor import CodeEditor
@@ -515,8 +515,8 @@ def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
 
 class SequenceList(QListWidget):
     """Drag-to-reorder list of plan blocks."""
-    block_selected = pyqtSignal(object)   # emits block dict or None
-    sequence_changed = pyqtSignal()
+    block_selected = Signal(object)   # emits block dict or None
+    sequence_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -645,7 +645,7 @@ class DevicePickerWidget(QWidget):
     Replaces the fragile closure-based approach so that selection changes
     reliably propagate back to PropertyPanel via a proper Qt signal.
     """
-    value_changed = pyqtSignal(str)   # emits comma-sep string (or single name)
+    value_changed = Signal(str)   # emits comma-sep string (or single name)
 
     def __init__(self, value, multi: bool, devices: list, parent=None):
         super().__init__(parent)
@@ -702,7 +702,7 @@ class DevicePickerWidget(QWidget):
 
 class PropertyPanel(QWidget):
     """Dynamic parameter form for the selected block."""
-    changed = pyqtSignal()
+    changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1088,7 +1088,7 @@ def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") 
 
 class ComposerWidget(QWidget):
     """Three-panel visual plan composer."""
-    send_to_editor = pyqtSignal(str)   # emits generated code
+    send_to_editor = Signal(str)   # emits generated code
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -1344,7 +1344,7 @@ class ComposerWidget(QWidget):
 
 class _PlanFileTree(QTreeWidget):
     """QTreeWidget that accepts folder drops from the OS file manager."""
-    folder_dropped = pyqtSignal(str)
+    folder_dropped = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1376,8 +1376,8 @@ class _PlanFileTree(QTreeWidget):
 # ── SFTP background threads ────────────────────────────────────────────────────
 
 class _RemoteFileLister(QThread):
-    result = pyqtSignal(list)
-    error  = pyqtSignal(str)
+    result = Signal(list)
+    error  = Signal(str)
 
     def __init__(self, conn_settings, profile, parent=None):
         super().__init__(parent)
@@ -1392,8 +1392,8 @@ class _RemoteFileLister(QThread):
 
 
 class _RemoteFileReader(QThread):
-    result = pyqtSignal(str, str)   # (filename, content)
-    error  = pyqtSignal(str, str)   # (filename, msg)
+    result = Signal(str, str)   # (filename, content)
+    error  = Signal(str, str)   # (filename, msg)
 
     def __init__(self, conn_settings, profile, filename, parent=None):
         super().__init__(parent)
@@ -1408,7 +1408,7 @@ class _RemoteFileReader(QThread):
 
 
 class _RemoteFileSaver(QThread):
-    done = pyqtSignal(bool, str)   # (success, message)
+    done = Signal(bool, str)   # (success, message)
 
     def __init__(self, conn_settings, profile, filename, content, parent=None):
         super().__init__(parent)
@@ -1502,11 +1502,11 @@ class PlanFileTreePanel(QWidget):
     display however it likes.
     """
 
-    file_open_requested  = pyqtSignal(str, str)   # (tier, name_or_path)
-    output_message       = pyqtSignal(str)
-    local_plans_added    = pyqtSignal()           # folder added — triggers env restart
-    local_plans_removed  = pyqtSignal(str)        # folder removed (path) — env restart needed
-    remote_file_names_ready = pyqtSignal(set)     # emitted when remote list arrives
+    file_open_requested  = Signal(str, str)   # (tier, name_or_path)
+    output_message       = Signal(str)
+    local_plans_added    = Signal()           # folder added — triggers env restart
+    local_plans_removed  = Signal(str)        # folder removed (path) — env restart needed
+    remote_file_names_ready = Signal(set)     # emitted when remote list arrives
 
     def __init__(self, show_new_remote_btn: bool = True, parent=None):
         super().__init__(parent)
@@ -1715,7 +1715,7 @@ class PlanFileTreePanel(QWidget):
         self.local_plans_removed.emit(dir_path)
 
     def _delete_local_file(self, file_path: str) -> None:
-        from PyQt6.QtWidgets import QMessageBox
+        from qtpy.QtWidgets import QMessageBox
         name = Path(file_path).name
         if QMessageBox.question(
                 self, "Delete file",
@@ -1779,7 +1779,7 @@ class PlanFileTreePanel(QWidget):
 # ── PlanBuilder ────────────────────────────────────────────────────────────────
 
 class PlanBuilder(QWidget):
-    plans_uploading = pyqtSignal(str)   # emitted when local plan upload starts (msg)
+    plans_uploading = Signal(str)   # emitted when local plan upload starts (msg)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -2454,7 +2454,7 @@ class PlanBuilder(QWidget):
 
     def _prompt_remove_bad_plans(self, failed: dict) -> None:
         """Show one dialog per folder that had upload errors, offering removal."""
-        from PyQt6.QtWidgets import QMessageBox, QPushButton
+        from qtpy.QtWidgets import QMessageBox, QPushButton
         for dir_path, errors in failed.items():
             folder_name = Path(dir_path).name
             detail = "\n".join(f"• {f}:\n  {m[:200]}" for f, m in errors)

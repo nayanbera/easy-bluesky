@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QObject, QTimer, Signal
+from qtpy.QtGui import QColor, QFont
+from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDoubleSpinBox, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
@@ -125,8 +125,8 @@ class _PVCallbackRelay(QObject):
     Manages pyepics PV subscriptions and re-emits CA callbacks as Qt signals
     so condition evaluation runs safely on the main thread.
     """
-    value_changed      = pyqtSignal(str, object)   # pvname, value
-    connection_changed = pyqtSignal(str, bool)      # pvname, connected
+    value_changed      = Signal(str, object)   # pvname, value
+    connection_changed = Signal(str, bool)      # pvname, connected
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -423,9 +423,9 @@ class PVWatchdogTab(QWidget):
       resume_requested → _on_watchdog_resume (calls worker.re_resume())
       log_message      → forwarded to RE console / experiment log
     """
-    pause_requested  = pyqtSignal()   # emitted when a condition fails mid-scan
-    resume_requested = pyqtSignal()   # emitted after conditions recover + delay
-    log_message      = pyqtSignal(str)
+    pause_requested  = Signal()   # emitted when a condition fails mid-scan
+    resume_requested = Signal()   # emitted after conditions recover + delay
+    log_message      = Signal(str)
 
     _COL_EN     = 0
     _COL_NAME   = 1
@@ -591,7 +591,7 @@ class PVWatchdogTab(QWidget):
     def _on_view_profiles(self):
         names = self._profile_names or [self._profile_name] if self._profile_name else []
         if not names:
-            from PyQt6.QtWidgets import QMessageBox
+            from qtpy.QtWidgets import QMessageBox
             QMessageBox.information(self, "No profiles",
                                     "No profiles available yet — connect first.")
             return

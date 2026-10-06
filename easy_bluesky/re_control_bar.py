@@ -1,22 +1,22 @@
 """re_control_bar.py — Persistent RE status and control toolbar."""
 
 import time
-from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton
-from PyQt6.QtCore import pyqtSignal, Qt
+from qtpy.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton
+from qtpy.QtCore import Signal, Qt
 from .themes import ACCENT, SUCCESS, DANGER, WARNING, THEMES, DEFAULT_THEME
 
 
 class REControlBar(QFrame):
     """Compact persistent toolbar showing RE state and action buttons."""
 
-    open_env_requested      = pyqtSignal()
-    close_env_requested     = pyqtSignal()
-    start_manager_requested = pyqtSignal()
-    stop_manager_requested  = pyqtSignal()
-    reconnect_requested     = pyqtSignal()
-    profile_changed         = pyqtSignal(str)   # emits the selected profile name
-    ai_requested            = pyqtSignal()
-    lock_chip_clicked       = pyqtSignal()       # user clicked the lock chip
+    open_env_requested      = Signal()
+    close_env_requested     = Signal()
+    start_manager_requested = Signal()
+    stop_manager_requested  = Signal()
+    reconnect_requested     = Signal()
+    profile_changed         = Signal(str)   # emits the selected profile name
+    ai_requested            = Signal()
+    lock_chip_clicked       = Signal()       # user clicked the lock chip
 
     _EXT_BUSY_DEBOUNCE = 1.5  # seconds before "BUSY (ext)" appears in the chip
 

@@ -15,12 +15,12 @@ try:
 except ImportError:
     PYQTGRAPH_AVAILABLE = False
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QAbstractItemView,
     QMessageBox, QApplication, QSplitter, QSizePolicy, QStackedWidget, QTabBar,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from qtpy.QtCore import Qt, QThread, Signal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
 from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 from . import peak_fit as _peak_fit
@@ -87,8 +87,8 @@ def _poisson_sigma(y_raw, norm_raw=None):
 
 class ZMQDocThread(QThread):
     """Background thread: receive bluesky documents from ZMQ PUB socket."""
-    doc_received   = pyqtSignal(str, dict)
-    status_changed = pyqtSignal(str)
+    doc_received   = Signal(str, dict)
+    status_changed = Signal(str)
 
     def __init__(self, addr=None, parent=None):
         super().__init__(parent)
@@ -123,10 +123,10 @@ class ZMQDocThread(QThread):
 
 class LiveViewer(QWidget):
     COLORS = PLOT_COLORS
-    move_requested        = pyqtSignal(str, float)           # (motor_name, target_position) — 1D
-    move_2d_requested     = pyqtSignal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
-    scan_point_completed  = pyqtSignal(int)          # seq_num of each event doc
-    scan_total_points     = pyqtSignal(int)          # num_points from start doc (0 if unknown)
+    move_requested        = Signal(str, float)           # (motor_name, target_position) — 1D
+    move_2d_requested     = Signal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
+    scan_point_completed  = Signal(int)          # seq_num of each event doc
+    scan_total_points     = Signal(int)          # num_points from start doc (0 if unknown)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)

@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from qtpy.QtCore import QObject, QThread, Signal, Slot
 from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_ADDR
 
@@ -397,8 +397,8 @@ def _get_scripts_dir() -> Path:
 
 class _PVNamesReader(QThread):
     """Background thread: calls get_device_pvnames() via function_execute."""
-    pv_names_ready = pyqtSignal(dict)
-    read_error     = pyqtSignal(str)
+    pv_names_ready = Signal(dict)
+    read_error     = Signal(str)
 
     def __init__(self, rm, rm_lock, parent=None):
         super().__init__(parent)
@@ -452,8 +452,8 @@ class _PVNamesReader(QThread):
 
 class _DeviceStatusReader(QThread):
     """Background thread: calls read_devices_status() via function_execute and waits for result."""
-    readings_ready = pyqtSignal(dict)
-    read_error     = pyqtSignal(str)
+    readings_ready = Signal(dict)
+    read_error     = Signal(str)
 
     def __init__(self, rm, rm_lock, parent=None):
         super().__init__(parent)
@@ -497,7 +497,7 @@ class _DeviceStatusReader(QThread):
 
 class _SimDeviceSetter(QThread):
     """Background thread: calls set_sim_device() via function_execute and polls for completion."""
-    done  = pyqtSignal(bool, str)   # success, message
+    done  = Signal(bool, str)   # success, message
 
     def __init__(self, rm, rm_lock, name: str, value: float, parent=None):
         super().__init__(parent)
@@ -541,8 +541,8 @@ class _SimDeviceSetter(QThread):
 
 class _ScanLogFetcher(QThread):
     """Fetch scans_log.json from the remote RE machine via SFTP."""
-    data_ready  = pyqtSignal(bytes)
-    fetch_error = pyqtSignal(str)
+    data_ready  = Signal(bytes)
+    fetch_error = Signal(str)
 
     def __init__(self, settings: dict, remote_path: str):
         super().__init__()
@@ -565,27 +565,27 @@ class _ScanLogFetcher(QThread):
 
 
 class ZMQWorker(QObject):
-    status_updated       = pyqtSignal(dict)
-    queue_updated        = pyqtSignal(list)
-    running_item_updated = pyqtSignal(dict)   # {} when idle, plan item dict when running
-    history_updated      = pyqtSignal(list)
-    plans_updated   = pyqtSignal(dict)
-    devices_updated         = pyqtSignal(dict)
-    device_readings_updated = pyqtSignal(dict)
-    device_read_error       = pyqtSignal(str)
-    pv_names_ready          = pyqtSignal(dict)
-    pv_names_error          = pyqtSignal(str)
-    sim_device_set_done     = pyqtSignal(str, bool, str)  # dev_name, success, msg
-    error_occurred          = pyqtSignal(str)
-    connected       = pyqtSignal()
-    disconnected    = pyqtSignal()
-    env_opened      = pyqtSignal(bool)  # True = genuine close→open; False = app reconnect
-    env_closed      = pyqtSignal()
-    re_manager_started = pyqtSignal(int)   # pid
-    console_updated      = pyqtSignal(str)   # new console text since last poll
-    scan_point_completed = pyqtSignal(int)  # seq_num of each completed event doc
-    scan_log_ready  = pyqtSignal(bytes)    # raw bytes of remote scans_log.json
-    scan_log_error  = pyqtSignal(str)      # error message if SFTP fetch failed
+    status_updated       = Signal(dict)
+    queue_updated        = Signal(list)
+    running_item_updated = Signal(dict)   # {} when idle, plan item dict when running
+    history_updated      = Signal(list)
+    plans_updated   = Signal(dict)
+    devices_updated         = Signal(dict)
+    device_readings_updated = Signal(dict)
+    device_read_error       = Signal(str)
+    pv_names_ready          = Signal(dict)
+    pv_names_error          = Signal(str)
+    sim_device_set_done     = Signal(str, bool, str)  # dev_name, success, msg
+    error_occurred          = Signal(str)
+    connected       = Signal()
+    disconnected    = Signal()
+    env_opened      = Signal(bool)  # True = genuine close→open; False = app reconnect
+    env_closed      = Signal()
+    re_manager_started = Signal(int)   # pid
+    console_updated      = Signal(str)   # new console text since last poll
+    scan_point_completed = Signal(int)  # seq_num of each completed event doc
+    scan_log_ready  = Signal(bytes)    # raw bytes of remote scans_log.json
+    scan_log_error  = Signal(str)      # error message if SFTP fetch failed
 
     def __init__(self):
         super().__init__()
@@ -611,7 +611,7 @@ class ZMQWorker(QObject):
         self.locked_out: bool = False       # True when another client holds operator lock
         self.lock_holder: str = ""          # hostname of the current lock holder
 
-    @pyqtSlot(str, str)
+    @Slot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
         self._is_connecting = True
         try:

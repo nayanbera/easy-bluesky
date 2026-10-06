@@ -29,8 +29,9 @@ curve-fitting module with per-dataset parameter memory supports rapid analysis w
 same interface used for data collection. A dedicated MCA Viewer supports multi-channel
 analyser detectors with ROI-based channel browsing, real-time EPICS CA readback, and
 automated Fe-55 energy calibration by fitting Mn Kα/Kβ Gaussian peaks. EasyBluesky is
-implemented in Python using PyQt6 and communicates with the queue-server via ZMQ. It is
-freely available at https://github.com/nayanbera/easy-bluesky under the GPL-3.0 licence.
+implemented in Python using PyQt6 or PySide6 (via the qtpy compatibility layer) and
+communicates with the queue-server via ZMQ. It is freely available at
+https://github.com/nayanbera/easy-bluesky under the BSD-3-Clause licence.
 
 **Keywords:** beamline control, data acquisition, Bluesky, graphical user interface,
 Python, queue-server, synchrotron, EPICS
@@ -62,7 +63,7 @@ to specific facility configurations and require significant local customisation 
 deployment. A general-purpose, self-contained application that can be installed by an end
 user and pointed at any Bluesky queue-server over SSH has not previously been available.
 
-Here we describe EasyBluesky (version 0.2.0), a PyQt6 desktop application that provides
+Here we describe EasyBluesky (version 0.2.0), a PyQt6/PySide6 desktop application that provides
 a complete graphical interface to a Bluesky queue-server running on a remote beamline
 computer. EasyBluesky targets the common scenario in which an experimenter works at a
 local workstation — or carries their own laptop — while the RunEngine executes on

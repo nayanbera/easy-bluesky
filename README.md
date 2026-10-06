@@ -1843,6 +1843,9 @@ Developed with assistance from [Claude](https://claude.ai) (Anthropic).
 
 ## License
 
-GNU General Public License v3 or later (GPL-3.0-or-later).
-EasyBluesky links against PyQt6, which is licensed under GPL-3.0, and is therefore
-distributed under the same terms. See the [LICENSE](LICENSE) file for the full text.
+BSD 3-Clause License. See the [LICENSE](LICENSE) file for the full text.
+
+EasyBluesky uses [qtpy](https://github.com/spyder-ide/qtpy) as a Qt binding
+abstraction layer, so it carries no hard dependency on any specific Qt binding.
+Users install their preferred binding separately — `PyQt6` or `PySide6` — and
+EasyBluesky works with either. qtpy itself is MIT-licensed.

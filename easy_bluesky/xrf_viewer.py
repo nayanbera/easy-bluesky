@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtGui import QCloseEvent
+from qtpy.QtWidgets import (
     QCheckBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QPushButton, QVBoxLayout, QWidget,
 )
@@ -114,7 +114,7 @@ def extract_xrf_spectrum_pv(pv_map: dict, classname: str = "") -> str | None:
 class XRFViewerWindow(QMainWindow):
     """Floating live XRF spectrum viewer.  Embeds PyMCA's McaAdvancedFit widget."""
 
-    _spectrum_received = pyqtSignal(object)   # np.ndarray — cross-thread delivery
+    _spectrum_received = Signal(object)   # np.ndarray — cross-thread delivery
 
     def __init__(
         self,
@@ -167,7 +167,7 @@ class XRFViewerWindow(QMainWindow):
                 "<b>PyMCA is not installed.</b><br><br>"
                 "Install it with:<br>"
                 "<tt>pip install pymca</tt><br><br>"
-                "PyMCA ≥ 5.9 is required for PyQt6 compatibility."
+                "PyMCA ≥ 5.9 is required for Qt6 compatibility."
             )
             msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
             msg.setWordWrap(True)

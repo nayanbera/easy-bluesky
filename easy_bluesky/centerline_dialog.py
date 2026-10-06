@@ -20,12 +20,12 @@ Algorithm
 
 import numpy as np
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QPushButton,
     QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
-from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from qtpy.QtCore import Qt, QRectF, Signal
 
 try:
     import pyqtgraph as pg
@@ -220,7 +220,7 @@ def _resample_equal_spacing(cx: np.ndarray, cy: np.ndarray,
 class CenterlineDialog(QDialog):
     """Interactive dialog for extracting a channel centerline from a 2D map."""
 
-    centerline_ready = pyqtSignal(object, object)   # (cx_array, cy_array)
+    centerline_ready = Signal(object, object)   # (cx_array, cy_array)
 
     def __init__(self, xs, ys, zs, x_label="X", y_label="Y", parent=None):
         super().__init__(parent)

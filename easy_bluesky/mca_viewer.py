@@ -5,9 +5,9 @@ import re
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QColor
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtGui import QCloseEvent, QColor
+from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QColorDialog, QDoubleSpinBox, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -115,11 +115,11 @@ def detect_n_rois(pv_map: dict) -> int:
 class MCAViewerWindow(QMainWindow):
     """Floating live MCA viewer driven by IOC ROI PVs — no PyMCA required."""
 
-    _spectrum_received = pyqtSignal(object)           # np.ndarray
-    _roi_cb_received   = pyqtSignal(int, object)      # idx, partial dict
-    _status_received   = pyqtSignal(float, float, bool)  # ertm, eltm, acqg
-    _cal_received      = pyqtSignal(float, float)     # calo (eV), cals (eV/ch)
-    _hdf_pv_received   = pyqtSignal(str, object)      # field, value
+    _spectrum_received = Signal(object)           # np.ndarray
+    _roi_cb_received   = Signal(int, object)      # idx, partial dict
+    _status_received   = Signal(float, float, bool)  # ertm, eltm, acqg
+    _cal_received      = Signal(float, float)     # calo (eV), cals (eV/ch)
+    _hdf_pv_received   = Signal(str, object)      # field, value
 
     def __init__(self, device_name: str, mca_prefix: str = "",
                  pv_map: dict | None = None, parent=None):

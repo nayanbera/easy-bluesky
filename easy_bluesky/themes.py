@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from PyQt6.QtGui import QPalette, QColor
+from qtpy.QtGui import QPalette, QColor
 
 # Semantic colors — constant across all themes
 ACCENT  = "#1f77b4"

@@ -1,7 +1,7 @@
 """highlighter.py — Python syntax highlighter with multi-line string support."""
 
 import re
-from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor
+from qtpy.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor
 
 
 def _fmt(color: str, bold: bool = False) -> QTextCharFormat:

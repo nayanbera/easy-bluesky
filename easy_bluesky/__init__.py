@@ -1,7 +1,7 @@
 """
 EasyBluesky
 -------------------
-A PyQt6 desktop application for controlling and monitoring
+A Qt desktop application (PyQt6/PySide6 via qtpy) for controlling and monitoring
 Bluesky experiments via the queue server (ZMQ transport).
 
 Modules:

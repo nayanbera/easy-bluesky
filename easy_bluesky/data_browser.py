@@ -15,13 +15,13 @@ try:
 except ImportError:
     PG_AVAILABLE = False
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QComboBox, QAbstractItemView, QLineEdit,
     QFrame,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
+from qtpy.QtCore import Qt, QThread, Signal
+from qtpy.QtGui import QColor
 from .config import CATALOG_NAME, TILED_URI, TILED_API_KEY, DATA_RUNS_DIR, SUCCESS, DANGER, ACCENT, PLOT_COLORS
 from .plot_tools import smart_legend_position
 
@@ -29,8 +29,8 @@ from .plot_tools import smart_legend_position
 # ── Background loader thread ───────────────────────────────────────────────────
 
 class CatalogLoader(QThread):
-    runs_ready  = pyqtSignal(list)   # list of (uid, label, color, run_obj)
-    error       = pyqtSignal(str)
+    runs_ready  = Signal(list)   # list of (uid, label, color, run_obj)
+    error       = Signal(str)
 
     def __init__(self, source_type, source_value):
         super().__init__()

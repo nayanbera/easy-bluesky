@@ -7,8 +7,8 @@ import socket
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QThread, QTimer, Signal
+from qtpy.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
@@ -20,8 +20,8 @@ from .widgets import NoScrollSpinBox
 
 class _RegistryFetchWorker(QThread):
     """Fetch registry.json via SSH and probe all instances in background."""
-    done  = pyqtSignal(dict, dict)   # (registry_dict, {name: running_bool})
-    error = pyqtSignal(str)
+    done  = Signal(dict, dict)   # (registry_dict, {name: running_bool})
+    error = Signal(str)
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -662,8 +662,8 @@ class _SshKeyInstaller(QThread):
     The SSH password is used only during this one-time setup and is never
     stored anywhere.
     """
-    progress = pyqtSignal(str)        # intermediate status line
-    finished = pyqtSignal(bool, str)  # (success, final_message)
+    progress = Signal(str)        # intermediate status line
+    finished = Signal(bool, str)  # (success, final_message)
 
     def __init__(self, host, port, user, password, key_path, parent=None):
         super().__init__(parent)
@@ -787,8 +787,8 @@ class _SshKeyInstaller(QThread):
 
 class _MongoCheckWorker(QThread):
     """SSH to the RE machine and run a MongoDB + Python package diagnostic."""
-    line_ready = pyqtSignal(str, str)   # (text, color)  '#2ca02c'=OK '#d62728'=fail etc.
-    finished_ok = pyqtSignal(bool)      # True if all checks passed
+    line_ready = Signal(str, str)   # (text, color)  '#2ca02c'=OK '#d62728'=fail etc.
+    finished_ok = Signal(bool)      # True if all checks passed
 
     # One-liner Python script executed on the remote machine.
     # Uses only stdlib + packages we want to verify — no bluesky imports needed.
@@ -904,8 +904,8 @@ class _MongoCheckDialog(QDialog):
         info.setWordWrap(True)
         lay.addWidget(info)
 
-        from PyQt6.QtWidgets import QPlainTextEdit
-        from PyQt6.QtGui import QFont, QTextCharFormat, QColor, QTextCursor
+        from qtpy.QtWidgets import QPlainTextEdit
+        from qtpy.QtGui import QFont, QTextCharFormat, QColor, QTextCursor
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         f = QFont("Menlo")
@@ -951,7 +951,7 @@ class _MongoCheckDialog(QDialog):
         self._worker.start()
 
     def _append_line(self, text: str, color: str):
-        from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor
+        from qtpy.QtGui import QTextCharFormat, QColor, QTextCursor
         cursor = self._log.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         fmt = QTextCharFormat()
@@ -977,8 +977,8 @@ class _MongoCheckDialog(QDialog):
 
 class _SFTPConnectWorker(QThread):
     """Open an SFTP channel to the remote host in a background thread."""
-    connected = pyqtSignal(object)   # emits (sftp, home_dir, ssh_client)
-    error     = pyqtSignal(str)
+    connected = Signal(object)   # emits (sftp, home_dir, ssh_client)
+    error     = Signal(str)
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -1959,7 +1959,7 @@ class ConnectionDialog(QDialog):
         is_local = self._prof_is_local.isChecked()
         if not is_local and host.lower() not in ("localhost", "127.0.0.1", "::1", ""):
             self._auto_assign_note.setText(f"Checking ports on {host} via SSH…")
-            from PyQt6.QtWidgets import QApplication
+            from qtpy.QtWidgets import QApplication
             QApplication.processEvents()
             settings = self._collect_top_level()
             ports, note = find_free_ports_remote(settings, count=4, start=start, used=used)
@@ -2181,7 +2181,7 @@ class ConnectionDialog(QDialog):
         host = (profile.get("host", "").strip()
                 or settings.get("host", "").strip())
         if not host:
-            from PyQt6.QtWidgets import QMessageBox
+            from qtpy.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self, "No host",
                 "Set a host (Host override or global Host) in this profile first."
@@ -2202,7 +2202,7 @@ class ConnectionDialog(QDialog):
             return
         self._esaf_status.setText("Testing…")
         self._esaf_status.setStyleSheet("color: #888;")
-        from PyQt6.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         QApplication.processEvents()
         try:
             import urllib.request as _ur
@@ -2237,7 +2237,7 @@ class ConnectionDialog(QDialog):
 
         self._esaf_status.setText("Starting aps-esaf-fetcher via SSH…")
         self._esaf_status.setStyleSheet("color: #888;")
-        from PyQt6.QtWidgets import QApplication
+        from qtpy.QtWidgets import QApplication
         QApplication.processEvents()
         try:
             from .ssh_manager import _get_client

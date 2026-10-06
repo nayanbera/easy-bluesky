@@ -1,14 +1,14 @@
 """curve_fit_dialog.py — Interactive parameter dialog for lmfit curve fitting."""
 
 import numpy as np
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QTableWidget, QTableWidgetItem, QTextEdit, QCheckBox, QWidget,
     QHeaderView, QAbstractItemView, QFrame, QSizePolicy, QFileDialog, QMessageBox,
     QSpinBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QColor
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtGui import QFont, QColor
 
 from . import peak_fit as _pf
 
@@ -27,8 +27,8 @@ class FitParamsDialog(QDialog):
           label, x, y, x_fit, y_fit, info, model_name, bg_name, method
     """
 
-    preview_changed = pyqtSignal(object, object)  # x_fit, y_fit (numpy arrays)
-    fit_applied     = pyqtSignal(object)           # list of fit-result dicts
+    preview_changed = Signal(object, object)  # x_fit, y_fit (numpy arrays)
+    fit_applied     = Signal(object)           # list of fit-result dicts
 
     def __init__(
         self,

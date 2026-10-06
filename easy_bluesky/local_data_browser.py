@@ -23,9 +23,9 @@ except ImportError:
 
 import datetime as _dt
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import (
+from qtpy.QtCore import Qt, QThread, Signal
+from qtpy.QtGui import QColor, QFont
+from qtpy.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListWidget, QMessageBox, QPushButton, QSizePolicy,
@@ -318,8 +318,8 @@ class _RunLoader(QThread):
     event data.  Tasks are (jsonl_path, uid, label) tuples.
     """
     # (dfs, n_from_mongo, n_no_events, mongo_labels)
-    done  = pyqtSignal(list, int, int, list)
-    error = pyqtSignal(str)
+    done  = Signal(list, int, int, list)
+    error = Signal(str)
 
     def __init__(self, tasks, mongo_profile=None, parent=None):
         """tasks: list of (jsonl_path, uid, label)"""
@@ -364,7 +364,7 @@ class _RunLoader(QThread):
 
 class _MetaLoader(QThread):
     """Read start/stop docs from JSONL files in background → populate Points/Detectors."""
-    row_ready = pyqtSignal(int, str, str)  # (table_row, n_points_str, detectors_str)
+    row_ready = Signal(int, str, str)  # (table_row, n_points_str, detectors_str)
 
     def __init__(self, tasks, parent=None):
         """tasks: list of (row_index, jsonl_path)"""
@@ -565,7 +565,7 @@ class LocalDataBrowserTab(QWidget):
     """Offline experiment data browser — reads plans_log.jsonl + runs/*.jsonl."""
 
     COLORS = PLOT_COLORS
-    sync_requested = pyqtSignal(list, str)   # (uid_list, runs_dir_path)
+    sync_requested = Signal(list, str)   # (uid_list, runs_dir_path)
 
     def set_sync_message(self, msg: str):
         """Called by main.py to show SSH progress in this tab's status bar."""
@@ -1694,7 +1694,7 @@ class LocalDataBrowserTab(QWidget):
 
     def _copy_screenshot(self):
         if _PG_OK:
-            from PyQt6.QtWidgets import QApplication
+            from qtpy.QtWidgets import QApplication
             QApplication.clipboard().setPixmap(self.plot_widget.grab())
 
     def closeEvent(self, event):

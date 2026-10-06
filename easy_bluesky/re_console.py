@@ -2,19 +2,19 @@
 
 from datetime import datetime
 
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit,
     QCheckBox,
 )
 from .code_editor import FindBar
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat
+from qtpy.QtCore import Qt, Signal
+from qtpy.QtGui import QFont, QTextCursor, QColor, QTextCharFormat
 
 
 class REConsoleWidget(QWidget):
     """Displays live console output from the RE Manager."""
 
-    diagnose_requested = pyqtSignal()
+    diagnose_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)

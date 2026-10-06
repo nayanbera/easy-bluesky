@@ -34,13 +34,13 @@ import time
 import threading
 from datetime import datetime
 from pathlib import Path
-from PyQt6.QtWidgets import (
+from qtpy.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QTabWidget,
     QTextBrowser, QToolBar, QVBoxLayout, QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from qtpy.QtCore import Qt, QThread, QTimer, Signal
 from .config import APP_NAME, ACCENT
 from .connection_settings import (
     load_connection, save_connection, make_zmq_addrs,
@@ -81,7 +81,7 @@ class SingleInstanceGuard:
     def try_acquire(self, profile_name: str) -> bool:
         """Try to claim exclusive lock for profile. Returns True if acquired."""
         try:
-            from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+            from qtpy.QtNetwork import QLocalServer, QLocalSocket
         except ImportError:
             return True  # QtNetwork not available — skip locking
 
@@ -98,10 +98,10 @@ class SingleInstanceGuard:
         # Release previous lock (profile switch)
         if self._server:
             self._server.close()
-            from PyQt6.QtNetwork import QLocalServer as _LS
+            from qtpy.QtNetwork import QLocalServer as _LS
             _LS.removeServer(self._current_name or "")
 
-        from PyQt6.QtNetwork import QLocalServer
+        from qtpy.QtNetwork import QLocalServer
         QLocalServer.removeServer(name)  # clean stale socket from crash
         self._server = QLocalServer()
         if not self._server.listen(name):
@@ -111,7 +111,7 @@ class SingleInstanceGuard:
 
     def release(self):
         try:
-            from PyQt6.QtNetwork import QLocalServer
+            from qtpy.QtNetwork import QLocalServer
             if self._server:
                 self._server.close()
             if self._current_name:
@@ -124,7 +124,7 @@ class SingleInstanceGuard:
     def locked_profiles(self, profile_names: list) -> set:
         """Return names of profiles locked by OTHER instances (not this one)."""
         try:
-            from PyQt6.QtNetwork import QLocalSocket
+            from qtpy.QtNetwork import QLocalSocket
         except ImportError:
             return set()
         locked = set()
@@ -895,13 +895,13 @@ global SSH host.  The override is used for:</p>
 
 _ABOUT_HTML = """
 <h2>EasyBluesky</h2>
-<p>A PyQt6 desktop GUI for controlling Bluesky/ophyd beamlines via the
+<p>A Qt desktop GUI (PyQt6/PySide6 via qtpy) for controlling Bluesky/ophyd beamlines via the
 <b>bluesky-queueserver</b> (ZMQ transport).</p>
 
 <table>
 <tr><td><b>Version</b></td><td>0.1.0</td></tr>
 <tr><td><b>Python</b></td><td>≥ 3.10</td></tr>
-<tr><td><b>UI toolkit</b></td><td>PyQt6</td></tr>
+<tr><td><b>UI toolkit</b></td><td>PyQt6 / PySide6 (via qtpy)</td></tr>
 <tr><td><b>License</b></td><td>BSD 3-Clause</td></tr>
 <tr><td><b>Source</b></td>
     <td><a href="https://github.com/nayanbera/easy-bluesky">
@@ -982,8 +982,8 @@ class _HelpDialog(QDialog):
 
 class _DiscoveryWorker(QThread):
     """Background thread: fetch registry via SSH then TCP-probe all instances."""
-    done   = pyqtSignal(list)   # list of instance dicts with extra 'running' key
-    failed = pyqtSignal(str)
+    done   = Signal(list)   # list of instance dicts with extra 'running' key
+    failed = Signal(str)
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -1005,7 +1005,7 @@ class _DiscoveryWorker(QThread):
 
 class _OperatorLockChecker(QThread):
     """Background thread: read the operator lock file from the remote machine."""
-    result = pyqtSignal(dict)   # holder dict; empty dict means lock is free
+    result = Signal(dict)   # holder dict; empty dict means lock is free
 
     def __init__(self, settings: dict, profile: dict, parent=None):
         super().__init__(parent)
@@ -1020,8 +1020,8 @@ class _OperatorLockChecker(QThread):
 
 class _JsonlSyncThread(QThread):
     """Background thread: SFTP-copy missing JSONL run files from the remote machine."""
-    done    = pyqtSignal(int, int)   # (n_copied, n_total)
-    message = pyqtSignal(str)        # progress / error messages for logging
+    done    = Signal(int, int)   # (n_copied, n_total)
+    message = Signal(str)        # progress / error messages for logging
 
     def __init__(self, profile: dict, uid_list: list, runs_dir: str, parent=None):
         super().__init__(parent)
@@ -1093,15 +1093,15 @@ def _ai_settings(conn: dict) -> dict:
 
 class MainWindow(QMainWindow):
     # Emitted on the main thread; queued delivery runs connect() on worker_thread.
-    _connect_requested  = pyqtSignal(str, str)  # ctrl_addr, info_addr
+    _connect_requested  = Signal(str, str)  # ctrl_addr, info_addr
     # Safe cross-thread → main thread delivery for background SSH threads.
-    _thread_log          = pyqtSignal(str)
-    _thread_reconnect    = pyqtSignal()          # triggers auto-reconnect from SSH thread
-    _thread_lock_claimed = pyqtSignal(bool)      # operator lock claim result from background thread
-    _multi_client_signal = pyqtSignal(str)       # IP list from background multi-client check
-    _clients_updated     = pyqtSignal(list)      # live client IP list for toolbar chip
-    _startup_clients_ready = pyqtSignal(list)   # result of startup client check
-    _lock_polled         = pyqtSignal(dict)      # lock file contents from 30 s poll thread
+    _thread_log          = Signal(str)
+    _thread_reconnect    = Signal()          # triggers auto-reconnect from SSH thread
+    _thread_lock_claimed = Signal(bool)      # operator lock claim result from background thread
+    _multi_client_signal = Signal(str)       # IP list from background multi-client check
+    _clients_updated     = Signal(list)      # live client IP list for toolbar chip
+    _startup_clients_ready = Signal(list)   # result of startup client check
+    _lock_polled         = Signal(dict)      # lock file contents from 30 s poll thread
 
     def __init__(self, guard: SingleInstanceGuard = None):
         super().__init__()
@@ -1215,7 +1215,7 @@ class MainWindow(QMainWindow):
         self.re_bar.update_profiles(names, active)
 
     def _build_menu(self):
-        from PyQt6.QtGui import QActionGroup
+        from qtpy.QtGui import QActionGroup
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("File")
@@ -1958,7 +1958,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Controls", win)
         tb.setMovable(False)
         tb.setFloatable(False)
-        from PyQt6.QtGui import QAction
+        from qtpy.QtGui import QAction
         act = QAction("↩  Re-attach to main window", win)
         act.triggered.connect(lambda: self._reattach_tab(widget))
         tb.addAction(act)
@@ -2466,7 +2466,7 @@ class MainWindow(QMainWindow):
         self.ai_window.update_profile(profile_slug(name), _ai_settings(self._conn_settings))
 
     def _on_open_hdf5(self):
-        from PyQt6.QtWidgets import QFileDialog
+        from qtpy.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(
             self, "Open HDF5 Archive", "", "HDF5 Files (*.h5 *.hdf5)"
         )
@@ -2764,7 +2764,7 @@ class MainWindow(QMainWindow):
         from .ssh_manager import _settings_for_profile
         settings = self._conn_settings
         if not settings.get("ssh_user"):
-            from PyQt6.QtWidgets import QMessageBox
+            from qtpy.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Not Connected",
                                 "SSH user not configured. "
                                 "Open Connection Settings and set SSH User.")
