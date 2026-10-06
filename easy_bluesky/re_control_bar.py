@@ -1,9 +1,29 @@
 """re_control_bar.py — Persistent RE status and control toolbar."""
 
+import socket
 import time
 from qtpy.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton
-from qtpy.QtCore import Signal, Qt
+from qtpy.QtCore import Signal, Qt, QThread
 from .themes import ACCENT, SUCCESS, DANGER, WARNING, THEMES, DEFAULT_THEME
+
+
+class _HostnameResolver(QThread):
+    """Resolves IP addresses to hostnames in a background thread."""
+    resolved = Signal(list, list)   # ips, hostnames
+
+    def __init__(self, ips, parent=None):
+        super().__init__(parent)
+        self._ips = ips
+
+    def run(self):
+        hostnames = []
+        for ip in self._ips:
+            try:
+                name = socket.gethostbyaddr(ip)[0]
+            except Exception:
+                name = ip
+            hostnames.append(name)
+        self.resolved.emit(self._ips, hostnames)
 
 
 class REControlBar(QFrame):
@@ -359,7 +379,18 @@ class REControlBar(QFrame):
                 f"color: {SUCCESS}; background: #1a3a1a; border-radius: 4px;"
                 " padding: 2px 6px; font-size: 11px; font-weight: bold;"
             )
+        # Show IPs immediately, then resolve hostnames in the background
         self.clients_chip.setToolTip("Connected clients:\n" + "\n".join(ips))
+        self._resolver = _HostnameResolver(list(ips), parent=self)
+        self._resolver.resolved.connect(self._on_hostnames_resolved)
+        self._resolver.start()
+
+    def _on_hostnames_resolved(self, ips: list, hostnames: list):
+        lines = [
+            f"{ip}  ({host})" if host != ip else ip
+            for ip, host in zip(ips, hostnames)
+        ]
+        self.clients_chip.setToolTip("Connected clients:\n" + "\n".join(lines))
 
     def update_queue_count(self, n: int):
         self.queue_label.setText(f"Queue: {n}")
