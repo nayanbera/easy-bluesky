@@ -2718,7 +2718,9 @@ class ExperimentsTab(QWidget):
         elif running and avg_dur and avg_dur > 0:
             # No start-doc total, but we have historical duration for this plan type.
             # Fill the bar proportionally using elapsed / avg_dur.
-            frac = min(elapsed / avg_dur, 1.0)
+            # Cap at 0.97 so the bar never appears "done" based on time estimate alone —
+            # only confirmed completion (running_item cleared) hides the bar.
+            frac = min(elapsed / avg_dur, 0.97)
             self._plan_bar.setRange(0, 1000)
             self._plan_bar.setValue(int(frac * 1000))
             remaining = max(0.0, avg_dur - elapsed)
@@ -2744,11 +2746,13 @@ class ExperimentsTab(QWidget):
             n_remaining = len(self._current_queue_items)
             n_total     = n_done + 1 + n_remaining  # completed + running + queued
 
-            # Fraction of the current plan completed (0.0 – 1.0).
+            # Fraction of the current plan completed (0.0 – <1.0).
+            # Cap at 0.97 in estimation modes so the queue bar never shows the
+            # current plan as done before running_item actually clears.
             if total > 0 and total >= done:
-                cur_frac = done / total
+                cur_frac = min(done / total, 0.97)
             elif avg_dur and avg_dur > 0:
-                cur_frac = min(elapsed / avg_dur, 1.0)
+                cur_frac = min(elapsed / avg_dur, 0.97)
             else:
                 cur_frac = 0.0
 
