@@ -30,7 +30,7 @@ same interface used for data collection. A dedicated MCA Viewer supports multi-c
 analyser detectors with ROI-based channel browsing, real-time EPICS CA readback, and
 automated Fe-55 energy calibration by fitting Mn Kα/Kβ Gaussian peaks. EasyBluesky is
 implemented in Python using PyQt6 and communicates with the queue-server via ZMQ. It is
-freely available at https://github.com/nayanbera/easy-bluesky under the BSD licence.
+freely available at https://github.com/nayanbera/easy-bluesky under the GPL-3.0 licence.
 
 **Keywords:** beamline control, data acquisition, Bluesky, graphical user interface,
 Python, queue-server, synchrotron, EPICS

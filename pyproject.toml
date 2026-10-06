@@ -8,7 +8,7 @@ version = "0.1.2"
 description = "PyQt6 desktop app for controlling Bluesky experiments via the queue server"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "BSD-3-Clause" }
+license = { text = "GPL-3.0-or-later" }
 authors = [
     { name = "Your Name", email = "you@example.com" },
 ]
@@ -16,7 +16,7 @@ keywords = ["bluesky", "queueserver", "PyQt6", "beamline", "synchrotron"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD Software License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

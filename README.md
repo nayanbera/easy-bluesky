@@ -1843,4 +1843,6 @@ Developed with assistance from [Claude](https://claude.ai) (Anthropic).
 
 ## License
 
-BSD 3-Clause License
+GNU General Public License v3 or later (GPL-3.0-or-later).
+EasyBluesky links against PyQt6, which is licensed under GPL-3.0, and is therefore
+distributed under the same terms. See the [LICENSE](LICENSE) file for the full text.
