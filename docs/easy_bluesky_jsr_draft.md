@@ -646,6 +646,10 @@ Physics Control Systems (ICALEPCS 2013)*, San Francisco, CA.
 
 The Qt Company (2022). Qt Framework (version 6). https://www.qt.io
 
+The qtpy contributors (2024). qtpy: A small abstraction layer for writing applications
+that run on PyQt5, PyQt6, PySide2 and PySide6.
+https://github.com/spyder-ide/qtpy
+
 Virtanen, P. *et al.* (2020). SciPy 1.0: Fundamental algorithms for scientific computing
 in Python. *Nature Methods*, **17**, 261–272.
 https://doi.org/10.1038/s41592-019-0686-2
