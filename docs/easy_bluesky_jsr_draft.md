@@ -26,9 +26,11 @@ Live Viewer displays scan data in real time as bluesky documents arrive over ZMQ
 two-dimensional scans it renders a colour-mapped intensity map with adjustable histogram
 LUT and supports direct motor moves by double-clicking a pixel. An interactive
 curve-fitting module with per-dataset parameter memory supports rapid analysis within the
-same interface used for data collection. EasyBluesky is implemented in Python using PyQt6
-and communicates with the queue-server via ZMQ. It is freely available at
-https://github.com/nayanbera/easy-bluesky under the BSD licence.
+same interface used for data collection. A dedicated MCA Viewer supports multi-channel
+analyser detectors with ROI-based channel browsing, real-time EPICS CA readback, and
+automated Fe-55 energy calibration by fitting Mn Kα/Kβ Gaussian peaks. EasyBluesky is
+implemented in Python using PyQt6 and communicates with the queue-server via ZMQ. It is
+freely available at https://github.com/nayanbera/easy-bluesky under the BSD licence.
 
 **Keywords:** beamline control, data acquisition, Bluesky, graphical user interface,
 Python, queue-server, synchrotron, EPICS
@@ -60,7 +62,7 @@ to specific facility configurations and require significant local customisation 
 deployment. A general-purpose, self-contained application that can be installed by an end
 user and pointed at any Bluesky queue-server over SSH has not previously been available.
 
-Here we describe EasyBluesky (version 0.1.2), a PyQt6 desktop application that provides
+Here we describe EasyBluesky (version 0.2.0), a PyQt6 desktop application that provides
 a complete graphical interface to a Bluesky queue-server running on a remote beamline
 computer. EasyBluesky targets the common scenario in which an experimenter works at a
 local workstation — or carries their own laptop — while the RunEngine executes on
@@ -178,13 +180,26 @@ making per-point progress visible in the console widget during running scans.
 
 ### 3.1 Queue Management
 
-The Queue Manager tab (Fig. 2b) provides a complete interface to the Bluesky plan queue.
-Experimenters can add plans by selecting from the list of plans registered in the
+Queue management is integrated into the Experiments tab (Fig. 2b) alongside experiment
+logging, eliminating the need to switch tabs between adding plans and reviewing scan
+history. Experimenters can add plans by selecting from the list of plans registered in the
 RunEngine environment, configure plan arguments through dynamically generated forms,
-reorder queue items by drag-and-drop, and remove or edit items at any time. Queue
-execution controls — Start, Pause, Resume, Abort, and Stop — are available both in the
-Queue Manager and in the Experiments tab, so no navigation is required to manage a
-running queue.
+reorder queue items by drag-and-drop, and remove or edit items at any time. A right-click
+context menu on any queued item provides Edit, Remove, Move to Top, and Move to Bottom
+actions. Double-clicking opens the plan editor with all previously entered arguments
+restored. Queue execution controls — Start, Pause, Resume, Abort, and Stop — are
+accessible directly in the same panel.
+
+The history section below the queue presents two sub-tabs. **Plans Log** is the
+default view and shows all completed scans for the active experiment, derived from the
+persistent `plans_log.jsonl` file; it supports text search and multi-selection for
+batch re-queuing or HDF5 export. **RE History** lists the full history returned by the
+RunEngine Manager across all experiments, with a configurable range filter (e.g.
+`0-100` for the most recent 100 entries), a search bar, and right-click options for
+Edit & Re-queue, Re-queue directly, and View Details. A collapsible detail panel at the
+bottom of the history section shows a formatted JSON view of the currently selected
+item — whether from the queue, the Plans Log, or the RE History — making parameter
+inspection accessible without a separate dialog.
 
 Two automation options reduce the manual steps required during a measurement session.
 The **Auto-start** checkbox causes EasyBluesky to start the queue automatically as soon
@@ -434,6 +449,45 @@ profile is exported as a CSV file. This workflow replaces manual peak-position r
 is particularly useful for positioning microfluidic mixers and capillaries before a SAXS
 or WAXS acquisition sequence.
 
+### 3.11 MCA Viewer and Detector Calibration
+
+EasyBluesky includes a dedicated MCA (Multi-Channel Analyser) Viewer for fluorescence
+detectors and energy-dispersive sensors such as silicon drift detectors (SDD). The viewer
+connects to an EPICS MCA record via Channel Access using a user-configured PV prefix; the
+spectrum (counts vs. channel number) updates in real time via CA subscription and is
+displayed with optional ROI (region of interest) overlays drawn from the ROI PVs of the
+same device. Each ROI is rendered as a colour-filled band on the spectrum, and the
+corresponding colour is reused for per-ROI curve-fit overlays so that calibration results
+are visually linked to the underlying data regions.
+
+An energy-axis calibration panel converts channel numbers to photon energy (eV) using
+a linear model
+\( E = \text{gain} \times \text{channel} + \text{offset} \).
+Calibration parameters can be entered manually or derived automatically by the
+**Auto-fit Fe-55** function. This routine uses `scipy.signal.find_peaks` with
+adaptively lowered height and prominence thresholds to locate the Mn K&alpha;
+(5895.0 eV) and Mn K&beta; (6490.4 eV) emission lines from an iron-55 source, fits a
+bounded Gaussian to each peak using `scipy.optimize.curve_fit`, and solves for gain and
+offset from the two fitted centroids. The gain and offset spinboxes are updated
+atomically (signals blocked during both assignments) to prevent an intermediate
+inconsistent state from triggering a premature axis recalculation. A **fit report** label
+beneath the calibration controls displays the centroid (&mu;), Gaussian width (&sigma;),
+and full width at half maximum (FWHM = 2.3548&sigma;) in eV for each fitted peak.
+
+Fitted Gaussian curves are optionally overlaid on the spectrum as dashed curves, coloured
+to match the enclosing ROI, with a solid vertical line marking the centroid position.
+A **Show fit overlay** checkbox toggles all fit graphics simultaneously, so the raw
+spectrum can be inspected without clutter. A crosshair readout follows the mouse cursor
+and reports the channel number, calibrated energy, and counts at the cursor position.
+
+An **HDF File** panel reads six PVs from the AreaDetector HDF5 plugin — file path,
+full filename, write mode, capture status, frames saved, and frames requested — and
+displays them as a compact status group that updates whenever the plugin state changes.
+EPICS char-waveform PVs (which the CA layer delivers as integer arrays) are decoded
+automatically to ASCII strings before display. Per-detector settings (PV prefix, gain,
+offset, and HDF5 plugin prefix) are persisted in the EasyBluesky device settings JSON
+so that they are restored across sessions without reconfiguration.
+
 ---
 
 ## 4. Application at the ASWAXS Beamline
@@ -459,11 +513,19 @@ consistently below 200 ms.
 EasyBluesky provides a complete, self-contained graphical interface to the Bluesky
 queue-server that requires no Python knowledge to operate. By encapsulating SSH
 connectivity, RunEngine lifecycle management, EPICS device monitoring, experiment logging,
-live data visualization, Visual Plan Composer, and plan development in a single desktop
-application, it substantially lowers the barrier to autonomous operation of
-Bluesky-controlled beamlines.
-The simulation mode enables beamtime preparation on personal hardware and supports user
-training independent of beamline availability.
+live data visualization, Visual Plan Composer, plan development, and detector calibration
+in a single desktop application, it substantially lowers the barrier to autonomous
+operation of Bluesky-controlled beamlines. The simulation mode enables beamtime
+preparation on personal hardware and supports user training independent of beamline
+availability.
+
+Queue management and experiment history are unified in a single Experiments tab, reducing
+panel-switching during active data collection. The Plans Log and RE History sub-tabs give
+users simultaneous access to experiment-specific completed scans and the full RunEngine
+history, with a collapsible JSON detail panel for rapid parameter inspection. The
+integrated MCA Viewer with automated Fe-55 energy calibration provides detector
+configuration and diagnostics within the same interface used for acquisition, eliminating
+the need for a separate detector-control tool.
 
 Beyond single-user operation, EasyBluesky addresses the practical reality of shared
 beamline infrastructure through its multi-client safety layer. The combination of operator
@@ -515,28 +577,34 @@ blocking operations (pymongo queries, HDF5 export, PV name retrieval, SFTP uploa
 actions.
 
 **Figure 2.** EasyBluesky graphical interface. *(a)* Main application window showing the
-tab-based layout: Experiments, Queue Manager, Available Devices & Plans, Code Editor,
+tab-based layout: Experiments, Plan Builder, Available Devices & Plans, Code Editor,
 RE Console, and Data Browser tabs are accessible from the top navigation bar. The
 persistent RE control bar at the top displays the current RunEngine state chip (IDLE,
 RUNNING, PAUSED, BUSY, or BUSY (ext)), environment state, and the connected-clients chip
-(green for sole operator, amber when sharing). *(b)* Queue Manager tab showing the plan
-queue (left panel) with drag-and-drop reordering, queue execution controls (Start, Pause,
-Resume, Abort, Stop), Auto-start checkbox, and Loop controls with an iteration counter.
-Each queued plan displays its pre-assigned scan number (#N). The right panel shows the
-plan detail view and RE console output. *(c)* Available Devices tab displaying the live
-device tree with columns for device class, current value, engineering units, and EPICS
-description. Motor-type devices expose inline tweak controls (◀ step ▶) for manual
-positioning. The search bar above the tree filters entries by name, class, or description.
-*(d)* Code Editor tab with syntax-highlighted Python plan editing, Plan Files management
-(add/remove local plan directories), and the integrated plan builder for constructing
-queue items from registered plans without writing code. *(e)* Visual Plan Composer showing
-drag-and-drop scan blocks arranged into a multi-step sequence with inner and outer motor
-loops; the right panel shows the generated Python code. *(f)* ESAF picker dialog showing
-the technique filter dropdown, client-side regex search field, and the selected ESAF record
-with PI name, proposal title, and user list; clicking Launch creates the experiment folder
-and registers the metadata. *(g)* Live Viewer in 2D map mode showing a colour-mapped
-pixel-intensity display for a two-motor scan with the histogram LUT panel open; the
-crosshair readout and motor-move-on-click controls are shown active.
+(green for sole operator, amber when sharing). *(b)* Experiments tab showing the three-panel
+layout: left panel with active experiment info, sample fields, and the history sub-tabs
+(Plans Log and RE History); middle panel with the plan queue (drag-and-drop reordering,
+right-click context menu), queue execution controls (Start, Pause, Resume, Abort, Stop),
+Auto-start and Loop controls, and RE console; right panel with the Live Viewer and data
+browser. The collapsible Details panel at the bottom of the history section shows the full
+JSON record for the selected queue item or history entry. Each queued plan displays its
+pre-assigned scan number (#N). *(c)* Available Devices tab displaying the live device tree
+with columns for device class, current value, engineering units, and EPICS description.
+Motor-type devices expose inline tweak controls (◀ step ▶) for manual positioning. The
+search bar above the tree filters entries by name, class, or description. *(d)* Code Editor
+tab with syntax-highlighted Python plan editing, Plan Files management (add/remove local
+plan directories), and the integrated plan builder for constructing queue items from
+registered plans without writing code. *(e)* Visual Plan Composer showing drag-and-drop
+scan blocks arranged into a multi-step sequence with inner and outer motor loops; the right
+panel shows the generated Python code. *(f)* ESAF picker dialog showing the technique
+filter dropdown, client-side regex search field, and the selected ESAF record with PI name,
+proposal title, and user list; clicking Launch creates the experiment folder and registers
+the metadata. *(g)* Live Viewer in 2D map mode showing a colour-mapped pixel-intensity
+display for a two-motor scan with the histogram LUT panel open; the crosshair readout and
+motor-move-on-click controls are shown active. *(h)* MCA Viewer showing the live
+fluorescence spectrum with ROI overlays, the Fe-55 calibration panel after Auto-fit
+(fitted Gaussian curves and centroid lines overlaid in ROI colours), and the HDF file info
+panel.
 
 **Figure 3.** Representative motor scan acquired using EasyBluesky at the ASWAXS
 beamline. [*Motor name*] was stepped through [*range and units*] in [*N*] steps; the
@@ -576,6 +644,10 @@ Rivers, M. (2012). pyepics: Python interface to EPICS Channel Access.
 Physics Control Systems (ICALEPCS 2013)*, San Francisco, CA.
 
 The Qt Company (2022). Qt Framework (version 6). https://www.qt.io
+
+Virtanen, P. *et al.* (2020). SciPy 1.0: Fundamental algorithms for scientific computing
+in Python. *Nature Methods*, **17**, 261–272.
+https://doi.org/10.1038/s41592-019-0686-2
 
 [*Add suitcase.jsonl / event-model reference if published*]
 [*Add MongoDB reference if needed by journal style*]
