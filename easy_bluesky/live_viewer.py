@@ -897,11 +897,11 @@ class LiveViewer(QWidget):
             self._live_fit_n_fitted = 0
 
     def _get_fit_xy(self):
-        """Return (x, y, model_name) arrays for the first selected Y signal, or None."""
-        if not self._data:
-            return None
-        x_key = self._x_signal or "seq_num"
-        x = np.array(self._data.get(x_key, []), dtype=float)
+        """Return (x, y, model_name) for the first selected Y signal, or None.
+
+        Reads data from the already-plotted curve so that normalization,
+        derivative, and log transforms are automatically included.
+        """
         y_signals = [
             self.y_list.item(i).text()
             for i in range(self.y_list.count())
@@ -909,12 +909,15 @@ class LiveViewer(QWidget):
         ]
         if not y_signals:
             return None
+        norm_key = self.norm_combo.currentData()
         y_key = y_signals[0]
-        y = np.array(self._data.get(y_key, []), dtype=float)
-        n = min(len(x), len(y))
-        if n < 5:
+        curve_name = y_key if not norm_key else f"{y_key}/{norm_key}"
+        curve = self._curves.get(curve_name)
+        if curve is None:
             return None
-        x_, y_ = x[:n], y[:n]
+        x_, y_ = curve.getData()
+        if x_ is None or len(x_) < 5:
+            return None
         mask = np.isfinite(x_) & np.isfinite(y_)
         x_, y_ = x_[mask], y_[mask]
         if len(x_) < 5:
