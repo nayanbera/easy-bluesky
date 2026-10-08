@@ -1311,6 +1311,7 @@ class ExperimentsTab(QWidget):
         self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
         self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
         self._completed_points         = 0    # event docs received so far
+        self._plan_first_event_time    = 0.0  # wall time of first event (for init/final move estimate)
         self._plan_event_intervals: deque = deque(maxlen=8)  # inter-event seconds
         self._plan_last_event_time     = 0.0
         self._queue_done_events        = 0    # events from plans already finished
@@ -2505,6 +2506,7 @@ class ExperimentsTab(QWidget):
             self._pending_total_points      = 0
             self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
+            self._plan_first_event_time     = 0.0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 
@@ -2690,6 +2692,8 @@ class ExperimentsTab(QWidget):
     def on_scan_point_completed(self, seq_num: int) -> None:
         """Called each time an event document arrives from the ZMQ doc stream."""
         now = time.monotonic()
+        if self._plan_first_event_time == 0.0 and self._running_item_start_time > 0.0:
+            self._plan_first_event_time = time.time()
         if self._plan_last_event_time > 0.0:
             interval = now - self._plan_last_event_time
             if 0.01 < interval < 3600.0:
@@ -2704,6 +2708,11 @@ class ExperimentsTab(QWidget):
         total    = self._running_item_total_points       # from start doc; 0 if unknown
         elapsed  = (time.time() - self._running_item_start_time
                     if self._running_item_start_time else 0.0)
+        # t_init: time from plan start to first event = motor ramp-up / initial move.
+        # We add the same duration to the remaining estimate to cover the final move.
+        t_init = (self._plan_first_event_time - self._running_item_start_time
+                  if self._plan_first_event_time > 0.0 and self._running_item_start_time > 0.0
+                  else 0.0)
         plan_name = (running or {}).get("name", "")
         avg_dur   = self._plan_duration_cache.get(plan_name)  # avg seconds from log
         avg_interval = (sum(self._plan_event_intervals) / len(self._plan_event_intervals)
@@ -2716,7 +2725,7 @@ class ExperimentsTab(QWidget):
             self._plan_bar.setValue(done)
             elapsed_str = f"  {self._format_duration(elapsed)} elapsed" if elapsed > 5 else ""
             if avg_interval is not None and done < total:
-                secs = (total - done) * avg_interval
+                secs = (total - done) * avg_interval + t_init
                 self._plan_bar.setFormat(
                     f"Plan: %v / %m events  (~{self._format_duration(secs)} left{elapsed_str})")
             else:
@@ -2772,8 +2781,13 @@ class ExperimentsTab(QWidget):
                 secs_left = max(0.0, avg_dur * (1.0 - cur_frac)) + n_remaining * avg_dur
                 time_str  = f"  (~{self._format_duration(secs_left)} left)"
             elif total > 0 and avg_interval is not None:
-                events_left = max(0, total - done) + n_remaining * total
-                secs_left   = events_left * avg_interval
+                # Remaining scan steps + final move (≈ t_init) for current plan,
+                # plus full duration estimate for each queued plan.
+                events_left = max(0, total - done)
+                secs_left   = events_left * avg_interval + t_init
+                if n_remaining > 0:
+                    plan_dur = total * avg_interval + 2 * t_init  # scan + init + final
+                    secs_left += n_remaining * plan_dur
                 time_str    = f"  (~{self._format_duration(secs_left)} left)"
             else:
                 time_str = ""
