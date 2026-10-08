@@ -2718,9 +2718,9 @@ class ExperimentsTab(QWidget):
             if avg_interval is not None and done < total:
                 secs = (total - done) * avg_interval
                 self._plan_bar.setFormat(
-                    f"Plan: %v/%m events  (~{self._format_duration(secs)} left{elapsed_str})")
+                    f"Plan: %v / %m events  (~{self._format_duration(secs)} left{elapsed_str})")
             else:
-                self._plan_bar.setFormat(f"Plan: %v/%m events{elapsed_str}")
+                self._plan_bar.setFormat(f"Plan: %v / %m events{elapsed_str}")
             self._plan_bar.setVisible(True)
         elif running and avg_dur and avg_dur > 0:
             # No start-doc total, but we have historical duration for this plan type.
@@ -2731,7 +2731,7 @@ class ExperimentsTab(QWidget):
             self._plan_bar.setRange(0, 1000)
             self._plan_bar.setValue(int(frac * 1000))
             remaining = max(0.0, avg_dur - elapsed)
-            event_str = f"  #{done} events" if done > 0 else ""
+            event_str = f"  {done} events" if done > 0 else ""
             self._plan_bar.setFormat(
                 f"Plan:{event_str}  ~{self._format_duration(remaining)} left"
                 f"  ({self._format_duration(elapsed)} elapsed)")
@@ -2742,7 +2742,7 @@ class ExperimentsTab(QWidget):
             self._plan_bar.setValue(0)
             elapsed_str = f"  {self._format_duration(elapsed)} elapsed" if elapsed > 5 else ""
             self._plan_bar.setFormat(
-                f"Plan: #{done} events{elapsed_str}" if done > 0 else "Plan: running…")
+                f"Plan: {done} events{elapsed_str}" if done > 0 else "Plan: running…")
             self._plan_bar.setVisible(True)
         else:
             self._plan_bar.setVisible(False)
@@ -2777,7 +2777,15 @@ class ExperimentsTab(QWidget):
                 time_str    = f"  (~{self._format_duration(secs_left)} left)"
             else:
                 time_str = ""
-            self._queue_bar.setFormat(f"Queue: {n_done}/{n_total} plans{time_str}")
+            # Show event progress alongside plan progress when total is known.
+            if total > 0:
+                event_info = f"  |  {done} / {total} events"
+            elif done > 0:
+                event_info = f"  |  {done} events"
+            else:
+                event_info = ""
+            self._queue_bar.setFormat(
+                f"Queue: {n_done} / {n_total} plans{event_info}{time_str}")
             self._queue_bar.setVisible(True)
         else:
             self._queue_bar.setVisible(False)
