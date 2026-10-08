@@ -31,8 +31,9 @@ from qtpy.QtCore import QUrl
 from .config import (
     SUCCESS, DANGER, WARNING, ACCENT,
     EXPERIMENTS_DIR, ACTIVE_EXPERIMENT_FILE, PLOT_COLORS, UI_PREFS_FILE,
-    ESAF_INFO_FILE,
+    ESAF_INFO_FILE, PLAN_TIMING_DB,
 )
+from .plan_timing import PlanTimingDB
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
 from .queue_manager import RunDetailDialog
@@ -1310,13 +1311,15 @@ class ExperimentsTab(QWidget):
         self._running_item_start_time: float = 0.0  # wall time when current plan started
         self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
         self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
-        self._completed_points         = 0    # event docs received so far
-        self._plan_first_event_time    = 0.0  # wall time of first event (for init/final move estimate)
+        self._completed_points          = 0    # event docs received so far
+        self._plan_first_event_time     = 0.0  # wall time of first event (for init/final move estimate)
+        self._plan_last_event_wall_time = 0.0  # wall time of last event (for total_s recording)
         self._plan_event_intervals: deque = deque(maxlen=8)  # inter-event seconds
-        self._plan_last_event_time     = 0.0
+        self._plan_last_event_time      = 0.0
         self._queue_done_events        = 0    # events from plans already finished
         self._queue_done_plans         = 0    # plans completed this session
-        self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log
+        self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log (fallback)
+        self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
         self._current_running_item: dict = {}
         self._current_queue_items: list  = []
@@ -2499,6 +2502,7 @@ class ExperimentsTab(QWidget):
             if self._running_item_uid:
                 self._queue_done_events += self._completed_points
                 self._queue_done_plans  += 1
+                self._record_plan_timing()
             self._running_item_uid = uid
             # Pick up num_points if the ZMQ start doc arrived before this poll tick;
             # otherwise on_scan_started will set it when the start doc arrives.
@@ -2507,6 +2511,7 @@ class ExperimentsTab(QWidget):
             self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
             self._plan_first_event_time     = 0.0
+            self._plan_last_event_wall_time = 0.0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 
@@ -2692,8 +2697,10 @@ class ExperimentsTab(QWidget):
     def on_scan_point_completed(self, seq_num: int) -> None:
         """Called each time an event document arrives from the ZMQ doc stream."""
         now = time.monotonic()
+        wall_now = time.time()
         if self._plan_first_event_time == 0.0 and self._running_item_start_time > 0.0:
-            self._plan_first_event_time = time.time()
+            self._plan_first_event_time = wall_now
+        self._plan_last_event_wall_time = wall_now
         if self._plan_last_event_time > 0.0:
             interval = now - self._plan_last_event_time
             if 0.01 < interval < 3600.0:
@@ -2701,6 +2708,35 @@ class ExperimentsTab(QWidget):
         self._plan_last_event_time = now
         self._completed_points = max(self._completed_points, seq_num)
         self._update_progress_bars()
+
+    def _record_plan_timing(self) -> None:
+        """Persist timing for the just-completed plan to the SQLite DB."""
+        plan_name  = (self._current_running_item or {}).get("name", "")
+        num_points = self._running_item_total_points
+        if not plan_name or num_points < 1:
+            return
+        t_init_s = (
+            self._plan_first_event_time - self._running_item_start_time
+            if self._plan_first_event_time > 0.0 and self._running_item_start_time > 0.0
+            else 0.0
+        )
+        avg_interval = (
+            sum(self._plan_event_intervals) / len(self._plan_event_intervals)
+            if self._plan_event_intervals else 0.0
+        )
+        per_step_s = avg_interval
+        # total_s: first→last event + initial and final move
+        if self._plan_last_event_wall_time > 0.0 and self._running_item_start_time > 0.0:
+            total_s = self._plan_last_event_wall_time - self._running_item_start_time + t_init_s
+        else:
+            total_s = num_points * per_step_s + 2.0 * t_init_s
+        if per_step_s <= 0 or total_s <= 0:
+            return
+        kwargs = (self._current_running_item or {}).get("kwargs", {}) or {}
+        try:
+            self._timing_db.record(plan_name, num_points, t_init_s, per_step_s, total_s, kwargs)
+        except Exception:
+            pass
 
     def _update_progress_bars(self) -> None:
         running  = self._current_running_item
@@ -2713,37 +2749,44 @@ class ExperimentsTab(QWidget):
         t_init = (self._plan_first_event_time - self._running_item_start_time
                   if self._plan_first_event_time > 0.0 and self._running_item_start_time > 0.0
                   else 0.0)
-        plan_name = (running or {}).get("name", "")
-        avg_dur   = self._plan_duration_cache.get(plan_name)  # avg seconds from log
+        plan_name    = (running or {}).get("name", "")
         avg_interval = (sum(self._plan_event_intervals) / len(self._plan_event_intervals)
                         if self._plan_event_intervals else None)
 
+        # DB-based full-plan estimate (used when num_points not yet known).
+        db_est, db_conf = self._timing_db.estimate(plan_name, max(total, 1), t_init)
+        # Fallback to plans_log mean only if DB has no data.
+        if db_est is None:
+            _legacy = self._plan_duration_cache.get(plan_name)
+            db_est  = _legacy
+            db_conf = "mean (log)" if _legacy else None
+
         # ── Plan progress bar ──────────────────────────────────────────────────
         if running and total > 0:
-            # We know exactly how many events the plan will produce.
+            # Exact event count from start doc — most accurate mode.
             self._plan_bar.setRange(0, total)
             self._plan_bar.setValue(done)
             elapsed_str = f"  {self._format_duration(elapsed)} elapsed" if elapsed > 5 else ""
             if avg_interval is not None and done < total:
                 secs = (total - done) * avg_interval + t_init
+                conf_tag = f" [{db_conf}]" if db_conf and "live" in db_conf else ""
                 self._plan_bar.setFormat(
-                    f"Plan: %v / %m events  (~{self._format_duration(secs)} left{elapsed_str})")
+                    f"Plan: %v / %m events  (~{self._format_duration(secs)} left"
+                    f"{conf_tag}{elapsed_str})")
             else:
                 self._plan_bar.setFormat(f"Plan: %v / %m events{elapsed_str}")
             self._plan_bar.setVisible(True)
-        elif running and avg_dur and avg_dur > 0:
-            # No start-doc total, but we have historical duration for this plan type.
-            # Fill the bar proportionally using elapsed / avg_dur.
-            # Cap at 0.97 so the bar never appears "done" based on time estimate alone —
-            # only confirmed completion (running_item cleared) hides the bar.
-            frac = min(elapsed / avg_dur, 0.97)
+        elif running and db_est and db_est > 0:
+            # No start-doc total — use DB estimate to fill the bar.
+            # Cap at 0.97 so the bar never appears "done" on estimate alone.
+            frac = min(elapsed / db_est, 0.97)
             self._plan_bar.setRange(0, 1000)
             self._plan_bar.setValue(int(frac * 1000))
-            remaining = max(0.0, avg_dur - elapsed)
+            remaining = max(0.0, db_est - elapsed)
             event_str = f"  {done} events" if done > 0 else ""
             self._plan_bar.setFormat(
                 f"Plan:{event_str}  ~{self._format_duration(remaining)} left"
-                f"  ({self._format_duration(elapsed)} elapsed)")
+                f"  [{db_conf}]  ({self._format_duration(elapsed)} elapsed)")
             self._plan_bar.setVisible(True)
         elif running:
             # No information at all — show event count, no fill.
@@ -2763,12 +2806,12 @@ class ExperimentsTab(QWidget):
             n_total     = n_done + 1 + n_remaining  # completed + running + queued
 
             # Fraction of the current plan completed (0.0 – <1.0).
-            # Cap at 0.97 in estimation modes so the queue bar never shows the
-            # current plan as done before running_item actually clears.
+            # Cap at 0.97 so the queue bar never shows the current plan as done
+            # before running_item actually clears.
             if total > 0 and total >= done:
                 cur_frac = min(done / total, 0.97)
-            elif avg_dur and avg_dur > 0:
-                cur_frac = min(elapsed / avg_dur, 0.97)
+            elif db_est and db_est > 0:
+                cur_frac = min(elapsed / db_est, 0.97)
             else:
                 cur_frac = 0.0
 
@@ -2776,19 +2819,19 @@ class ExperimentsTab(QWidget):
             self._queue_bar.setRange(0, n_total * 1000)
             self._queue_bar.setValue(int((n_done + cur_frac) * 1000))
 
-            # Time estimate: remaining fraction of current plan + queued plans.
-            if avg_dur and avg_dur > 0:
-                secs_left = max(0.0, avg_dur * (1.0 - cur_frac)) + n_remaining * avg_dur
-                time_str  = f"  (~{self._format_duration(secs_left)} left)"
-            elif total > 0 and avg_interval is not None:
-                # Remaining scan steps + final move (≈ t_init) for current plan,
-                # plus full duration estimate for each queued plan.
+            # Time estimate for remaining queue.
+            if total > 0 and avg_interval is not None:
+                # Best case: live event rate + t_init for final move + queued plans.
                 events_left = max(0, total - done)
                 secs_left   = events_left * avg_interval + t_init
                 if n_remaining > 0:
-                    plan_dur = total * avg_interval + 2 * t_init  # scan + init + final
-                    secs_left += n_remaining * plan_dur
-                time_str    = f"  (~{self._format_duration(secs_left)} left)"
+                    # Per-queued-plan: use DB estimate if available, else live rate.
+                    per_plan = db_est if db_est and db_est > 0 else (total * avg_interval + 2 * t_init)
+                    secs_left += n_remaining * per_plan
+                time_str = f"  (~{self._format_duration(secs_left)} left)"
+            elif db_est and db_est > 0:
+                secs_left = max(0.0, db_est * (1.0 - cur_frac)) + n_remaining * db_est
+                time_str  = f"  (~{self._format_duration(secs_left)} left  [{db_conf}])"
             else:
                 time_str = ""
             # Show event progress alongside plan progress when total is known.

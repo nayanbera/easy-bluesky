@@ -38,6 +38,7 @@ EXPERIMENTS_DIR = os.getenv(
 )
 ACTIVE_EXPERIMENT_FILE = str(_USER_DIR / "data" / "active_experiment.json")
 UI_PREFS_FILE          = str(_USER_DIR / "ui_prefs.json")
+PLAN_TIMING_DB         = str(_USER_DIR / "plan_timing.db")
 ESAF_INFO_FILE         = "esaf_info.json"   # filename inside each experiment folder
 
 # ── UI Colors (semantic — constant across themes) ─────────────────────────────
