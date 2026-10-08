@@ -1130,9 +1130,12 @@ class MainWindow(QMainWindow):
         self._loop_enabled            = False
         self._loop_count              = 0      # 0=∞, N=N more after first
         self._loop_iteration          = 0      # how many loops have run so far
-        self._loop_snapshot           : list  = []
         self._prev_queue_running      = False  # last known queue_running from status
         self._queue_loop_cancelled    = False
+        # Server-native loop tracking
+        self._history_count_at_start  = 0     # items_in_history when queue started
+        self._loop_snapshot_len       = 0     # queue length at start (for cycle detection)
+        self._loop_spin_at_start      = 0     # spin_val captured at queue start
         self._last_status             : dict  = {}
         self._detached_tabs: dict = {}        # widget → (QMainWindow, orig_index, title)
         self.worker = ZMQWorker()
@@ -2054,13 +2057,17 @@ class MainWindow(QMainWindow):
     def _on_queue_start_success(self):
         self.devices_plans_tab.resume_sim_poll()
         self._queue_loop_cancelled = False
-        self._loop_iteration = 0
+        self._loop_iteration = -1  # -1 = first poll not yet processed
         if self._loop_enabled:
-            self._loop_snapshot = list(self.experiments_tab._current_queue_items)
             spin_val = self.experiments_tab.spin_loop.value()
+            self._loop_spin_at_start     = spin_val
+            self._loop_snapshot_len      = len(self.experiments_tab._current_queue_items)
+            self._history_count_at_start = self._last_status.get("items_in_history", 0)
+            ok, msg = self.worker.queue_mode_set({"loop": True})
+            if not ok:
+                self._log(f"[{self._ts()}] ✗ Enable server loop mode: {msg}")
             self.experiments_tab.set_loop_iteration(1, spin_val)
         else:
-            self._loop_snapshot = []
             self.experiments_tab.clear_loop_iteration()
 
     def _on_pause_requested(self):
@@ -2123,6 +2130,8 @@ class MainWindow(QMainWindow):
         # Cancel loop regardless of whether the stop succeeds
         self._queue_loop_cancelled = True
         self.experiments_tab.clear_loop_iteration()
+        if self._loop_enabled:
+            self.worker.queue_mode_set({"loop": False})
         ok, msg = self.worker.re_stop()
         if ok:
             self._log(f"[{self._ts()}] ✓ Stop: {msg}")
@@ -2161,6 +2170,10 @@ class MainWindow(QMainWindow):
         if count == -1:
             self._loop_enabled = False
             self.experiments_tab.clear_loop_iteration()
+            # Disable server-side loop if queue is currently running
+            if self._prev_queue_running:
+                self._queue_loop_cancelled = True
+                self.worker.queue_mode_set({"loop": False})
             chk = self.experiments_tab.chk_loop
             if chk.isChecked():
                 chk.blockSignals(True)
@@ -2200,46 +2213,33 @@ class MainWindow(QMainWindow):
     def _on_status_for_loop_and_autostart(self, status: dict) -> None:
         self._last_status = status
         queue_running = status.get("manager_state", "") == "executing_queue"
+
+        # Server-native loop: detect completed cycles and update the iteration display.
+        # Also stop the loop when the user-specified count is reached.
+        if (self._loop_enabled
+                and not self._queue_loop_cancelled
+                and self._loop_snapshot_len > 0):
+            history_now = status.get("items_in_history", 0)
+            completed_cycles = (history_now - self._history_count_at_start) // self._loop_snapshot_len
+            if completed_cycles != self._loop_iteration:
+                self._loop_iteration = completed_cycles
+                spin_at_start = self._loop_spin_at_start
+                # remaining = how many more after the current one (matches old spinbox-decrement logic)
+                remaining = max(0, spin_at_start - completed_cycles)
+                self.experiments_tab.set_loop_iteration(completed_cycles + 1, remaining)
+                # For finite N: disable loop while the last cycle is running so the
+                # server won't recycle items when that cycle completes.
+                # Condition: cycle spin_at_start is now running (spin_at_start-1 done).
+                if spin_at_start > 0 and completed_cycles >= spin_at_start - 1:
+                    self.worker.queue_mode_set({"loop": False})
+                    self._queue_loop_cancelled = True
+
         if self._prev_queue_running and not queue_running:
-            # Queue just stopped — check if we should loop
-            if (self._loop_enabled
-                    and not self._queue_loop_cancelled):
-                self._trigger_loop_restart()
-        self._prev_queue_running = queue_running
-
-    def _trigger_loop_restart(self) -> None:
-        """Re-add snapshot items and restart the queue for another loop iteration."""
-        snapshot = self._loop_snapshot
-        if not snapshot:
-            return
-        # Read live spinbox value — user may have changed it during run
-        spin_val = self.experiments_tab.spin_loop.value()
-        if spin_val > 0:
-            new_val = spin_val - 1
-            sp = self.experiments_tab.spin_loop
-            sp.blockSignals(True)
-            sp.setValue(new_val)
-            sp.blockSignals(False)
-            if new_val == 0:
-                # Last finite iteration exhausted — stop looping
-                self.experiments_tab.chk_loop.setChecked(False)
+            # Queue just finished — clean up loop UI if it's done
+            if not self._loop_enabled or self._queue_loop_cancelled:
                 self.experiments_tab.clear_loop_iteration()
-                return
-        # spin_val == 0 means infinite → keep looping
-        self._loop_iteration += 1
-        self.experiments_tab.set_loop_iteration(self._loop_iteration + 1, spin_val)
-        for item in snapshot:
-            item_copy = {k: v for k, v in item.items() if k != 'item_uid'}
-            self.worker.add_item(item_copy)
-        QTimer.singleShot(300, self._loop_queue_start)
 
-    def _loop_queue_start(self) -> None:
-        ok, msg = self.worker.queue_start()
-        if not ok:
-            self._log(f"[{self._ts()}] ✗ Loop restart failed: {msg}")
-            if "busy" in msg.lower() or "executing" in msg.lower():
-                self._log(f"[{self._ts()}]   ↻ Retrying loop start in 800 ms…")
-                QTimer.singleShot(800, self._loop_queue_start)
+        self._prev_queue_running = queue_running
 
     def _on_open_env_requested(self):
         ok, msg = self.worker.open_environment()

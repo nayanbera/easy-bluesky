@@ -1056,6 +1056,14 @@ class ZMQWorker(QObject):
         except Exception as e:
             return False, str(e)
 
+    def queue_mode_set(self, mode: dict) -> tuple:
+        try:
+            with self._rm_lock:
+                r = self.rm.queue_mode_set(mode=mode)
+            return r.get("success", False), r.get("msg", "")
+        except Exception as e:
+            return False, str(e)
+
     def re_pause(self, option="deferred"):
         try:
             with self._rm_lock:
