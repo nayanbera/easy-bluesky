@@ -1306,6 +1306,7 @@ class ExperimentsTab(QWidget):
         self._acquire_time_cache: dict = {}
         self._running_item_uid         = ""
         self._running_item_total_points: int = 0  # num_points from start doc
+        self._pending_total_points: int = 0       # buffered num_points if start doc arrives before poll
         self._running_item_start_time: float = 0.0  # wall time when current plan started
         self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
         self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
@@ -2497,8 +2498,11 @@ class ExperimentsTab(QWidget):
             if self._running_item_uid:
                 self._queue_done_events += self._completed_points
                 self._queue_done_plans  += 1
-            self._running_item_uid          = uid
-            self._running_item_total_points = 0  # reset; on_scan_started sets from start doc
+            self._running_item_uid = uid
+            # Pick up num_points if the ZMQ start doc arrived before this poll tick;
+            # otherwise on_scan_started will set it when the start doc arrives.
+            self._running_item_total_points = self._pending_total_points
+            self._pending_total_points      = 0
             self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
             self._plan_event_intervals.clear()
@@ -2672,16 +2676,19 @@ class ExperimentsTab(QWidget):
         return acq_total + motor_time
 
     def on_scan_started(self, num_points: int) -> None:
-        """Called when a start document arrives — sets total point count for the plan bar."""
-        if not self._running_item_uid:
-            return
-        self._running_item_total_points = num_points
+        """Called when a start document arrives — sets total point count for the plan bar.
+
+        The ZMQ start doc often arrives before the RE Manager poll fires and sets
+        _running_item_uid, so we buffer the value in _pending_total_points so that
+        update_running_item() can pick it up on the next poll tick.
+        """
+        self._pending_total_points = num_points
+        if self._running_item_uid:
+            self._running_item_total_points = num_points
         self._update_progress_bars()
 
     def on_scan_point_completed(self, seq_num: int) -> None:
         """Called each time an event document arrives from the ZMQ doc stream."""
-        if not self._running_item_uid:
-            return
         now = time.monotonic()
         if self._plan_last_event_time > 0.0:
             interval = now - self._plan_last_event_time
