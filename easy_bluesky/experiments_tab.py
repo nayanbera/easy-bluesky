@@ -3987,7 +3987,8 @@ class ExperimentsTab(QWidget):
         if not self._active_exp_path:
             return
         log_file = Path(self._active_exp_path) / "plans_log.jsonl"
-        changed  = False
+        changed       = False
+        has_pending   = False   # True if any item has no exit_status yet
 
         for item in items:
             uid = item.get("item_uid", "")
@@ -3996,6 +3997,11 @@ class ExperimentsTab(QWidget):
             result      = item.get("result") or {}
             exit_status = result.get("exit_status", "")
             if not exit_status:
+                # queueserver may add history entries before populating exit_status.
+                # Mark as pending so we retry in 2 s rather than waiting for the
+                # next natural items_in_history change (which requires another plan
+                # to complete or be aborted).
+                has_pending = True
                 continue
             t_stop   = result.get("time_stop",  0)
             t_start  = result.get("time_start", 0)
@@ -4124,6 +4130,12 @@ class ExperimentsTab(QWidget):
                 ]
                 if missing:
                     self.run_files_needed.emit(missing, runs_dir)
+
+        if has_pending and self.worker:
+            # History entries exist but exit_status not yet populated (queueserver
+            # race). Retry once after 2 s so the plan appears in the log without
+            # waiting for the next natural items_in_history change.
+            QTimer.singleShot(2000, self.worker.request_history_fetch)
 
     def update_compact_queue(self, items: list):
         old_order = [it.get("item_uid", "") for it in self._current_queue_items]

@@ -1013,6 +1013,10 @@ class ZMQWorker(QObject):
         self._last_history_count = -1   # force re-fetch on next connect
         self.disconnected.emit()
 
+    def request_history_fetch(self):
+        """Trigger an out-of-band history re-fetch (e.g. to retry items with no exit_status)."""
+        self._history_fetch_event.set()
+
     def stop(self):
         self._active = False
         self._history_active = False
