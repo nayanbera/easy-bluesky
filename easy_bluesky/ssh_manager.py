@@ -42,6 +42,9 @@ class _PooledClient:
     def open_sftp(self):
         return self._transport.open_sftp_client()
 
+    def get_transport(self):
+        return self._transport
+
     def close(self):
         pass  # shared transport — caller must not close it
 
