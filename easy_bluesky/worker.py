@@ -5,12 +5,33 @@ import os
 import queue as _queue
 import shutil
 import subprocess
+import sys as _sys
 import threading
 import time
 from pathlib import Path
 from qtpy.QtCore import QObject, QThread, Signal, Slot
 from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_ADDR
+
+
+def _start_gil_health_monitor(threshold_ms: float = 200.0, interval_s: float = 0.05):
+    """Daemon thread that detects GIL stalls > threshold_ms and prints to stderr.
+
+    The thread sleeps for interval_s (releasing the GIL).  If the actual sleep
+    duration exceeds threshold_ms it means the GIL was held by another thread
+    for that long, blocking the CA callback thread and the p4p PVA thread.
+    """
+    def _run():
+        while True:
+            t0 = time.monotonic()
+            time.sleep(interval_s)
+            dt = (time.monotonic() - t0) * 1000
+            if dt > threshold_ms:
+                _sys.stderr.write(f"[GIL stall] {dt:.0f} ms\n")
+                _sys.stderr.flush()
+
+    t = threading.Thread(target=_run, daemon=True, name="GIL-health-monitor")
+    t.start()
 
 
 # ── Direct ZMQ console subscriber ─────────────────────────────────────────────
@@ -615,6 +636,7 @@ class ZMQWorker(QObject):
         self._last_history_count: int  = -1
         self._cached_history: dict     = {}
         self._history_stale_ticks: int = 0   # force refresh every N ticks
+        _start_gil_health_monitor()
 
     @Slot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -873,9 +895,11 @@ class ZMQWorker(QObject):
                     self._reload_plans_requested = False
                     self._load_plans_devices()
                 try:
+                    import time as _time
+                    _t0 = _time.monotonic()
                     with self._rm_lock:
-                        status = self.rm.status()
-                        queue  = self.rm.queue_get()
+                        _ts = _time.monotonic(); status = self.rm.status();  _dt_status = (_time.monotonic()-_ts)*1e3
+                        _ts = _time.monotonic(); queue  = self.rm.queue_get(); _dt_queue  = (_time.monotonic()-_ts)*1e3
 
                         # history_get() returns the full history payload on every
                         # call — potentially hundreds of KB over an SSH/ZMQ tunnel.
@@ -885,10 +909,21 @@ class ZMQWorker(QObject):
                         self._history_stale_ticks += 1
                         if (n_history != self._last_history_count
                                 or self._history_stale_ticks >= 30):
-                            self._cached_history      = self.rm.history_get()
+                            _ts = _time.monotonic(); self._cached_history = self.rm.history_get(); _dt_hist = (_time.monotonic()-_ts)*1e3
                             self._last_history_count  = n_history
                             self._history_stale_ticks = 0
+                        else:
+                            _dt_hist = 0.0
                         history = self._cached_history
+                    _dt_total = (_time.monotonic() - _t0) * 1e3
+                    if _dt_total > 200 or _dt_status > 200 or _dt_queue > 200 or _dt_hist > 200:
+                        import sys as _sys
+                        _sys.stderr.write(
+                            f"[poll slow] total={_dt_total:.0f}ms  "
+                            f"status={_dt_status:.0f}ms  queue={_dt_queue:.0f}ms  "
+                            f"history={_dt_hist:.0f}ms\n"
+                        )
+                        _sys.stderr.flush()
                     self._last_manager_state = status.get("manager_state", "idle")
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
