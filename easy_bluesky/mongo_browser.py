@@ -51,6 +51,37 @@ def _poisson_sigma(y_raw, norm_raw=None):
         return np.where(n > 0, np.sqrt(y / n ** 2 + y ** 2 / n ** 3), np.nan)
 
 
+def _compute_peak_stats(x, y) -> str:
+    """Return a formatted stats string (cen, FWHM, max, COM) for a 1-D curve."""
+    try:
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y)
+        x, y = x[mask], y[mask]
+        if len(x) < 4:
+            return ""
+        i_max = int(np.argmax(y))
+        y_pos = y - y.min()
+        denom = float(np.sum(y_pos))
+        com = float(np.sum(x * y_pos) / denom) if denom > 0 else float(x[i_max])
+        half  = (float(y.max()) + float(y.min())) / 2.0
+        above = y >= half
+        edges = np.where(np.diff(above.astype(int)))[0]
+        if len(edges) >= 2:
+            def _ic(i):
+                x0, x1, y0, y1 = float(x[i]), float(x[i+1]), float(y[i]), float(y[i+1])
+                return x0 + (half - y0) / (y1 - y0) * (x1 - x0) if y1 != y0 else (x0+x1)/2
+            xl = _ic(edges[0]);  xr = _ic(edges[-1])
+            cen = (xl + xr) / 2.0;  fwhm = abs(xr - xl)
+            return (f"cen = {cen:.5g}    FWHM = {fwhm:.4g}"
+                    f"    max = {y[i_max]:.4g} @ {x[i_max]:.5g}"
+                    f"    COM = {com:.5g}")
+        return (f"max = {y[i_max]:.4g} @ {x[i_max]:.5g}"
+                f"    COM = {com:.5g}")
+    except Exception:
+        return ""
+
+
 def _fetch_streams(db, uid: str) -> dict:
     """Fetch all event streams for one run UID from an open pymongo Database.
 
@@ -1737,7 +1768,18 @@ class MongoDataBrowserTab(QWidget):
             title   = f"Scan {seq_num}  —  {plan}"
             if len(rows) > 1:
                 title += f"  (+{len(rows)-1} more)"
-            self._plot_widget.setTitle(title)
+            # For a single curve, show peak stats (cen/FWHM/COM) in the title,
+            # matching the live-plot display style.
+            if len(self._curves) == 1 and not stats_on:
+                sole_xy = list(self._curves.values())[0].getData()
+                if sole_xy[0] is not None:
+                    ps = _compute_peak_stats(*sole_xy)
+                    if ps:
+                        self._plot_widget.setTitle(ps, color="#aaaaaa", size="11pt")
+                    else:
+                        self._plot_widget.setTitle(title, color="#aaaaaa", size="10pt")
+            else:
+                self._plot_widget.setTitle(title, color="#aaaaaa", size="10pt")
 
         if stats_on:
             self._draw_statistics(stream, x_field, y_fields, norm_field, log_y, deriv_mode)
