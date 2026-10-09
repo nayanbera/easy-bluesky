@@ -146,20 +146,23 @@ if _plans_dir and os.path.isdir(_plans_dir):
         except Exception as _e_pd:
             print(f"[re_startup_mongo] WARNING: {_pf.name} failed to load: {_e_pd}")
 else:
-    # Backward compat: load user_plans.py from the scripts directory if present
-    _user_plans_file = str(Path(__file__).parent / "user_plans.py")
-    if os.path.exists(_user_plans_file):
+    # Load custom_plans.py and/or user_plans.py from the scripts directory if present.
+    # custom_plans.py takes precedence; user_plans.py is the legacy fallback name.
+    import importlib.util as _ilu_up
+    for _up_name in ("custom_plans.py", "user_plans.py"):
+        _up_file = str(Path(__file__).parent / _up_name)
+        if not os.path.exists(_up_file):
+            continue
         try:
-            import importlib.util as _ilu_up
             _spec_up = _ilu_up.spec_from_file_location("_easy_bluesky_user_plans",
-                                                        _user_plans_file)
+                                                        _up_file)
             _mod_up  = _ilu_up.module_from_spec(_spec_up)
             _spec_up.loader.exec_module(_mod_up)
             globals().update({k: v for k, v in vars(_mod_up).items()
                               if not k.startswith('_')})
-            print("[re_startup_mongo] user_plans.py loaded (legacy)")
+            print(f"[re_startup_mongo] {_up_name} loaded")
         except Exception as _e_up:
-            print(f"[re_startup_mongo] WARNING: user_plans.py failed to load: {_e_up}")
+            print(f"[re_startup_mongo] WARNING: {_up_name} failed to load: {_e_up}")
 
 # ── Standard bluesky plans ─────────────────────────────────────────────────────
 from bluesky.plans import (
