@@ -4075,6 +4075,7 @@ class ExperimentsTab(QWidget):
                         pass
                 if already:
                     self._logged_uids.add(uid)
+                    changed = True  # another client wrote it; reload display to show it
                     continue
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
