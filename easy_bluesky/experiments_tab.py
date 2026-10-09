@@ -2867,7 +2867,11 @@ class ExperimentsTab(QWidget):
                     # Per-queued-plan: use DB estimate if available, else live rate.
                     per_plan = db_est if db_est and db_est > 0 else (total * avg_interval + 2 * t_init)
                     secs_left += n_remaining * per_plan
-                time_str = f"  (~{self._format_duration(secs_left)} left)"
+                if events_left == 0 and n_remaining == 0:
+                    # All scan events received; RE Manager is doing post-scan cleanup.
+                    time_str = "  (finalizing…)"
+                else:
+                    time_str = f"  (~{self._format_duration(secs_left)} left)"
             elif db_est and db_est > 0:
                 secs_left = max(0.0, db_est * (1.0 - cur_frac)) + n_remaining * db_est
                 time_str  = f"  (~{self._format_duration(secs_left)} left  [{db_conf}])"
