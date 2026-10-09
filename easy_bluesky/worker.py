@@ -17,17 +17,30 @@ from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_ADDR
 def _start_gil_health_monitor(threshold_ms: float = 200.0, interval_s: float = 0.05):
     """Daemon thread that detects GIL stalls > threshold_ms and prints to stderr.
 
-    The thread sleeps for interval_s (releasing the GIL).  If the actual sleep
-    duration exceeds threshold_ms it means the GIL was held by another thread
-    for that long, blocking the CA callback thread and the p4p PVA thread.
+    After sleeping (GIL released), if the actual elapsed time exceeds
+    threshold_ms it means another thread held the GIL for that long.
+    Captures a stack-trace snapshot of all threads at wake-up time to
+    identify the holder.
     """
+    import traceback
+
     def _run():
         while True:
             t0 = time.monotonic()
             time.sleep(interval_s)
             dt = (time.monotonic() - t0) * 1000
             if dt > threshold_ms:
-                _sys.stderr.write(f"[GIL stall] {dt:.0f} ms\n")
+                # Snapshot frames of all live threads at the moment we woke.
+                frames = _sys._current_frames()
+                lines = [f"[GIL stall] {dt:.0f} ms — thread frames at wake:\n"]
+                for tid, frame in frames.items():
+                    tname = next(
+                        (t.name for t in threading.enumerate() if t.ident == tid),
+                        f"tid={tid}",
+                    )
+                    tb = "".join(traceback.format_stack(frame, limit=4))
+                    lines.append(f"  [{tname}]:\n{tb}\n")
+                _sys.stderr.write("".join(lines))
                 _sys.stderr.flush()
 
     t = threading.Thread(target=_run, daemon=True, name="GIL-health-monitor")
