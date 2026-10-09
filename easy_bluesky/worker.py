@@ -891,9 +891,11 @@ class ZMQWorker(QObject):
                 with self._rm_lock:
                     h = self.rm.history_get()
                 self._cached_history = h
-                self.history_updated.emit(h.get("items", []))
-            except Exception:
-                pass
+                items = h.get("items", [])
+                print(f"[DBG-HIST] history_get returned {len(items)} items, emitting history_updated", flush=True)
+                self.history_updated.emit(items)
+            except Exception as _exc:
+                print(f"[DBG-HIST] history_get EXCEPTION: {_exc}", flush=True)
 
     def poll(self):
         _prev_env_state = None
