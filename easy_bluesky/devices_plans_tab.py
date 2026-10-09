@@ -477,6 +477,23 @@ class DevicesPlansTab(QWidget):
         hdr.addWidget(lbl)
         hdr.addStretch()
 
+        hdr.addWidget(QLabel("Update:"))
+        self._flush_rate_spin = NoScrollDoubleSpinBox()
+        self._flush_rate_spin.setRange(0.1, 10.0)
+        self._flush_rate_spin.setSingleStep(0.1)
+        self._flush_rate_spin.setDecimals(1)
+        self._flush_rate_spin.setValue(0.1)
+        self._flush_rate_spin.setSuffix(" s")
+        self._flush_rate_spin.setFixedWidth(68)
+        self._flush_rate_spin.setToolTip(
+            "How often CA callback values are applied to the tree.\n"
+            "Increase if the display is sluggish with many devices."
+        )
+        self._flush_rate_spin.valueChanged.connect(
+            lambda v: self._pv_flush_timer.setInterval(int(v * 1000))
+        )
+        hdr.addWidget(self._flush_rate_spin)
+
         self._refresh_btn = QPushButton("⟳ Reconnect")
         self._refresh_btn.setFixedWidth(95)
         self._refresh_btn.setToolTip(
