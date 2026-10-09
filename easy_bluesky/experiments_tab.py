@@ -1302,6 +1302,7 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
         self._re_state: str    = ""
+        self._prev_re_state: str = ""
         self._pv_map: dict             = {}
         self._velocity_cache: dict     = {}
         self._acquire_time_cache: dict = {}
@@ -2488,6 +2489,13 @@ class ExperimentsTab(QWidget):
             env_state = "idle" if status.get("worker_environment_exists") else "closed"
         re_state      = status.get("re_state", "")
         manager_state = status.get("manager_state", "idle")
+        # Transition "running" → other state means a plan just finished.
+        # Trigger an immediate history fetch to log completed plans without
+        # waiting for the running_item sentinel or the 30-second fallback.
+        if self._prev_re_state == "running" and re_state != "running":
+            if self.worker:
+                QTimer.singleShot(500, self.worker.request_history_fetch)
+        self._prev_re_state = re_state
         self._re_state = re_state
         env_open = env_state not in ("", "closed")
         running  = re_state == "running"
@@ -4104,8 +4112,8 @@ class ExperimentsTab(QWidget):
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
                 changed = True
-            except Exception:
-                pass
+            except Exception as _exc:
+                self._log(f"⚠ Plans Log write error (uid {uid[:8]}): {_exc}")
 
             # Show error dialog for newly failed plans — only for plans that
             # finished AFTER this session connected (ignores history from other
