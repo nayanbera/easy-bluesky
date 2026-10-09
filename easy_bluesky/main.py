@@ -2067,6 +2067,7 @@ class MainWindow(QMainWindow):
             if not ok:
                 self._log(f"[{self._ts()}] ✗ Enable server loop mode: {msg}")
             self.experiments_tab.set_loop_iteration(1, spin_val)
+            self.experiments_tab.set_loop_cycle_info(1, spin_val, self._loop_snapshot_len)
         else:
             self.experiments_tab.clear_loop_iteration()
 
@@ -2226,7 +2227,10 @@ class MainWindow(QMainWindow):
                 spin_at_start = self._loop_spin_at_start
                 # remaining = how many more after the current one (matches old spinbox-decrement logic)
                 remaining = max(0, spin_at_start - completed_cycles)
-                self.experiments_tab.set_loop_iteration(completed_cycles + 1, remaining)
+                current_cycle = completed_cycles + 1
+                self.experiments_tab.set_loop_iteration(current_cycle, remaining)
+                self.experiments_tab.set_loop_cycle_info(
+                    current_cycle, spin_at_start, self._loop_snapshot_len)
                 # For finite N: disable loop while the last cycle is running so the
                 # server won't recycle items when that cycle completes.
                 # Condition: cycle spin_at_start is now running (spin_at_start-1 done).

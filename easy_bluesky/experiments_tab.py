@@ -1318,6 +1318,11 @@ class ExperimentsTab(QWidget):
         self._plan_last_event_time      = 0.0
         self._queue_done_events        = 0    # events from plans already finished
         self._queue_done_plans         = 0    # plans completed this session
+        # Server-loop tracking for per-cycle queue progress bar
+        self._server_loop_snapshot_len    = 0  # plans per cycle (0 = no loop)
+        self._server_loop_total_cycles    = 0  # 0 = infinite
+        self._server_loop_current_cycle   = 0
+        self._queue_done_at_cycle_start   = 0  # _queue_done_plans at start of current cycle
         self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log (fallback)
         self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
@@ -2801,9 +2806,22 @@ class ExperimentsTab(QWidget):
 
         # ── Queue progress bar — plan-count based ─────────────────────────────
         if running:
-            n_done      = self._queue_done_plans
-            n_remaining = len(self._current_queue_items)
-            n_total     = n_done + 1 + n_remaining  # completed + running + queued
+            if self._server_loop_snapshot_len > 0:
+                # Server loop mode: progress within the current cycle only.
+                done_in_cycle = self._queue_done_plans - self._queue_done_at_cycle_start
+                n_done        = done_in_cycle
+                n_remaining   = len(self._current_queue_items)
+                n_total       = self._server_loop_snapshot_len
+                cur_cyc       = self._server_loop_current_cycle
+                tot_cyc       = self._server_loop_total_cycles
+                _cycle_sfx    = (f"  ∞" if tot_cyc == 0
+                                 else f"  (of {tot_cyc} cycles)")
+                _cycle_lbl    = f"  cycle {cur_cyc}{_cycle_sfx}"
+            else:
+                n_done        = self._queue_done_plans
+                n_remaining   = len(self._current_queue_items)
+                n_total       = n_done + 1 + n_remaining  # completed + running + queued
+                _cycle_lbl    = ""
 
             # Fraction of the current plan completed (0.0 – <1.0).
             # Cap at 0.97 so the queue bar never shows the current plan as done
@@ -2842,7 +2860,7 @@ class ExperimentsTab(QWidget):
             else:
                 event_info = ""
             self._queue_bar.setFormat(
-                f"Queue: {n_done} / {n_total} plans{event_info}{time_str}")
+                f"Queue: {n_done} / {n_total} plans{_cycle_lbl}{event_info}{time_str}")
             self._queue_bar.setVisible(True)
         else:
             self._queue_bar.setVisible(False)
@@ -2873,6 +2891,20 @@ class ExperimentsTab(QWidget):
 
     def clear_loop_iteration(self) -> None:
         self._loop_iter_lbl.setText("")
+        self._server_loop_snapshot_len  = 0
+        self._server_loop_total_cycles  = 0
+        self._server_loop_current_cycle = 0
+        self._queue_done_at_cycle_start = 0
+
+    def set_loop_cycle_info(self, current: int, total_cycles: int, snapshot_len: int) -> None:
+        """Called by main.py when server loop cycle advances or loop starts."""
+        if current > self._server_loop_current_cycle:
+            # New cycle started — reset the per-cycle done counter.
+            self._queue_done_at_cycle_start = self._queue_done_plans
+        self._server_loop_current_cycle = current
+        self._server_loop_total_cycles  = total_cycles
+        self._server_loop_snapshot_len  = snapshot_len
+        self._update_progress_bars()
 
     # ── Public setters ─────────────────────────────────────────────────────────
 
