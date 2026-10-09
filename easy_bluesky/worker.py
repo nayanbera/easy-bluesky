@@ -648,7 +648,12 @@ class ZMQWorker(QObject):
         # (potentially hundreds of KB) on every poll tick when nothing has changed.
         self._last_history_count: int  = -1
         self._cached_history: dict     = {}
-        self._history_stale_ticks: int = 0   # force refresh every N ticks
+        self._history_fetch_event = threading.Event()
+        self._history_active = True
+        _history_thread = threading.Thread(
+            target=self._history_fetch_loop, daemon=True, name="history-fetch"
+        )
+        _history_thread.start()
         _start_gil_health_monitor()
 
     @Slot(str, str)
@@ -903,6 +908,26 @@ class ZMQWorker(QObject):
                 )
         return "".join(lines)
 
+    def _history_fetch_loop(self):
+        """Dedicated thread: fetches history only when triggered by count change.
+
+        Decoupled from the poll loop so json.loads of the full history payload
+        (potentially 100s of KB) never blocks status/queue signal delivery.
+        """
+        while self._history_active:
+            triggered = self._history_fetch_event.wait(timeout=5.0)
+            if not triggered:
+                continue
+            self._history_fetch_event.clear()
+            if self.rm is None:
+                continue
+            try:
+                with self._rm_lock:
+                    h = self.rm.history_get()
+                self._cached_history = h
+                self.history_updated.emit(h.get("items", []))
+            except Exception:
+                pass
 
     def poll(self):
         _prev_env_state = None
@@ -919,30 +944,24 @@ class ZMQWorker(QObject):
                     with self._rm_lock:
                         _ts = _time.monotonic(); status = self.rm.status();  _dt_status = (_time.monotonic()-_ts)*1e3
                         _ts = _time.monotonic(); queue  = self.rm.queue_get(); _dt_queue  = (_time.monotonic()-_ts)*1e3
-
-                        # history_get() returns the full history payload on every
-                        # call — potentially hundreds of KB over an SSH/ZMQ tunnel.
-                        # Skip the fetch when items_in_history hasn't changed; force
-                        # a full refresh every 30 ticks (~30 s) as a safety net.
-                        n_history = status.get("items_in_history", -1)
-                        self._history_stale_ticks += 1
-                        if (n_history != self._last_history_count
-                                or self._history_stale_ticks >= 30):
-                            _ts = _time.monotonic(); self._cached_history = self.rm.history_get(); _dt_hist = (_time.monotonic()-_ts)*1e3
-                            self._last_history_count  = n_history
-                            self._history_stale_ticks = 0
-                        else:
-                            _dt_hist = 0.0
-                        history = self._cached_history
                     _dt_total = (_time.monotonic() - _t0) * 1e3
-                    if _dt_total > 200 or _dt_status > 200 or _dt_queue > 200 or _dt_hist > 200:
+                    if _dt_total > 200 or _dt_status > 200 or _dt_queue > 200:
                         import sys as _sys
                         _sys.stderr.write(
                             f"[poll slow] total={_dt_total:.0f}ms  "
-                            f"status={_dt_status:.0f}ms  queue={_dt_queue:.0f}ms  "
-                            f"history={_dt_hist:.0f}ms\n"
+                            f"status={_dt_status:.0f}ms  queue={_dt_queue:.0f}ms\n"
                         )
                         _sys.stderr.flush()
+
+                    # Trigger a background history fetch when scan count changes.
+                    # history_get() can return 100s of KB (json.loads holds GIL
+                    # ~200 ms); running it in _history_fetch_loop decouples it from
+                    # the fast status/queue poll.
+                    n_history = status.get("items_in_history", -1)
+                    if n_history != self._last_history_count:
+                        self._last_history_count = n_history
+                        self._history_fetch_event.set()
+
                     self._last_manager_state = status.get("manager_state", "idle")
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
@@ -953,7 +972,7 @@ class ZMQWorker(QObject):
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
                     self.running_item_updated.emit(queue.get("running_item") or {})
-                    self.history_updated.emit(history.get("items", []))
+                    self.history_updated.emit(self._cached_history.get("items", []))
 
                     env_state = status.get("worker_environment_state", "")
                     if not env_state:
@@ -1036,6 +1055,8 @@ class ZMQWorker(QObject):
 
     def stop(self):
         self._active = False
+        self._history_active = False
+        self._history_fetch_event.set()  # unblock the history thread so it can exit
 
     # ── Queue operations ───────────────────────────────────────────────────────
     def execute_item(self, item):
