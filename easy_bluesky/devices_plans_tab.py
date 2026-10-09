@@ -1130,7 +1130,7 @@ class DevicesPlansTab(QWidget):
         # Suspend repaints for the whole batch — each setText() on a visible
         # QTreeWidgetItem otherwise triggers a synchronous repaint, making the
         # flush O(N×repaint_cost) instead of O(1×repaint_cost).
-        self.tree.setUpdatesEnabled(False)
+        self.devices_tree.setUpdatesEnabled(False)
         try:
             pv_updates, self._pending_pv_updates = self._pending_pv_updates, {}
             for (dev_name, sig_name), (value, units) in pv_updates.items():
@@ -1162,7 +1162,7 @@ class DevicesPlansTab(QWidget):
                     if dev_item and dev_item.text(4) != desc:
                         dev_item.setText(4, desc)
         finally:
-            self.tree.setUpdatesEnabled(True)
+            self.devices_tree.setUpdatesEnabled(True)
 
     def _save_metadata_cache(self):
         try:
