@@ -610,6 +610,11 @@ class ZMQWorker(QObject):
         self._rm_lock = threading.Lock()    # serialises all self.rm.* ZMQ calls
         self.locked_out: bool = False       # True when another client holds operator lock
         self.lock_holder: str = ""          # hostname of the current lock holder
+        # Cache last seen history count to avoid fetching the full history payload
+        # (potentially hundreds of KB) on every poll tick when nothing has changed.
+        self._last_history_count: int  = -1
+        self._cached_history: dict     = {}
+        self._history_stale_ticks: int = 0   # force refresh every N ticks
 
     @Slot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -869,9 +874,21 @@ class ZMQWorker(QObject):
                     self._load_plans_devices()
                 try:
                     with self._rm_lock:
-                        status  = self.rm.status()
-                        queue   = self.rm.queue_get()
-                        history = self.rm.history_get()
+                        status = self.rm.status()
+                        queue  = self.rm.queue_get()
+
+                        # history_get() returns the full history payload on every
+                        # call — potentially hundreds of KB over an SSH/ZMQ tunnel.
+                        # Skip the fetch when items_in_history hasn't changed; force
+                        # a full refresh every 30 ticks (~30 s) as a safety net.
+                        n_history = status.get("items_in_history", -1)
+                        self._history_stale_ticks += 1
+                        if (n_history != self._last_history_count
+                                or self._history_stale_ticks >= 30):
+                            self._cached_history      = self.rm.history_get()
+                            self._last_history_count  = n_history
+                            self._history_stale_ticks = 0
+                        history = self._cached_history
                     self._last_manager_state = status.get("manager_state", "idle")
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
