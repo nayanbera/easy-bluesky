@@ -505,12 +505,12 @@ class DevicesPlansTab(QWidget):
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
         status_row.addWidget(self._status_lbl)
         status_row.addStretch()
-        self._btn_pause_poll = QPushButton("⏸ Pause")
-        self._btn_pause_poll.setFixedWidth(70)
-        self._btn_pause_poll.setToolTip("Pause / resume automatic sim device polling")
-        self._btn_pause_poll.setVisible(False)
-        self._btn_pause_poll.clicked.connect(self._on_pause_poll_clicked)
-        status_row.addWidget(self._btn_pause_poll)
+        self._chk_poll_sim = QCheckBox("Poll Sim Devices")
+        self._chk_poll_sim.setChecked(False)
+        self._chk_poll_sim.setToolTip("Enable automatic 2-second polling of sim device values")
+        self._chk_poll_sim.setVisible(False)
+        self._chk_poll_sim.toggled.connect(self._on_poll_sim_toggled)
+        status_row.addWidget(self._chk_poll_sim)
         vlay.addLayout(status_row)
 
         self._search_box = QLineEdit()
@@ -669,7 +669,7 @@ class DevicesPlansTab(QWidget):
             self._status_lbl.setText("● No devices — open the RE environment")
             self._refresh_btn.setEnabled(True)
             self._refresh_btn.setText("⟳ Reconnect")
-            self._btn_pause_poll.setVisible(False)
+            self._chk_poll_sim.setVisible(False)
             return
 
         groups: dict = {}
@@ -873,11 +873,14 @@ class DevicesPlansTab(QWidget):
             self._sim_timer = QTimer(self)
             self._sim_timer.setInterval(2000)
             self._sim_timer.timeout.connect(self._on_sim_poll)
-            self._sim_timer.start()
-            self._btn_pause_poll.setText("⏸ Pause")
-            self._btn_pause_poll.setVisible(True)
+            self._chk_poll_sim.setVisible(True)
+            if self._chk_poll_sim.isChecked():
+                self._sim_timer.start()
+                self._status_lbl.setText("● Sim — polling device values…")
+            else:
+                self._status_lbl.setText("● Sim — polling paused")
         else:
-            self._btn_pause_poll.setVisible(False)
+            self._chk_poll_sim.setVisible(False)
 
         self._refresh_btn.setEnabled(True)
         self._refresh_btn.setText("⟳ Reconnect")
@@ -1297,21 +1300,19 @@ class DevicesPlansTab(QWidget):
             self._sim_timer.stop()
 
     def resume_sim_poll(self):
-        """Restart the sim poll timer after queue_start has been sent."""
-        if self._sim_timer is not None:
+        """Restart the sim poll timer after queue_start has been sent (only if checkbox is on)."""
+        if self._sim_timer is not None and self._chk_poll_sim.isChecked():
             self._sim_timer.start()
 
-    def _on_pause_poll_clicked(self):
+    def _on_poll_sim_toggled(self, checked: bool):
         if self._sim_timer is None:
             return
-        if self._sim_timer.isActive():
-            self._sim_timer.stop()
-            self._btn_pause_poll.setText("▶ Resume")
-            self._status_lbl.setText("● Sim — polling paused")
-        else:
+        if checked:
             self._sim_timer.start()
-            self._btn_pause_poll.setText("⏸ Pause")
             self._status_lbl.setText("● Sim — polling device values…")
+        else:
+            self._sim_timer.stop()
+            self._status_lbl.setText("● Sim — polling paused")
 
     def update_sim_values(self, readings: dict):
         """Update Value/Units/Description columns for polled (sim/pseudo) devices."""
