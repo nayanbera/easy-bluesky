@@ -500,9 +500,18 @@ class DevicesPlansTab(QWidget):
         legend.addStretch()
         vlay.addLayout(legend)
 
+        status_row = QHBoxLayout()
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
-        vlay.addWidget(self._status_lbl)
+        status_row.addWidget(self._status_lbl)
+        status_row.addStretch()
+        self._btn_pause_poll = QPushButton("⏸ Pause")
+        self._btn_pause_poll.setFixedWidth(70)
+        self._btn_pause_poll.setToolTip("Pause / resume automatic sim device polling")
+        self._btn_pause_poll.setVisible(False)
+        self._btn_pause_poll.clicked.connect(self._on_pause_poll_clicked)
+        status_row.addWidget(self._btn_pause_poll)
+        vlay.addLayout(status_row)
 
         self._search_box = QLineEdit()
         self._search_box.setPlaceholderText("Search devices…")
@@ -660,6 +669,7 @@ class DevicesPlansTab(QWidget):
             self._status_lbl.setText("● No devices — open the RE environment")
             self._refresh_btn.setEnabled(True)
             self._refresh_btn.setText("⟳ Reconnect")
+            self._btn_pause_poll.setVisible(False)
             return
 
         groups: dict = {}
@@ -864,6 +874,10 @@ class DevicesPlansTab(QWidget):
             self._sim_timer.setInterval(2000)
             self._sim_timer.timeout.connect(self._on_sim_poll)
             self._sim_timer.start()
+            self._btn_pause_poll.setText("⏸ Pause")
+            self._btn_pause_poll.setVisible(True)
+        else:
+            self._btn_pause_poll.setVisible(False)
 
         self._refresh_btn.setEnabled(True)
         self._refresh_btn.setText("⟳ Reconnect")
@@ -1286,6 +1300,18 @@ class DevicesPlansTab(QWidget):
         """Restart the sim poll timer after queue_start has been sent."""
         if self._sim_timer is not None:
             self._sim_timer.start()
+
+    def _on_pause_poll_clicked(self):
+        if self._sim_timer is None:
+            return
+        if self._sim_timer.isActive():
+            self._sim_timer.stop()
+            self._btn_pause_poll.setText("▶ Resume")
+            self._status_lbl.setText("● Sim — polling paused")
+        else:
+            self._sim_timer.start()
+            self._btn_pause_poll.setText("⏸ Pause")
+            self._status_lbl.setText("● Sim — polling device values…")
 
     def update_sim_values(self, readings: dict):
         """Update Value/Units/Description columns for polled (sim/pseudo) devices."""
