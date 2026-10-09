@@ -4046,6 +4046,9 @@ class ExperimentsTab(QWidget):
         log_file = Path(self._active_exp_path) / "plans_log.jsonl"
         changed       = False
         has_pending   = False   # True if any item has no exit_status yet
+        _new_uids = [i.get("item_uid","") for i in items if i.get("item_uid","") not in self._logged_uids]
+        if _new_uids:
+            print(f"[update_history] {len(items)} items, {len(_new_uids)} new UIDs", flush=True)
 
         for item in items:
             uid = item.get("item_uid", "")
@@ -4062,6 +4065,7 @@ class ExperimentsTab(QWidget):
                 # Mark as pending so we retry in 2 s rather than waiting for the
                 # next natural items_in_history change (which requires another plan
                 # to complete or be aborted).
+                print(f"[update_history] {uid[:8]} {item.get('name','')} pending (no exit_status)", flush=True)
                 has_pending = True
                 continue
             t_start  = result.get("time_start", 0)

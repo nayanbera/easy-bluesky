@@ -2071,7 +2071,9 @@ class MainWindow(QMainWindow):
         else:
             # Explicitly reset server-side loop mode in case a previous session left
             # the server in {"loop": true} (e.g. app was force-quit mid-loop).
-            self.worker.queue_mode_set({"loop": False})
+            ok_lm, msg_lm = self.worker.queue_mode_set({"loop": False})
+            if not ok_lm:
+                self._log(f"[{self._ts()}] ✗ Reset server loop mode: {msg_lm}")
             self.experiments_tab.clear_loop_iteration()
 
     def _on_pause_requested(self):

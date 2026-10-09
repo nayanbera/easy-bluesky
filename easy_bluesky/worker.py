@@ -931,8 +931,17 @@ class ZMQWorker(QObject):
                     # catches plans that completed while the Mac was asleep.
                     running_uid = (queue.get("running_item") or {}).get("item_uid", "")
                     if running_uid != self._last_running_uid:
+                        _prev_running = self._last_running_uid
                         self._last_running_uid = running_uid
                         self._history_fetch_event.set()
+                        # Race guard: the server may not have committed the just-finished
+                        # plan to history by the time the immediate fetch runs above.
+                        # Schedule a second fetch 2.5 s later so the plan is reliably
+                        # caught even if the immediate fetch sees stale state.
+                        if _prev_running:
+                            _t = threading.Timer(2.5, self._history_fetch_event.set)
+                            _t.daemon = True
+                            _t.start()
 
                     # Periodic fallback: fetch history every ~30 s regardless of
                     # other triggers.  Catches any plans completed while the app
