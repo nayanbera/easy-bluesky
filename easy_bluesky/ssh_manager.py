@@ -1,12 +1,53 @@
 """ssh_manager.py — SSH-based remote RE Manager control (key auth only, no passwords)."""
 
+import threading
 import time
 from pathlib import Path
 from .connection_settings import profile_slug
 
+# ── SSH transport pool ─────────────────────────────────────────────────────────
+# Each _get_client() call previously opened a full TCP connection + Ed25519
+# key handshake (pure-Python PyNaCl/cffi, holds the GIL ~100 ms).  When
+# several operations fire concurrently at startup (register, log tail, heartbeat,
+# etc.) the overlapping handshakes stall CA callback and PVA threads for 300+ ms.
+#
+# Fix: cache one authenticated Transport per remote host.  Concurrent callers for
+# the same host serialise on _pool_lock; the second caller finds an active transport
+# and returns a new channel on it in microseconds — no handshake, no GIL hold.
+
+_transport_pool: dict = {}   # cache_key → paramiko.Transport
+_pool_lock = threading.Lock()
+
+
+class _PooledClient:
+    """
+    Thin SSHClient facade backed by a shared Transport.
+    exec_command / open_sftp work normally; close() is a no-op so callers
+    cannot accidentally tear down the shared transport.
+    """
+
+    def __init__(self, transport):
+        self._transport = transport
+
+    def exec_command(self, command, timeout=None, **_kwargs):
+        chan = self._transport.open_session()
+        if timeout is not None:
+            chan.settimeout(timeout)
+        chan.exec_command(command)
+        stdin  = chan.makefile("wb")
+        stdout = chan.makefile("r")
+        stderr = chan.makefile_stderr("r")
+        return stdin, stdout, stderr
+
+    def open_sftp(self):
+        return self._transport.open_sftp_client()
+
+    def close(self):
+        pass  # shared transport — caller must not close it
+
 
 def _get_client(settings: dict):
-    """Return a connected paramiko SSHClient using key authentication."""
+    """Return an SSH facade backed by a cached transport (one handshake per host)."""
     try:
         import paramiko
     except ImportError:
@@ -34,16 +75,28 @@ def _get_client(settings: dict):
             f"  ssh-copy-id -i {key_file}.pub {user}@{host}"
         )
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname=host,
-        port=port,
-        username=user,
-        key_filename=str(key_file),
-        timeout=10,
-    )
-    return client
+    cache_key = f"{user}@{host}:{port}"
+
+    with _pool_lock:
+        transport = _transport_pool.get(cache_key)
+        if transport and transport.is_active() and transport.is_authenticated():
+            return _PooledClient(transport)
+
+        # No active transport — full connect.  Held under _pool_lock so a burst
+        # of concurrent callers serialises here; the second caller will find the
+        # transport active and skip the handshake.
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=host,
+            port=port,
+            username=user,
+            key_filename=str(key_file),
+            timeout=10,
+        )
+        transport = client.get_transport()
+        _transport_pool[cache_key] = transport
+        return _PooledClient(transport)
 
 
 def _re_manager_exe(settings: dict, profile: dict = None) -> str:
