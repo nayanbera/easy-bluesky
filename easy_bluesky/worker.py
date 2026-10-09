@@ -498,7 +498,7 @@ class _DeviceStatusReader(QThread):
 
 class _SimDeviceSetter(QThread):
     """Background thread: calls set_sim_device() via function_execute and polls for completion."""
-    done  = Signal(bool, str)   # success, message
+    done  = Signal(str, bool, str)   # dev_name, success, message
 
     def __init__(self, rm, rm_lock, name: str, value: float, parent=None):
         super().__init__(parent)
@@ -515,7 +515,7 @@ class _SimDeviceSetter(QThread):
                     item=BFunc("set_sim_device", name=self._name, value=self._value)
                 )
             if not r.get("success"):
-                self.done.emit(False, r.get("msg", "function_execute failed"))
+                self.done.emit(self._name, False, r.get("msg", "function_execute failed"))
                 return
             task_uid = r["task_uid"]
             deadline = time.monotonic() + 15.0
@@ -528,16 +528,16 @@ class _SimDeviceSetter(QThread):
                     result = res.get("result", {})
                     if not result.get("success", True):
                         tb = str(result.get("return_value", "unknown error"))
-                        self.done.emit(False, tb[:200])
+                        self.done.emit(self._name, False, tb[:200])
                         return
-                    self.done.emit(True, "")
+                    self.done.emit(self._name, True, "")
                     return
                 if state in ("failed", "aborted", "not_found"):
-                    self.done.emit(False, res.get("msg", f"Task {state}"))
+                    self.done.emit(self._name, False, res.get("msg", f"Task {state}"))
                     return
-            self.done.emit(False, "set_sim_device timed out (>15 s)")
+            self.done.emit(self._name, False, "set_sim_device timed out (>15 s)")
         except Exception as e:
-            self.done.emit(False, str(e))
+            self.done.emit(self._name, False, str(e))
 
 
 class _ScanLogFetcher(QThread):
@@ -1215,10 +1215,9 @@ class ZMQWorker(QObject):
         self._current_task = "read_devices_status"
         self._device_reader = _DeviceStatusReader(self.rm, self._rm_lock)
         self._device_reader.readings_ready.connect(self.device_readings_updated)
-        self._device_reader.readings_ready.connect(lambda _: self._clear_task("read_devices_status"))
         self._device_reader.read_error.connect(self.device_read_error)
         self._device_reader.read_error.connect(self._on_device_read_error)
-        self._device_reader.read_error.connect(lambda _: self._clear_task("read_devices_status"))
+        self._device_reader.finished.connect(lambda: self._clear_task("read_devices_status"))
         self._device_reader.start()
 
     def set_sim_device(self, name: str, value: float):
@@ -1230,10 +1229,8 @@ class ZMQWorker(QObject):
             return
         self._current_task = f"set_sim_device({name})"
         self._sim_device_setter = _SimDeviceSetter(self.rm, self._rm_lock, name, value)
-        self._sim_device_setter.done.connect(
-            lambda ok, msg: self.sim_device_set_done.emit(name, ok, msg)
-        )
-        self._sim_device_setter.done.connect(lambda *_: self._clear_task(f"set_sim_device({name})"))
+        self._sim_device_setter.done.connect(self.sim_device_set_done)
+        self._sim_device_setter.finished.connect(lambda: self._clear_task(f"set_sim_device({name})"))
         self._sim_device_setter.start()
 
     def fetch_scan_log(self, remote_path: str):
@@ -1282,9 +1279,8 @@ class ZMQWorker(QObject):
         self._current_task = "get_device_pvnames"
         self._pv_names_reader = _PVNamesReader(self.rm, self._rm_lock)
         self._pv_names_reader.pv_names_ready.connect(self.pv_names_ready)
-        self._pv_names_reader.pv_names_ready.connect(lambda _: self._clear_task("get_device_pvnames"))
         self._pv_names_reader.read_error.connect(self.pv_names_error)
-        self._pv_names_reader.read_error.connect(lambda _: self._clear_task("get_device_pvnames"))
+        self._pv_names_reader.finished.connect(lambda: self._clear_task("get_device_pvnames"))
         self._pv_names_reader.start()
 
     def last_manager_state(self) -> str:
