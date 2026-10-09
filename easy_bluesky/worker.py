@@ -613,9 +613,10 @@ class ZMQWorker(QObject):
         self.lock_holder: str = ""          # hostname of the current lock holder
         # Cache last seen history count to avoid fetching the full history payload
         # (potentially hundreds of KB) on every poll tick when nothing has changed.
-        self._last_history_count: int  = -1
-        self._last_running_uid:   str  = ""   # uid of current running_item; change = plan started/finished
-        self._cached_history: dict     = {}
+        self._last_history_count: int       = -1
+        self._last_running_uid:   object   = None  # None = reconnect sentinel; always triggers on first poll
+        self._poll_count:         int       = 0     # for periodic history fallback
+        self._cached_history: dict          = {}
         self._history_fetch_event = threading.Event()
         self._history_active = True
         _history_thread = threading.Thread(
@@ -927,10 +928,21 @@ class ZMQWorker(QObject):
                     # v0.0.25, items_in_history may not increment during a
                     # continuous queue run, so this is the reliable signal that a
                     # completed plan is waiting in history.
+                    # _last_running_uid is reset to None on every disconnect so the
+                    # first poll after reconnect ALWAYS triggers a fetch — this
+                    # catches plans that completed while the Mac was asleep.
                     running_uid = (queue.get("running_item") or {}).get("item_uid", "")
                     if running_uid != self._last_running_uid:
                         print(f"[DBG-POLL] running_item changed: '{self._last_running_uid}' → '{running_uid}'", flush=True)
                         self._last_running_uid = running_uid
+                        self._history_fetch_event.set()
+
+                    # Periodic fallback: fetch history every ~30 s regardless of
+                    # other triggers.  Catches any plans completed while the app
+                    # was disconnected or sleeping that slipped through the
+                    # running_item / items_in_history triggers.
+                    self._poll_count += 1
+                    if self._poll_count % 30 == 0:
                         self._history_fetch_event.set()
 
                     self._last_manager_state = status.get("manager_state", "idle")
@@ -1025,8 +1037,8 @@ class ZMQWorker(QObject):
         self._log_tailer.stop()
         self._doc_writer.stop()
         self.rm = None
-        self._last_history_count = -1   # force re-fetch on next connect
-        self._last_running_uid   = ""   # force running-item trigger on next connect
+        self._last_history_count = -1    # force re-fetch on next connect
+        self._last_running_uid   = None  # None sentinel: always triggers on first poll after reconnect
         self.disconnected.emit()
 
     def request_history_fetch(self):
