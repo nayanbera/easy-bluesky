@@ -972,7 +972,10 @@ class ZMQWorker(QObject):
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
                     self.running_item_updated.emit(queue.get("running_item") or {})
-                    self.history_updated.emit(self._cached_history.get("items", []))
+                    # history_updated is emitted by _history_fetch_loop whenever
+                    # items_in_history changes — NOT on every poll tick.  Emitting
+                    # it here from the cache every second triggered a full rebuild
+                    # of the 863-item history list on the main thread each tick.
 
                     env_state = status.get("worker_environment_state", "")
                     if not env_state:
@@ -1051,6 +1054,7 @@ class ZMQWorker(QObject):
         self._log_tailer.stop()
         self._doc_writer.stop()
         self.rm = None
+        self._last_history_count = -1   # force re-fetch on next connect
         self.disconnected.emit()
 
     def stop(self):
