@@ -143,8 +143,11 @@ class _PVAMonitorThread(QThread):
         except Exception:
             pass
         self.connection_changed.emit(True)
+        raw_min = int(arr.min())
+        raw_max = int(arr.max())
         self.new_frame.emit(arr, {'unique_id': uid, 'shape': arr.shape,
-                                  'dtype': str(arr.dtype), 'fps': self._fps})
+                                  'dtype': str(arr.dtype), 'fps': self._fps,
+                                  'raw_min': raw_min, 'raw_max': raw_max})
 
 
 class _CAInitThread(QThread):
@@ -267,6 +270,7 @@ class ADViewerWindow(QMainWindow):
         self._pva_pv      = pva_pv or f"{prefix}Pva1:Image"
 
         self._arr: np.ndarray | None = None
+        self._prepared_arr: np.ndarray | None = None  # cached result of _prepare(arr)
         self._log_scale = False
         self._transpose = False
         self._roi_on    = False
@@ -678,20 +682,21 @@ class ADViewerWindow(QMainWindow):
         if hasattr(self, '_no_frame_timer'):
             self._no_frame_timer.stop()
         self._arr = arr
+        self._prepared_arr = self._prepare(arr)   # compute once; reused by _update_roi_stats
         self._frame_cnt += 1
-        first_frame = self._frame_cnt == 1
 
         auto = self._chk_auto_levels.isChecked()
-        self._img_view.setImage(self._prepare(arr), autoRange=False,
+        self._img_view.setImage(self._prepared_arr, autoRange=False,
                                 autoLevels=auto, autoHistogramRange=auto)
         if auto:
             QTimer.singleShot(80, self._sync_level_edits)
         if self._roi_on:
             self._update_roi_stats()
 
-        uid  = meta.get('unique_id', self._frame_cnt)
-        h, w = arr.shape[:2]
-        raw_min, raw_max = arr.min(), arr.max()
+        uid     = meta.get('unique_id', self._frame_cnt)
+        h, w    = arr.shape[:2]
+        raw_min = meta.get('raw_min', '?')
+        raw_max = meta.get('raw_max', '?')
         self._set_status(
             f"● Connected  frame #{uid}  |  {w}×{h}  {meta.get('dtype', '')}  "
             f"raw:[{raw_min}, {raw_max}]", "#2ca02c")
@@ -744,8 +749,9 @@ class ADViewerWindow(QMainWindow):
 
     def _refresh_display(self):
         if self._arr is not None:
+            self._prepared_arr = self._prepare(self._arr)   # recompute after param change
             auto = self._chk_auto_levels.isChecked()
-            self._img_view.setImage(self._prepare(self._arr),
+            self._img_view.setImage(self._prepared_arr,
                                     autoRange=False, autoLevels=auto,
                                     autoHistogramRange=auto)
             if auto:
@@ -1034,7 +1040,9 @@ class ADViewerWindow(QMainWindow):
         if self._stats1_vals:
             return   # AD Stats1 callbacks are providing live values; don't overwrite
         try:
-            disp   = self._prepare(self._arr).astype(np.float64)
+            # Use cached prepared array to avoid recomputing the transform.
+            disp   = (self._prepared_arr if self._prepared_arr is not None
+                      else self._prepare(self._arr)).astype(np.float64)
             region = self._roi.getArrayRegion(disp, self._img_view.getImageItem())
             if region is None or region.size == 0:
                 return
