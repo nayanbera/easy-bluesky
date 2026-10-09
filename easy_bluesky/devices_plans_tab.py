@@ -1127,29 +1127,42 @@ class DevicesPlansTab(QWidget):
         green = QColor("#2ca02c")
         dim   = QColor("#666666")
 
-        pv_updates, self._pending_pv_updates = self._pending_pv_updates, {}
-        for (dev_name, sig_name), (value, units) in pv_updates.items():
-            sig_item = self._signal_items.get((dev_name, sig_name))
-            if sig_item:
-                sig_item.setText(2, _fmt_value(value))
-                sig_item.setText(3, units)
-                sig_item.setForeground(2, dim)
-            if self._primary_signal.get(dev_name) == sig_name:
-                dev_item = self._device_items.get(dev_name)
-                if dev_item:
-                    dev_item.setText(2, _fmt_value(value))
-                    dev_item.setText(3, units)
-                    dev_item.setForeground(2, green)
+        # Suspend repaints for the whole batch — each setText() on a visible
+        # QTreeWidgetItem otherwise triggers a synchronous repaint, making the
+        # flush O(N×repaint_cost) instead of O(1×repaint_cost).
+        self.tree.setUpdatesEnabled(False)
+        try:
+            pv_updates, self._pending_pv_updates = self._pending_pv_updates, {}
+            for (dev_name, sig_name), (value, units) in pv_updates.items():
+                sig_item = self._signal_items.get((dev_name, sig_name))
+                if sig_item:
+                    val_str = _fmt_value(value)
+                    if sig_item.text(2) != val_str:
+                        sig_item.setText(2, val_str)
+                        sig_item.setForeground(2, dim)
+                    if sig_item.text(3) != units:
+                        sig_item.setText(3, units)
+                if self._primary_signal.get(dev_name) == sig_name:
+                    dev_item = self._device_items.get(dev_name)
+                    if dev_item:
+                        val_str = _fmt_value(value)
+                        if dev_item.text(2) != val_str:
+                            dev_item.setText(2, val_str)
+                            dev_item.setForeground(2, green)
+                        if dev_item.text(3) != units:
+                            dev_item.setText(3, units)
 
-        desc_updates, self._pending_desc_updates = self._pending_desc_updates, {}
-        for (dev_name, sig_name), desc in desc_updates.items():
-            sig_item = self._signal_items.get((dev_name, sig_name))
-            if sig_item:
-                sig_item.setText(4, desc)
-            if self._primary_signal.get(dev_name) == sig_name:
-                dev_item = self._device_items.get(dev_name)
-                if dev_item:
-                    dev_item.setText(4, desc)
+            desc_updates, self._pending_desc_updates = self._pending_desc_updates, {}
+            for (dev_name, sig_name), desc in desc_updates.items():
+                sig_item = self._signal_items.get((dev_name, sig_name))
+                if sig_item and sig_item.text(4) != desc:
+                    sig_item.setText(4, desc)
+                if self._primary_signal.get(dev_name) == sig_name:
+                    dev_item = self._device_items.get(dev_name)
+                    if dev_item and dev_item.text(4) != desc:
+                        dev_item.setText(4, desc)
+        finally:
+            self.tree.setUpdatesEnabled(True)
 
     def _save_metadata_cache(self):
         try:
