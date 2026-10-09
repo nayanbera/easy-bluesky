@@ -442,10 +442,16 @@ class LiveViewer(QWidget):
             if restored_y:
                 y_chosen = set(restored_y)
             else:
-                # Use start-doc detectors → first field only, to avoid
-                # cluttering the plot with all readable signals on first run.
+                # Use start-doc detectors, but skip non-numeric fields
+                # (file-path strings and image arrays are not plottable).
                 det_fields = _fields_for(self._start_detectors)
-                if det_fields:
+                plottable = [f for f in det_fields
+                             if not any(tok in f.lower().split("_")
+                                        for tok in ("file", "image", "name", "path"))
+                             and f != x_chosen]
+                if plottable:
+                    y_chosen = {plottable[0]}
+                elif det_fields:
                     y_chosen = {det_fields[0]}
                 else:
                     fallback = [k for k in keys
@@ -608,7 +614,13 @@ class LiveViewer(QWidget):
             y_chosen = set(restored_y)
         else:
             det_fields = _fields_for(self._start_detectors)
-            if det_fields:
+            plottable = [f for f in det_fields
+                         if not any(tok in f.lower().split("_")
+                                    for tok in ("file", "image", "name", "path"))
+                         and f != x_chosen]
+            if plottable:
+                y_chosen = {plottable[0]}
+            elif det_fields:
                 y_chosen = set(det_fields)
             else:
                 y_chosen = {k for k in keys

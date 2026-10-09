@@ -4047,8 +4047,6 @@ class ExperimentsTab(QWidget):
         changed       = False
         has_pending   = False   # True if any item has no exit_status yet
 
-        new_uids = [i.get("item_uid","") for i in items
-                    if i.get("item_uid","") and i.get("item_uid","") not in self._logged_uids]
         for item in items:
             uid = item.get("item_uid", "")
             if not uid or uid in self._logged_uids:
@@ -4144,8 +4142,11 @@ class ExperimentsTab(QWidget):
                         pass
                 if already:
                     self._logged_uids.add(uid)
-                    changed = True  # another client wrote it; reload display to show it
+                    # Another client wrote it — reload from file so the entry appears.
+                    self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+                    changed = True
                     continue
+                print(f"Plans Log: #{scan_num} {item.get('name','')} {exit_status}", flush=True)
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
