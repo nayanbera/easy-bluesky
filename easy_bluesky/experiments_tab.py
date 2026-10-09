@@ -1312,6 +1312,12 @@ class ExperimentsTab(QWidget):
         self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
         self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
         self._completed_points          = 0    # event docs received so far
+        # Generation counter: incremented on each running-item uid change.
+        # on_scan_point_completed events are only counted when their generation
+        # matches — prevents stale ZMQ events from a finished scan incrementing
+        # _completed_points for the next (non-scan) plan.
+        self._event_gen: int     = 0   # incremented each uid change
+        self._scan_gen: int      = -1  # generation when last start doc arrived
         self._plan_first_event_time     = 0.0  # wall time of first event (for init/final move estimate)
         self._plan_last_event_wall_time = 0.0  # wall time of last event (for total_s recording)
         self._plan_event_intervals: deque = deque(maxlen=8)  # inter-event seconds
@@ -2509,9 +2515,18 @@ class ExperimentsTab(QWidget):
                 self._queue_done_plans  += 1
                 self._record_plan_timing()
             self._running_item_uid = uid
+            # Bump generation so stale ZMQ events from the just-finished scan are
+            # rejected by on_scan_point_completed.
+            self._event_gen += 1
             # Pick up num_points if the ZMQ start doc arrived before this poll tick;
             # otherwise on_scan_started will set it when the start doc arrives.
+            # If _pending_total_points is non-zero, the start doc already arrived —
+            # mark the current generation so events from that scan are accepted.
             self._running_item_total_points = self._pending_total_points
+            if self._pending_total_points > 0:
+                self._scan_gen = self._event_gen
+            else:
+                self._scan_gen = -1   # no start doc yet; on_scan_started will set this
             self._pending_total_points      = 0
             self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
@@ -2694,13 +2709,21 @@ class ExperimentsTab(QWidget):
         _running_item_uid, so we buffer the value in _pending_total_points so that
         update_running_item() can pick it up on the next poll tick.
         """
-        self._pending_total_points = num_points
         if self._running_item_uid:
+            # Running item already known — apply directly; do NOT set
+            # _pending_total_points so the value cannot bleed into the next plan.
             self._running_item_total_points = num_points
+            self._pending_total_points = 0
+            self._scan_gen = self._event_gen   # events from now on belong to this plan
+        else:
+            # Running item not yet known — buffer; update_running_item will pick it up.
+            self._pending_total_points = num_points
         self._update_progress_bars()
 
     def on_scan_point_completed(self, seq_num: int) -> None:
         """Called each time an event document arrives from the ZMQ doc stream."""
+        if self._scan_gen < 0 or self._scan_gen != self._event_gen:
+            return  # stale event from a finished scan or no scan started yet
         now = time.monotonic()
         wall_now = time.time()
         if self._plan_first_event_time == 0.0 and self._running_item_start_time > 0.0:
