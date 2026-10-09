@@ -614,6 +614,7 @@ class ZMQWorker(QObject):
         # Cache last seen history count to avoid fetching the full history payload
         # (potentially hundreds of KB) on every poll tick when nothing has changed.
         self._last_history_count: int  = -1
+        self._last_running_uid:   str  = ""   # uid of current running_item; change = plan started/finished
         self._cached_history: dict     = {}
         self._history_fetch_event = threading.Event()
         self._history_active = True
@@ -918,6 +919,18 @@ class ZMQWorker(QObject):
                     n_history = status.get("items_in_history", -1)
                     if n_history != self._last_history_count:
                         self._last_history_count = n_history
+                        print(f"[DBG-POLL] items_in_history changed: {n_history}", flush=True)
+                        self._history_fetch_event.set()
+
+                    # Also trigger when the running item changes: new uid means a
+                    # plan just started (previous plan finished).  In queueserver
+                    # v0.0.25, items_in_history may not increment during a
+                    # continuous queue run, so this is the reliable signal that a
+                    # completed plan is waiting in history.
+                    running_uid = (queue.get("running_item") or {}).get("item_uid", "")
+                    if running_uid != self._last_running_uid:
+                        print(f"[DBG-POLL] running_item changed: '{self._last_running_uid}' → '{running_uid}'", flush=True)
+                        self._last_running_uid = running_uid
                         self._history_fetch_event.set()
 
                     self._last_manager_state = status.get("manager_state", "idle")
@@ -1013,6 +1026,7 @@ class ZMQWorker(QObject):
         self._doc_writer.stop()
         self.rm = None
         self._last_history_count = -1   # force re-fetch on next connect
+        self._last_running_uid   = ""   # force running-item trigger on next connect
         self.disconnected.emit()
 
     def request_history_fetch(self):
