@@ -2493,7 +2493,6 @@ class ExperimentsTab(QWidget):
         # Trigger an immediate history fetch to log completed plans without
         # waiting for the running_item sentinel or the 30-second fallback.
         if self._prev_re_state == "running" and re_state != "running":
-            print(f"[RE] re_state {self._prev_re_state!r}→{re_state!r}: scheduling history fetch", flush=True)
             if self.worker:
                 QTimer.singleShot(500, self.worker.request_history_fetch)
         self._prev_re_state = re_state
@@ -3925,7 +3924,6 @@ class ExperimentsTab(QWidget):
                     except Exception:
                         pass
 
-            print(f"[LPL] read {len(all_entries)} entries from {log_file}", flush=True)
             # Sort chronologically by timestamp so display and numbering are
             # consistent even when entries were appended out of order.
             def _ts_key(e):
@@ -3985,8 +3983,8 @@ class ExperimentsTab(QWidget):
                 li.setForeground(QColor(color))
                 li.setData(Qt.ItemDataRole.UserRole, entry)
                 self.plan_log_list.addItem(li)
-        except Exception as _lpl_exc:
-            print(f"[LPL] exception in _load_plan_log: {_lpl_exc}", flush=True)
+        except Exception:
+            pass
         # Always re-apply manually suppressed UIDs so they survive repeated reloads
         self._logged_uids |= self._suppressed_uids
         # All UIDs now in _logged_uids were processed in this or a prior session;
@@ -3996,6 +3994,49 @@ class ExperimentsTab(QWidget):
 
         if auto_select_newest and self.plan_log_list.count() > 0:
             self.plan_log_list.scrollToTop()
+
+    def _prepend_plan_log_entry(self, entry: dict) -> None:
+        """Insert a single new completed-plan entry at the top of the list widget.
+
+        Called immediately after writing the entry to plans_log.jsonl so the
+        display updates without re-reading the file (avoids NFS read-after-write
+        latency on macOS where the just-written bytes may not yet be visible on a
+        subsequent open/read of the same path).
+        """
+        name     = entry.get("name", "?")
+        args     = entry.get("args", []) or []
+        kwargs   = entry.get("kwargs", {}) or {}
+        status   = entry.get("exit_status", "")
+        ok       = status in ("completed", "success")
+        aborted  = status == "aborted"
+        motion   = _is_motion_only(name, kwargs)
+        icon     = "✓" if ok else ("⊘" if aborted else ("✗" if status else "?"))
+        if motion:
+            color = _NEUTRAL_COLOR
+        elif ok:
+            color = SUCCESS
+        elif aborted:
+            color = WARNING
+        else:
+            color = DANGER
+        ts       = entry.get("timestamp", "")
+        t_str    = ts[11:19] if len(ts) >= 19 else ts[:19]
+        dur      = entry.get("duration_s")
+        scan_num = entry.get("scan_num")
+        summary  = self._plan_summary(name, kwargs, args)
+        dur_str  = f"  ({dur:.1f}s)" if dur is not None else ""
+        prefix   = f"#{scan_num:<3} " if scan_num is not None else "     "
+        li = QListWidgetItem(f"{prefix}{icon}  {t_str}  {name}{summary}{dur_str}")
+        li.setForeground(QColor(color))
+        li.setData(Qt.ItemDataRole.UserRole, entry)
+        self.plan_log_list.insertItem(0, li)
+        # Update duration cache from this new entry.
+        dur_val = entry.get("duration_s")
+        if name and isinstance(dur_val, (int, float)) and dur_val > 0:
+            cached = self._plan_duration_cache.get(name, 0.0)
+            self._plan_duration_cache[name] = (cached + dur_val) / 2 if cached else dur_val
+        self._filter_plan_log(self._plan_log_search.text())
+        self.plan_log_list.scrollToTop()
 
     # ── Public update slots ────────────────────────────────────────────────────
 
@@ -4008,11 +4049,6 @@ class ExperimentsTab(QWidget):
 
         new_uids = [i.get("item_uid","") for i in items
                     if i.get("item_uid","") and i.get("item_uid","") not in self._logged_uids]
-        if new_uids:
-            print(f"[UH] {len(items)} items, {len(new_uids)} new; "
-                  f"exp_end={self._exp_end_time:.0f} created={self._exp_created_at:.0f} "
-                  f"path={self._active_exp_path[-40:]}", flush=True)
-
         for item in items:
             uid = item.get("item_uid", "")
             if not uid or uid in self._logged_uids:
@@ -4023,8 +4059,6 @@ class ExperimentsTab(QWidget):
             plan_exp_dir = (
                 ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
             )
-            print(f"[UH]  uid={uid[:8]} exit={exit_status!r} "
-                  f"t_stop={t_stop:.0f} exp_dir={plan_exp_dir[-30:]!r}", flush=True)
             if not exit_status:
                 # queueserver may add history entries before populating exit_status.
                 # Mark as pending so we retry in 2 s rather than waiting for the
@@ -4036,11 +4070,9 @@ class ExperimentsTab(QWidget):
             run_uids = result.get("run_uids", [])
 
             if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
-                print(f"[UH]  -> SKIP t_stop<created", flush=True)
                 self._logged_uids.add(uid)
                 continue
             if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
-                print(f"[UH]  -> SKIP t_stop>=end_time", flush=True)
                 self._logged_uids.add(uid)
                 continue
 
@@ -4113,9 +4145,7 @@ class ExperimentsTab(QWidget):
                 if already:
                     self._logged_uids.add(uid)
                     changed = True  # another client wrote it; reload display to show it
-                    print(f"[UH]  -> ALREADY in file", flush=True)
                     continue
-                print(f"[UH]  -> WRITING scan_num={scan_num} to {log_file}", flush=True)
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
@@ -4127,8 +4157,11 @@ class ExperimentsTab(QWidget):
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
                 changed = True
+                # Update list widget directly — do NOT re-read from the NFS file
+                # because macOS NFS attribute caching can return stale data on an
+                # immediate open/read after a write, making the new entry invisible.
+                self._prepend_plan_log_entry(entry)
             except Exception as _exc:
-                print(f"[UH]  -> EXCEPTION: {_exc}", flush=True)
                 self._log(f"⚠ Plans Log write error (uid {uid[:8]}): {_exc}")
 
             # Show error dialog for newly failed plans — only for plans that
@@ -4145,9 +4178,6 @@ class ExperimentsTab(QWidget):
                 )
 
         if changed:
-            print(f"[UH] changed=True → calling _load_plan_log", flush=True)
-            self._load_plan_log(self._active_exp_path, auto_select_newest=True)
-            print(f"[UH] _load_plan_log done → list has {self.plan_log_list.count()} items", flush=True)
             self.scan_completed.emit()
             # Emit any run UIDs whose JSONL files are not yet in the local runs/ dir
             if self._active_exp_path:
