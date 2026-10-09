@@ -4142,8 +4142,10 @@ class ExperimentsTab(QWidget):
                         pass
                 if already:
                     self._logged_uids.add(uid)
-                    # Another client wrote it — reload from file so the entry appears.
-                    self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+                    # Another client wrote it; display from in-memory entry rather
+                    # than re-reading the NFS file (avoids resetting _logged_uids
+                    # with stale data that would allow duplicate writes later).
+                    self._prepend_plan_log_entry(entry)
                     changed = True
                     continue
                 print(f"Plans Log: #{scan_num} {item.get('name','')} {exit_status}", flush=True)
