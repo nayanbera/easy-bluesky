@@ -3925,6 +3925,7 @@ class ExperimentsTab(QWidget):
                     except Exception:
                         pass
 
+            print(f"[LPL] read {len(all_entries)} entries from {log_file}", flush=True)
             # Sort chronologically by timestamp so display and numbering are
             # consistent even when entries were appended out of order.
             def _ts_key(e):
@@ -3984,8 +3985,8 @@ class ExperimentsTab(QWidget):
                 li.setForeground(QColor(color))
                 li.setData(Qt.ItemDataRole.UserRole, entry)
                 self.plan_log_list.addItem(li)
-        except Exception:
-            pass
+        except Exception as _lpl_exc:
+            print(f"[LPL] exception in _load_plan_log: {_lpl_exc}", flush=True)
         # Always re-apply manually suppressed UIDs so they survive repeated reloads
         self._logged_uids |= self._suppressed_uids
         # All UIDs now in _logged_uids were processed in this or a prior session;
@@ -4144,7 +4145,9 @@ class ExperimentsTab(QWidget):
                 )
 
         if changed:
+            print(f"[UH] changed=True → calling _load_plan_log", flush=True)
             self._load_plan_log(self._active_exp_path, auto_select_newest=True)
+            print(f"[UH] _load_plan_log done → list has {self.plan_log_list.count()} items", flush=True)
             self.scan_completed.emit()
             # Emit any run UIDs whose JSONL files are not yet in the local runs/ dir
             if self._active_exp_path:
