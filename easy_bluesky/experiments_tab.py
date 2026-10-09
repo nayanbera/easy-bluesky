@@ -2493,6 +2493,7 @@ class ExperimentsTab(QWidget):
         # Trigger an immediate history fetch to log completed plans without
         # waiting for the running_item sentinel or the 30-second fallback.
         if self._prev_re_state == "running" and re_state != "running":
+            print(f"[RE] re_state {self._prev_re_state!r}→{re_state!r}: scheduling history fetch", flush=True)
             if self.worker:
                 QTimer.singleShot(500, self.worker.request_history_fetch)
         self._prev_re_state = re_state
@@ -4004,12 +4005,25 @@ class ExperimentsTab(QWidget):
         changed       = False
         has_pending   = False   # True if any item has no exit_status yet
 
+        new_uids = [i.get("item_uid","") for i in items
+                    if i.get("item_uid","") and i.get("item_uid","") not in self._logged_uids]
+        if new_uids:
+            print(f"[UH] {len(items)} items, {len(new_uids)} new; "
+                  f"exp_end={self._exp_end_time:.0f} created={self._exp_created_at:.0f} "
+                  f"path={self._active_exp_path[-40:]}", flush=True)
+
         for item in items:
             uid = item.get("item_uid", "")
             if not uid or uid in self._logged_uids:
                 continue
             result      = item.get("result") or {}
             exit_status = result.get("exit_status", "")
+            t_stop   = result.get("time_stop",  0)
+            plan_exp_dir = (
+                ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
+            )
+            print(f"[UH]  uid={uid[:8]} exit={exit_status!r} "
+                  f"t_stop={t_stop:.0f} exp_dir={plan_exp_dir[-30:]!r}", flush=True)
             if not exit_status:
                 # queueserver may add history entries before populating exit_status.
                 # Mark as pending so we retry in 2 s rather than waiting for the
@@ -4017,23 +4031,21 @@ class ExperimentsTab(QWidget):
                 # to complete or be aborted).
                 has_pending = True
                 continue
-            t_stop   = result.get("time_stop",  0)
             t_start  = result.get("time_start", 0)
             run_uids = result.get("run_uids", [])
 
             if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
+                print(f"[UH]  -> SKIP t_stop<created", flush=True)
                 self._logged_uids.add(uid)
                 continue
             if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
+                print(f"[UH]  -> SKIP t_stop>=end_time", flush=True)
                 self._logged_uids.add(uid)
                 continue
 
             # If the plan carries exp_dir metadata, it belongs to a specific
             # experiment folder.  Only log it when it matches ours — this is the
             # primary guard against cross-client contamination in multi-client sessions.
-            plan_exp_dir = (
-                ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
-            )
             if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
                 self._logged_uids.add(uid)
                 if not self._foreign_plan_msg_shown:
@@ -4100,7 +4112,9 @@ class ExperimentsTab(QWidget):
                 if already:
                     self._logged_uids.add(uid)
                     changed = True  # another client wrote it; reload display to show it
+                    print(f"[UH]  -> ALREADY in file", flush=True)
                     continue
+                print(f"[UH]  -> WRITING scan_num={scan_num} to {log_file}", flush=True)
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
@@ -4113,6 +4127,7 @@ class ExperimentsTab(QWidget):
                     self._next_scan_num = scan_num + 1
                 changed = True
             except Exception as _exc:
+                print(f"[UH]  -> EXCEPTION: {_exc}", flush=True)
                 self._log(f"⚠ Plans Log write error (uid {uid[:8]}): {_exc}")
 
             # Show error dialog for newly failed plans — only for plans that
