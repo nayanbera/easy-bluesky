@@ -14,39 +14,6 @@ from bluesky_queueserver_api.zmq import REManagerAPI
 from .config import ZMQ_CONTROL, ZMQ_INFO, ZMQ_DOC_ADDR
 
 
-def _start_gil_health_monitor(threshold_ms: float = 200.0, interval_s: float = 0.05):
-    """Daemon thread that detects GIL stalls > threshold_ms and prints to stderr.
-
-    After sleeping (GIL released), if the actual elapsed time exceeds
-    threshold_ms it means another thread held the GIL for that long.
-    Captures a stack-trace snapshot of all threads at wake-up time to
-    identify the holder.
-    """
-    import traceback
-
-    def _run():
-        while True:
-            t0 = time.monotonic()
-            time.sleep(interval_s)
-            dt = (time.monotonic() - t0) * 1000
-            if dt > threshold_ms:
-                # Snapshot frames of all live threads at the moment we woke.
-                frames = _sys._current_frames()
-                lines = [f"[GIL stall] {dt:.0f} ms — thread frames at wake:\n"]
-                for tid, frame in frames.items():
-                    tname = next(
-                        (t.name for t in threading.enumerate() if t.ident == tid),
-                        f"tid={tid}",
-                    )
-                    tb = "".join(traceback.format_stack(frame, limit=4))
-                    lines.append(f"  [{tname}]:\n{tb}\n")
-                _sys.stderr.write("".join(lines))
-                _sys.stderr.flush()
-
-    t = threading.Thread(target=_run, daemon=True, name="GIL-health-monitor")
-    t.start()
-
-
 # ── Direct ZMQ console subscriber ─────────────────────────────────────────────
 
 class _DirectConsoleMonitor:
@@ -654,7 +621,6 @@ class ZMQWorker(QObject):
             target=self._history_fetch_loop, daemon=True, name="history-fetch"
         )
         _history_thread.start()
-        _start_gil_health_monitor()
 
     @Slot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -939,19 +905,9 @@ class ZMQWorker(QObject):
                     self._reload_plans_requested = False
                     self._load_plans_devices()
                 try:
-                    import time as _time
-                    _t0 = _time.monotonic()
                     with self._rm_lock:
-                        _ts = _time.monotonic(); status = self.rm.status();  _dt_status = (_time.monotonic()-_ts)*1e3
-                        _ts = _time.monotonic(); queue  = self.rm.queue_get(); _dt_queue  = (_time.monotonic()-_ts)*1e3
-                    _dt_total = (_time.monotonic() - _t0) * 1e3
-                    if _dt_total > 200 or _dt_status > 200 or _dt_queue > 200:
-                        import sys as _sys
-                        _sys.stderr.write(
-                            f"[poll slow] total={_dt_total:.0f}ms  "
-                            f"status={_dt_status:.0f}ms  queue={_dt_queue:.0f}ms\n"
-                        )
-                        _sys.stderr.flush()
+                        status = self.rm.status()
+                        queue  = self.rm.queue_get()
 
                     # Trigger a background history fetch when scan count changes.
                     # history_get() can return 100s of KB (json.loads holds GIL
@@ -1213,8 +1169,10 @@ class ZMQWorker(QObject):
         try:
             with self._rm_lock:
                 r = self.rm.script_upload(script=script)
+            self._current_task = ""
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
+            self._current_task = ""
             return False, str(e)
 
     def upload_scripts(self, scripts: list) -> list:
@@ -1239,6 +1197,7 @@ class ZMQWorker(QObject):
                 break
         skipped = len(scripts) - len(results)
         results.extend([(False, "skipped")] * skipped)
+        self._current_task = ""
         return results
 
     def _on_device_read_error(self, msg: str) -> None:
