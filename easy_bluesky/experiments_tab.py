@@ -2814,8 +2814,7 @@ class ExperimentsTab(QWidget):
                 n_total       = self._server_loop_snapshot_len
                 cur_cyc       = self._server_loop_current_cycle
                 tot_cyc       = self._server_loop_total_cycles
-                _cycle_sfx    = (f"  ∞" if tot_cyc == 0
-                                 else f"  (of {tot_cyc} cycles)")
+                _cycle_sfx    = " (∞)" if tot_cyc == 0 else f"/{tot_cyc}"
                 _cycle_lbl    = f"  cycle {cur_cyc}{_cycle_sfx}"
             else:
                 n_done        = self._queue_done_plans
