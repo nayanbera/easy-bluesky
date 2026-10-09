@@ -442,13 +442,15 @@ class LiveViewer(QWidget):
             if restored_y:
                 y_chosen = set(restored_y)
             else:
-                # Use start-doc detectors → everything-except-X fallback
+                # Use start-doc detectors → first field only, to avoid
+                # cluttering the plot with all readable signals on first run.
                 det_fields = _fields_for(self._start_detectors)
                 if det_fields:
-                    y_chosen = set(det_fields)
+                    y_chosen = {det_fields[0]}
                 else:
-                    y_chosen = {k for k in keys
-                                if k != x_chosen and k not in ("time", "seq_num")}
+                    fallback = [k for k in keys
+                                if k != x_chosen and k not in ("time", "seq_num")]
+                    y_chosen = {fallback[0]} if fallback else set()
 
             for i in range(self.y_list.count()):
                 self.y_list.item(i).setSelected(
