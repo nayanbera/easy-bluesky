@@ -3377,9 +3377,15 @@ class ExperimentsTab(QWidget):
         exps_dir = Path(EXPERIMENTS_DIR)
         if not exps_dir.exists():
             return 0.0
+        # Only meaningful when the active experiment lives inside EXPERIMENTS_DIR.
+        # NFS-mounted or external paths have no "next local experiment" relationship.
+        try:
+            Path(self._active_exp_path).relative_to(exps_dir)
+        except ValueError:
+            return 0.0
         next_t = float("inf")
         for d in exps_dir.iterdir():
-            if not d.is_dir() or str(d) == self._active_exp_path:
+            if not d.is_dir() or Path(d) == Path(self._active_exp_path):
                 continue
             exp_json = d / "experiment.json"
             if not exp_json.exists():
@@ -3990,14 +3996,6 @@ class ExperimentsTab(QWidget):
         changed       = False
         has_pending   = False   # True if any item has no exit_status yet
 
-        new_uids = [i.get("item_uid", "") for i in items
-                    if i.get("item_uid", "") and i.get("item_uid", "") not in self._logged_uids]
-        print(f"[DBG-UH] update_history called: {len(items)} items, "
-              f"{len(new_uids)} new (not yet logged)", flush=True)
-        if new_uids:
-            self._log(f"[DBG] update_history: {len(items)} items, "
-                      f"{len(new_uids)} new uids: {new_uids[:3]}")
-
         for item in items:
             uid = item.get("item_uid", "")
             if not uid or uid in self._logged_uids:
@@ -4009,7 +4007,6 @@ class ExperimentsTab(QWidget):
                 # Mark as pending so we retry in 2 s rather than waiting for the
                 # next natural items_in_history change (which requires another plan
                 # to complete or be aborted).
-                print(f"[DBG-UH] uid {uid[:8]}: no exit_status yet — will retry", flush=True)
                 has_pending = True
                 continue
             t_stop   = result.get("time_stop",  0)
@@ -4017,14 +4014,9 @@ class ExperimentsTab(QWidget):
             run_uids = result.get("run_uids", [])
 
             if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
-                print(f"[DBG-UH] uid {uid[:8]}: SKIPPED t_stop<exp_created_at "
-                      f"({t_stop:.0f} < {self._exp_created_at:.0f})", flush=True)
                 self._logged_uids.add(uid)
                 continue
             if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
-                print(f"[DBG-UH] uid {uid[:8]}: SKIPPED t_stop>=exp_end_time "
-                      f"({t_stop:.0f} >= {self._exp_end_time:.0f}, "
-                      f"end={datetime.fromtimestamp(self._exp_end_time).isoformat()})", flush=True)
                 self._logged_uids.add(uid)
                 continue
 
@@ -4035,10 +4027,6 @@ class ExperimentsTab(QWidget):
                 ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
             )
             if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
-                print(f"[DBG-UH] uid {uid[:8]}: SKIPPED exp_dir mismatch: "
-                      f"plan='{plan_exp_dir}' vs active='{self._active_exp_path}'", flush=True)
-                self._log(f"[DBG] uid {uid[:8]}: SKIPPED — exp_dir mismatch: "
-                          f"plan='{plan_exp_dir}' vs active='{self._active_exp_path}'")
                 self._logged_uids.add(uid)
                 if not self._foreign_plan_msg_shown:
                     self._foreign_plan_msg_shown = True
@@ -4102,11 +4090,9 @@ class ExperimentsTab(QWidget):
                     except Exception:
                         pass
                 if already:
-                    print(f"[DBG-UH] uid {uid[:8]}: already in log file (other client wrote it)", flush=True)
                     self._logged_uids.add(uid)
                     changed = True  # another client wrote it; reload display to show it
                     continue
-                print(f"[DBG-UH] uid {uid[:8]}: WRITING to log (exit={exit_status})", flush=True)
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
@@ -4118,8 +4104,8 @@ class ExperimentsTab(QWidget):
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
                 changed = True
-            except Exception as _exc:
-                print(f"[DBG-UH] uid {uid[:8]}: EXCEPTION writing log: {_exc}", flush=True)
+            except Exception:
+                pass
 
             # Show error dialog for newly failed plans — only for plans that
             # finished AFTER this session connected (ignores history from other

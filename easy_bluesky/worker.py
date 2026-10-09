@@ -894,10 +894,9 @@ class ZMQWorker(QObject):
                     h = self.rm.history_get()
                 self._cached_history = h
                 items = h.get("items", [])
-                print(f"[DBG-HIST] history_get returned {len(items)} items, emitting history_updated", flush=True)
                 self.history_updated.emit(items)
-            except Exception as _exc:
-                print(f"[DBG-HIST] history_get EXCEPTION: {_exc}", flush=True)
+            except Exception:
+                pass
 
     def poll(self):
         _prev_env_state = None
@@ -920,7 +919,6 @@ class ZMQWorker(QObject):
                     n_history = status.get("items_in_history", -1)
                     if n_history != self._last_history_count:
                         self._last_history_count = n_history
-                        print(f"[DBG-POLL] items_in_history changed: {n_history}", flush=True)
                         self._history_fetch_event.set()
 
                     # Also trigger when the running item changes: new uid means a
@@ -933,7 +931,6 @@ class ZMQWorker(QObject):
                     # catches plans that completed while the Mac was asleep.
                     running_uid = (queue.get("running_item") or {}).get("item_uid", "")
                     if running_uid != self._last_running_uid:
-                        print(f"[DBG-POLL] running_item changed: '{self._last_running_uid}' → '{running_uid}'", flush=True)
                         self._last_running_uid = running_uid
                         self._history_fetch_event.set()
 
