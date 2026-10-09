@@ -2526,7 +2526,7 @@ class ExperimentsTab(QWidget):
             if self._pending_total_points > 0:
                 self._scan_gen = self._event_gen
             else:
-                self._scan_gen = -1   # no start doc yet; on_scan_started will set this
+                self._scan_gen = -1
             self._pending_total_points      = 0
             self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
@@ -2534,6 +2534,12 @@ class ExperimentsTab(QWidget):
             self._plan_last_event_wall_time = 0.0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
+        elif self._pending_total_points > 0 and self._scan_gen < 0:
+            # Start doc arrived after this uid was set (ZMQ is faster than the poll).
+            # Apply now that we know the uid is stable.
+            self._running_item_total_points = self._pending_total_points
+            self._scan_gen = self._event_gen
+            self._pending_total_points = 0
 
 
         self._current_running_item = item or {}
@@ -2705,19 +2711,12 @@ class ExperimentsTab(QWidget):
     def on_scan_started(self, num_points: int) -> None:
         """Called when a start document arrives — sets total point count for the plan bar.
 
-        The ZMQ start doc often arrives before the RE Manager poll fires and sets
-        _running_item_uid, so we buffer the value in _pending_total_points so that
-        update_running_item() can pick it up on the next poll tick.
+        Always buffer: update_running_item() is the sole place that sets _scan_gen.
+        This prevents a race where the ZMQ start doc for the NEXT plan arrives before
+        the poll detects the queue-item-uid change, which would otherwise attribute
+        the next plan's events to the currently displayed plan.
         """
-        if self._running_item_uid:
-            # Running item already known — apply directly; do NOT set
-            # _pending_total_points so the value cannot bleed into the next plan.
-            self._running_item_total_points = num_points
-            self._pending_total_points = 0
-            self._scan_gen = self._event_gen   # events from now on belong to this plan
-        else:
-            # Running item not yet known — buffer; update_running_item will pick it up.
-            self._pending_total_points = num_points
+        self._pending_total_points = num_points
         self._update_progress_bars()
 
     def on_scan_point_completed(self, seq_num: int) -> None:

@@ -2098,9 +2098,20 @@ class MainWindow(QMainWindow):
     def _on_abort_requested(self):
         if self._locked_out_of_queue_control():
             return
-        r = QMessageBox.question(self, "Abort", "Abort the currently running plan?")
+        if self._loop_enabled:
+            msg_text = (
+                "Abort the currently running plan and stop the loop?\n\n"
+                "The loop will be disabled and the queue will not repeat."
+            )
+        else:
+            msg_text = "Abort the currently running plan?"
+        r = QMessageBox.question(self, "Abort", msg_text)
         if r != QMessageBox.StandardButton.Yes:
             return
+        if self._loop_enabled:
+            self._queue_loop_cancelled = True
+            self.experiments_tab.clear_loop_iteration()
+            self.worker.queue_mode_set({"loop": False})
         ok, msg = self.worker.re_abort()
         if ok:
             self._log(f"[{self._ts()}] ✓ Abort: {msg}")
