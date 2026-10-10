@@ -1150,13 +1150,6 @@ class ZMQWorker(QObject):
         try:
             with self._rm_lock:
                 r = self.rm.queue_mode_set(mode=mode)
-                # Read back immediately to verify the mode was accepted
-                try:
-                    sv = self.rm.status()
-                    actual = sv.get("queue_mode", "?")
-                    print(f"[queue_mode_set] requested={mode} ok={r.get('success')} server_reports={actual}", flush=True)
-                except Exception:
-                    pass
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
             return False, str(e)
