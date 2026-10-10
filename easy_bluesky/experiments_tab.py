@@ -1336,6 +1336,7 @@ class ExperimentsTab(QWidget):
         self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
         self._current_running_item: dict = {}
+        self._prev_running_item: dict    = {}   # item that ran before the current one
         self._current_queue_items: list  = []
         self._watcher_debounce = QTimer()
         self._watcher_debounce.setSingleShot(True)
@@ -2558,6 +2559,8 @@ class ExperimentsTab(QWidget):
             self._pending_total_points = 0
 
 
+        if uid != self._running_item_uid and self._current_running_item:
+            self._prev_running_item = self._current_running_item
         self._current_running_item = item or {}
         # Cache running scan_num so _renumber_queue bases queued plans after it.
         run_sn = ((item or {}).get("kwargs", {}) or {}).get("md", {}).get("scan_num")
@@ -2739,28 +2742,52 @@ class ExperimentsTab(QWidget):
 
         Bypasses history_get() so entries appear as each plan finishes,
         regardless of whether the queueserver has committed it to history yet.
+
+        Uses the ZMQ start doc when available; falls back to the queue item
+        cached by update_running_item when the start doc was not received.
+        In bluesky start documents, metadata from the md kwarg is merged at
+        the top level (not under a nested 'md' key).
         """
         if not self._active_exp_path:
             return
-        run_uid = doc.get("run_start", "")
-        start_doc = self._start_doc_cache.pop(run_uid, None)
-        if not start_doc:
-            return
-        md = start_doc.get("md", {}) or {}
-        exp_dir = md.get("exp_dir", "")
-        if exp_dir and not _same_experiment(exp_dir, self._active_exp_path):
-            return
-        item_uid = md.get("item_uid", "") or run_uid
-        if item_uid in self._logged_uids:
-            return
+        run_uid     = doc.get("run_start", "")
         exit_status = doc.get("exit_status", "unknown")
         if exit_status not in ("success", "fail", "abort"):
             return
-        plan_name = start_doc.get("plan_name", "") or md.get("plan_name", "")
-        is_motion = _is_motion_only(plan_name, start_doc.get("plan_kwargs", {}) or {})
-        scan_num = None if is_motion else (md.get("scan_num") or self._next_scan_num)
-        t_start  = start_doc.get("time", 0)
-        t_stop   = doc.get("time", 0)
+
+        start_doc = self._start_doc_cache.pop(run_uid, None)
+        if start_doc:
+            # Bluesky start docs merge md kwargs at the top level.
+            item_uid        = start_doc.get("item_uid", "") or run_uid
+            exp_dir         = start_doc.get("exp_dir", "")
+            plan_name       = start_doc.get("plan_name", "")
+            plan_args       = start_doc.get("plan_args", []) or []
+            plan_kwargs     = start_doc.get("plan_kwargs", {}) or {}
+            scan_num_in_doc = start_doc.get("scan_num")
+            t_start         = start_doc.get("time", 0)
+        else:
+            # ZMQ start doc was missed — use the item cached by update_running_item.
+            cached = self._prev_running_item
+            if not cached:
+                return
+            kw              = cached.get("kwargs", {}) or {}
+            md              = kw.get("md", {}) or {}
+            item_uid        = cached.get("item_uid", "") or run_uid
+            exp_dir         = md.get("exp_dir", "")
+            plan_name       = cached.get("name", "")
+            plan_args       = cached.get("args", []) or []
+            plan_kwargs     = kw
+            scan_num_in_doc = md.get("scan_num")
+            t_start         = 0  # not available without start doc
+
+        if exp_dir and not _same_experiment(exp_dir, self._active_exp_path):
+            return
+        if item_uid in self._logged_uids:
+            return
+
+        is_motion = _is_motion_only(plan_name, plan_kwargs)
+        scan_num  = None if is_motion else (scan_num_in_doc or self._next_scan_num)
+        t_stop    = doc.get("time", 0)
         dur = round(t_stop - t_start, 2) if (t_start and t_stop) else None
         timestamp = (
             datetime.fromtimestamp(t_stop).isoformat()
@@ -2769,10 +2796,10 @@ class ExperimentsTab(QWidget):
         entry = {
             "timestamp":   timestamp,
             "uid":         item_uid,
-            "run_uids":    [run_uid],
+            "run_uids":    [run_uid] if run_uid else [],
             "name":        plan_name,
-            "args":        start_doc.get("plan_args", []) or [],
-            "kwargs":      start_doc.get("plan_kwargs", {}) or {},
+            "args":        plan_args,
+            "kwargs":      plan_kwargs,
             "exit_status": exit_status,
             "duration_s":  dur,
             "scan_num":    scan_num,
@@ -2789,9 +2816,6 @@ class ExperimentsTab(QWidget):
             self._needs_renumber = True
         if not is_motion and scan_num is not None and scan_num >= self._next_scan_num:
             self._next_scan_num = scan_num + 1
-        # Update progress counter (ZMQ stop doc is authoritative for plan completion)
-        if not is_motion:
-            self._queue_done_plans += 1
         if not is_motion and scan_num is not None:
             self._prepend_plan_log_entry(entry)
             self._update_next_scan_label()
