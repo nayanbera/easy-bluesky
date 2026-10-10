@@ -2266,21 +2266,128 @@ class ExperimentsTab(QWidget):
         li = self.queue_compact.itemAt(pos)
         if not li:
             return
+
+        selected  = self.queue_compact.selectedItems()
+        n_sel     = len(selected)
+        loop_on   = bool(self._loop_copies_list)
+
         menu = QMenu(self)
-        menu.addAction("Edit",            lambda: self._on_queue_item_clicked(li))
-        menu.addAction("Remove",          self._remove_plan)
+
+        act_edit = menu.addAction("Edit")
+        act_edit.triggered.connect(lambda: self._on_queue_item_clicked(li))
+        act_edit.setEnabled(not loop_on and n_sel == 1)
+        if loop_on:
+            act_edit.setToolTip("Disabled while loop is active")
+        elif n_sel > 1:
+            act_edit.setToolTip("Select a single plan to edit")
+
+        act_rem = menu.addAction("Remove")
+        act_rem.triggered.connect(self._remove_plan)
+        act_rem.setEnabled(not loop_on and n_sel >= 1)
+        if loop_on:
+            act_rem.setToolTip("Disabled while loop is active")
+
         menu.addSeparator()
-        menu.addAction("Move to top",    lambda: self._move_compact_item("front"))
-        menu.addAction("Move to bottom", lambda: self._move_compact_item("back"))
+
+        act_dup_end   = menu.addAction("Duplicate to end")
+        act_dup_start = menu.addAction("Duplicate to start")
+        act_dup_end.triggered.connect(lambda: self._duplicate_selected("back"))
+        act_dup_start.triggered.connect(lambda: self._duplicate_selected("front"))
+        act_dup_end.setEnabled(not loop_on and n_sel >= 1)
+        act_dup_start.setEnabled(not loop_on and n_sel >= 1)
+
+        menu.addSeparator()
+
+        act_mv_start = menu.addAction("Move to start")
+        act_mv_end   = menu.addAction("Move to end")
+        act_mv_start.triggered.connect(lambda: self._move_selected("front"))
+        act_mv_end.triggered.connect(lambda: self._move_selected("back"))
+        act_mv_start.setEnabled(not loop_on and n_sel >= 1)
+        act_mv_end.setEnabled(not loop_on and n_sel >= 1)
+
+        if loop_on:
+            for act in (act_dup_end, act_dup_start, act_mv_start, act_mv_end):
+                act.setToolTip("Disabled while loop is active")
+
         menu.exec(self.queue_compact.viewport().mapToGlobal(pos))
 
-    def _move_compact_item(self, dest):
-        cur = self.queue_compact.currentItem()
-        if not cur:
+    def _selected_queue_items_in_order(self) -> list:
+        """Return selected queue items ordered by their current position in the list."""
+        selected_set = set(id(li) for li in self.queue_compact.selectedItems())
+        result = []
+        for i in range(self.queue_compact.count()):
+            li = self.queue_compact.item(i)
+            if id(li) in selected_set:
+                result.append(li)
+        return result
+
+    def _move_selected(self, dest: str) -> None:
+        """Move all selected queue items to 'front' or 'back', maintaining their relative order."""
+        if not self.worker:
             return
-        uid = cur.data(Qt.ItemDataRole.UserRole)
-        if uid and self.worker:
-            self.worker.move_item(uid, dest)
+        items_in_order = self._selected_queue_items_in_order()
+        if not items_in_order:
+            return
+        if dest == "front":
+            # Insert in reverse order, each at position 0 → result is selection order at front
+            for li in reversed(items_in_order):
+                uid = li.data(Qt.ItemDataRole.UserRole)
+                if uid:
+                    self.worker.move_item(uid, 0)
+        else:
+            # Append in forward order → result is selection order at back
+            for li in items_in_order:
+                uid = li.data(Qt.ItemDataRole.UserRole)
+                if uid:
+                    self.worker.move_item(uid, "back")
+        self._needs_renumber = True
+
+    def _duplicate_selected(self, dest: str) -> None:
+        """Duplicate selected queue items to 'front' or 'back', stripping loop metadata."""
+        if not self.worker or not self._active_exp_path:
+            return
+        import copy as _copy
+        items_in_order = self._selected_queue_items_in_order()
+        if not items_in_order:
+            return
+
+        _LOOP_MD_KEYS = ("_loop_n_cycles", "_loop_cycle_num", "_loop_cycle_size")
+
+        added = 0
+        if dest == "front":
+            # Add in reverse selection order so the first selected item ends up at front
+            to_add = list(reversed(items_in_order))
+            pos_arg: object = 0
+        else:
+            to_add  = items_in_order
+            pos_arg = "back"
+
+        for li in to_add:
+            raw = li.data(Qt.ItemDataRole.UserRole + 1)
+            if not raw:
+                continue
+            item = _copy.deepcopy(raw)
+            # Strip loop metadata from the copy
+            md = (item.get("kwargs") or {}).get("md") or {}
+            for k in _LOOP_MD_KEYS:
+                md.pop(k, None)
+            # Strip old item_uid so queueserver generates a fresh one
+            item.pop("item_uid", None)
+            # Assign fresh scan_num and experiment metadata
+            item = self._inject_metadata(item)
+            ok, result = self.worker.add_item(item, pos=pos_arg)
+            if ok:
+                added += 1
+                if dest == "front":
+                    # Each subsequent item must go one position later
+                    if isinstance(pos_arg, int):
+                        pos_arg += 1
+            else:
+                self._log(f"✗ Duplicate: {result}")
+
+        if added:
+            self._needs_renumber = True
+            self._log(f"✓ Duplicated {added} plan(s) to {'start' if dest == 'front' else 'end'}")
 
     def _on_queue_compact_selection(self, current, _previous):
         if not current:

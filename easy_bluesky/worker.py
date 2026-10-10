@@ -1083,7 +1083,7 @@ class ZMQWorker(QObject):
         except Exception as e:
             return False, str(e)
 
-    def add_item(self, item):
+    def add_item(self, item, pos=None):
         if self.locked_out:
             holder = self.lock_holder or "another computer"
             return False, (
@@ -1092,7 +1092,10 @@ class ZMQWorker(QObject):
             )
         try:
             with self._rm_lock:
-                r = self.rm.item_add(item=item)
+                kwargs = {"item": item}
+                if pos is not None:
+                    kwargs["pos"] = pos
+                r = self.rm.item_add(**kwargs)
             if r.get("success"):
                 item_uid = (r.get("item") or {}).get("item_uid", "")
                 return True, item_uid
