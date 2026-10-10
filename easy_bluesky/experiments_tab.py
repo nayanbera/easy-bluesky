@@ -4344,7 +4344,6 @@ class ExperimentsTab(QWidget):
             # primary guard against cross-client contamination in multi-client sessions.
             if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
                 self._logged_uids.add(uid)
-                self._last_history_len += 1
                 if not self._foreign_plan_msg_shown:
                     self._foreign_plan_msg_shown = True
                     other_name = Path(plan_exp_dir).name
