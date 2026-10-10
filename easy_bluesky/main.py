@@ -59,7 +59,7 @@ from .worker import ZMQWorker
 from .registry import fetch_registry, merge_into_profiles, probe_all_instances
 from .re_control_bar import REControlBar
 from .plan_builder import PlanBuilder
-from .experiments_tab import ExperimentsTab
+from .experiments_tab import ExperimentsTab, _same_experiment as _same_exp_dirs
 from .devices_plans_tab import DevicesPlansTab
 from .pv_watchdog import PVWatchdogTab
 from .mongo_browser import MongoDataBrowserTab
@@ -1127,15 +1127,7 @@ class MainWindow(QMainWindow):
         self._clients_ssh_profile: dict = {}  # profile snapshot for client polling
         self._auto_start_enabled      = False
         self._prev_queue_len          = 0      # for auto-start detection
-        self._loop_enabled            = False
-        self._loop_count              = 0      # 0=∞, N=N more after first
-        self._loop_iteration          = 0      # how many loops have run so far
         self._prev_queue_running      = False  # last known queue_running from status
-        self._queue_loop_cancelled    = False
-        # Server-native loop tracking
-        self._history_count_at_start  = 0     # items_in_history when queue started
-        self._loop_snapshot_len       = 0     # queue length at start (for cycle detection)
-        self._loop_spin_at_start      = 0     # spin_val captured at queue start
         self._last_status             : dict  = {}
         self._detached_tabs: dict = {}        # widget → (QMainWindow, orig_index, title)
         self.worker = ZMQWorker()
@@ -1415,12 +1407,9 @@ class MainWindow(QMainWindow):
             self.experiments_tab.on_scan_point_completed)
         self.experiments_tab.live_viewer.scan_total_points.connect(
             self.experiments_tab.on_scan_started)
-        self.worker.scan_start_doc.connect(self.experiments_tab.on_scan_start_doc)
-        self.worker.scan_stop_doc.connect(self.experiments_tab.on_scan_stop_doc)
         self.worker.disconnected.connect(self.experiments_tab.on_disconnected)
 
         self.experiments_tab.auto_start_toggled.connect(self._on_auto_start_toggled)
-        self.experiments_tab.loop_count_changed.connect(self._on_loop_count_changed)
         self.worker.status_updated.connect(self._on_status_for_loop_and_autostart)
         self.worker.queue_updated.connect(self._on_queue_for_autostart)
 
@@ -2010,15 +1999,38 @@ class MainWindow(QMainWindow):
         if not ready:
             QMessageBox.warning(self, "Cannot Start Queue", reason)
             return
+        # Multi-experiment guard: warn if queue has plans from a different experiment
+        active_exp = self.experiments_tab._active_exp_path
+        if active_exp:
+            queue_items = self.experiments_tab._current_queue_items
+            manager_state = self._last_status.get("manager_state", "")
+            if manager_state != "executing_queue":
+                foreign_items = [
+                    it for it in queue_items
+                    if (it.get("kwargs") or {}).get("md", {}).get("exp_dir")
+                    and not _same_exp_dirs(
+                        (it.get("kwargs") or {}).get("md", {}).get("exp_dir"),
+                        active_exp,
+                    )
+                ]
+                if foreign_items:
+                    other_exp = (foreign_items[0].get("kwargs") or {}).get("md", {}).get("exp_dir", "")
+                    other_name = Path(other_exp).name if other_exp else "unknown"
+                    msg_box = QMessageBox(self)
+                    msg_box.setWindowTitle("Experiment Mismatch")
+                    msg_box.setText(
+                        f"The queue contains plans from experiment '{other_name}'.\n\n"
+                        "Start the queue anyway, or cancel to review?"
+                    )
+                    btn_start  = msg_box.addButton("Start Anyway", QMessageBox.ButtonRole.AcceptRole)
+                    btn_cancel = msg_box.addButton("Cancel",        QMessageBox.ButtonRole.RejectRole)
+                    msg_box.setDefaultButton(btn_cancel)
+                    msg_box.exec()
+                    if msg_box.clickedButton() != btn_start:
+                        return
         self.devices_plans_tab.pause_sim_poll()
-        # Set server loop mode BEFORE queue_start so the server reads the correct mode.
-        # Calling it after is too late — queueserver v0.0.25 reads the loop setting at
-        # queue-start time and commits plans to history only when the loop ends.
-        _loop_mode = {"loop": self._loop_enabled}
-        ok_lm, msg_lm = self.worker.queue_mode_set(_loop_mode)
-        if not ok_lm:
-            label = "Enable" if self._loop_enabled else "Reset"
-            self._log(f"[{self._ts()}] ✗ {label} server loop mode (pre-start): {msg_lm}")
+        # Ensure server-side loop mode is OFF (client manages looping via queue population)
+        self.worker.queue_mode_set({"loop": False})
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
@@ -2044,7 +2056,7 @@ class MainWindow(QMainWindow):
                                 "RE Manager is still busy after 90 s.\n"
                                 "Check the RE Console tab for the current state.")
             return
-        self.worker.queue_mode_set({"loop": self._loop_enabled})
+        self.worker.queue_mode_set({"loop": False})
         ok, msg = self.worker.queue_start()
         if not ok:
             _m = msg.lower()
@@ -2067,27 +2079,9 @@ class MainWindow(QMainWindow):
 
     def _on_queue_start_success(self):
         self.devices_plans_tab.resume_sim_poll()
-        self._queue_loop_cancelled = False
-        self._loop_iteration = -1  # -1 = first poll not yet processed
-        # Record initial queue size for client-side loop-mode detection.
-        self.experiments_tab._queue_plans_at_start = self._last_status.get("items_in_queue", 0)
-        if self._loop_enabled:
-            spin_val = self.experiments_tab.spin_loop.value()
-            self._loop_spin_at_start     = spin_val
-            self._loop_snapshot_len      = len(self.experiments_tab._current_queue_items)
-            self._history_count_at_start = self._last_status.get("items_in_history", 0)
-            ok, msg = self.worker.queue_mode_set({"loop": True})
-            if not ok:
-                self._log(f"[{self._ts()}] ✗ Enable server loop mode: {msg}")
-            self.experiments_tab.set_loop_iteration(1, spin_val)
-            self.experiments_tab.set_loop_cycle_info(1, spin_val, self._loop_snapshot_len)
-        else:
-            # Explicitly reset server-side loop mode in case a previous session left
-            # the server in {"loop": true} (e.g. app was force-quit mid-loop).
-            ok_lm, msg_lm = self.worker.queue_mode_set({"loop": False})
-            if not ok_lm:
-                self._log(f"[{self._ts()}] ✗ Reset server loop mode: {msg_lm}")
-            self.experiments_tab.clear_loop_iteration()
+        history_count = self._last_status.get("items_in_history", 0)
+        total_items   = len(self.experiments_tab._current_queue_items) + 1  # +1 for running
+        self.experiments_tab.on_queue_started(history_count, total_items)
 
     def _on_pause_requested(self):
         if self._locked_out_of_queue_control():
@@ -2116,20 +2110,10 @@ class MainWindow(QMainWindow):
     def _on_abort_requested(self):
         if self._locked_out_of_queue_control():
             return
-        if self._loop_enabled:
-            msg_text = (
-                "Abort the currently running plan and stop the loop?\n\n"
-                "The loop will be disabled and the queue will not repeat."
-            )
-        else:
-            msg_text = "Abort the currently running plan?"
+        msg_text = "Abort the currently running plan?"
         r = QMessageBox.question(self, "Abort", msg_text)
         if r != QMessageBox.StandardButton.Yes:
             return
-        if self._loop_enabled:
-            self._queue_loop_cancelled = True
-            self.experiments_tab.clear_loop_iteration()
-            self.worker.queue_mode_set({"loop": False})
         ok, msg = self.worker.re_abort()
         if ok:
             self._log(f"[{self._ts()}] ✓ Abort: {msg}")
@@ -2157,11 +2141,6 @@ class MainWindow(QMainWindow):
             # else: unexpected error — already logged, stop retrying
 
     def _on_stop_requested(self):
-        # Cancel loop regardless of whether the stop succeeds
-        self._queue_loop_cancelled = True
-        self.experiments_tab.clear_loop_iteration()
-        if self._loop_enabled:
-            self.worker.queue_mode_set({"loop": False})
         ok, msg = self.worker.re_stop()
         if ok:
             self._log(f"[{self._ts()}] ✓ Stop: {msg}")
@@ -2195,35 +2174,6 @@ class MainWindow(QMainWindow):
             w.setChecked(enabled)
             w.blockSignals(False)
 
-    def _on_loop_count_changed(self, count: int) -> None:
-        # count == -1 means loop disabled (checkbox unchecked)
-        if count == -1:
-            self._loop_enabled = False
-            self.experiments_tab.clear_loop_iteration()
-            # Disable server-side loop if queue is currently running
-            if self._prev_queue_running:
-                self._queue_loop_cancelled = True
-                self.worker.queue_mode_set({"loop": False})
-            chk = self.experiments_tab.chk_loop
-            if chk.isChecked():
-                chk.blockSignals(True)
-                chk.setChecked(False)
-                chk.blockSignals(False)
-        else:
-            self._loop_enabled = True
-            self._loop_count = count
-            spin = self.experiments_tab.spin_loop
-            if spin.value() != count:
-                spin.blockSignals(True)
-                spin.setValue(count)
-                spin.blockSignals(False)
-            chk = self.experiments_tab.chk_loop
-            if not chk.isChecked():
-                chk.blockSignals(True)
-                chk.setChecked(True)
-                chk.blockSignals(False)
-            if not spin.isEnabled():
-                spin.setEnabled(True)
 
     def _on_queue_for_autostart(self, items: list) -> None:
         n = len(items)
@@ -2244,29 +2194,6 @@ class MainWindow(QMainWindow):
         self._last_status = status
         queue_running = status.get("manager_state", "") == "executing_queue"
 
-        # Server-native loop: detect completed cycles and update the iteration display.
-        # Also stop the loop when the user-specified count is reached.
-        if (self._loop_enabled
-                and not self._queue_loop_cancelled
-                and self._loop_snapshot_len > 0):
-            history_now = status.get("items_in_history", 0)
-            completed_cycles = (history_now - self._history_count_at_start) // self._loop_snapshot_len
-            if completed_cycles != self._loop_iteration:
-                self._loop_iteration = completed_cycles
-                spin_at_start = self._loop_spin_at_start
-                # remaining = how many more after the current one (matches old spinbox-decrement logic)
-                remaining = max(0, spin_at_start - completed_cycles)
-                current_cycle = completed_cycles + 1
-                self.experiments_tab.set_loop_iteration(current_cycle, remaining)
-                self.experiments_tab.set_loop_cycle_info(
-                    current_cycle, spin_at_start, self._loop_snapshot_len)
-                # For finite N: disable loop while the last cycle is running so the
-                # server won't recycle items when that cycle completes.
-                # Condition: cycle spin_at_start is now running (spin_at_start-1 done).
-                if spin_at_start > 0 and completed_cycles >= spin_at_start - 1:
-                    self.worker.queue_mode_set({"loop": False})
-                    self._queue_loop_cancelled = True
-
         if self._prev_queue_running and not queue_running:
             # Queue just finished — request history fetches so completed plans are
             # logged promptly.  Multiple delayed calls ensure the server has fully
@@ -2275,9 +2202,6 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(500,  self.worker.request_history_fetch)
                 QTimer.singleShot(2500, self.worker.request_history_fetch)
                 QTimer.singleShot(5000, self.worker.request_history_fetch)
-            # Clean up loop UI if done
-            if not self._loop_enabled or self._queue_loop_cancelled:
-                self.experiments_tab.clear_loop_iteration()
 
         self._prev_queue_running = queue_running
 
