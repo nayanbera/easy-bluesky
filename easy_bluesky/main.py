@@ -2255,7 +2255,14 @@ class MainWindow(QMainWindow):
                     self._queue_loop_cancelled = True
 
         if self._prev_queue_running and not queue_running:
-            # Queue just finished — clean up loop UI if it's done
+            # Queue just finished — request history fetches so completed plans are
+            # logged promptly.  Multiple delayed calls ensure the server has fully
+            # committed the last plan's result before we call history_get().
+            if self.worker:
+                QTimer.singleShot(500,  self.worker.request_history_fetch)
+                QTimer.singleShot(2500, self.worker.request_history_fetch)
+                QTimer.singleShot(5000, self.worker.request_history_fetch)
+            # Clean up loop UI if done
             if not self._loop_enabled or self._queue_loop_cancelled:
                 self.experiments_tab.clear_loop_iteration()
 

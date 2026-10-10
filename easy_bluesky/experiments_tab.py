@@ -2522,6 +2522,12 @@ class ExperimentsTab(QWidget):
                 self._queue_done_events += self._completed_points
                 self._queue_done_plans  += 1
                 self._record_plan_timing()
+                # Plan just completed — schedule delayed history fetches so the
+                # server has time to commit the result before we read history_get().
+                # QTimer is main-thread safe and more reliable than threading.Timer.
+                if self.worker:
+                    QTimer.singleShot(1500, self.worker.request_history_fetch)
+                    QTimer.singleShot(4000, self.worker.request_history_fetch)
             self._running_item_uid = uid
             # Bump generation so stale ZMQ events from the just-finished scan are
             # rejected by on_scan_point_completed.
@@ -4047,8 +4053,7 @@ class ExperimentsTab(QWidget):
         changed       = False
         has_pending   = False   # True if any item has no exit_status yet
         _new_uids = [i.get("item_uid","") for i in items if i.get("item_uid","") not in self._logged_uids]
-        if _new_uids:
-            print(f"[update_history] {len(items)} items, {len(_new_uids)} new UIDs", flush=True)
+        print(f"[update_history] {len(items)} items, {len(_new_uids)} new UIDs", flush=True)
 
         for item in items:
             uid = item.get("item_uid", "")
