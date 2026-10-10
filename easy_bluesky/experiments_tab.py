@@ -2539,12 +2539,6 @@ class ExperimentsTab(QWidget):
                         and self._queue_done_plans >= self._queue_plans_at_start
                         and self.worker):
                     QTimer.singleShot(1000, self.worker.queue_stop)
-            # If nothing is now running (uid == "") in a non-loop run, the queue
-            # should be going idle.  Call queue_stop() to break any server-side
-            # loop that might prevent the idle transition.  Harmless if already idle.
-            _loop_on = self.chk_loop.isChecked()
-            if not uid and not _loop_on and self._queue_done_plans > 0 and self.worker:
-                QTimer.singleShot(300, self.worker.queue_stop)
             self._running_item_uid = uid
             # Bump generation so stale ZMQ events from the just-finished scan are
             # rejected by on_scan_point_completed.
