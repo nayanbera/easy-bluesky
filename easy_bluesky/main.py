@@ -2014,9 +2014,8 @@ class MainWindow(QMainWindow):
         # queue-start time and commits plans to history only when the loop ends.
         _loop_mode = {"loop": self._loop_enabled}
         ok_lm, msg_lm = self.worker.queue_mode_set(_loop_mode)
-        if not ok_lm:
-            label = "Enable" if self._loop_enabled else "Reset"
-            self._log(f"[{self._ts()}] ✗ {label} server loop mode (pre-start): {msg_lm}")
+        label = "Enable" if self._loop_enabled else "Reset"
+        self._log(f"[{self._ts()}] {'✓' if ok_lm else '✗'} {label} server loop mode (pre-start){'' if ok_lm else ': ' + msg_lm}")
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
@@ -2239,6 +2238,10 @@ class MainWindow(QMainWindow):
     def _on_status_for_loop_and_autostart(self, status: dict) -> None:
         self._last_status = status
         queue_running = status.get("manager_state", "") == "executing_queue"
+        # If queue is running in non-loop mode but server reports loop=True, force-correct it.
+        server_loop = status.get("queue_mode", {}).get("loop", False)
+        if queue_running and not self._loop_enabled and server_loop:
+            self.worker.queue_mode_set({"loop": False})
 
         # Server-native loop: detect completed cycles and update the iteration display.
         # Also stop the loop when the user-specified count is reached.
