@@ -255,6 +255,7 @@ class _LocalDocWriter:
         self._lock     = threading.Lock()
         self._open_fhs = {}     # uid → file handle (only accessed by _run thread)
         self.event_queue: _queue.Queue = _queue.Queue()  # (seq_num) drained by poll()
+        self.doc_queue:   _queue.Queue = _queue.Queue()  # (name, doc) for start/stop
 
     def set_exp_dir(self, path: str):
         with self._lock:
@@ -324,6 +325,8 @@ class _LocalDocWriter:
     def _handle(self, name: str, doc: dict):
         if name == "event":
             self.event_queue.put_nowait(doc.get("seq_num", 0))
+        if name in ("start", "stop"):
+            self.doc_queue.put_nowait((name, doc))
 
         exp_dir = self._get_exp_dir()
         if exp_dir is None:
@@ -584,7 +587,9 @@ class ZMQWorker(QObject):
     env_closed      = Signal()
     re_manager_started = Signal(int)   # pid
     console_updated      = Signal(str)   # new console text since last poll
-    scan_point_completed = Signal(int)  # seq_num of each completed event doc
+    scan_point_completed = Signal(int)   # seq_num of each completed event doc
+    scan_start_doc       = Signal(dict)  # bluesky start document
+    scan_stop_doc        = Signal(dict)  # bluesky stop document
     scan_log_ready  = Signal(bytes)    # raw bytes of remote scans_log.json
     scan_log_error  = Signal(str)      # error message if SFTP fetch failed
 
@@ -1025,6 +1030,16 @@ class ZMQWorker(QObject):
                         while True:
                             seq_num = self._doc_writer.event_queue.get_nowait()
                             self.scan_point_completed.emit(seq_num)
+                    except _queue.Empty:
+                        pass
+                    # Drain start/stop documents for real-time Plans Log updates
+                    try:
+                        while True:
+                            doc_name, doc = self._doc_writer.doc_queue.get_nowait()
+                            if doc_name == "start":
+                                self.scan_start_doc.emit(doc)
+                            elif doc_name == "stop":
+                                self.scan_stop_doc.emit(doc)
                     except _queue.Empty:
                         pass
                 except Exception:

@@ -1326,6 +1326,7 @@ class ExperimentsTab(QWidget):
         self._queue_done_events        = 0    # events from plans already finished
         self._queue_done_plans         = 0    # plans completed this session
         self._queue_plans_at_start     = 0    # items in queue when Start was pressed (set by main.py)
+        self._start_doc_cache: dict    = {}   # run_uid → start doc, for ZMQ-based log writes
         # Server-loop tracking for per-cycle queue progress bar
         self._server_loop_snapshot_len    = 0  # plans per cycle (0 = no loop)
         self._server_loop_total_cycles    = 0  # 0 = infinite
@@ -2529,16 +2530,7 @@ class ExperimentsTab(QWidget):
                 if self.worker:
                     QTimer.singleShot(1500, self.worker.request_history_fetch)
                     QTimer.singleShot(4000, self.worker.request_history_fetch)
-                # Loop-mode guard: if all originally-queued plans have completed
-                # in a non-loop run but the queue is still executing (server-side
-                # loop mode is stuck), call queue_stop() so the server goes idle
-                # and commits plans to history_get().
-                _loop_on = self.chk_loop.isChecked()
-                if (not _loop_on
-                        and self._queue_plans_at_start > 0
-                        and self._queue_done_plans >= self._queue_plans_at_start
-                        and self.worker):
-                    QTimer.singleShot(1000, self.worker.queue_stop)
+                pass  # Plans Log and queue_stop() are now driven by on_scan_stop_doc
             self._running_item_uid = uid
             # Bump generation so stale ZMQ events from the just-finished scan are
             # rejected by on_scan_point_completed.
@@ -2732,6 +2724,85 @@ class ExperimentsTab(QWidget):
 
         motor_time = max(per_step_times) * num if per_step_times else 0.0
         return acq_total + motor_time
+
+    def on_scan_start_doc(self, doc: dict) -> None:
+        """Cache the bluesky start document so on_scan_stop_doc can write the Plans Log."""
+        run_uid = doc.get("uid", "")
+        if run_uid:
+            self._start_doc_cache[run_uid] = doc
+            # Evict old entries to prevent unbounded growth
+            if len(self._start_doc_cache) > 50:
+                oldest = next(iter(self._start_doc_cache))
+                self._start_doc_cache.pop(oldest, None)
+
+    def on_scan_stop_doc(self, doc: dict) -> None:
+        """Write a Plans Log entry immediately from the ZMQ stop document.
+
+        Bypasses history_get() so entries appear as each plan finishes,
+        regardless of whether the queueserver has committed it to history yet.
+        """
+        if not self._active_exp_path:
+            return
+        run_uid = doc.get("run_start", "")
+        start_doc = self._start_doc_cache.pop(run_uid, None)
+        if not start_doc:
+            return
+        md = start_doc.get("md", {}) or {}
+        exp_dir = md.get("exp_dir", "")
+        if exp_dir and not _same_experiment(exp_dir, self._active_exp_path):
+            return
+        item_uid = md.get("item_uid", "") or run_uid
+        if item_uid in self._logged_uids:
+            return
+        exit_status = doc.get("exit_status", "unknown")
+        if exit_status not in ("success", "fail", "abort"):
+            return
+        plan_name = start_doc.get("plan_name", "") or md.get("plan_name", "")
+        is_motion = _is_motion_only(plan_name, start_doc.get("plan_kwargs", {}) or {})
+        scan_num = None if is_motion else (md.get("scan_num") or self._next_scan_num)
+        t_start  = start_doc.get("time", 0)
+        t_stop   = doc.get("time", 0)
+        dur = round(t_stop - t_start, 2) if (t_start and t_stop) else None
+        timestamp = (
+            datetime.fromtimestamp(t_stop).isoformat()
+            if t_stop else datetime.now().isoformat()
+        )
+        entry = {
+            "timestamp":   timestamp,
+            "uid":         item_uid,
+            "run_uids":    [run_uid],
+            "name":        plan_name,
+            "args":        start_doc.get("plan_args", []) or [],
+            "kwargs":      start_doc.get("plan_kwargs", {}) or {},
+            "exit_status": exit_status,
+            "duration_s":  dur,
+            "scan_num":    scan_num,
+        }
+        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
+        try:
+            with open(log_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            return
+        self._logged_uids.add(item_uid)
+        if not is_motion and scan_num is not None:
+            _write_scan_num_json(self._active_exp_path, int(scan_num))
+            self._needs_renumber = True
+        if not is_motion and scan_num is not None and scan_num >= self._next_scan_num:
+            self._next_scan_num = scan_num + 1
+        # Update progress counter and queue_stop guard
+        if not is_motion:
+            self._queue_done_plans += 1
+            _loop_on = self.chk_loop.isChecked()
+            if (not _loop_on
+                    and self._queue_plans_at_start > 0
+                    and self._queue_done_plans >= self._queue_plans_at_start
+                    and self.worker):
+                QTimer.singleShot(1000, self.worker.queue_stop)
+        if not is_motion and scan_num is not None:
+            self._prepend_plan_log_entry(entry)
+            self._update_next_scan_label()
+            self.scan_completed.emit()
 
     def on_scan_started(self, num_points: int) -> None:
         """Called when a start document arrives — sets total point count for the plan bar.
