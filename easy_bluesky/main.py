@@ -2009,6 +2009,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot Start Queue", reason)
             return
         self.devices_plans_tab.pause_sim_poll()
+        # Set server loop mode BEFORE queue_start so the server reads the correct mode.
+        # Calling it after is too late — queueserver v0.0.25 reads the loop setting at
+        # queue-start time and commits plans to history only when the loop ends.
+        _loop_mode = {"loop": self._loop_enabled}
+        ok_lm, msg_lm = self.worker.queue_mode_set(_loop_mode)
+        if not ok_lm:
+            label = "Enable" if self._loop_enabled else "Reset"
+            self._log(f"[{self._ts()}] ✗ {label} server loop mode (pre-start): {msg_lm}")
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
@@ -2034,6 +2042,7 @@ class MainWindow(QMainWindow):
                                 "RE Manager is still busy after 90 s.\n"
                                 "Check the RE Console tab for the current state.")
             return
+        self.worker.queue_mode_set({"loop": self._loop_enabled})
         ok, msg = self.worker.queue_start()
         if not ok:
             _m = msg.lower()
