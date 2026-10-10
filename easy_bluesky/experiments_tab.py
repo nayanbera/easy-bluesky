@@ -2533,7 +2533,8 @@ class ExperimentsTab(QWidget):
                 # in a non-loop run but the queue is still executing (server-side
                 # loop mode is stuck), call queue_stop() so the server goes idle
                 # and commits plans to history_get().
-                if (not self._loop_enabled
+                _loop_on = self.chk_loop.isChecked()
+                if (not _loop_on
                         and self._queue_plans_at_start > 0
                         and self._queue_done_plans >= self._queue_plans_at_start
                         and self.worker):
@@ -2541,7 +2542,8 @@ class ExperimentsTab(QWidget):
             # If nothing is now running (uid == "") in a non-loop run, the queue
             # should be going idle.  Call queue_stop() to break any server-side
             # loop that might prevent the idle transition.  Harmless if already idle.
-            if not uid and not self._loop_enabled and self._queue_done_plans > 0 and self.worker:
+            _loop_on = self.chk_loop.isChecked()
+            if not uid and not _loop_on and self._queue_done_plans > 0 and self.worker:
                 QTimer.singleShot(300, self.worker.queue_stop)
             self._running_item_uid = uid
             # Bump generation so stale ZMQ events from the just-finished scan are
