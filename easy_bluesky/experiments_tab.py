@@ -2530,7 +2530,6 @@ class ExperimentsTab(QWidget):
                 if self.worker:
                     QTimer.singleShot(1500, self.worker.request_history_fetch)
                     QTimer.singleShot(4000, self.worker.request_history_fetch)
-                pass  # Plans Log and queue_stop() are now driven by on_scan_stop_doc
             self._running_item_uid = uid
             # Bump generation so stale ZMQ events from the just-finished scan are
             # rejected by on_scan_point_completed.
@@ -2790,15 +2789,9 @@ class ExperimentsTab(QWidget):
             self._needs_renumber = True
         if not is_motion and scan_num is not None and scan_num >= self._next_scan_num:
             self._next_scan_num = scan_num + 1
-        # Update progress counter and queue_stop guard
+        # Update progress counter (ZMQ stop doc is authoritative for plan completion)
         if not is_motion:
             self._queue_done_plans += 1
-            _loop_on = self.chk_loop.isChecked()
-            if (not _loop_on
-                    and self._queue_plans_at_start > 0
-                    and self._queue_done_plans >= self._queue_plans_at_start
-                    and self.worker):
-                QTimer.singleShot(1000, self.worker.queue_stop)
         if not is_motion and scan_num is not None:
             self._prepend_plan_log_entry(entry)
             self._update_next_scan_label()
