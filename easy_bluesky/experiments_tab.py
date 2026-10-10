@@ -1335,6 +1335,7 @@ class ExperimentsTab(QWidget):
         self._total_items_at_start: int         = 0  # N×M set at queue start
         self._current_history_count: int        = 0  # latest items_in_history from status
         self._last_history_len: int             = 0  # for incremental update_history
+        self._start_doc_cache:  dict            = {}  # run_uid → start-doc metadata
         self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log (fallback)
         self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
@@ -2008,6 +2009,7 @@ class ExperimentsTab(QWidget):
         self._remote_exp_dir   = ""
         self._esaf_info        = {}
         self._logged_uids      = set()
+        self._start_doc_cache  = {}
         self._suppressed_uids  = set()
         self._shown_error_uids = set()
         self._exp_created_at   = 0.0
@@ -3708,6 +3710,7 @@ class ExperimentsTab(QWidget):
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids          = set()
+        self._start_doc_cache      = {}
         self._shown_error_uids     = set()  # reset so old errors don't re-appear
         self._suppressed_uids      = set()   # suppressions are per-experiment
         self._foreign_run_warned_uid = ""
@@ -4178,6 +4181,11 @@ class ExperimentsTab(QWidget):
                                 continue   # skip duplicate written by a second client
                             _seen_uids.add(uid)
                             self._logged_uids.add(uid)
+                        # Also track run_uids so ZMQ-written entries are deduped
+                        # against the history-based fallback in update_history.
+                        for ruid in entry.get("run_uids", []):
+                            if ruid:
+                                self._logged_uids.add(ruid)
                         all_entries.append(entry)
                     except Exception:
                         pass
@@ -4298,6 +4306,113 @@ class ExperimentsTab(QWidget):
 
     # ── Public update slots ────────────────────────────────────────────────────
 
+    def on_scan_start_doc(self, doc: dict) -> None:
+        """Cache start-document metadata for Plans Log correlation with stop doc."""
+        run_uid = doc.get("uid", "")
+        if not run_uid:
+            return
+        # Correlate with the current running queue item for item_uid and kwargs.
+        # update_running_item fires every ~1 s; the ZMQ start doc usually arrives
+        # within 1-2 poll ticks so _current_running_item is typically correct.
+        running = self._current_running_item or {}
+        self._start_doc_cache[run_uid] = {
+            "scan_num":   doc.get("scan_num"),
+            "exp_dir":    doc.get("exp_dir", ""),
+            "plan_name":  doc.get("plan_name", running.get("name", "")),
+            "time_start": doc.get("time", 0),
+            "item_uid":   running.get("item_uid", ""),
+            "args":       running.get("args", []),
+            "kwargs":     running.get("kwargs", {}),
+        }
+        if len(self._start_doc_cache) > 50:
+            self._start_doc_cache.pop(next(iter(self._start_doc_cache)))
+
+    def on_scan_stop_doc(self, doc: dict) -> None:
+        """Write plan to Plans Log immediately from ZMQ stop document.
+
+        queueserver v0.0.25 holds completed plans in an internal staging buffer
+        and only commits them to history_get() when the queue is aborted.  This
+        handler bypasses that limitation by writing directly to plans_log.jsonl
+        as soon as the RunEngine emits its stop document.
+        """
+        if not self._active_exp_path:
+            return
+        run_uid    = doc.get("run_start", "")
+        exit_status = doc.get("exit_status", "")
+        if not run_uid or not exit_status:
+            return
+        if run_uid in self._logged_uids:
+            return  # already written
+
+        start_meta = self._start_doc_cache.pop(run_uid, None)
+        if start_meta is None:
+            # Start doc was missed; try to recover from current running item.
+            running = self._current_running_item or {}
+            start_meta = {
+                "scan_num":  ((running.get("kwargs") or {}).get("md") or {}).get("scan_num"),
+                "exp_dir":   ((running.get("kwargs") or {}).get("md") or {}).get("exp_dir", ""),
+                "plan_name": running.get("name", ""),
+                "time_start": 0,
+                "item_uid":  running.get("item_uid", ""),
+                "args":      running.get("args", []),
+                "kwargs":    running.get("kwargs", {}),
+            }
+
+        plan_exp_dir = start_meta.get("exp_dir", "")
+        if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
+            self._logged_uids.add(run_uid)
+            return  # foreign experiment — silently skip
+
+        plan_name = start_meta.get("plan_name", "")
+        is_motion = _is_motion_only(plan_name, {})
+        scan_num  = None if is_motion else start_meta.get("scan_num")
+
+        t_start = start_meta.get("time_start", 0)
+        t_stop  = doc.get("time", 0)
+        timestamp = (
+            datetime.fromtimestamp(t_stop).isoformat()
+            if t_stop else datetime.now().isoformat()
+        )
+        dur = (t_stop - t_start) if (t_stop and t_start) else None
+
+        # Use item_uid as primary key so update_history dedup catches duplicates.
+        # Fall back to run_uid when item_uid was not available (start doc missed).
+        item_uid    = start_meta.get("item_uid", "")
+        primary_uid = item_uid or run_uid
+        if primary_uid in self._logged_uids:
+            # item_uid already written (multi-run plan — second run's stop doc)
+            self._logged_uids.add(run_uid)
+            return
+
+        entry = {
+            "timestamp":   timestamp,
+            "uid":         primary_uid,
+            "run_uids":    [run_uid],
+            "name":        plan_name,
+            "args":        start_meta.get("args", []),
+            "kwargs":      start_meta.get("kwargs", {}),
+            "exit_status": exit_status,
+            "duration_s":  round(dur, 2) if dur else None,
+            "scan_num":    scan_num,
+        }
+        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
+        try:
+            with open(log_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+            self._logged_uids.add(primary_uid)
+            self._logged_uids.add(run_uid)  # ensures update_history skips this run
+            if not is_motion and scan_num is not None:
+                _write_scan_num_json(self._active_exp_path, int(scan_num))
+                self._needs_renumber = True
+            if not is_motion and scan_num is not None and scan_num >= self._next_scan_num:
+                self._next_scan_num = scan_num + 1
+            sn_str = f"#{scan_num} " if scan_num is not None else ""
+            self._log(f"✓ Plan Log: {sn_str}{plan_name} ({exit_status})")
+            self._prepend_plan_log_entry(entry)
+            self.scan_completed.emit()
+        except Exception as exc:
+            self._log(f"⚠ Plans Log write error (ZMQ): {exc}")
+
     def update_history(self, items: list):
         if not self._active_exp_path:
             return
@@ -4317,6 +4432,13 @@ class ExperimentsTab(QWidget):
                 continue
             result      = item.get("result") or {}
             exit_status = result.get("exit_status", "")
+            # If any run from this item was already written via ZMQ stop doc,
+            # skip writing but mark item_uid as seen so future calls skip it too.
+            run_uids_in_item = result.get("run_uids", [])
+            if any(ruid in self._logged_uids for ruid in run_uids_in_item):
+                self._logged_uids.add(uid)
+                self._last_history_len += 1
+                continue
             t_stop   = result.get("time_stop",  0)
             plan_exp_dir = (
                 ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""

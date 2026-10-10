@@ -1333,6 +1333,8 @@ class MainWindow(QMainWindow):
 
         self.worker.history_updated.connect(self.experiments_tab.update_history)
         self.worker.history_updated.connect(self.experiments_tab.update_re_history_display)
+        self.worker.scan_start_doc.connect(self.experiments_tab.on_scan_start_doc)
+        self.worker.scan_stop_doc.connect(self.experiments_tab.on_scan_stop_doc)
         self.worker.queue_updated.connect(self.experiments_tab.update_compact_queue)
 
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
