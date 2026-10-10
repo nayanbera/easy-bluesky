@@ -4306,11 +4306,14 @@ class ExperimentsTab(QWidget):
         has_pending   = False   # True if any item has no exit_status yet
         # Incremental: only process items that are new since last call.
         # _logged_uids still guards multi-client dedup within the new slice.
+        # IMPORTANT: advance _last_history_len only for FULLY processed items.
+        # Pending items (exit_status not yet set) must NOT advance the pointer
+        # or the 2-second retry will slice past them and miss them permanently.
         new_items = items[self._last_history_len:]
-        self._last_history_len = len(items)
         for item in new_items:
             uid = item.get("item_uid", "")
             if not uid or uid in self._logged_uids:
+                self._last_history_len += 1
                 continue
             result      = item.get("result") or {}
             exit_status = result.get("exit_status", "")
@@ -4320,19 +4323,20 @@ class ExperimentsTab(QWidget):
             )
             if not exit_status:
                 # queueserver may add history entries before populating exit_status.
-                # Mark as pending so we retry in 2 s rather than waiting for the
-                # next natural items_in_history change (which requires another plan
-                # to complete or be aborted).
+                # Stop here — do NOT advance _last_history_len — so the retry
+                # will reprocess this item and any that follow it.
                 has_pending = True
-                continue
+                break
             t_start  = result.get("time_start", 0)
             run_uids = result.get("run_uids", [])
 
             if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
                 self._logged_uids.add(uid)
+                self._last_history_len += 1
                 continue
             if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
                 self._logged_uids.add(uid)
+                self._last_history_len += 1
                 continue
 
             # If the plan carries exp_dir metadata, it belongs to a specific
@@ -4340,6 +4344,7 @@ class ExperimentsTab(QWidget):
             # primary guard against cross-client contamination in multi-client sessions.
             if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
                 self._logged_uids.add(uid)
+                self._last_history_len += 1
                 if not self._foreign_plan_msg_shown:
                     self._foreign_plan_msg_shown = True
                     other_name = Path(plan_exp_dir).name
@@ -4352,6 +4357,7 @@ class ExperimentsTab(QWidget):
                         f"experiment '{other_name}'{who} — it will not appear in this "
                         f"Plan Log. Switch to that experiment to see its results."
                     )
+                self._last_history_len += 1
                 continue
 
             # Use the scan number that was injected into the item's md at queue
@@ -4403,6 +4409,7 @@ class ExperimentsTab(QWidget):
                         pass
                 if already:
                     self._logged_uids.add(uid)
+                    self._last_history_len += 1
                     # Another client wrote it; display from in-memory entry rather
                     # than re-reading the NFS file (avoids resetting _logged_uids
                     # with stale data that would allow duplicate writes later).
@@ -4420,6 +4427,9 @@ class ExperimentsTab(QWidget):
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
                 changed = True
+                self._last_history_len += 1
+                sn_str = f"#{scan_num} " if scan_num is not None else ""
+                self._log(f"✓ Plan Log: {sn_str}{plan_name} ({exit_status})")
                 # Update list widget directly — do NOT re-read from the NFS file
                 # because macOS NFS attribute caching can return stale data on an
                 # immediate open/read after a write, making the new entry invisible.

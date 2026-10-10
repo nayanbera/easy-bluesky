@@ -2080,7 +2080,7 @@ class MainWindow(QMainWindow):
     def _on_queue_start_success(self):
         self.devices_plans_tab.resume_sim_poll()
         history_count = self._last_status.get("items_in_history", 0)
-        total_items   = len(self.experiments_tab._current_queue_items) + 1  # +1 for running
+        total_items   = len(self.experiments_tab._current_queue_items)
         self.experiments_tab.on_queue_started(history_count, total_items)
 
     def _on_pause_requested(self):
