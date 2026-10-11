@@ -2032,7 +2032,9 @@ class MainWindow(QMainWindow):
                         return
         self.devices_plans_tab.pause_sim_poll()
         # Ensure server-side loop mode is OFF (client manages looping via queue population)
-        self.worker.queue_mode_set({"loop": False})
+        mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
+        if not mode_ok:
+            self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
@@ -2058,7 +2060,9 @@ class MainWindow(QMainWindow):
                                 "RE Manager is still busy after 90 s.\n"
                                 "Check the RE Console tab for the current state.")
             return
-        self.worker.queue_mode_set({"loop": False})
+        mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
+        if not mode_ok:
+            self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
         ok, msg = self.worker.queue_start()
         if not ok:
             _m = msg.lower()
@@ -2195,6 +2199,24 @@ class MainWindow(QMainWindow):
     def _on_status_for_loop_and_autostart(self, status: dict) -> None:
         self._last_status = status
         queue_running = status.get("manager_state", "") == "executing_queue"
+
+        if queue_running:
+            # Detect stuck-loop: executing_queue but queue is empty and nothing running.
+            # queueserver v0.0.25 in loop mode stays in this state indefinitely after
+            # all pre-populated plans complete.  Stop it automatically.
+            queue_empty   = not self.experiments_tab._current_queue_items
+            nothing_running = not self.experiments_tab._current_running_item
+            if queue_empty and nothing_running:
+                self._stuck_loop_count = getattr(self, "_stuck_loop_count", 0) + 1
+                if self._stuck_loop_count == 3:
+                    self._log(f"[{self._ts()}] ⚠ Queue stuck in loop mode — stopping automatically")
+                    self.worker.queue_stop()
+                    QTimer.singleShot(1000, self.worker.request_history_fetch)
+                    QTimer.singleShot(3000, self.worker.request_history_fetch)
+            else:
+                self._stuck_loop_count = 0
+        else:
+            self._stuck_loop_count = 0
 
         if self._prev_queue_running and not queue_running:
             # Queue just finished — request history fetches so completed plans are

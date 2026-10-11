@@ -4335,10 +4335,12 @@ class ExperimentsTab(QWidget):
         handler bypasses that limitation by writing directly to plans_log.jsonl
         as soon as the RunEngine emits its stop document.
         """
-        if not self._active_exp_path:
-            return
         run_uid    = doc.get("run_start", "")
         exit_status = doc.get("exit_status", "")
+        # Debug: log every stop doc received so we can verify signal delivery.
+        self._log(f"[ZMQ stop] run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}")
+        if not self._active_exp_path:
+            return
         if not run_uid or not exit_status:
             return
         if run_uid in self._logged_uids:
