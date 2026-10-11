@@ -4021,6 +4021,7 @@ class ExperimentsTab(QWidget):
                     self._logged_uids.add(uid)
                     continue
                 if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
+                    self._log(f"⚠ Plan Log: skipping '{item.get('name','?')}' — completed after exp_end_time (no exp_dir metadata)")
                     self._logged_uids.add(uid)
                     continue
 
@@ -4084,6 +4085,7 @@ class ExperimentsTab(QWidget):
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
                 changed = True
+                self._log(f"✓ Plan Log: recorded '{plan_name}' (#{scan_num})")
                 # Update the list widget directly — do NOT re-read from the NFS
                 # file because macOS NFS attribute caching can return stale data
                 # on an immediate open/read after a write (new entry invisible).
