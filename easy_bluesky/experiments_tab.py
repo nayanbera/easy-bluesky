@@ -4098,7 +4098,6 @@ class ExperimentsTab(QWidget):
                 self._logged_uids.add(uid)
                 if not is_motion and scan_num is not None and self._active_exp_path:
                     _write_scan_num_json(self._active_exp_path, int(scan_num))
-                    self._needs_renumber = True  # re-number queue from last_completed+1
                 # Advance both counters so the next queued scan gets a fresh number
                 # even when this scan was aborted (with or without bluesky run_uids).
                 if not is_motion and scan_num >= self._next_scan_num:
