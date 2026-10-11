@@ -127,6 +127,8 @@ class LiveViewer(QWidget):
     move_2d_requested     = Signal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
     scan_point_completed  = Signal(int)          # seq_num of each event doc
     scan_total_points     = Signal(int)          # num_points from start doc (0 if unknown)
+    scan_start_doc        = Signal(dict)         # bluesky start document (for Plans Log)
+    scan_stop_doc         = Signal(dict)         # bluesky stop document  (for Plans Log)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -360,6 +362,7 @@ class LiveViewer(QWidget):
 
     def _on_doc(self, name, doc):
         if name == "start":
+            self.scan_start_doc.emit(doc)
             self.scan_total_points.emit(int(doc.get("num_points") or 0))
             # Save current selections before resetting so they can be restored
             # when the new run's descriptor arrives (if signals match).
@@ -499,6 +502,7 @@ class LiveViewer(QWidget):
                 )
 
         elif name == "stop":
+            self.scan_stop_doc.emit(doc)
             status = doc.get("exit_status", "unknown")
             n      = doc.get("num_events", "?")
             self.run_label.setText(f"Run complete — {status}  ({n} events)")

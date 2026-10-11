@@ -1482,6 +1482,18 @@ class MainWindow(QMainWindow):
         self.watchdog_tab.update_profiles(_all_names)
         self.watchdog_tab.load_for_profile(profile.get("name", "Default"))
         self.experiments_tab.live_viewer.restart_zmq(doc_addr)
+        # Forward start/stop docs from LiveViewer's ZMQ thread to Plans Log.
+        # LiveViewer's ZMQDocThread is proven to receive docs (live plots work),
+        # so this is more reliable than _doc_writer's independent subscription.
+        # _logged_uids dedup prevents double-writes if both paths deliver a doc.
+        lv = self.experiments_tab.live_viewer
+        try:
+            lv.scan_start_doc.disconnect(self.experiments_tab.on_scan_start_doc)
+            lv.scan_stop_doc.disconnect(self.experiments_tab.on_scan_stop_doc)
+        except RuntimeError:
+            pass
+        lv.scan_start_doc.connect(self.experiments_tab.on_scan_start_doc)
+        lv.scan_stop_doc.connect(self.experiments_tab.on_scan_stop_doc)
         # If this is an SSH-managed instance, tail the procServ log file so
         # that worker stdout (startup script output, plan progress) reaches the
         # RE Console regardless of whether the manager publishes to ZMQ.
