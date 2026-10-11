@@ -4319,7 +4319,6 @@ class ExperimentsTab(QWidget):
         # update_running_item fires every ~1 s; the ZMQ start doc usually arrives
         # within 1-2 poll ticks so _current_running_item is typically correct.
         running = self._current_running_item or {}
-        print(f"[EasyBluesky] on_scan_start_doc: run={run_uid[:8]} item={running.get('item_uid','')[:8]}", flush=True)
         self._start_doc_cache[run_uid] = {
             "scan_num":   doc.get("scan_num"),
             "exp_dir":    doc.get("exp_dir", ""),
@@ -4346,7 +4345,6 @@ class ExperimentsTab(QWidget):
         """
         run_uid    = doc.get("run_start", "")
         exit_status = doc.get("exit_status", "")
-        print(f"[EasyBluesky] on_scan_stop_doc called: run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}", flush=True)
         self._log(f"[ZMQ stop] run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}")
         if not self._active_exp_path:
             return
@@ -4375,6 +4373,14 @@ class ExperimentsTab(QWidget):
             return  # foreign experiment — silently skip
 
         plan_name = start_meta.get("plan_name", "")
+        # If _current_running_item still refers to this plan (item_uid matches),
+        # use its name — it's the registered queue name, immune to the bluesky
+        # start-doc plan_name showing the inner generator (e.g. "rel_scan" instead
+        # of "rel_scan_w_time_n_delay").  This works even when _queue_plan_name
+        # was not injected (plans queued before the md-injection fix).
+        _cur = self._current_running_item or {}
+        if _cur.get("item_uid") and _cur.get("item_uid") == start_meta.get("item_uid") and _cur.get("name"):
+            plan_name = _cur["name"]
         is_motion = _is_motion_only(plan_name, {})
         scan_num  = None if is_motion else start_meta.get("scan_num")
 
