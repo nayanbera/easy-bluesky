@@ -892,10 +892,20 @@ class ZMQWorker(QObject):
                         _history_changed = False
                         if (n_history != self._last_history_count
                                 or self._history_stale_ticks >= 30):
-                            self._cached_history      = self.rm.history_get()
-                            self._last_history_count  = n_history
-                            self._history_stale_ticks = 0
-                            _history_changed          = True
+                            _new_hist    = self.rm.history_get()
+                            _actual_len  = len(_new_hist.get("items", []))
+                            if n_history >= 0 and _actual_len < n_history:
+                                # queueserver race: status count updated before the
+                                # completed item appears in history_get().  Keep
+                                # _last_history_count at its old value so the next
+                                # poll tick retries without being blocked by the
+                                # "count unchanged" skip logic.
+                                pass
+                            else:
+                                self._cached_history      = _new_hist
+                                self._last_history_count  = n_history
+                                self._history_stale_ticks = 0
+                                _history_changed          = True
                     self._last_manager_state = status.get("manager_state", "idle")
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
