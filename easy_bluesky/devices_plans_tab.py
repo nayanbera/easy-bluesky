@@ -1,4 +1,5 @@
 """devices_plans_tab.py — Devices & Plans browser tab."""
+from __future__ import annotations
 
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
@@ -477,6 +478,23 @@ class DevicesPlansTab(QWidget):
         hdr.addWidget(lbl)
         hdr.addStretch()
 
+        hdr.addWidget(QLabel("Update:"))
+        self._flush_rate_spin = NoScrollDoubleSpinBox()
+        self._flush_rate_spin.setRange(0.1, 10.0)
+        self._flush_rate_spin.setSingleStep(0.1)
+        self._flush_rate_spin.setDecimals(1)
+        self._flush_rate_spin.setValue(0.1)
+        self._flush_rate_spin.setSuffix(" s")
+        self._flush_rate_spin.setFixedWidth(68)
+        self._flush_rate_spin.setToolTip(
+            "How often CA callback values are applied to the tree.\n"
+            "Increase if the display is sluggish with many devices."
+        )
+        self._flush_rate_spin.valueChanged.connect(
+            lambda v: self._pv_flush_timer.setInterval(int(v * 1000))
+        )
+        hdr.addWidget(self._flush_rate_spin)
+
         self._refresh_btn = QPushButton("⟳ Reconnect")
         self._refresh_btn.setFixedWidth(95)
         self._refresh_btn.setToolTip(
@@ -500,9 +518,18 @@ class DevicesPlansTab(QWidget):
         legend.addStretch()
         vlay.addLayout(legend)
 
+        status_row = QHBoxLayout()
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
-        vlay.addWidget(self._status_lbl)
+        status_row.addWidget(self._status_lbl)
+        status_row.addStretch()
+        self._chk_poll_sim = QCheckBox("Poll Sim Devices")
+        self._chk_poll_sim.setChecked(False)
+        self._chk_poll_sim.setToolTip("Enable automatic 2-second polling of sim device values")
+        self._chk_poll_sim.setVisible(False)
+        self._chk_poll_sim.toggled.connect(self._on_poll_sim_toggled)
+        status_row.addWidget(self._chk_poll_sim)
+        vlay.addLayout(status_row)
 
         self._search_box = QLineEdit()
         self._search_box.setPlaceholderText("Search devices…")
@@ -660,6 +687,7 @@ class DevicesPlansTab(QWidget):
             self._status_lbl.setText("● No devices — open the RE environment")
             self._refresh_btn.setEnabled(True)
             self._refresh_btn.setText("⟳ Reconnect")
+            self._chk_poll_sim.setVisible(False)
             return
 
         groups: dict = {}
@@ -863,7 +891,14 @@ class DevicesPlansTab(QWidget):
             self._sim_timer = QTimer(self)
             self._sim_timer.setInterval(2000)
             self._sim_timer.timeout.connect(self._on_sim_poll)
-            self._sim_timer.start()
+            self._chk_poll_sim.setVisible(True)
+            if self._chk_poll_sim.isChecked():
+                self._sim_timer.start()
+                self._status_lbl.setText("● Sim — polling device values…")
+            else:
+                self._status_lbl.setText("● Sim — polling paused")
+        else:
+            self._chk_poll_sim.setVisible(False)
 
         self._refresh_btn.setEnabled(True)
         self._refresh_btn.setText("⟳ Reconnect")
@@ -1093,29 +1128,42 @@ class DevicesPlansTab(QWidget):
         green = QColor("#2ca02c")
         dim   = QColor("#666666")
 
-        pv_updates, self._pending_pv_updates = self._pending_pv_updates, {}
-        for (dev_name, sig_name), (value, units) in pv_updates.items():
-            sig_item = self._signal_items.get((dev_name, sig_name))
-            if sig_item:
-                sig_item.setText(2, _fmt_value(value))
-                sig_item.setText(3, units)
-                sig_item.setForeground(2, dim)
-            if self._primary_signal.get(dev_name) == sig_name:
-                dev_item = self._device_items.get(dev_name)
-                if dev_item:
-                    dev_item.setText(2, _fmt_value(value))
-                    dev_item.setText(3, units)
-                    dev_item.setForeground(2, green)
+        # Suspend repaints for the whole batch — each setText() on a visible
+        # QTreeWidgetItem otherwise triggers a synchronous repaint, making the
+        # flush O(N×repaint_cost) instead of O(1×repaint_cost).
+        self.devices_tree.setUpdatesEnabled(False)
+        try:
+            pv_updates, self._pending_pv_updates = self._pending_pv_updates, {}
+            for (dev_name, sig_name), (value, units) in pv_updates.items():
+                sig_item = self._signal_items.get((dev_name, sig_name))
+                if sig_item:
+                    val_str = _fmt_value(value)
+                    if sig_item.text(2) != val_str:
+                        sig_item.setText(2, val_str)
+                        sig_item.setForeground(2, dim)
+                    if sig_item.text(3) != units:
+                        sig_item.setText(3, units)
+                if self._primary_signal.get(dev_name) == sig_name:
+                    dev_item = self._device_items.get(dev_name)
+                    if dev_item:
+                        val_str = _fmt_value(value)
+                        if dev_item.text(2) != val_str:
+                            dev_item.setText(2, val_str)
+                            dev_item.setForeground(2, green)
+                        if dev_item.text(3) != units:
+                            dev_item.setText(3, units)
 
-        desc_updates, self._pending_desc_updates = self._pending_desc_updates, {}
-        for (dev_name, sig_name), desc in desc_updates.items():
-            sig_item = self._signal_items.get((dev_name, sig_name))
-            if sig_item:
-                sig_item.setText(4, desc)
-            if self._primary_signal.get(dev_name) == sig_name:
-                dev_item = self._device_items.get(dev_name)
-                if dev_item:
-                    dev_item.setText(4, desc)
+            desc_updates, self._pending_desc_updates = self._pending_desc_updates, {}
+            for (dev_name, sig_name), desc in desc_updates.items():
+                sig_item = self._signal_items.get((dev_name, sig_name))
+                if sig_item and sig_item.text(4) != desc:
+                    sig_item.setText(4, desc)
+                if self._primary_signal.get(dev_name) == sig_name:
+                    dev_item = self._device_items.get(dev_name)
+                    if dev_item and dev_item.text(4) != desc:
+                        dev_item.setText(4, desc)
+        finally:
+            self.devices_tree.setUpdatesEnabled(True)
 
     def _save_metadata_cache(self):
         try:
@@ -1283,9 +1331,19 @@ class DevicesPlansTab(QWidget):
             self._sim_timer.stop()
 
     def resume_sim_poll(self):
-        """Restart the sim poll timer after queue_start has been sent."""
-        if self._sim_timer is not None:
+        """Restart the sim poll timer after queue_start has been sent (only if checkbox is on)."""
+        if self._sim_timer is not None and self._chk_poll_sim.isChecked():
             self._sim_timer.start()
+
+    def _on_poll_sim_toggled(self, checked: bool):
+        if self._sim_timer is None:
+            return
+        if checked:
+            self._sim_timer.start()
+            self._status_lbl.setText("● Sim — polling device values…")
+        else:
+            self._sim_timer.stop()
+            self._status_lbl.setText("● Sim — polling paused")
 
     def update_sim_values(self, readings: dict):
         """Update Value/Units/Description columns for polled (sim/pseudo) devices."""
