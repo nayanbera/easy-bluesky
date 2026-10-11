@@ -3924,13 +3924,55 @@ class ExperimentsTab(QWidget):
         if auto_select_newest and self.plan_log_list.count() > 0:
             self.plan_log_list.scrollToTop()
 
+    def _prepend_plan_log_entry(self, entry: dict) -> None:
+        """Insert a single completed-plan entry at the top of the list widget.
+
+        Called immediately after writing to plans_log.jsonl so the display
+        updates without re-reading the file — avoids NFS read-after-write
+        latency on macOS where just-written bytes may not yet be visible.
+        """
+        name     = entry.get("name", "?")
+        args     = entry.get("args", []) or []
+        kwargs   = entry.get("kwargs", {}) or {}
+        status   = entry.get("exit_status", "")
+        ok       = status in ("completed", "success")
+        aborted  = status == "aborted"
+        motion   = _is_motion_only(name, kwargs)
+        icon     = "✓" if ok else ("⊘" if aborted else ("✗" if status else "?"))
+        if motion:
+            color = _NEUTRAL_COLOR
+        elif ok:
+            color = SUCCESS
+        elif aborted:
+            color = WARNING
+        else:
+            color = DANGER
+        ts       = entry.get("timestamp", "")
+        t_str    = ts[11:19] if len(ts) >= 19 else ts[:19]
+        dur      = entry.get("duration_s")
+        scan_num = entry.get("scan_num")
+        summary  = self._plan_summary(name, kwargs, args)
+        dur_str  = f"  ({dur:.1f}s)" if dur is not None else ""
+        prefix   = f"#{scan_num:<3} " if scan_num is not None else "     "
+        li = QListWidgetItem(f"{prefix}{icon}  {t_str}  {name}{summary}{dur_str}")
+        li.setForeground(QColor(color))
+        li.setData(Qt.ItemDataRole.UserRole, entry)
+        self.plan_log_list.insertItem(0, li)
+        dur_val = entry.get("duration_s")
+        if name and isinstance(dur_val, (int, float)) and dur_val > 0:
+            cached = self._plan_duration_cache.get(name, 0.0)
+            self._plan_duration_cache[name] = (cached + dur_val) / 2 if cached else dur_val
+        self._filter_plan_log(self._plan_log_search.text())
+        self.plan_log_list.scrollToTop()
+
     # ── Public update slots ────────────────────────────────────────────────────
 
     def update_history(self, items: list):
         if not self._active_exp_path:
             return
         log_file = Path(self._active_exp_path) / "plans_log.jsonl"
-        changed  = False
+        changed     = False
+        has_pending = False   # True if any new item has no exit_status yet
 
         for item in items:
             uid = item.get("item_uid", "")
@@ -3939,6 +3981,10 @@ class ExperimentsTab(QWidget):
             result      = item.get("result") or {}
             exit_status = result.get("exit_status", "")
             if not exit_status:
+                # queueserver may add history entries before exit_status is set.
+                # Flag for a 2-s retry so this item isn't lost when the
+                # history_updated signal is throttled to count-change events only.
+                has_pending = True
                 continue
             t_stop   = result.get("time_stop",  0)
             t_start  = result.get("time_start", 0)
@@ -4003,10 +4049,9 @@ class ExperimentsTab(QWidget):
                 "scan_num":    scan_num,
             }
             try:
-                # Guard against multi-client double-writes: _logged_uids is
-                # rebuilt from the file on each _load_plan_log call, so it can
-                # be stale if another client wrote this UID since the last reload.
-                # Re-scan the file just before appending to catch that race.
+                # Guard against multi-client double-writes: re-scan the file
+                # just before appending so we don't duplicate an entry that
+                # another client wrote since our last _load_plan_log call.
                 already = False
                 if log_file.exists():
                     try:
@@ -4034,6 +4079,10 @@ class ExperimentsTab(QWidget):
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
                 changed = True
+                # Update the list widget directly — do NOT re-read from the NFS
+                # file because macOS NFS attribute caching can return stale data
+                # on an immediate open/read after a write (new entry invisible).
+                self._prepend_plan_log_entry(entry)
             except Exception:
                 pass
 
@@ -4051,7 +4100,6 @@ class ExperimentsTab(QWidget):
                 )
 
         if changed:
-            self._load_plan_log(self._active_exp_path, auto_select_newest=True)
             self.scan_completed.emit()
             # Emit any run UIDs whose JSONL files are not yet in the local runs/ dir
             if self._active_exp_path:
@@ -4066,6 +4114,12 @@ class ExperimentsTab(QWidget):
                 ]
                 if missing:
                     self.run_files_needed.emit(missing, runs_dir)
+
+        if has_pending and self.worker:
+            # Some history items had no exit_status yet (queueserver race).
+            # Force a history re-fetch in 2 s so these items are not missed
+            # when history_updated is throttled to count-change events only.
+            QTimer.singleShot(2000, self.worker.request_history_fetch)
 
     def update_compact_queue(self, items: list):
         old_order = [it.get("item_uid", "") for it in self._current_queue_items]

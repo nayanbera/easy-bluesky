@@ -1064,6 +1064,15 @@ class ZMQWorker(QObject):
         except Exception as e:
             return False, str(e)
 
+    def request_history_fetch(self):
+        """Force the next poll tick to re-fetch history.
+
+        Called by experiments_tab when a history item had no exit_status yet
+        (queueserver race), so the entry is retried 2 s later without waiting
+        for the 30-tick forced-refresh window.
+        """
+        self._last_history_count = -1
+
     # ── RE operations ──────────────────────────────────────────────────────────
     def queue_start(self):
         try:
