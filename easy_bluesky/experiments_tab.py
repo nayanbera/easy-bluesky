@@ -4315,6 +4315,7 @@ class ExperimentsTab(QWidget):
         # update_running_item fires every ~1 s; the ZMQ start doc usually arrives
         # within 1-2 poll ticks so _current_running_item is typically correct.
         running = self._current_running_item or {}
+        print(f"[EasyBluesky] on_scan_start_doc: run={run_uid[:8]} item={running.get('item_uid','')[:8]}", flush=True)
         self._start_doc_cache[run_uid] = {
             "scan_num":   doc.get("scan_num"),
             "exp_dir":    doc.get("exp_dir", ""),
@@ -4382,9 +4383,22 @@ class ExperimentsTab(QWidget):
         item_uid    = start_meta.get("item_uid", "")
         primary_uid = item_uid or run_uid
         if primary_uid in self._logged_uids:
-            # item_uid already written (multi-run plan — second run's stop doc)
-            self._logged_uids.add(run_uid)
-            return
+            # primary_uid already logged.  This can mean two things:
+            # (a) Multi-run plan: same item_uid produced run_uid1 (logged) and
+            #     run_uid2 (this call) — skip the second run's entry.
+            # (b) Race condition: start doc for plan N arrived while
+            #     _current_running_item still held plan N-1's item_uid, so the
+            #     cache has the wrong item_uid.  Since run_uid was NOT in
+            #     _logged_uids (checked above), this plan has not been written
+            #     yet — use run_uid as the primary key instead of skipping.
+            if item_uid and item_uid != run_uid:
+                primary_uid = run_uid   # retry with run_uid
+                if primary_uid in self._logged_uids:
+                    # run_uid also logged — genuine duplicate
+                    return
+            else:
+                self._logged_uids.add(run_uid)
+                return
 
         entry = {
             "timestamp":   timestamp,
