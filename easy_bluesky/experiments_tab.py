@@ -2134,6 +2134,10 @@ class ExperimentsTab(QWidget):
         if self._active_exp_path:
             merged["scan_num"] = self._next_scan_num
             self._next_scan_num += 1
+        # Preserve the queue item's registered plan name so on_scan_start_doc can
+        # use the correct name regardless of what bluesky puts in plan_name
+        # (custom plans that yield from rel_scan appear as "rel_scan" in start docs).
+        merged["_queue_plan_name"] = plan_name
         result_item.setdefault("kwargs", {})["md"] = merged
         return result_item
 
@@ -4319,7 +4323,11 @@ class ExperimentsTab(QWidget):
         self._start_doc_cache[run_uid] = {
             "scan_num":   doc.get("scan_num"),
             "exp_dir":    doc.get("exp_dir", ""),
-            "plan_name":  doc.get("plan_name", running.get("name", "")),
+            # _queue_plan_name is injected by _inject_metadata — always the queue
+            # item's registered name.  Fall back to bluesky's plan_name (which can
+            # be the inner generator name, e.g. "rel_scan" for "rel_scan_w_time_n_delay")
+            # and then to the current running item's name.
+            "plan_name":  doc.get("_queue_plan_name") or doc.get("plan_name", running.get("name", "")),
             "time_start": doc.get("time", 0),
             "item_uid":   running.get("item_uid", ""),
             "args":       running.get("args", []),
