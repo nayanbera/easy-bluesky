@@ -2093,12 +2093,16 @@ class ExperimentsTab(QWidget):
         auto_md = self._build_metadata()
         if not auto_md:
             return result_item
-        # Only inject md if the plan actually accepts it — plan stubs like
-        # sleep/mv/mvr do not, and the queue server will reject the item.
+        # Only inject md if the plan accepts it (from schema) OR if the item
+        # already carries md (re-queued from history — the plan accepted md
+        # when it ran before, so updating it here is safe even if the RE
+        # environment is currently closed and the schema isn't loaded).
         plan_name = result_item.get("name", "")
         plan_info = self._plans.get(plan_name, {})
         params = plan_info.get("parameters", []) if plan_info else []
-        if not any(p.get("name") == "md" for p in params):
+        has_md_param    = any(p.get("name") == "md" for p in params)
+        already_has_md  = bool((result_item.get("kwargs") or {}).get("md"))
+        if not has_md_param and not already_has_md:
             return result_item
         existing_md = result_item.get("kwargs", {}).get("md", {}) or {}
         # Always strip scan_num from existing metadata — it belongs to whichever
@@ -2388,7 +2392,8 @@ class ExperimentsTab(QWidget):
         if name in (self._plans or {}):
             dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
             if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-                ok, result = self.worker.add_item(dlg.result_item)
+                item = self._inject_metadata(dlg.result_item)
+                ok, result = self.worker.add_item(item)
                 self._log(f"✓ Re-queue '{name}': queued" if ok else f"✗ Re-queue '{name}': {result}")
         else:
             r = QMessageBox.question(
@@ -2398,6 +2403,7 @@ class ExperimentsTab(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if r == QMessageBox.StandardButton.Yes:
+                base = self._inject_metadata(base)
                 ok, result = self.worker.add_item(base)
                 self._log(f"✓ Re-queue '{name}': queued" if ok else f"✗ Re-queue '{name}': {result}")
 
@@ -2407,6 +2413,7 @@ class ExperimentsTab(QWidget):
             return
         base = {k: v for k, v in item.items() if k not in ("item_uid", "result")}
         base.setdefault("item_type", "plan")
+        base = self._inject_metadata(base)
         ok, result = self.worker.add_item(base)
         self._log(f"✓ Re-queue '{item.get('name', '?')}': queued" if ok
                   else f"✗ Re-queue '{item.get('name', '?')}': {result}")
@@ -4045,17 +4052,10 @@ class ExperimentsTab(QWidget):
                 scan_num = None
             else:
                 md_sn = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
-                if md_sn is not None:
-                    try:
-                        md_sn = int(md_sn)
-                        # Guard: direct re-queue via RE History keeps the original
-                        # md.scan_num, which duplicates an already-recorded entry.
-                        # If md_sn is below the session's next counter it's stale.
-                        if md_sn < self._next_scan_num:
-                            md_sn = None
-                    except (ValueError, TypeError):
-                        md_sn = None
-                scan_num = md_sn if md_sn is not None else self._next_scan_num
+                try:
+                    scan_num = int(md_sn) if md_sn is not None else self._next_scan_num
+                except (ValueError, TypeError):
+                    scan_num = self._next_scan_num
 
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
