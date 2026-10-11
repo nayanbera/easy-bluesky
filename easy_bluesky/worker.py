@@ -648,6 +648,13 @@ class ZMQWorker(QObject):
             self.rm = REManagerAPI(
                 zmq_control_addr=ctrl_addr,
                 zmq_info_addr=zmq_info or ZMQ_INFO,
+                # Disable the API's own 1-s background status poll.  It calls
+                # plans_allowed() internally; json.loads of the large plan schema
+                # JSON holds the Python GIL for 200-300 ms per second, blocking
+                # the CA callback thread and the p4p PVA thread.  Our own poll()
+                # already covers status, queue, and history.
+                status_polling_period=3600,
+                status_expiration_period=3600,
             )
             status = self.rm.status()
             self.connected.emit()

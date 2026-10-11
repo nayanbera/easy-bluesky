@@ -1141,7 +1141,7 @@ class DevicesPlansTab(QWidget):
                     if sig_item.text(2) != val_str:
                         sig_item.setText(2, val_str)
                         sig_item.setForeground(2, dim)
-                    if sig_item.text(3) != units:
+                    if units and sig_item.text(3) != units:
                         sig_item.setText(3, units)
                 if self._primary_signal.get(dev_name) == sig_name:
                     dev_item = self._device_items.get(dev_name)
@@ -1150,7 +1150,7 @@ class DevicesPlansTab(QWidget):
                         if dev_item.text(2) != val_str:
                             dev_item.setText(2, val_str)
                             dev_item.setForeground(2, green)
-                        if dev_item.text(3) != units:
+                        if units and dev_item.text(3) != units:
                             dev_item.setText(3, units)
 
             desc_updates, self._pending_desc_updates = self._pending_desc_updates, {}
