@@ -2035,13 +2035,11 @@ class ExperimentsTab(QWidget):
         return md
 
     def _renumber_queue(self):
-        """Re-number pending queue items sequentially.
+        """Push corrected scan_nums to queueserver for all pending queue items.
 
-        Base = max(scan_num.json, currently-running scan_num) so that queued
-        plans always follow on from whatever is executing or last completed.
-        Motion-only plans (mv, sleep, …) are skipped — they never carry a
-        scan_num.  Items that already have the correct number are left untouched
-        (no unnecessary update_item calls).
+        Queueserver is the source of truth — we only call update_item() here
+        and let the next poll tick bring back the confirmed scan_nums for
+        display.  Items that already have the correct number are skipped.
         """
         if not self.worker or not self._active_exp_path:
             return
@@ -2051,10 +2049,9 @@ class ExperimentsTab(QWidget):
 
         import copy as _copy
         base = _read_scan_num_json(self._active_exp_path)
-        # Collect scan_nums already assigned to plans still in the queue.
-        # If _running_scan_num matches one of them the running plan is briefly
-        # still in the queue list during a state transition — using it as the
-        # floor would push all queued plans to +1 unnecessarily.
+        # Skip _running_scan_num as floor if it is already assigned to a
+        # queued plan — avoids pushing all queued plans to +1 during the
+        # brief transition where the running plan still appears in the list.
         _queue_scan_nums: set = set()
         for _it in items:
             _sn = ((_it.get("kwargs") or {}).get("md") or {}).get("scan_num")
@@ -2067,19 +2064,16 @@ class ExperimentsTab(QWidget):
             base = self._running_scan_num
         next_num = base + 1
 
-        new_items = []
         for item in items:
             name   = item.get("name", "")
             kwargs = item.get("kwargs", {}) or {}
 
             if _is_motion_only(name, kwargs):
-                new_items.append(item)
                 continue
 
             plan_info = self._plans.get(name, {})
             params    = plan_info.get("parameters", []) if plan_info else []
             if not any(p.get("name") == "md" for p in params):
-                new_items.append(item)
                 continue
 
             current_sn = (kwargs.get("md") or {}).get("scan_num")
@@ -2088,16 +2082,10 @@ class ExperimentsTab(QWidget):
                 patched = _copy.deepcopy(item)
                 patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = next_num
                 self.worker.update_item(patched)
-                new_items.append(patched)
-            else:
-                new_items.append(item)
 
             next_num += 1
 
-        # Update _current_queue_items immediately so the display rebuild in
-        # update_compact_queue uses the corrected scan_nums without waiting
-        # for the next poll to confirm the update_item calls.
-        self._current_queue_items = new_items
+        # _next_scan_num must still be kept in sync for _inject_metadata.
         self._next_scan_num = next_num
 
     def _inject_metadata(self, result_item: dict):
@@ -2141,7 +2129,6 @@ class ExperimentsTab(QWidget):
 
 
     def _on_compact_queue_reorder(self, parent, start, end, dest, row):
-        self._compact_queue_uids = None  # force re-render after drag-reorder
         QTimer.singleShot(100, self._sync_compact_queue_order)
 
     def _sync_compact_queue_order(self):
@@ -4161,42 +4148,25 @@ class ExperimentsTab(QWidget):
             QTimer.singleShot(2000, self.worker.request_history_fetch)
 
     def update_compact_queue(self, items: list):
-        old_order = [it.get("item_uid", "") for it in self._current_queue_items]
-        self._current_queue_items = items
-        new_uids = [item.get("item_uid", "") for item in items]
-        # Trigger renumber on queue changes, but NOT when the only change is the
-        # running plan moving out of the queue to the execution slot — those
-        # remaining plans already have correct scan_nums and renumbering from
-        # scan_num.json (which isn't updated until the plan completes) would
-        # assign scan_num.json+1 to the first queued plan, colliding with the
-        # running plan that is still consuming that number.
-        if old_order != new_uids:
-            running_uid = (self._current_running_item or {}).get("item_uid", "")
-            removed     = set(old_order) - set(new_uids)
-            added       = set(new_uids) - set(old_order)
-            execution_departure = (
-                bool(running_uid)
-                and removed == {running_uid}
-                and not added
-                and old_order[1:] == new_uids  # remaining order is unchanged
-            )
-            if not execution_departure:
-                self._needs_renumber = True
+        # Queueserver is the single source of truth for queue contents.
+        # Keep a read-only snapshot for other code that needs to inspect it.
+        self._current_queue_items = list(items)
+
+        # If a renumber is pending, push the corrected scan_nums to queueserver
+        # now.  The display will show them on the next poll tick (~1 s later).
         if self._needs_renumber:
             self._needs_renumber = False
             self._renumber_queue()
-            self._compact_queue_uids = None  # force display rebuild with corrected scan_nums
-        if new_uids == getattr(self, "_compact_queue_uids", None):
-            self._update_progress_bars()
-            return  # nothing changed — skip full rebuild
-        self._compact_queue_uids = new_uids
+
+        # Always rebuild the display from queueserver data — no diff/skip logic.
+        # This keeps the panel in sync without any local state divergence.
         selected_uids = {
             self.queue_compact.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(self.queue_compact.count())
             if self.queue_compact.item(i).isSelected()
         }
         self.queue_compact.clear()
-        for i, item in enumerate(self._current_queue_items):
+        for i, item in enumerate(items):
             name    = item.get("name", "unknown")
             args    = item.get("args", []) or []
             kwargs  = item.get("kwargs", {}) or {}
