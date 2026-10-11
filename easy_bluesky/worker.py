@@ -889,12 +889,13 @@ class ZMQWorker(QObject):
                         # unchanged; force a full refresh every 30 ticks (~30 s).
                         n_history = status.get("items_in_history", -1)
                         self._history_stale_ticks += 1
+                        _history_changed = False
                         if (n_history != self._last_history_count
                                 or self._history_stale_ticks >= 30):
                             self._cached_history      = self.rm.history_get()
                             self._last_history_count  = n_history
                             self._history_stale_ticks = 0
-                        history = self._cached_history
+                            _history_changed          = True
                     self._last_manager_state = status.get("manager_state", "idle")
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
@@ -905,7 +906,8 @@ class ZMQWorker(QObject):
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
                     self.running_item_updated.emit(queue.get("running_item") or {})
-                    self.history_updated.emit(history.get("items", []))
+                    if _history_changed:
+                        self.history_updated.emit(self._cached_history.get("items", []))
 
                     env_state = status.get("worker_environment_state", "")
                     if not env_state:
