@@ -619,6 +619,12 @@ class ZMQWorker(QObject):
     @Slot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
         self._is_connecting = True
+        # Replace the lock so any background reader thread that survived a
+        # sleep/wake cycle keeps a reference to the OLD lock object and can
+        # no longer block the new poll loop.  The old lock is harmlessly
+        # orphaned; the old reader will either time out and exit or block
+        # forever on its dead ZMQ socket — but it can no longer starve us.
+        self._rm_lock = threading.Lock()
         try:
             ctrl_addr = zmq_control or ZMQ_CONTROL
             # TCP pre-check: probe the control port before creating the ZMQ
@@ -881,7 +887,19 @@ class ZMQWorker(QObject):
                     self._reload_plans_requested = False
                     self._load_plans_devices()
                 try:
-                    with self._rm_lock:
+                    if not self._rm_lock.acquire(timeout=8):
+                        # A background reader thread is stuck on a dead ZMQ
+                        # socket and has held the lock for >8 s.  Replace the
+                        # lock so the next reconnect gets a clean one, and skip
+                        # this tick.  The frozen reader is now harmless.
+                        self._rm_lock = threading.Lock()
+                        self.console_updated.emit(
+                            "[EasyBluesky] ⚠ Poll blocked >8 s — background task "
+                            "may be stuck on a dead connection. Reconnect to reset.\n"
+                        )
+                        time.sleep(self._poll_interval)
+                        continue
+                    try:
                         status = self.rm.status()
                         queue  = self.rm.queue_get()
 
@@ -907,6 +925,8 @@ class ZMQWorker(QObject):
                                 self._last_history_count  = n_history
                                 self._history_stale_ticks = 0
                                 _history_changed          = True
+                    finally:
+                        self._rm_lock.release()
                     _cur_manager_state       = status.get("manager_state", "idle")
                     self._last_manager_state = _cur_manager_state
                     # When a plan finishes, force a history re-fetch on the very next
