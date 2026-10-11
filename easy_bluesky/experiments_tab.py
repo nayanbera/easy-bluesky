@@ -4048,7 +4048,17 @@ class ExperimentsTab(QWidget):
                 scan_num = None
             else:
                 md_sn = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
-                scan_num = md_sn or self._next_scan_num
+                if md_sn is not None:
+                    try:
+                        md_sn = int(md_sn)
+                        # Guard: direct re-queue via RE History keeps the original
+                        # md.scan_num, which duplicates an already-recorded entry.
+                        # If md_sn is below the session's next counter it's stale.
+                        if md_sn < self._next_scan_num:
+                            md_sn = None
+                    except (ValueError, TypeError):
+                        md_sn = None
+                scan_num = md_sn if md_sn is not None else self._next_scan_num
 
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()

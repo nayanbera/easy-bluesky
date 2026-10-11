@@ -923,11 +923,13 @@ class ZMQWorker(QObject):
                     status["_app_task"] = self._current_task
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
-                    # Gate on manager_state: queueserver v0.0.25 keeps running_item
-                    # populated with the last plan even after the queue finishes.
-                    _is_executing = _cur_manager_state in ("executing_plan", "executing_queue")
+                    # Use status running_item (same source as re_control_bar) gated
+                    # on re_state so the banner clears when the RE is not active.
+                    # queueserver v0.0.25 may keep queue running_item stale between
+                    # consecutive plans; status is refreshed each poll cycle.
+                    _re_active = status.get("re_state") in ("running", "paused")
                     self.running_item_updated.emit(
-                        (queue.get("running_item") or {}) if _is_executing else {}
+                        (status.get("running_item") or {}) if _re_active else {}
                     )
                     if _history_changed:
                         self.history_updated.emit(self._cached_history.get("items", []))
