@@ -1128,6 +1128,7 @@ class MainWindow(QMainWindow):
         self._auto_start_enabled      = False
         self._prev_queue_len          = 0      # for auto-start detection
         self._prev_queue_running      = False  # last known queue_running from status
+        self._loop_mode_reset_pending = True   # reset server loop mode on first idle status
         self._last_status             : dict  = {}
         self._detached_tabs: dict = {}        # widget → (QMainWindow, orig_index, title)
         self.worker = ZMQWorker()
@@ -2202,14 +2203,14 @@ class MainWindow(QMainWindow):
 
         if queue_running:
             # Detect stuck-loop: executing_queue but queue is empty and nothing running.
-            # queueserver v0.0.25 in loop mode stays in this state indefinitely after
-            # all pre-populated plans complete.  Stop it automatically.
-            queue_empty   = not self.experiments_tab._current_queue_items
+            # queueserver v0.0.25 in server-side loop mode stays in this state
+            # indefinitely after all pre-populated plans complete.  Stop it automatically.
+            queue_empty     = not self.experiments_tab._current_queue_items
             nothing_running = not self.experiments_tab._current_running_item
             if queue_empty and nothing_running:
                 self._stuck_loop_count = getattr(self, "_stuck_loop_count", 0) + 1
                 if self._stuck_loop_count == 3:
-                    self._log(f"[{self._ts()}] ⚠ Queue stuck in loop mode — stopping automatically")
+                    self._log(f"[{self._ts()}] ⚠ Queue stuck in server-side loop mode — stopping")
                     self.worker.queue_stop()
                     QTimer.singleShot(1000, self.worker.request_history_fetch)
                     QTimer.singleShot(3000, self.worker.request_history_fetch)
@@ -2217,11 +2218,20 @@ class MainWindow(QMainWindow):
                 self._stuck_loop_count = 0
         else:
             self._stuck_loop_count = 0
+            # Clear any server-side loop mode that may have been left by a previous
+            # session or an ac3a999-era run.  Called once after connect (flag starts
+            # True) and once after each queue run finishes.
+            if self._loop_mode_reset_pending and self.worker:
+                self._loop_mode_reset_pending = False
+                ok, msg = self.worker.queue_mode_set({"loop": False})
+                if not ok:
+                    self._log(f"[{self._ts()}] ⚠ Reset server loop mode on idle: {msg}")
 
         if self._prev_queue_running and not queue_running:
             # Queue just finished — request history fetches so completed plans are
             # logged promptly.  Multiple delayed calls ensure the server has fully
             # committed the last plan's result before we call history_get().
+            self._loop_mode_reset_pending = True  # reset loop mode after next idle tick
             if self.worker:
                 QTimer.singleShot(500,  self.worker.request_history_fetch)
                 QTimer.singleShot(2500, self.worker.request_history_fetch)
