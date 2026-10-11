@@ -3990,34 +3990,39 @@ class ExperimentsTab(QWidget):
             t_start  = result.get("time_start", 0)
             run_uids = result.get("run_uids", [])
 
-            if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
-                self._logged_uids.add(uid)
-                continue
-            if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
-                self._logged_uids.add(uid)
-                continue
-
-            # If the plan carries exp_dir metadata, it belongs to a specific
-            # experiment folder.  Only log it when it matches ours — this is the
-            # primary guard against cross-client contamination in multi-client sessions.
+            # Check exp_dir first — it is the authoritative experiment identifier
+            # injected at queue time.  When present, use it as the sole filter and
+            # skip the timestamp guards (which fire incorrectly when the user returns
+            # to an old experiment after creating a newer one).
             plan_exp_dir = (
                 ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
             )
-            if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
-                self._logged_uids.add(uid)
-                if not self._foreign_plan_msg_shown:
-                    self._foreign_plan_msg_shown = True
-                    other_name = Path(plan_exp_dir).name
-                    other_host = (
-                        ((item.get("kwargs") or {}).get("md") or {}).get("client_host") or ""
-                    )
-                    who = f" (queued from {other_host})" if other_host else ""
-                    self._log(
-                        f"⚠ Completed plan '{item.get('name', '?')}' belongs to "
-                        f"experiment '{other_name}'{who} — it will not appear in this "
-                        f"Plan Log. Switch to that experiment to see its results."
-                    )
-                continue
+            if plan_exp_dir:
+                if not _same_experiment(plan_exp_dir, self._active_exp_path):
+                    self._logged_uids.add(uid)
+                    if not self._foreign_plan_msg_shown:
+                        self._foreign_plan_msg_shown = True
+                        other_name = Path(plan_exp_dir).name
+                        other_host = (
+                            ((item.get("kwargs") or {}).get("md") or {}).get("client_host") or ""
+                        )
+                        who = f" (queued from {other_host})" if other_host else ""
+                        self._log(
+                            f"⚠ Completed plan '{item.get('name', '?')}' belongs to "
+                            f"experiment '{other_name}'{who} — it will not appear in this "
+                            f"Plan Log. Switch to that experiment to see its results."
+                        )
+                    continue
+                # exp_dir matches → log it; timestamp checks are irrelevant
+            else:
+                # No exp_dir metadata (plans queued before _inject_metadata): fall
+                # back to timestamp-based filtering so old history stays clean.
+                if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
+                    self._logged_uids.add(uid)
+                    continue
+                if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
+                    self._logged_uids.add(uid)
+                    continue
 
             # Use the scan number that was injected into the item's md at queue
             # time. Fall back to the in-session lookup for plans queued before
