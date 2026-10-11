@@ -610,11 +610,8 @@ class ZMQWorker(QObject):
         self._rm_lock = threading.Lock()    # serialises all self.rm.* ZMQ calls
         self.locked_out: bool = False       # True when another client holds operator lock
         self.lock_holder: str = ""          # hostname of the current lock holder
-        # Skip history_get() when item count is unchanged — avoids parsing
-        # hundreds of KB of JSON every poll tick and starving CA callbacks.
-        self._last_history_count: int  = -1
-        self._cached_history: dict     = {}
-        self._history_stale_ticks: int = 0
+        self._last_history_count: int = -1
+        self._cached_history: dict    = {}
 
     @Slot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -900,40 +897,17 @@ class ZMQWorker(QObject):
                         time.sleep(self._poll_interval)
                         continue
                     try:
-                        status = self.rm.status()
-                        queue  = self.rm.queue_get()
-
-                        # history_get() returns the full history payload on every
-                        # call — potentially hundreds of KB.  Skip when count is
-                        # unchanged; force a full refresh every 30 ticks (~30 s).
-                        n_history = status.get("items_in_history", -1)
-                        self._history_stale_ticks += 1
-                        _history_changed = False
-                        if (n_history != self._last_history_count
-                                or self._history_stale_ticks >= 30):
-                            _new_hist    = self.rm.history_get()
-                            _actual_len  = len(_new_hist.get("items", []))
-                            if n_history >= 0 and _actual_len < n_history:
-                                # queueserver race: status count updated before the
-                                # completed item appears in history_get().  Keep
-                                # _last_history_count at its old value so the next
-                                # poll tick retries without being blocked by the
-                                # "count unchanged" skip logic.
-                                pass
-                            else:
-                                self._cached_history      = _new_hist
-                                self._last_history_count  = n_history
-                                self._history_stale_ticks = 0
-                                _history_changed          = True
+                        status  = self.rm.status()
+                        queue   = self.rm.queue_get()
+                        _new_hist   = self.rm.history_get()
+                        _n_new      = len(_new_hist.get("items", []))
+                        _history_changed = (_n_new != self._last_history_count)
+                        self._cached_history     = _new_hist
+                        self._last_history_count = _n_new
                     finally:
                         self._rm_lock.release()
                     _cur_manager_state       = status.get("manager_state", "idle")
                     self._last_manager_state = _cur_manager_state
-                    # When a plan finishes, force a history re-fetch on the very next
-                    # tick even if items_in_history hasn't updated yet (count race).
-                    if (_prev_manager_state == "executing_plan"
-                            and _cur_manager_state != "executing_plan"):
-                        self._last_history_count = -1
                     _prev_manager_state = _cur_manager_state
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
