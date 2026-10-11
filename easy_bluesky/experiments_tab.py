@@ -4337,7 +4337,7 @@ class ExperimentsTab(QWidget):
         """
         run_uid    = doc.get("run_start", "")
         exit_status = doc.get("exit_status", "")
-        # Debug: log every stop doc received so we can verify signal delivery.
+        print(f"[EasyBluesky] on_scan_stop_doc called: run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}", flush=True)
         self._log(f"[ZMQ stop] run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}")
         if not self._active_exp_path:
             return
