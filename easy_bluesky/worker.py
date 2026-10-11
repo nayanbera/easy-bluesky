@@ -871,8 +871,9 @@ class ZMQWorker(QObject):
 
 
     def poll(self):
-        _prev_env_state = None
-        _opening_env    = False  # True after closed→executing_task
+        _prev_env_state     = None
+        _prev_manager_state = None
+        _opening_env        = False  # True after closed→executing_task
 
         while self._active:
             if self.rm and not self._is_connecting:
@@ -906,7 +907,14 @@ class ZMQWorker(QObject):
                                 self._last_history_count  = n_history
                                 self._history_stale_ticks = 0
                                 _history_changed          = True
-                    self._last_manager_state = status.get("manager_state", "idle")
+                    _cur_manager_state       = status.get("manager_state", "idle")
+                    self._last_manager_state = _cur_manager_state
+                    # When a plan finishes, force a history re-fetch on the very next
+                    # tick even if items_in_history hasn't updated yet (count race).
+                    if (_prev_manager_state in ("executing_plan", "executing_queue")
+                            and _cur_manager_state == "idle"):
+                        self._last_history_count = -1
+                    _prev_manager_state = _cur_manager_state
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
                     _prev_app_task = self._current_task

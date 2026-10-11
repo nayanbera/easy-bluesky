@@ -4083,8 +4083,8 @@ class ExperimentsTab(QWidget):
                 # file because macOS NFS attribute caching can return stale data
                 # on an immediate open/read after a write (new entry invisible).
                 self._prepend_plan_log_entry(entry)
-            except Exception:
-                pass
+            except Exception as _exc:
+                self._log(f"⚠ Plan Log: could not record '{plan_name}': {_exc}")
 
             # Show error dialog for newly failed plans — only for plans that
             # finished AFTER this session connected (ignores history from other
