@@ -3888,7 +3888,17 @@ class ExperimentsTab(QWidget):
 
             # Trigger a renumber so queued scan_nums stay in sync after any
             # plan log change (completion, removal, experiment switch, etc.).
-            base = _read_scan_num_json(self._active_exp_path) if self._active_exp_path else 0
+            # Use the max of scan_num.json and the actual log — scan_num.json can
+            # lag behind if plans were logged via _load_plan_log (not update_history)
+            # in a previous session, causing new sessions to re-use numbers.
+            if self._active_exp_path:
+                _log_max  = _next_scan_num_for(self._active_exp_path) - 1
+                _json_max = _read_scan_num_json(self._active_exp_path)
+                base = max(_log_max, _json_max)
+                if _log_max > _json_max:
+                    _write_scan_num_json(self._active_exp_path, _log_max)
+            else:
+                base = 0
             self._next_scan_num = base + 1
             self._needs_renumber = True
 
