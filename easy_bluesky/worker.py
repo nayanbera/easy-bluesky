@@ -969,9 +969,14 @@ class ZMQWorker(QObject):
                         self.env_opened.emit(_opened_from_closed)
                     elif _was_task and env_state == "idle" and _prev_app_task:
                         # Our own script_upload or function_execute finished —
-                        # reload plans/devices. Skip for external tasks (empty
-                        # _prev_app_task) since they don't change plan lists.
-                        self._load_plans_devices()
+                        # reload plans/devices. Skip read-only queries (they
+                        # don't change the namespace) and external tasks (empty
+                        # _prev_app_task).  Reloading after get_device_pvnames
+                        # would re-trigger fetch → infinite loop.
+                        _READONLY = ("get_device_pvnames", "read_devices_status")
+                        if not (_prev_app_task in _READONLY or
+                                _prev_app_task.startswith("set_sim_device")):
+                            self._load_plans_devices()
                     elif env_state == "closed" and _was_open:
                         self.env_closed.emit()
 
@@ -1267,6 +1272,10 @@ class ZMQWorker(QObject):
         if self.rm is None:
             return
         if self._pv_names_reader is not None and self._pv_names_reader.isRunning():
+            return
+        # Don't start a function_execute while a plan is running — it may block
+        # on the ZMQ socket and hold _rm_lock for the entire plan duration.
+        if self._last_manager_state in ("executing_plan", "executing_queue"):
             return
         self._current_task = "get_device_pvnames"
         self._pv_names_reader = _PVNamesReader(self.rm, self._rm_lock)
