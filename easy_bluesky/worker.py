@@ -931,8 +931,8 @@ class ZMQWorker(QObject):
                     self._last_manager_state = _cur_manager_state
                     # When a plan finishes, force a history re-fetch on the very next
                     # tick even if items_in_history hasn't updated yet (count race).
-                    if (_prev_manager_state in ("executing_plan", "executing_queue")
-                            and _cur_manager_state == "idle"):
+                    if (_prev_manager_state == "executing_plan"
+                            and _cur_manager_state != "executing_plan"):
                         self._last_history_count = -1
                     _prev_manager_state = _cur_manager_state
                     # Save before auto-clear so transition logic can check whether
