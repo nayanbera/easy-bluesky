@@ -2050,8 +2050,20 @@ class ExperimentsTab(QWidget):
             return
 
         import copy as _copy
-        base     = _read_scan_num_json(self._active_exp_path)
-        if self._running_scan_num > base:
+        base = _read_scan_num_json(self._active_exp_path)
+        # Collect scan_nums already assigned to plans still in the queue.
+        # If _running_scan_num matches one of them the running plan is briefly
+        # still in the queue list during a state transition — using it as the
+        # floor would push all queued plans to +1 unnecessarily.
+        _queue_scan_nums: set = set()
+        for _it in items:
+            _sn = ((_it.get("kwargs") or {}).get("md") or {}).get("scan_num")
+            if _sn is not None:
+                try:
+                    _queue_scan_nums.add(int(_sn))
+                except (ValueError, TypeError):
+                    pass
+        if self._running_scan_num > base and self._running_scan_num not in _queue_scan_nums:
             base = self._running_scan_num
         next_num = base + 1
 

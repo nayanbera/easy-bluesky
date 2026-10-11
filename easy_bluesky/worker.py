@@ -923,7 +923,12 @@ class ZMQWorker(QObject):
                     status["_app_task"] = self._current_task
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
-                    self.running_item_updated.emit(queue.get("running_item") or {})
+                    # Gate on manager_state: queueserver v0.0.25 keeps running_item
+                    # populated with the last plan even after the queue finishes.
+                    _is_executing = _cur_manager_state in ("executing_plan", "executing_queue")
+                    self.running_item_updated.emit(
+                        (queue.get("running_item") or {}) if _is_executing else {}
+                    )
                     if _history_changed:
                         self.history_updated.emit(self._cached_history.get("items", []))
 
