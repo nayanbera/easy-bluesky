@@ -7,21 +7,25 @@ from pathlib import Path
 from .connection_settings import profile_slug
 
 # ── SSH transport pool ─────────────────────────────────────────────────────────
-# Each _get_client() call used to open a full TCP connection + Ed25519 key
-# handshake (pure-Python PyNaCl/cffi, holds the GIL ~100 ms).  When several
-# operations fire concurrently at startup (register, log tail, heartbeat, etc.)
-# the overlapping handshakes stall CA callback and PVA threads for 300+ ms.
+# Each _get_client() call previously opened a full TCP connection + Ed25519
+# key handshake (pure-Python PyNaCl/cffi, holds the GIL ~100 ms).  When
+# several operations fire concurrently at startup (register, log tail, heartbeat,
+# etc.) the overlapping handshakes stall CA callback and PVA threads for 300+ ms.
 #
-# Fix: cache one authenticated Transport per remote host.  Concurrent callers
-# serialise on _pool_lock; the second caller finds an active transport and opens
-# a new channel in microseconds — no handshake, no GIL hold.
+# Fix: cache one authenticated Transport per remote host.  Concurrent callers for
+# the same host serialise on _pool_lock; the second caller finds an active transport
+# and returns a new channel on it in microseconds — no handshake, no GIL hold.
 
-_transport_pool: dict = {}
+_transport_pool: dict = {}   # cache_key → paramiko.Transport
 _pool_lock = threading.Lock()
 
 
 class _PooledClient:
-    """SSH facade backed by a shared Transport.  close() is a no-op."""
+    """
+    Thin SSHClient facade backed by a shared Transport.
+    exec_command / open_sftp work normally; close() is a no-op so callers
+    cannot accidentally tear down the shared transport.
+    """
 
     def __init__(self, transport):
         self._transport = transport
@@ -82,8 +86,9 @@ def _get_client(settings: dict):
         if transport and transport.is_active() and transport.is_authenticated():
             return _PooledClient(transport)
 
-        # No active transport — full connect (serialised so a burst of concurrent
-        # callers doesn't spawn multiple handshakes).
+        # No active transport — full connect.  Held under _pool_lock so a burst
+        # of concurrent callers serialises here; the second caller will find the
+        # transport active and skip the handshake.
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(

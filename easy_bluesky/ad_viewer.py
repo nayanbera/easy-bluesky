@@ -143,8 +143,11 @@ class _PVAMonitorThread(QThread):
         except Exception:
             pass
         self.connection_changed.emit(True)
+        raw_min = int(arr.min())
+        raw_max = int(arr.max())
         self.new_frame.emit(arr, {'unique_id': uid, 'shape': arr.shape,
-                                  'dtype': str(arr.dtype), 'fps': self._fps})
+                                  'dtype': str(arr.dtype), 'fps': self._fps,
+                                  'raw_min': raw_min, 'raw_max': raw_max})
 
 
 class _CAInitThread(QThread):
@@ -267,10 +270,15 @@ class ADViewerWindow(QMainWindow):
         self._pva_pv      = pva_pv or f"{prefix}Pva1:Image"
 
         self._arr: np.ndarray | None = None
+        self._prepared_arr: np.ndarray | None = None  # cached result of _prepare(arr)
+        self._latest_frame: tuple | None = None       # (arr, meta) — latest from PVA thread
         self._log_scale = False
         self._transpose = False
         self._roi_on    = False
         self._frame_cnt = 0
+        self._diag_recv_t  = 0.0   # monotonic time of last frame receipt
+        self._diag_tick_t  = 0.0   # monotonic time of last display-timer tick
+        self._diag_render_ms = 0.0 # last setImage duration (ms)
 
         self._pva_host = pva_host.strip()
         self._ca_pvs: dict                      = {}
@@ -294,6 +302,14 @@ class ADViewerWindow(QMainWindow):
         self._roi_debounce_timer.setSingleShot(True)
         self._roi_debounce_timer.setInterval(150)
         self._roi_debounce_timer.timeout.connect(self._write_roi_to_ad)
+
+        # Display timer: renders the latest PVA frame at a steady rate instead of
+        # processing every queued signal.  This keeps the Qt event loop free between
+        # frames so CA callbacks and other timers are not blocked by setImage().
+        self._display_timer = QTimer(self)
+        self._display_timer.setInterval(int(1000 / _MAX_FPS))
+        self._display_timer.timeout.connect(self._render_latest_frame)
+        self._display_timer.start()
 
         self._build_ui()
         self._restore_display_settings()   # apply saved colormap/log/transpose
@@ -364,6 +380,9 @@ class ADViewerWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._crosshair_lbl)
         self._fps_lbl = QLabel("—")
         self.statusBar().addPermanentWidget(self._fps_lbl)
+        self._diag_lbl = QLabel("")
+        self._diag_lbl.setStyleSheet("font-size: 10px; color: #888;")
+        self.statusBar().addPermanentWidget(self._diag_lbl)
 
     def _build_ctrl(self) -> QWidget:
         panel = QWidget()
@@ -675,28 +694,58 @@ class ADViewerWindow(QMainWindow):
             )
 
     def _on_new_frame(self, arr: np.ndarray, meta: dict):
+        """Receive frame from PVA thread — just store it; rendering happens in _render_latest_frame."""
         if hasattr(self, '_no_frame_timer'):
             self._no_frame_timer.stop()
-        self._arr = arr
         self._frame_cnt += 1
-        first_frame = self._frame_cnt == 1
+        meta['frame_cnt'] = self._frame_cnt
+        meta['recv_t'] = time.monotonic()
+        self._diag_recv_t = meta['recv_t']
+        self._latest_frame = (arr, meta)
 
+    def _render_latest_frame(self):
+        """Called by _display_timer — renders the most recent frame, skipping any backlog."""
+        now = time.monotonic()
+        tick_gap = (now - self._diag_tick_t) * 1000 if self._diag_tick_t else 0.0
+        self._diag_tick_t = now
+
+        frame = self._latest_frame
+        if frame is None:
+            # No new frame — update diag with timer gap so stalls are visible
+            if tick_gap > 200:
+                self._diag_lbl.setText(f"⚠ loop blocked {tick_gap:.0f}ms")
+            return
+        self._latest_frame = None   # consume immediately so timer re-entries are no-ops
+
+        arr, meta = frame
+        recv_lag = (now - meta.get('recv_t', now)) * 1000
+        self._arr = arr
+        self._prepared_arr = self._prepare(arr)   # compute once; reused by _update_roi_stats
+
+        t0 = time.monotonic()
         auto = self._chk_auto_levels.isChecked()
-        self._img_view.setImage(self._prepare(arr), autoRange=False,
+        self._img_view.setImage(self._prepared_arr, autoRange=False,
                                 autoLevels=auto, autoHistogramRange=auto)
+        self._diag_render_ms = (time.monotonic() - t0) * 1000
         if auto:
             QTimer.singleShot(80, self._sync_level_edits)
         if self._roi_on:
             self._update_roi_stats()
 
-        uid  = meta.get('unique_id', self._frame_cnt)
-        h, w = arr.shape[:2]
-        raw_min, raw_max = arr.min(), arr.max()
+        uid     = meta.get('unique_id', meta.get('frame_cnt', '?'))
+        h, w    = arr.shape[:2]
+        raw_min = meta.get('raw_min', '?')
+        raw_max = meta.get('raw_max', '?')
         self._set_status(
             f"● Connected  frame #{uid}  |  {w}×{h}  {meta.get('dtype', '')}  "
             f"raw:[{raw_min}, {raw_max}]", "#2ca02c")
         fps = meta.get('fps', 0.0)
         self._fps_lbl.setText(f"{fps:.1f} fps" if fps > 0 else "—")
+        self._diag_lbl.setText(
+            f"render {self._diag_render_ms:.0f}ms  "
+            f"lag {recv_lag:.0f}ms  "
+            f"tick {tick_gap:.0f}ms"
+        )
 
     def _on_pva_connected(self, ok: bool):
         if not ok:
@@ -744,8 +793,9 @@ class ADViewerWindow(QMainWindow):
 
     def _refresh_display(self):
         if self._arr is not None:
+            self._prepared_arr = self._prepare(self._arr)   # recompute after param change
             auto = self._chk_auto_levels.isChecked()
-            self._img_view.setImage(self._prepare(self._arr),
+            self._img_view.setImage(self._prepared_arr,
                                     autoRange=False, autoLevels=auto,
                                     autoHistogramRange=auto)
             if auto:
@@ -1034,7 +1084,9 @@ class ADViewerWindow(QMainWindow):
         if self._stats1_vals:
             return   # AD Stats1 callbacks are providing live values; don't overwrite
         try:
-            disp   = self._prepare(self._arr).astype(np.float64)
+            # Use cached prepared array to avoid recomputing the transform.
+            disp   = (self._prepared_arr if self._prepared_arr is not None
+                      else self._prepare(self._arr)).astype(np.float64)
             region = self._roi.getArrayRegion(disp, self._img_view.getImageItem())
             if region is None or region.size == 0:
                 return
@@ -1175,6 +1227,7 @@ class ADViewerWindow(QMainWindow):
             t.requestInterruption()
             t.wait(1500)   # thread has at most one pv.get(1 s) left before checking
         # Stop pending timers before tearing down PVs
+        self._display_timer.stop()
         self._roi_debounce_timer.stop()
         if hasattr(self, '_no_frame_timer'):
             self._no_frame_timer.stop()

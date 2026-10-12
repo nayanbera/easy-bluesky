@@ -1260,7 +1260,6 @@ class ExperimentsTab(QWidget):
     abort_requested    = Signal()
     stop_requested     = Signal()
     auto_start_toggled = Signal(bool)
-    loop_count_changed = Signal(int)   # 0 = ∞; -1 = loop disabled
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -1304,6 +1303,7 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
         self._re_state: str    = ""
         self._manager_state: str = "idle"
+        self._prev_re_state: str = ""
         self._pv_map: dict             = {}
         self._velocity_cache: dict     = {}
         self._acquire_time_cache: dict = {}
@@ -1314,6 +1314,12 @@ class ExperimentsTab(QWidget):
         self._foreign_run_warned_uid   = ""   # uid of last foreign-client run we logged
         self._foreign_plan_msg_shown   = False  # one-shot: foreign plan skipped in update_history
         self._completed_points          = 0    # event docs received so far
+        # Generation counter: incremented on each running-item uid change.
+        # on_scan_point_completed events are only counted when their generation
+        # matches — prevents stale ZMQ events from a finished scan incrementing
+        # _completed_points for the next (non-scan) plan.
+        self._event_gen: int     = 0   # incremented each uid change
+        self._scan_gen: int      = -1  # generation when last start doc arrived
         self._plan_first_event_time     = 0.0  # wall time of first event (for init/final move estimate)
         self._plan_last_event_wall_time = 0.0  # wall time of last event (for total_s recording)
         self._plan_event_intervals: deque = deque(maxlen=8)  # inter-event seconds
@@ -1324,6 +1330,18 @@ class ExperimentsTab(QWidget):
         self._queue_started_plans      = 0    # how many plans have started (ZMQ start docs)
         self._queue_in_progress        = False  # True while a queue session is active (including between-plan gaps)
         self._manager_state_prev: str  = "idle"  # previous manager_state for transition detection
+        self._queue_plans_at_start     = 0    # items in queue when Start was pressed (set by main.py)
+        # Client-side loop state
+        self._loop_template: list  = []   # snapshot of original items when loop enabled
+        self._loop_copies_list: list = [] # ordered list of copy item_uids (cycles 2+)
+        self._loop_copies_set: set  = set()
+        self._loop_cycle_size: int  = 0   # M = plans per cycle
+        self._loop_n_cycles: int    = 1   # current N setting
+        self._history_count_at_loop_start: int = 0  # items_in_history when queue started
+        self._total_items_at_start: int         = 0  # N×M set at queue start
+        self._current_history_count: int        = 0  # latest items_in_history from status
+        self._last_history_len: int             = 0  # for incremental update_history
+        self._start_doc_cache:  dict            = {}  # run_uid → start-doc metadata
         self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log (fallback)
         self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
@@ -1685,19 +1703,18 @@ class ExperimentsTab(QWidget):
         opt_row.addWidget(vsep1)
 
         self.chk_loop = QCheckBox("Loop")
-        self.chk_loop.setToolTip("Re-run the queue repeatedly after it finishes.")
+        self.chk_loop.setToolTip("Pre-populate queue with N copies of the current plans.")
         opt_row.addWidget(self.chk_loop)
 
         self.spin_loop = QSpinBox()
-        self.spin_loop.setRange(0, 9999)
-        self.spin_loop.setValue(0)
-        self.spin_loop.setSpecialValueText("∞")
-        self.spin_loop.setToolTip("0 = loop forever; N = repeat N more times after the first run.")
+        self.spin_loop.setRange(1, 999)
+        self.spin_loop.setValue(2)
+        self.spin_loop.setToolTip("Number of times to run the full queue (1 = run once, no loop).")
         self.spin_loop.setFixedWidth(64)
         self.spin_loop.setEnabled(False)
         opt_row.addWidget(self.spin_loop)
 
-        lbl_times = QLabel("times")
+        lbl_times = QLabel("× (total runs)")
         lbl_times.setStyleSheet("font-size: 11px;")
         opt_row.addWidget(lbl_times)
 
@@ -1705,13 +1722,18 @@ class ExperimentsTab(QWidget):
         self._loop_iter_lbl.setStyleSheet("font-size: 11px; color: #e8a44a; font-style: italic;")
         opt_row.addWidget(self._loop_iter_lbl)
 
+        self._loop_drag_lbl = QLabel("⚠ Reordering disabled while loop is active")
+        self._loop_drag_lbl.setStyleSheet("font-size: 10px; color: #e8a44a;")
+        self._loop_drag_lbl.setVisible(False)
+        opt_row.addWidget(self._loop_drag_lbl)
+
         opt_row.addStretch()
         vlay.addLayout(opt_row)
 
         # Wire auto-start + loop
         self.chk_auto_start.toggled.connect(self.auto_start_toggled)
         self.chk_loop.toggled.connect(self._on_loop_checkbox)
-        self.spin_loop.valueChanged.connect(self.loop_count_changed)
+        self.spin_loop.valueChanged.connect(self._on_spin_loop_changed)
 
         self._plan_bar = QProgressBar()
         self._plan_bar.setTextVisible(True)
@@ -1994,6 +2016,7 @@ class ExperimentsTab(QWidget):
         self._esaf_info        = {}
         self._logged_uids      = set()
         self._logged_scan_nums = set()
+        self._start_doc_cache  = {}
         self._suppressed_uids  = set()
         self._shown_error_uids = set()
         self._exp_created_at   = 0.0
@@ -2122,6 +2145,10 @@ class ExperimentsTab(QWidget):
         if self._active_exp_path:
             merged["scan_num"] = self._next_scan_num
             self._next_scan_num += 1
+        # Preserve the queue item's registered plan name so on_scan_start_doc can
+        # use the correct name regardless of what bluesky puts in plan_name
+        # (custom plans that yield from rel_scan appear as "rel_scan" in start docs).
+        merged["_queue_plan_name"] = plan_name
         result_item.setdefault("kwargs", {})["md"] = merged
         return result_item
 
@@ -2255,21 +2282,128 @@ class ExperimentsTab(QWidget):
         li = self.queue_compact.itemAt(pos)
         if not li:
             return
+
+        selected  = self.queue_compact.selectedItems()
+        n_sel     = len(selected)
+        loop_on   = bool(self._loop_copies_list)
+
         menu = QMenu(self)
-        menu.addAction("Edit",            lambda: self._on_queue_item_clicked(li))
-        menu.addAction("Remove",          self._remove_plan)
+
+        act_edit = menu.addAction("Edit")
+        act_edit.triggered.connect(lambda: self._on_queue_item_clicked(li))
+        act_edit.setEnabled(not loop_on and n_sel == 1)
+        if loop_on:
+            act_edit.setToolTip("Disabled while loop is active")
+        elif n_sel > 1:
+            act_edit.setToolTip("Select a single plan to edit")
+
+        act_rem = menu.addAction("Remove")
+        act_rem.triggered.connect(self._remove_plan)
+        act_rem.setEnabled(not loop_on and n_sel >= 1)
+        if loop_on:
+            act_rem.setToolTip("Disabled while loop is active")
+
         menu.addSeparator()
-        menu.addAction("Move to top",    lambda: self._move_compact_item("front"))
-        menu.addAction("Move to bottom", lambda: self._move_compact_item("back"))
+
+        act_dup_end   = menu.addAction("Duplicate to end")
+        act_dup_start = menu.addAction("Duplicate to start")
+        act_dup_end.triggered.connect(lambda: self._duplicate_selected("back"))
+        act_dup_start.triggered.connect(lambda: self._duplicate_selected("front"))
+        act_dup_end.setEnabled(not loop_on and n_sel >= 1)
+        act_dup_start.setEnabled(not loop_on and n_sel >= 1)
+
+        menu.addSeparator()
+
+        act_mv_start = menu.addAction("Move to start")
+        act_mv_end   = menu.addAction("Move to end")
+        act_mv_start.triggered.connect(lambda: self._move_selected("front"))
+        act_mv_end.triggered.connect(lambda: self._move_selected("back"))
+        act_mv_start.setEnabled(not loop_on and n_sel >= 1)
+        act_mv_end.setEnabled(not loop_on and n_sel >= 1)
+
+        if loop_on:
+            for act in (act_dup_end, act_dup_start, act_mv_start, act_mv_end):
+                act.setToolTip("Disabled while loop is active")
+
         menu.exec(self.queue_compact.viewport().mapToGlobal(pos))
 
-    def _move_compact_item(self, dest):
-        cur = self.queue_compact.currentItem()
-        if not cur:
+    def _selected_queue_items_in_order(self) -> list:
+        """Return selected queue items ordered by their current position in the list."""
+        selected_set = set(id(li) for li in self.queue_compact.selectedItems())
+        result = []
+        for i in range(self.queue_compact.count()):
+            li = self.queue_compact.item(i)
+            if id(li) in selected_set:
+                result.append(li)
+        return result
+
+    def _move_selected(self, dest: str) -> None:
+        """Move all selected queue items to 'front' or 'back', maintaining their relative order."""
+        if not self.worker:
             return
-        uid = cur.data(Qt.ItemDataRole.UserRole)
-        if uid and self.worker:
-            self.worker.move_item(uid, dest)
+        items_in_order = self._selected_queue_items_in_order()
+        if not items_in_order:
+            return
+        if dest == "front":
+            # Insert in reverse order, each at position 0 → result is selection order at front
+            for li in reversed(items_in_order):
+                uid = li.data(Qt.ItemDataRole.UserRole)
+                if uid:
+                    self.worker.move_item(uid, 0)
+        else:
+            # Append in forward order → result is selection order at back
+            for li in items_in_order:
+                uid = li.data(Qt.ItemDataRole.UserRole)
+                if uid:
+                    self.worker.move_item(uid, "back")
+        self._needs_renumber = True
+
+    def _duplicate_selected(self, dest: str) -> None:
+        """Duplicate selected queue items to 'front' or 'back', stripping loop metadata."""
+        if not self.worker or not self._active_exp_path:
+            return
+        import copy as _copy
+        items_in_order = self._selected_queue_items_in_order()
+        if not items_in_order:
+            return
+
+        _LOOP_MD_KEYS = ("_loop_n_cycles", "_loop_cycle_num", "_loop_cycle_size")
+
+        added = 0
+        if dest == "front":
+            # Add in reverse selection order so the first selected item ends up at front
+            to_add = list(reversed(items_in_order))
+            pos_arg: object = 0
+        else:
+            to_add  = items_in_order
+            pos_arg = "back"
+
+        for li in to_add:
+            raw = li.data(Qt.ItemDataRole.UserRole + 1)
+            if not raw:
+                continue
+            item = _copy.deepcopy(raw)
+            # Strip loop metadata from the copy
+            md = (item.get("kwargs") or {}).get("md") or {}
+            for k in _LOOP_MD_KEYS:
+                md.pop(k, None)
+            # Strip old item_uid so queueserver generates a fresh one
+            item.pop("item_uid", None)
+            # Assign fresh scan_num and experiment metadata
+            item = self._inject_metadata(item)
+            ok, result = self.worker.add_item(item, pos=pos_arg)
+            if ok:
+                added += 1
+                if dest == "front":
+                    # Each subsequent item must go one position later
+                    if isinstance(pos_arg, int):
+                        pos_arg += 1
+            else:
+                self._log(f"✗ Duplicate: {result}")
+
+        if added:
+            self._needs_renumber = True
+            self._log(f"✓ Duplicated {added} plan(s) to {'start' if dest == 'front' else 'end'}")
 
     def _on_queue_compact_selection(self, current, _previous):
         if not current:
@@ -2521,6 +2655,30 @@ class ExperimentsTab(QWidget):
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 
+        # Track current history count for progress bar and loop spinner clamp
+        self._current_history_count = status.get("items_in_history", self._current_history_count)
+        # Spinner minimum clamp: can't undo completed cycles
+        queue_running = manager_state == "executing_queue"
+        if queue_running and self._loop_cycle_size > 0:
+            done  = max(0, self._current_history_count - self._history_count_at_loop_start)
+            completed_cycles = done // self._loop_cycle_size
+            new_min = max(1, completed_cycles + 1)
+            if self.spin_loop.minimum() != new_min:
+                self.spin_loop.blockSignals(True)
+                self.spin_loop.setMinimum(new_min)
+                self.spin_loop.blockSignals(False)
+        elif not queue_running and self.spin_loop.minimum() != 1:
+            self.spin_loop.blockSignals(True)
+            self.spin_loop.setMinimum(1)
+            self.spin_loop.blockSignals(False)
+        # Transition "running" → other state means a plan just finished.
+        # Trigger an immediate history fetch to log completed plans without
+        # waiting for the running_item sentinel or the 30-second fallback.
+        if self._prev_re_state == "running" and re_state != "running":
+            if self.worker:
+                QTimer.singleShot(500, self.worker.request_history_fetch)
+        self._prev_re_state = re_state
+
         env_open = env_state not in ("", "closed")
         running  = re_state == "running"
         paused   = re_state == "paused"
@@ -2547,23 +2705,43 @@ class ExperimentsTab(QWidget):
                 # (on_scan_stopped), so only record timing here; event/plan counts
                 # are already updated.
                 self._record_plan_timing()
+                # Plan just completed — schedule delayed history fetches so the
+                # server has time to commit the result before we read history_get().
+                # QTimer is main-thread safe and more reliable than threading.Timer.
+                if self.worker:
+                    QTimer.singleShot(1500, self.worker.request_history_fetch)
+                    QTimer.singleShot(4000, self.worker.request_history_fetch)
             self._running_item_uid = uid
+            # Bump generation so stale ZMQ events from the just-finished scan are
+            # rejected by on_scan_point_completed.
+            self._event_gen += 1
             # Pick up num_points if the ZMQ start doc arrived before this poll tick;
             # otherwise on_scan_started will set it when the start doc arrives.
             # Only consume _pending_total_points for a real plan uid, not the
             # transient empty-uid gap the RE Manager emits between consecutive plans.
             if uid:
                 self._running_item_total_points = self._pending_total_points
+                if self._pending_total_points > 0:
+                    self._scan_gen = self._event_gen
+                else:
+                    self._scan_gen = -1
                 self._pending_total_points      = 0
                 self._queue_in_progress         = True
             else:
                 self._running_item_total_points = 0
+                self._scan_gen = -1
             self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
             self._plan_first_event_time     = 0.0
             self._plan_last_event_wall_time = 0.0
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
+        elif self._pending_total_points > 0 and self._scan_gen < 0:
+            # Start doc arrived after this uid was set (ZMQ is faster than the poll).
+            # Apply now that we know the uid is stable.
+            self._running_item_total_points = self._pending_total_points
+            self._scan_gen = self._event_gen
+            self._pending_total_points = 0
 
 
         self._current_running_item = item or {}
@@ -2732,6 +2910,7 @@ class ExperimentsTab(QWidget):
         motor_time = max(per_step_times) * num if per_step_times else 0.0
         return acq_total + motor_time
 
+
     def on_scan_started(self, num_points: int) -> None:
         """Called when a start document arrives — sets total point count for the plan bar.
 
@@ -2739,12 +2918,10 @@ class ExperimentsTab(QWidget):
         _running_item_uid, so we buffer the value in _pending_total_points so that
         update_running_item() can pick it up on the next poll tick.
 
-        Also resets per-run event counters here so that event docs from the new run
-        don't inherit the completed_points count from the previous plan.  The start
-        doc always arrives before the first event doc, so this is safe.
-
-        We record timing for the previous plan first (before clearing its intervals)
-        so that update_running_item()'s duplicate _record_plan_timing() call is a no-op.
+        Always buffer: update_running_item() is the sole place that sets _scan_gen.
+        This prevents a race where the ZMQ start doc for the NEXT plan arrives before
+        the poll detects the queue-item-uid change, which would otherwise attribute
+        the next plan's events to the currently displayed plan.
         """
         # Save timing for the previous plan before clearing its counters.
         if self._running_item_uid and self._plan_event_intervals:
@@ -2783,6 +2960,8 @@ class ExperimentsTab(QWidget):
 
     def on_scan_point_completed(self, seq_num: int) -> None:
         """Called each time an event document arrives from the ZMQ doc stream."""
+        if self._scan_gen < 0 or self._scan_gen != self._event_gen:
+            return  # stale event from a finished scan or no scan started yet
         now = time.monotonic()
         wall_now = time.time()
         if self._plan_first_event_time == 0.0 and self._running_item_start_time > 0.0:
@@ -2957,19 +3136,155 @@ class ExperimentsTab(QWidget):
     def _on_loop_checkbox(self, checked: bool) -> None:
         self.spin_loop.setEnabled(checked)
         if not checked:
-            self._loop_iter_lbl.setText("")
-        self.loop_count_changed.emit(self.spin_loop.value() if checked else -1)
+            self._on_loop_unchecked()
+        else:
+            if self.spin_loop.value() < 2:
+                self.spin_loop.blockSignals(True)
+                self.spin_loop.setValue(2)
+                self.spin_loop.blockSignals(False)
+            self._apply_loop_count(self.spin_loop.value())
+        self._update_loop_ui()
 
-    def set_loop_iteration(self, current: int, total: int) -> None:
-        if total == 0:
-            self._loop_iter_lbl.setText(f"(iteration {current}, ∞)")
-        elif total > 0:
-            self._loop_iter_lbl.setText(f"(iteration {current} of {total + current - 1})")
+    def _on_loop_unchecked(self) -> None:
+        """Ask user what to do with copied plans when loop is unchecked."""
+        if not self._loop_copies_list:
+            # No copies in queue — just clear loop state
+            self._clear_loop_state()
+            return
+        n_copies = len(self._loop_copies_list)
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Loop Disabled")
+        msg.setText(
+            f"Loop mode disabled. There are {n_copies} copied plan(s) in the queue.\n\n"
+            "What should happen to them?"
+        )
+        btn_remove = msg.addButton("Remove copies", QMessageBox.ButtonRole.DestructiveRole)
+        btn_keep   = msg.addButton("Keep all",      QMessageBox.ButtonRole.AcceptRole)
+        btn_cancel = msg.addButton("Cancel",         QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(btn_cancel)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == btn_cancel:
+            # Recheck the checkbox without re-triggering _on_loop_checkbox
+            self.chk_loop.blockSignals(True)
+            self.chk_loop.setChecked(True)
+            self.spin_loop.setEnabled(True)
+            self.chk_loop.blockSignals(False)
+            return
+        if clicked == btn_remove:
+            self._remove_loop_copies()
+        # Keep all: just clear tracking, leave items in queue
+        self._clear_loop_state()
+
+    def _clear_loop_state(self) -> None:
+        self._loop_template    = []
+        self._loop_copies_list = []
+        self._loop_copies_set  = set()
+        self._loop_cycle_size  = 0
+        self._loop_n_cycles    = 1
+
+    def _remove_loop_copies(self) -> None:
+        """Remove all copy-cycle items from the queueserver queue."""
+        if not self.worker:
+            self._loop_copies_list.clear()
+            self._loop_copies_set.clear()
+            return
+        for uid in list(self._loop_copies_list):
+            self.worker.remove_item(uid)
+        self._loop_copies_list.clear()
+        self._loop_copies_set.clear()
+
+    def _on_spin_loop_changed(self, n: int) -> None:
+        if self.chk_loop.isChecked():
+            self._apply_loop_count(n)
+
+    def _apply_loop_count(self, n: int) -> None:
+        """Expand or contract the queue to reflect the requested cycle count."""
+        if not self.worker or not self._active_exp_path:
+            self._loop_n_cycles = n
+            return
+        old_n = self._loop_n_cycles
+        self._loop_n_cycles = n
+        # First time loop is enabled: build template from current queue
+        if not self._loop_template:
+            self._loop_template   = list(self._current_queue_items)
+            self._loop_cycle_size = len(self._loop_template)
+            if self._loop_cycle_size == 0:
+                return
+        if n > old_n:
+            self._add_loop_cycles(n - old_n)
+        elif n < old_n:
+            self._remove_loop_cycles(old_n - n)
+        self._update_loop_ui()
+
+    def _inject_loop_metadata(self, item: dict, cycle_num: int) -> None:
+        """Embed loop tracking fields into item's md (only if plan accepts md)."""
+        plan_name = item.get("name", "")
+        plan_info = self._plans.get(plan_name, {})
+        params    = plan_info.get("parameters", []) if plan_info else []
+        if not any(p.get("name") == "md" for p in params):
+            return
+        item.setdefault("kwargs", {}).setdefault("md", {}).update({
+            "_loop_n_cycles":   self._loop_n_cycles,
+            "_loop_cycle_num":  cycle_num,
+            "_loop_cycle_size": self._loop_cycle_size,
+        })
+
+    def _add_loop_cycles(self, count: int) -> None:
+        """Add `count` more copies of the template to the queue end."""
+        import copy as _copy
+        n_existing_copies = len(self._loop_copies_list) // self._loop_cycle_size if self._loop_cycle_size else 0
+        for ci in range(count):
+            cycle_num = n_existing_copies + ci + 2  # cycle 1 = original; copies start at 2
+            for item in self._loop_template:
+                item_copy = _copy.deepcopy(item)
+                # Strip old scan_num so _inject_metadata assigns a fresh one
+                (item_copy.get("kwargs") or {}).get("md", {}).pop("scan_num", None)
+                # Strip old item_uid so queueserver generates a new one
+                item_copy.pop("item_uid", None)
+                self._inject_loop_metadata(item_copy, cycle_num)
+                item_copy = self._inject_metadata(item_copy)
+                ok, new_uid = self.worker.add_item(item_copy)
+                if ok and new_uid:
+                    self._loop_copies_list.append(new_uid)
+                    self._loop_copies_set.add(new_uid)
+
+    def _remove_loop_cycles(self, count: int) -> None:
+        """Remove the last `count` cycles worth of copies from the queue."""
+        items_to_remove = count * self._loop_cycle_size
+        if not self.worker:
+            return
+        removed = 0
+        while removed < items_to_remove and self._loop_copies_list:
+            uid = self._loop_copies_list.pop()
+            self._loop_copies_set.discard(uid)
+            self.worker.remove_item(uid)
+            removed += 1
+
+    def _update_loop_ui(self) -> None:
+        """Sync loop controls and drag state to current loop state."""
+        loop_active = bool(self._loop_copies_list)
+        # Drag: disable when loop is active
+        from qtpy.QtWidgets import QAbstractItemView
+        if loop_active:
+            self.queue_compact.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        else:
+            self.queue_compact.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._loop_drag_lbl.setVisible(loop_active)
+        # Update iteration label
+        if loop_active and self._loop_n_cycles > 1 and self._loop_cycle_size > 0:
+            done  = max(0, self._current_history_count - self._history_count_at_loop_start)
+            cur   = done // self._loop_cycle_size + 1
+            cur   = min(cur, self._loop_n_cycles)
+            self._loop_iter_lbl.setText(f"(cycle {cur}/{self._loop_n_cycles})")
         else:
             self._loop_iter_lbl.setText("")
 
-    def clear_loop_iteration(self) -> None:
-        self._loop_iter_lbl.setText("")
+    def on_queue_started(self, history_count: int, total_items: int) -> None:
+        """Called by main.py when queue is successfully started."""
+        self._history_count_at_loop_start = history_count
+        self._total_items_at_start        = total_items
+        self._update_progress_bars()
 
     # ── Public setters ─────────────────────────────────────────────────────────
 
@@ -3417,9 +3732,15 @@ class ExperimentsTab(QWidget):
         exps_dir = Path(EXPERIMENTS_DIR)
         if not exps_dir.exists():
             return 0.0
+        # Only meaningful when the active experiment lives inside EXPERIMENTS_DIR.
+        # NFS-mounted or external paths have no "next local experiment" relationship.
+        try:
+            Path(self._active_exp_path).relative_to(exps_dir)
+        except ValueError:
+            return 0.0
         next_t = float("inf")
         for d in exps_dir.iterdir():
-            if not d.is_dir() or str(d) == self._active_exp_path:
+            if not d.is_dir() or Path(d) == Path(self._active_exp_path):
                 continue
             exp_json = d / "experiment.json"
             if not exp_json.exists():
@@ -3477,6 +3798,7 @@ class ExperimentsTab(QWidget):
         if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
             self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids          = set()
+        self._start_doc_cache      = {}
         self._shown_error_uids     = set()  # reset so old errors don't re-appear
         self._suppressed_uids      = set()   # suppressions are per-experiment
         self._foreign_run_warned_uid = ""
@@ -3891,8 +4213,9 @@ class ExperimentsTab(QWidget):
     def _load_plan_log(self, exp_path: str, auto_select_newest: bool = False):
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
-        self._logged_uids = set()
+        self._logged_uids      = set()
         self._logged_scan_nums = set()
+        self._last_history_len = 0  # reset incremental pointer on experiment change
         # Any UID already in plans_log.jsonl was processed in a prior session;
         # mark it seen so update_history never re-shows its error dialog.
         self._shown_error_uids = set()
@@ -3953,6 +4276,11 @@ class ExperimentsTab(QWidget):
                                 self._logged_scan_nums.add(int(sn))
                             except (ValueError, TypeError):
                                 pass
+                        # Also track run_uids so ZMQ-written entries are deduped
+                        # against the history-based fallback in update_history.
+                        for ruid in entry.get("run_uids", []):
+                            if ruid:
+                                self._logged_uids.add(ruid)
                         all_entries.append(entry)
                     except Exception:
                         pass
@@ -4039,11 +4367,12 @@ class ExperimentsTab(QWidget):
             self.plan_log_list.scrollToTop()
 
     def _prepend_plan_log_entry(self, entry: dict) -> None:
-        """Insert a single completed-plan entry at the top of the list widget.
+        """Insert a single new completed-plan entry at the top of the list widget.
 
-        Called immediately after writing to plans_log.jsonl so the display
-        updates without re-reading the file — avoids NFS read-after-write
-        latency on macOS where just-written bytes may not yet be visible.
+        Called immediately after writing the entry to plans_log.jsonl so the
+        display updates without re-reading the file (avoids NFS read-after-write
+        latency on macOS where the just-written bytes may not yet be visible on a
+        subsequent open/read of the same path).
         """
         name     = entry.get("name", "?")
         args     = entry.get("args", []) or []
@@ -4072,6 +4401,7 @@ class ExperimentsTab(QWidget):
         li.setForeground(QColor(color))
         li.setData(Qt.ItemDataRole.UserRole, entry)
         self.plan_log_list.insertItem(0, li)
+        # Update duration cache from this new entry.
         dur_val = entry.get("duration_s")
         if name and isinstance(dur_val, (int, float)) and dur_val > 0:
             cached = self._plan_duration_cache.get(name, 0.0)
@@ -4081,26 +4411,175 @@ class ExperimentsTab(QWidget):
 
     # ── Public update slots ────────────────────────────────────────────────────
 
+    def on_scan_start_doc(self, doc: dict) -> None:
+        """Cache start-document metadata for Plans Log correlation with stop doc."""
+        run_uid = doc.get("uid", "")
+        if not run_uid:
+            return
+        # Correlate with the current running queue item for item_uid and kwargs.
+        # update_running_item fires every ~1 s; the ZMQ start doc usually arrives
+        # within 1-2 poll ticks so _current_running_item is typically correct.
+        running = self._current_running_item or {}
+        self._start_doc_cache[run_uid] = {
+            "scan_num":   doc.get("scan_num"),
+            "exp_dir":    doc.get("exp_dir", ""),
+            # _queue_plan_name is injected by _inject_metadata — always the queue
+            # item's registered name.  Fall back to bluesky's plan_name (which can
+            # be the inner generator name, e.g. "rel_scan" for "rel_scan_w_time_n_delay")
+            # and then to the current running item's name.
+            "plan_name":  doc.get("_queue_plan_name") or doc.get("plan_name", running.get("name", "")),
+            "time_start": doc.get("time", 0),
+            "item_uid":   running.get("item_uid", ""),
+            "args":       running.get("args", []),
+            "kwargs":     running.get("kwargs", {}),
+        }
+        if len(self._start_doc_cache) > 50:
+            self._start_doc_cache.pop(next(iter(self._start_doc_cache)))
+
+    def on_scan_stop_doc(self, doc: dict) -> None:
+        """Write plan to Plans Log immediately from ZMQ stop document.
+
+        queueserver v0.0.25 holds completed plans in an internal staging buffer
+        and only commits them to history_get() when the queue is aborted.  This
+        handler bypasses that limitation by writing directly to plans_log.jsonl
+        as soon as the RunEngine emits its stop document.
+        """
+        run_uid    = doc.get("run_start", "")
+        exit_status = doc.get("exit_status", "")
+        self._log(f"[ZMQ stop] run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}")
+        if not self._active_exp_path:
+            return
+        if not run_uid or not exit_status:
+            return
+        if run_uid in self._logged_uids:
+            return  # already written
+
+        start_meta = self._start_doc_cache.pop(run_uid, None)
+        if start_meta is None:
+            # Start doc was missed; try to recover from current running item.
+            running = self._current_running_item or {}
+            start_meta = {
+                "scan_num":  ((running.get("kwargs") or {}).get("md") or {}).get("scan_num"),
+                "exp_dir":   ((running.get("kwargs") or {}).get("md") or {}).get("exp_dir", ""),
+                "plan_name": running.get("name", ""),
+                "time_start": 0,
+                "item_uid":  running.get("item_uid", ""),
+                "args":      running.get("args", []),
+                "kwargs":    running.get("kwargs", {}),
+            }
+
+        plan_exp_dir = start_meta.get("exp_dir", "")
+        if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
+            self._logged_uids.add(run_uid)
+            return  # foreign experiment — silently skip
+
+        plan_name = start_meta.get("plan_name", "")
+        # If _current_running_item still refers to this plan (item_uid matches),
+        # use its name — it's the registered queue name, immune to the bluesky
+        # start-doc plan_name showing the inner generator (e.g. "rel_scan" instead
+        # of "rel_scan_w_time_n_delay").  This works even when _queue_plan_name
+        # was not injected (plans queued before the md-injection fix).
+        _cur = self._current_running_item or {}
+        if _cur.get("item_uid") and _cur.get("item_uid") == start_meta.get("item_uid") and _cur.get("name"):
+            plan_name = _cur["name"]
+        is_motion = _is_motion_only(plan_name, {})
+        scan_num  = None if is_motion else start_meta.get("scan_num")
+
+        t_start = start_meta.get("time_start", 0)
+        t_stop  = doc.get("time", 0)
+        timestamp = (
+            datetime.fromtimestamp(t_stop).isoformat()
+            if t_stop else datetime.now().isoformat()
+        )
+        dur = (t_stop - t_start) if (t_stop and t_start) else None
+
+        # Use item_uid as primary key so update_history dedup catches duplicates.
+        # Fall back to run_uid when item_uid was not available (start doc missed).
+        item_uid    = start_meta.get("item_uid", "")
+        primary_uid = item_uid or run_uid
+        if primary_uid in self._logged_uids:
+            # primary_uid already logged.  This can mean two things:
+            # (a) Multi-run plan: same item_uid produced run_uid1 (logged) and
+            #     run_uid2 (this call) — skip the second run's entry.
+            # (b) Race condition: start doc for plan N arrived while
+            #     _current_running_item still held plan N-1's item_uid, so the
+            #     cache has the wrong item_uid.  Since run_uid was NOT in
+            #     _logged_uids (checked above), this plan has not been written
+            #     yet — use run_uid as the primary key instead of skipping.
+            if item_uid and item_uid != run_uid:
+                primary_uid = run_uid   # retry with run_uid
+                if primary_uid in self._logged_uids:
+                    # run_uid also logged — genuine duplicate
+                    return
+            else:
+                self._logged_uids.add(run_uid)
+                return
+
+        entry = {
+            "timestamp":   timestamp,
+            "uid":         primary_uid,
+            "run_uids":    [run_uid],
+            "name":        plan_name,
+            "args":        start_meta.get("args", []),
+            "kwargs":      start_meta.get("kwargs", {}),
+            "exit_status": exit_status,
+            "duration_s":  round(dur, 2) if dur else None,
+            "scan_num":    scan_num,
+        }
+        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
+        try:
+            with open(log_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+            self._logged_uids.add(primary_uid)
+            self._logged_uids.add(run_uid)  # ensures update_history skips this run
+            if not is_motion and scan_num is not None:
+                _write_scan_num_json(self._active_exp_path, int(scan_num))
+                self._needs_renumber = True
+            if not is_motion and scan_num is not None and scan_num >= self._next_scan_num:
+                self._next_scan_num = scan_num + 1
+            sn_str = f"#{scan_num} " if scan_num is not None else ""
+            self._log(f"✓ Plan Log: {sn_str}{plan_name} ({exit_status})")
+            self._prepend_plan_log_entry(entry)
+            self.scan_completed.emit()
+        except Exception as exc:
+            self._log(f"⚠ Plans Log write error (ZMQ): {exc}")
+
     def update_history(self, items: list):
         if not self._active_exp_path:
             return
         log_file = Path(self._active_exp_path) / "plans_log.jsonl"
-        changed     = False
-        has_pending = False   # True if any new item has no exit_status yet
-
-        for item in items:
+        changed       = False
+        has_pending   = False   # True if any item has no exit_status yet
+        # Incremental: only process items that are new since last call.
+        # _logged_uids still guards multi-client dedup within the new slice.
+        # IMPORTANT: advance _last_history_len only for FULLY processed items.
+        # Pending items (exit_status not yet set) must NOT advance the pointer
+        # or the 2-second retry will slice past them and miss them permanently.
+        new_items = items[self._last_history_len:]
+        for item in new_items:
             uid = item.get("item_uid", "")
             if not uid or uid in self._logged_uids:
+                self._last_history_len += 1
                 continue
             result      = item.get("result") or {}
             exit_status = result.get("exit_status", "")
-            if not exit_status:
-                # queueserver may add history entries before exit_status is set.
-                # Flag for a 2-s retry so this item isn't lost when the
-                # history_updated signal is throttled to count-change events only.
-                has_pending = True
+            # If any run from this item was already written via ZMQ stop doc,
+            # skip writing but mark item_uid as seen so future calls skip it too.
+            run_uids_in_item = result.get("run_uids", [])
+            if any(ruid in self._logged_uids for ruid in run_uids_in_item):
+                self._logged_uids.add(uid)
+                self._last_history_len += 1
                 continue
             t_stop   = result.get("time_stop",  0)
+            plan_exp_dir = (
+                ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
+            )
+            if not exit_status:
+                # queueserver may add history entries before populating exit_status.
+                # Stop here — do NOT advance _last_history_len — so the retry
+                # will reprocess this item and any that follow it.
+                has_pending = True
+                break
             t_start  = result.get("time_start", 0)
             run_uids = result.get("run_uids", [])
 
@@ -4108,12 +4587,10 @@ class ExperimentsTab(QWidget):
             # injected at queue time.  When present, use it as the sole filter and
             # skip the timestamp guards (which fire incorrectly when the user returns
             # to an old experiment after creating a newer one).
-            plan_exp_dir = (
-                ((item.get("kwargs") or {}).get("md") or {}).get("exp_dir") or ""
-            )
             if plan_exp_dir:
                 if not _same_experiment(plan_exp_dir, self._active_exp_path):
                     self._logged_uids.add(uid)
+                    self._last_history_len += 1
                     if not self._foreign_plan_msg_shown:
                         self._foreign_plan_msg_shown = True
                         other_name = Path(plan_exp_dir).name
@@ -4133,10 +4610,12 @@ class ExperimentsTab(QWidget):
                 # back to timestamp-based filtering so old history stays clean.
                 if t_stop and self._exp_created_at and t_stop < self._exp_created_at:
                     self._logged_uids.add(uid)
+                    self._last_history_len += 1
                     continue
                 if t_stop and self._exp_end_time and t_stop >= self._exp_end_time:
                     self._log(f"⚠ Plan Log: skipping '{item.get('name','?')}' — completed after exp_end_time (no exp_dir metadata)")
                     self._logged_uids.add(uid)
+                    self._last_history_len += 1
                     continue
 
             # Use the scan number that was injected into the item's md at queue
@@ -4199,6 +4678,12 @@ class ExperimentsTab(QWidget):
                         pass
                 if already:
                     self._logged_uids.add(uid)
+                    self._last_history_len += 1
+                    # Another client wrote it; display from in-memory entry rather
+                    # than re-reading the NFS file (avoids resetting _logged_uids
+                    # with stale data that would allow duplicate writes later).
+                    self._prepend_plan_log_entry(entry)
+                    changed = True
                     continue
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
@@ -4212,13 +4697,15 @@ class ExperimentsTab(QWidget):
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
                 changed = True
-                self._log(f"✓ Plan Log: recorded '{plan_name}' (#{scan_num})")
+                self._last_history_len += 1
+                sn_str = f"#{scan_num} " if scan_num is not None else ""
+                self._log(f"✓ Plan Log: {sn_str}{plan_name} ({exit_status})")
                 # Update the list widget directly — do NOT re-read from the NFS
                 # file because macOS NFS attribute caching can return stale data
                 # on an immediate open/read after a write (new entry invisible).
                 self._prepend_plan_log_entry(entry)
             except Exception as _exc:
-                self._log(f"⚠ Plan Log: could not record '{plan_name}': {_exc}")
+                self._log(f"⚠ Plans Log write error (uid {uid[:8]}): {_exc}")
 
             # Show error dialog for newly failed plans — only for plans that
             # finished AFTER this session connected (ignores history from other
@@ -4250,9 +4737,9 @@ class ExperimentsTab(QWidget):
                     self.run_files_needed.emit(missing, runs_dir)
 
         if has_pending and self.worker:
-            # Some history items had no exit_status yet (queueserver race).
-            # Force a history re-fetch in 2 s so these items are not missed
-            # when history_updated is throttled to count-change events only.
+            # History entries exist but exit_status not yet populated (queueserver
+            # race). Retry once after 2 s so the plan appears in the log without
+            # waiting for the next natural items_in_history change.
             QTimer.singleShot(2000, self.worker.request_history_fetch)
 
     def update_compact_queue(self, items: list):
@@ -4273,6 +4760,35 @@ class ExperimentsTab(QWidget):
             for i in range(self.queue_compact.count())
             if self.queue_compact.item(i).isSelected()
         }
+        # Multi-client loop detection: if any item has _loop_n_cycles > 1 in md
+        # and we're not already tracking a loop, reconstruct loop state from queue.
+        if not self._loop_copies_list:
+            for item in items:
+                md_chk = (item.get("kwargs") or {}).get("md") or {}
+                n_cyc  = md_chk.get("_loop_n_cycles", 1)
+                c_size = md_chk.get("_loop_cycle_size", 0)
+                if n_cyc > 1 and c_size > 0:
+                    # Loop active from another client — reconstruct tracking
+                    self._loop_cycle_size = c_size
+                    self._loop_n_cycles   = n_cyc
+                    for it in items:
+                        it_md  = (it.get("kwargs") or {}).get("md") or {}
+                        it_uid = it.get("item_uid", "")
+                        if it_uid and it_md.get("_loop_cycle_num", 1) > 1:
+                            if it_uid not in self._loop_copies_set:
+                                self._loop_copies_list.append(it_uid)
+                                self._loop_copies_set.add(it_uid)
+                    if not self.chk_loop.isChecked():
+                        self.chk_loop.blockSignals(True)
+                        self.chk_loop.setChecked(True)
+                        self.spin_loop.setEnabled(True)
+                        self.spin_loop.blockSignals(True)
+                        self.spin_loop.setValue(n_cyc)
+                        self.spin_loop.blockSignals(False)
+                        self.chk_loop.blockSignals(False)
+                    self._update_loop_ui()
+                    break
+
         self.queue_compact.clear()
         for i, item in enumerate(items):
             name    = item.get("name", "unknown")
@@ -4283,13 +4799,17 @@ class ExperimentsTab(QWidget):
             md       = kwargs.get("md", {}) or {}
             scan_num = md.get("scan_num")
             prefix   = f"#{scan_num}" if scan_num is not None else f"{i + 1}."
-            li = QListWidgetItem(f"{prefix}  {name}{summary}")
+            cycle_num = md.get("_loop_cycle_num")
+            cycle_tag = f" [C{cycle_num}]" if cycle_num and cycle_num > 1 else ""
+            li = QListWidgetItem(f"{prefix}  {name}{summary}{cycle_tag}")
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
             client_host = md.get("client_host", "")
             if client_host and client_host != socket.gethostname():
                 li.setForeground(QColor("#e8a44a"))
                 li.setToolTip(f"Queued from: {client_host}")
+            elif cycle_num and cycle_num > 1:
+                li.setForeground(QColor("#888888"))
             self.queue_compact.addItem(li)
             if uid and uid in selected_uids:
                 li.setSelected(True)

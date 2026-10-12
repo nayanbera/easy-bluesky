@@ -5,6 +5,7 @@ import os
 import queue as _queue
 import shutil
 import subprocess
+import sys as _sys
 import threading
 import time
 from pathlib import Path
@@ -254,6 +255,7 @@ class _LocalDocWriter:
         self._lock     = threading.Lock()
         self._open_fhs = {}     # uid → file handle (only accessed by _run thread)
         self.event_queue: _queue.Queue = _queue.Queue()  # (seq_num) drained by poll()
+        self.doc_queue:   _queue.Queue = _queue.Queue()  # (name, doc) for start/stop
 
     def set_exp_dir(self, path: str):
         with self._lock:
@@ -323,6 +325,8 @@ class _LocalDocWriter:
     def _handle(self, name: str, doc: dict):
         if name == "event":
             self.event_queue.put_nowait(doc.get("seq_num", 0))
+        if name in ("start", "stop"):
+            self.doc_queue.put_nowait((name, doc))
 
         exp_dir = self._get_exp_dir()
         if exp_dir is None:
@@ -497,7 +501,7 @@ class _DeviceStatusReader(QThread):
 
 class _SimDeviceSetter(QThread):
     """Background thread: calls set_sim_device() via function_execute and polls for completion."""
-    done  = Signal(bool, str)   # success, message
+    done  = Signal(str, bool, str)   # dev_name, success, message
 
     def __init__(self, rm, rm_lock, name: str, value: float, parent=None):
         super().__init__(parent)
@@ -514,7 +518,7 @@ class _SimDeviceSetter(QThread):
                     item=BFunc("set_sim_device", name=self._name, value=self._value)
                 )
             if not r.get("success"):
-                self.done.emit(False, r.get("msg", "function_execute failed"))
+                self.done.emit(self._name, False, r.get("msg", "function_execute failed"))
                 return
             task_uid = r["task_uid"]
             deadline = time.monotonic() + 15.0
@@ -527,16 +531,16 @@ class _SimDeviceSetter(QThread):
                     result = res.get("result", {})
                     if not result.get("success", True):
                         tb = str(result.get("return_value", "unknown error"))
-                        self.done.emit(False, tb[:200])
+                        self.done.emit(self._name, False, tb[:200])
                         return
-                    self.done.emit(True, "")
+                    self.done.emit(self._name, True, "")
                     return
                 if state in ("failed", "aborted", "not_found"):
-                    self.done.emit(False, res.get("msg", f"Task {state}"))
+                    self.done.emit(self._name, False, res.get("msg", f"Task {state}"))
                     return
-            self.done.emit(False, "set_sim_device timed out (>15 s)")
+            self.done.emit(self._name, False, "set_sim_device timed out (>15 s)")
         except Exception as e:
-            self.done.emit(False, str(e))
+            self.done.emit(self._name, False, str(e))
 
 
 class _ScanLogFetcher(QThread):
@@ -583,7 +587,9 @@ class ZMQWorker(QObject):
     env_closed      = Signal()
     re_manager_started = Signal(int)   # pid
     console_updated      = Signal(str)   # new console text since last poll
-    scan_point_completed = Signal(int)  # seq_num of each completed event doc
+    scan_point_completed = Signal(int)   # seq_num of each completed event doc
+    scan_start_doc       = Signal(dict)  # bluesky start document
+    scan_stop_doc        = Signal(dict)  # bluesky stop document
     scan_log_ready  = Signal(bytes)    # raw bytes of remote scans_log.json
     scan_log_error  = Signal(str)      # error message if SFTP fetch failed
 
@@ -610,8 +616,18 @@ class ZMQWorker(QObject):
         self._rm_lock = threading.Lock()    # serialises all self.rm.* ZMQ calls
         self.locked_out: bool = False       # True when another client holds operator lock
         self.lock_holder: str = ""          # hostname of the current lock holder
-        self._last_history_count: int = -1
-        self._cached_history: dict    = {}
+        # Cache last seen history count to avoid fetching the full history payload
+        # (potentially hundreds of KB) on every poll tick when nothing has changed.
+        self._last_history_count: int       = -1
+        self._last_running_uid:   object   = None  # None = reconnect sentinel; always triggers on first poll
+        self._poll_count:         int       = 0     # for periodic history fallback
+        self._cached_history: dict          = {}
+        self._history_fetch_event = threading.Event()
+        self._history_active = True
+        _history_thread = threading.Thread(
+            target=self._history_fetch_loop, daemon=True, name="history-fetch"
+        )
+        _history_thread.start()
 
     @Slot(str, str)
     def connect(self, zmq_control=None, zmq_info=None, zmq_doc=None):
@@ -877,6 +893,27 @@ class ZMQWorker(QObject):
                 )
         return "".join(lines)
 
+    def _history_fetch_loop(self):
+        """Dedicated thread: fetches history only when triggered by count change.
+
+        Decoupled from the poll loop so json.loads of the full history payload
+        (potentially 100s of KB) never blocks status/queue signal delivery.
+        """
+        while self._history_active:
+            triggered = self._history_fetch_event.wait(timeout=5.0)
+            if not triggered:
+                continue
+            self._history_fetch_event.clear()
+            if self.rm is None:
+                continue
+            try:
+                with self._rm_lock:
+                    h = self.rm.history_get()
+                self._cached_history = h
+                items = h.get("items", [])
+                self.history_updated.emit(items)
+            except Exception:
+                pass
 
     def poll(self):
         _prev_env_state     = None
@@ -889,31 +926,50 @@ class ZMQWorker(QObject):
                     self._reload_plans_requested = False
                     self._load_plans_devices()
                 try:
-                    if not self._rm_lock.acquire(timeout=8):
-                        # A background reader thread is stuck on a dead ZMQ
-                        # socket and has held the lock for >8 s.  Replace the
-                        # lock so the next reconnect gets a clean one, and skip
-                        # this tick.  The frozen reader is now harmless.
-                        self._rm_lock = threading.Lock()
-                        self.console_updated.emit(
-                            "[EasyBluesky] ⚠ Poll blocked >8 s — background task "
-                            "may be stuck on a dead connection. Reconnect to reset.\n"
-                        )
-                        time.sleep(self._poll_interval)
-                        continue
-                    try:
-                        status  = self.rm.status()
-                        queue   = self.rm.queue_get()
-                        _new_hist   = self.rm.history_get()
-                        _n_new      = len(_new_hist.get("items", []))
-                        _history_changed = (_n_new != self._last_history_count)
-                        self._cached_history     = _new_hist
-                        self._last_history_count = _n_new
-                    finally:
-                        self._rm_lock.release()
-                    _cur_manager_state       = status.get("manager_state", "idle")
-                    self._last_manager_state = _cur_manager_state
-                    _prev_manager_state = _cur_manager_state
+                    with self._rm_lock:
+                        status = self.rm.status()
+                        queue  = self.rm.queue_get()
+
+                    # Trigger a background history fetch when scan count changes.
+                    # history_get() can return 100s of KB (json.loads holds GIL
+                    # ~200 ms); running it in _history_fetch_loop decouples it from
+                    # the fast status/queue poll.
+                    n_history = status.get("items_in_history", -1)
+                    if n_history != self._last_history_count:
+                        self._last_history_count = n_history
+                        self._history_fetch_event.set()
+
+                    # Also trigger when the running item changes: new uid means a
+                    # plan just started (previous plan finished).  In queueserver
+                    # v0.0.25, items_in_history may not increment during a
+                    # continuous queue run, so this is the reliable signal that a
+                    # completed plan is waiting in history.
+                    # _last_running_uid is reset to None on every disconnect so the
+                    # first poll after reconnect ALWAYS triggers a fetch — this
+                    # catches plans that completed while the Mac was asleep.
+                    running_uid = (queue.get("running_item") or {}).get("item_uid", "")
+                    if running_uid != self._last_running_uid:
+                        _prev_running = self._last_running_uid
+                        self._last_running_uid = running_uid
+                        self._history_fetch_event.set()
+                        # Race guard: the server may not have committed the just-finished
+                        # plan to history by the time the immediate fetch runs above.
+                        # Schedule a second fetch 2.5 s later so the plan is reliably
+                        # caught even if the immediate fetch sees stale state.
+                        if _prev_running:
+                            _t = threading.Timer(2.5, self._history_fetch_event.set)
+                            _t.daemon = True
+                            _t.start()
+
+                    # Periodic fallback: fetch history every ~30 s regardless of
+                    # other triggers.  Catches any plans completed while the app
+                    # was disconnected or sleeping that slipped through the
+                    # running_item / items_in_history triggers.
+                    self._poll_count += 1
+                    if self._poll_count % 30 == 0:
+                        self._history_fetch_event.set()
+
+                    self._last_manager_state = status.get("manager_state", "idle")
                     # Save before auto-clear so transition logic can check whether
                     # the completing task was ours (non-empty) or external (empty).
                     _prev_app_task = self._current_task
@@ -922,15 +978,11 @@ class ZMQWorker(QObject):
                     status["_app_task"] = self._current_task
                     self.status_updated.emit(status)
                     self.queue_updated.emit(queue.get("items", []))
-                    # queue_get() has the full running_item dict; status() only has
-                    # running_item_uid.  Gate on re_state so the banner clears when
-                    # the RE is idle even if queue running_item stays populated.
-                    _re_active = status.get("re_state") in ("running", "paused")
-                    self.running_item_updated.emit(
-                        (queue.get("running_item") or {}) if _re_active else {}
-                    )
-                    if _history_changed:
-                        self.history_updated.emit(self._cached_history.get("items", []))
+                    self.running_item_updated.emit(queue.get("running_item") or {})
+                    # history_updated is emitted by _history_fetch_loop whenever
+                    # items_in_history changes — NOT on every poll tick.  Emitting
+                    # it here from the cache every second triggered a full rebuild
+                    # of the 863-item history list on the main thread each tick.
 
                     env_state = status.get("worker_environment_state", "")
                     if not env_state:
@@ -998,6 +1050,16 @@ class ZMQWorker(QObject):
                             self.scan_point_completed.emit(seq_num)
                     except _queue.Empty:
                         pass
+                    # Drain start/stop documents for real-time Plans Log updates
+                    try:
+                        while True:
+                            doc_name, doc = self._doc_writer.doc_queue.get_nowait()
+                            if doc_name == "start":
+                                self.scan_start_doc.emit(doc)
+                            elif doc_name == "stop":
+                                self.scan_stop_doc.emit(doc)
+                    except _queue.Empty:
+                        pass
                 except Exception:
                     if not self._is_connecting:
                         self.rm = None
@@ -1014,10 +1076,18 @@ class ZMQWorker(QObject):
         self._log_tailer.stop()
         self._doc_writer.stop()
         self.rm = None
+        self._last_history_count = -1    # force re-fetch on next connect
+        self._last_running_uid   = None  # None sentinel: always triggers on first poll after reconnect
         self.disconnected.emit()
+
+    def request_history_fetch(self):
+        """Trigger an out-of-band history re-fetch (e.g. to retry items with no exit_status)."""
+        self._history_fetch_event.set()
 
     def stop(self):
         self._active = False
+        self._history_active = False
+        self._history_fetch_event.set()  # unblock the history thread so it can exit
 
     # ── Queue operations ───────────────────────────────────────────────────────
     def execute_item(self, item):
@@ -1031,7 +1101,7 @@ class ZMQWorker(QObject):
         except Exception as e:
             return False, str(e)
 
-    def add_item(self, item):
+    def add_item(self, item, pos=None):
         if self.locked_out:
             holder = self.lock_holder or "another computer"
             return False, (
@@ -1040,7 +1110,10 @@ class ZMQWorker(QObject):
             )
         try:
             with self._rm_lock:
-                r = self.rm.item_add(item=item)
+                kwargs = {"item": item}
+                if pos is not None:
+                    kwargs["pos"] = pos
+                r = self.rm.item_add(**kwargs)
             if r.get("success"):
                 item_uid = (r.get("item") or {}).get("item_uid", "")
                 return True, item_uid
@@ -1118,6 +1191,14 @@ class ZMQWorker(QObject):
         except Exception as e:
             return False, str(e)
 
+    def queue_mode_set(self, mode: dict) -> tuple:
+        try:
+            with self._rm_lock:
+                r = self.rm.queue_mode_set(mode=mode)
+            return r.get("success", False), r.get("msg", "")
+        except Exception as e:
+            return False, str(e)
+
     def re_pause(self, option="deferred"):
         try:
             with self._rm_lock:
@@ -1171,8 +1252,10 @@ class ZMQWorker(QObject):
         try:
             with self._rm_lock:
                 r = self.rm.script_upload(script=script)
+            self._current_task = ""
             return r.get("success", False), r.get("msg", "")
         except Exception as e:
+            self._current_task = ""
             return False, str(e)
 
     def upload_scripts(self, scripts: list) -> list:
@@ -1197,6 +1280,7 @@ class ZMQWorker(QObject):
                 break
         skipped = len(scripts) - len(results)
         results.extend([(False, "skipped")] * skipped)
+        self._current_task = ""
         return results
 
     def _on_device_read_error(self, msg: str) -> None:
@@ -1214,10 +1298,9 @@ class ZMQWorker(QObject):
         self._current_task = "read_devices_status"
         self._device_reader = _DeviceStatusReader(self.rm, self._rm_lock)
         self._device_reader.readings_ready.connect(self.device_readings_updated)
-        self._device_reader.readings_ready.connect(lambda _: self._clear_task("read_devices_status"))
         self._device_reader.read_error.connect(self.device_read_error)
         self._device_reader.read_error.connect(self._on_device_read_error)
-        self._device_reader.read_error.connect(lambda _: self._clear_task("read_devices_status"))
+        self._device_reader.finished.connect(lambda: self._clear_task("read_devices_status"))
         self._device_reader.start()
 
     def set_sim_device(self, name: str, value: float):
@@ -1229,10 +1312,8 @@ class ZMQWorker(QObject):
             return
         self._current_task = f"set_sim_device({name})"
         self._sim_device_setter = _SimDeviceSetter(self.rm, self._rm_lock, name, value)
-        self._sim_device_setter.done.connect(
-            lambda ok, msg: self.sim_device_set_done.emit(name, ok, msg)
-        )
-        self._sim_device_setter.done.connect(lambda *_: self._clear_task(f"set_sim_device({name})"))
+        self._sim_device_setter.done.connect(self.sim_device_set_done)
+        self._sim_device_setter.finished.connect(lambda: self._clear_task(f"set_sim_device({name})"))
         self._sim_device_setter.start()
 
     def fetch_scan_log(self, remote_path: str):
@@ -1285,9 +1366,8 @@ class ZMQWorker(QObject):
         self._current_task = "get_device_pvnames"
         self._pv_names_reader = _PVNamesReader(self.rm, self._rm_lock)
         self._pv_names_reader.pv_names_ready.connect(self.pv_names_ready)
-        self._pv_names_reader.pv_names_ready.connect(lambda _: self._clear_task("get_device_pvnames"))
         self._pv_names_reader.read_error.connect(self.pv_names_error)
-        self._pv_names_reader.read_error.connect(lambda _: self._clear_task("get_device_pvnames"))
+        self._pv_names_reader.finished.connect(lambda: self._clear_task("get_device_pvnames"))
         self._pv_names_reader.start()
 
     def last_manager_state(self) -> str:

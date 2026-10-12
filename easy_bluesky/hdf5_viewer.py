@@ -45,6 +45,38 @@ from .plot_tools import setup_crosshair, smart_legend_position, TwoDMapWidget
 from . import peak_fit as _peak_fit
 from .curve_fit_dialog import FitParamsDialog
 
+
+def _compute_peak_stats(x, y) -> str:
+    """Return a formatted stats string (cen, FWHM, max, COM) for a 1-D curve."""
+    try:
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y)
+        x, y = x[mask], y[mask]
+        if len(x) < 4:
+            return ""
+        i_max = int(np.argmax(y))
+        y_pos = y - y.min()
+        denom = float(np.sum(y_pos))
+        com = float(np.sum(x * y_pos) / denom) if denom > 0 else float(x[i_max])
+        half  = (float(y.max()) + float(y.min())) / 2.0
+        above = y >= half
+        edges = np.where(np.diff(above.astype(int)))[0]
+        if len(edges) >= 2:
+            def _ic(i):
+                x0, x1, y0, y1 = float(x[i]), float(x[i+1]), float(y[i]), float(y[i+1])
+                return x0 + (half - y0) / (y1 - y0) * (x1 - x0) if y1 != y0 else (x0+x1)/2
+            xl = _ic(edges[0]);  xr = _ic(edges[-1])
+            cen = (xl + xr) / 2.0;  fwhm = abs(xr - xl)
+            return (f"cen = {cen:.5g}    FWHM = {fwhm:.4g}"
+                    f"    max = {y[i_max]:.4g} @ {x[i_max]:.5g}"
+                    f"    COM = {com:.5g}")
+        return (f"max = {y[i_max]:.4g} @ {x[i_max]:.5g}"
+                f"    COM = {com:.5g}")
+    except Exception:
+        return ""
+
+
 _MOTION_PLANS = frozenset({
     "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
     "kickoff", "complete", "collect", "null",
@@ -763,7 +795,9 @@ class HDF5Viewer(QWidget):
                     self._error_items[curve_name] = err_item
 
                 color_idx += 1
-                stats.append(f"{curve_name}: min={y_.min():.4g}  max={y_.max():.4g}")
+                ps = _compute_peak_stats(x_, y_)
+                entry = f"{curve_name}: " + (ps if ps else f"min={y_.min():.4g}  max={y_.max():.4g}")
+                stats.append(entry)
 
         self.plot_widget.setLabel("bottom", xc)
         y_label = ", ".join(ycs)
@@ -777,7 +811,17 @@ class HDF5Viewer(QWidget):
         if self._log_y_cb.isChecked():
             y_label = f"log₁₀({y_label})"
         self.plot_widget.setLabel("left", y_label)
-        self.stats_label.setText("   ".join(stats))
+
+        # Single curve: show peak stats in plot title (mirrors live viewer style).
+        # Multiple curves: clear title, show per-curve stats in the bottom label.
+        if len(self._curves) == 1:
+            sole_xy = list(self._curves.values())[0].getData()
+            ps = _compute_peak_stats(*sole_xy) if sole_xy[0] is not None else ""
+            self.plot_widget.setTitle(ps, color="#aaaaaa", size="11pt")
+            self.stats_label.setText("")
+        else:
+            self.plot_widget.setTitle("")
+            self.stats_label.setText("   ".join(stats))
         smart_legend_position(self.plot_widget)
 
     # ── Double-click → details dialog ─────────────────────────────────────────

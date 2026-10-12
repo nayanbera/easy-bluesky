@@ -128,6 +128,8 @@ class LiveViewer(QWidget):
     scan_point_completed  = Signal(int)          # seq_num of each event doc
     scan_total_points     = Signal(int)          # num_points from start doc (0 if unknown)
     scan_stopped          = Signal()             # stop doc received — plan completed/failed
+    scan_start_doc        = Signal(dict)         # bluesky start document (for Plans Log)
+    scan_stop_doc         = Signal(dict)         # bluesky stop document  (for Plans Log)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -361,6 +363,7 @@ class LiveViewer(QWidget):
 
     def _on_doc(self, name, doc):
         if name == "start":
+            self.scan_start_doc.emit(doc)
             self.scan_total_points.emit(int(doc.get("num_points") or 0))
             # Save current selections before resetting so they can be restored
             # when the new run's descriptor arrives (if signals match).
@@ -443,13 +446,21 @@ class LiveViewer(QWidget):
             if restored_y:
                 y_chosen = set(restored_y)
             else:
-                # Use start-doc detectors → everything-except-X fallback
+                # Use start-doc detectors, but skip non-numeric fields
+                # (file-path strings and image arrays are not plottable).
                 det_fields = _fields_for(self._start_detectors)
-                if det_fields:
-                    y_chosen = set(det_fields)
+                plottable = [f for f in det_fields
+                             if not any(tok in f.lower().split("_")
+                                        for tok in ("file", "image", "name", "path"))
+                             and f != x_chosen]
+                if plottable:
+                    y_chosen = {plottable[0]}
+                elif det_fields:
+                    y_chosen = {det_fields[0]}
                 else:
-                    y_chosen = {k for k in keys
-                                if k != x_chosen and k not in ("time", "seq_num")}
+                    fallback = [k for k in keys
+                                if k != x_chosen and k not in ("time", "seq_num")]
+                    y_chosen = {fallback[0]} if fallback else set()
 
             for i in range(self.y_list.count()):
                 self.y_list.item(i).setSelected(
@@ -492,6 +503,7 @@ class LiveViewer(QWidget):
                 )
 
         elif name == "stop":
+            self.scan_stop_doc.emit(doc)
             status = doc.get("exit_status", "unknown")
             n      = doc.get("num_events", "?")
             self.run_label.setText(f"Run complete — {status}  ({n} events)")
@@ -608,7 +620,13 @@ class LiveViewer(QWidget):
             y_chosen = set(restored_y)
         else:
             det_fields = _fields_for(self._start_detectors)
-            if det_fields:
+            plottable = [f for f in det_fields
+                         if not any(tok in f.lower().split("_")
+                                    for tok in ("file", "image", "name", "path"))
+                         and f != x_chosen]
+            if plottable:
+                y_chosen = {plottable[0]}
+            elif det_fields:
                 y_chosen = set(det_fields)
             else:
                 y_chosen = {k for k in keys
