@@ -2514,8 +2514,13 @@ class ExperimentsTab(QWidget):
             self._running_item_uid = uid
             # Pick up num_points if the ZMQ start doc arrived before this poll tick;
             # otherwise on_scan_started will set it when the start doc arrives.
-            self._running_item_total_points = self._pending_total_points
-            self._pending_total_points      = 0
+            # Only consume _pending_total_points for a real plan uid, not the
+            # transient empty-uid gap the RE Manager emits between consecutive plans.
+            if uid:
+                self._running_item_total_points = self._pending_total_points
+                self._pending_total_points      = 0
+            else:
+                self._running_item_total_points = 0
             self._running_item_start_time   = time.time() if uid else 0.0
             self._completed_points          = 0
             self._plan_first_event_time     = 0.0
