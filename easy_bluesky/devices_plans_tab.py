@@ -448,7 +448,7 @@ class DevicesPlansTab(QWidget):
         self._pending_pv_updates: dict = {}    # (dev, sig) → (value, units)
         self._pending_desc_updates: dict = {}  # (dev, sig) → desc
         self._pv_flush_timer = QTimer(self)
-        self._pv_flush_timer.setInterval(100)
+        self._pv_flush_timer.setInterval(200)
         self._pv_flush_timer.timeout.connect(self._flush_pv_updates)
         self._pv_flush_timer.start()
         # Fingerprint to skip full rebuild when devices list is unchanged
@@ -483,7 +483,7 @@ class DevicesPlansTab(QWidget):
         self._flush_rate_spin.setRange(0.1, 10.0)
         self._flush_rate_spin.setSingleStep(0.1)
         self._flush_rate_spin.setDecimals(1)
-        self._flush_rate_spin.setValue(0.1)
+        self._flush_rate_spin.setValue(0.2)
         self._flush_rate_spin.setSuffix(" s")
         self._flush_rate_spin.setFixedWidth(68)
         self._flush_rate_spin.setToolTip(
