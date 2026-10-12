@@ -1331,14 +1331,13 @@ class ExperimentsTab(QWidget):
         self._queue_in_progress        = False  # True while a queue session is active (including between-plan gaps)
         self._manager_state_prev: str  = "idle"  # previous manager_state for transition detection
         self._queue_plans_at_start     = 0    # items in queue when Start was pressed (set by main.py)
-        # Client-side loop state
-        self._loop_template: list  = []   # snapshot of original items when loop enabled
-        self._loop_copies_list: list = [] # ordered list of copy item_uids (cycles 2+)
-        self._loop_copies_set: set  = set()
-        self._loop_cycle_size: int  = 0   # M = plans per cycle
-        self._loop_n_cycles: int    = 1   # current N setting
+        # Server-side loop state
+        self._server_loop_active: bool = False   # True when queue_mode.loop=True
+        self._server_loop_cycle_size: int = 0    # plans per cycle (queue size at loop enable)
+        self._server_loop_n_cycles: int   = 0    # requested cycles (0=∞)
+        self._server_loop_history_start: int = 0 # items_in_history when loop was enabled
+        self._loop_patched_uids: set = set()     # item_uids already patched with new scan_num
         self._history_count_at_loop_start: int = 0  # items_in_history when queue started
-        self._total_items_at_start: int         = 0  # N×M set at queue start
         self._current_history_count: int        = 0  # latest items_in_history from status
         self._last_history_len: int             = 0  # for incremental update_history
         self._start_doc_cache:  dict            = {}  # run_uid → start-doc metadata
@@ -1703,18 +1702,22 @@ class ExperimentsTab(QWidget):
         opt_row.addWidget(vsep1)
 
         self.chk_loop = QCheckBox("Loop")
-        self.chk_loop.setToolTip("Pre-populate queue with N copies of the current plans.")
+        self.chk_loop.setToolTip(
+            "Enable server-side loop: RE Manager re-queues each plan after it completes.\n"
+            "Set cycles to 0 for infinite looping."
+        )
         opt_row.addWidget(self.chk_loop)
 
         self.spin_loop = QSpinBox()
-        self.spin_loop.setRange(1, 999)
-        self.spin_loop.setValue(2)
-        self.spin_loop.setToolTip("Number of times to run the full queue (1 = run once, no loop).")
+        self.spin_loop.setRange(0, 9999)
+        self.spin_loop.setValue(0)
+        self.spin_loop.setSpecialValueText("∞")
+        self.spin_loop.setToolTip("Number of cycles (0 = run forever).")
         self.spin_loop.setFixedWidth(64)
         self.spin_loop.setEnabled(False)
         opt_row.addWidget(self.spin_loop)
 
-        lbl_times = QLabel("× (total runs)")
+        lbl_times = QLabel("cycles")
         lbl_times.setStyleSheet("font-size: 11px;")
         opt_row.addWidget(lbl_times)
 
@@ -2290,7 +2293,7 @@ class ExperimentsTab(QWidget):
 
         selected  = self.queue_compact.selectedItems()
         n_sel     = len(selected)
-        loop_on   = bool(self._loop_copies_list)
+        loop_on   = self._server_loop_active
 
         menu = QMenu(self)
 
@@ -2660,22 +2663,25 @@ class ExperimentsTab(QWidget):
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 
-        # Track current history count for progress bar and loop spinner clamp
+        # Track current history count for progress bar and loop label
         self._current_history_count = status.get("items_in_history", self._current_history_count)
-        # Spinner minimum clamp: can't undo completed cycles
+        # Server-side loop: auto-stop after N cycles
         queue_running = manager_state == "executing_queue"
-        if queue_running and self._loop_cycle_size > 0:
-            done  = max(0, self._current_history_count - self._history_count_at_loop_start)
-            completed_cycles = done // self._loop_cycle_size
-            new_min = max(1, completed_cycles + 1)
-            if self.spin_loop.minimum() != new_min:
-                self.spin_loop.blockSignals(True)
-                self.spin_loop.setMinimum(new_min)
-                self.spin_loop.blockSignals(False)
-        elif not queue_running and self.spin_loop.minimum() != 1:
-            self.spin_loop.blockSignals(True)
-            self.spin_loop.setMinimum(1)
-            self.spin_loop.blockSignals(False)
+        if (queue_running and self._server_loop_active
+                and self._server_loop_n_cycles > 0
+                and self._server_loop_cycle_size > 0):
+            done = max(0, self._current_history_count - self._server_loop_history_start)
+            completed_cycles = done // self._server_loop_cycle_size
+            if completed_cycles >= self._server_loop_n_cycles:
+                self._log(f"Loop complete — {completed_cycles} cycle(s) done, disabling loop.")
+                if self.worker:
+                    self.worker.queue_mode_set({"loop": False})
+                self._clear_loop_state()
+                self.chk_loop.blockSignals(True)
+                self.chk_loop.setChecked(False)
+                self.spin_loop.setEnabled(False)
+                self.chk_loop.blockSignals(False)
+                self._update_loop_ui()
         # Transition "running" → other state means a plan just finished.
         # Trigger an immediate history fetch to log completed plans without
         # waiting for the running_item sentinel or the 30-second fallback.
@@ -3143,152 +3149,75 @@ class ExperimentsTab(QWidget):
         if not checked:
             self._on_loop_unchecked()
         else:
-            if self.spin_loop.value() < 2:
-                self.spin_loop.blockSignals(True)
-                self.spin_loop.setValue(2)
-                self.spin_loop.blockSignals(False)
-            self._apply_loop_count(self.spin_loop.value())
+            self._on_loop_enabled()
         self._update_loop_ui()
 
-    def _on_loop_unchecked(self) -> None:
-        """Ask user what to do with copied plans when loop is unchecked."""
-        if not self._loop_copies_list:
-            # No copies in queue — just clear loop state
-            self._clear_loop_state()
+    def _on_loop_enabled(self) -> None:
+        """Enable server-side loop mode."""
+        if not self.worker:
             return
-        n_copies = len(self._loop_copies_list)
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Loop Disabled")
-        msg.setText(
-            f"Loop mode disabled. There are {n_copies} copied plan(s) in the queue.\n\n"
-            "What should happen to them?"
-        )
-        btn_remove = msg.addButton("Remove copies", QMessageBox.ButtonRole.DestructiveRole)
-        btn_keep   = msg.addButton("Keep all",      QMessageBox.ButtonRole.AcceptRole)
-        btn_cancel = msg.addButton("Cancel",         QMessageBox.ButtonRole.RejectRole)
-        msg.setDefaultButton(btn_cancel)
-        msg.exec()
-        clicked = msg.clickedButton()
-        if clicked == btn_cancel:
-            # Recheck the checkbox without re-triggering _on_loop_checkbox
+        self._server_loop_cycle_size = len(self._current_queue_items)
+        self._server_loop_n_cycles   = self.spin_loop.value()
+        self._server_loop_history_start = self._current_history_count
+        self._loop_patched_uids.clear()
+        ok, msg = self.worker.queue_mode_set({"loop": True})
+        if not ok:
+            self._log(f"✗ Loop: {msg}")
             self.chk_loop.blockSignals(True)
-            self.chk_loop.setChecked(True)
-            self.spin_loop.setEnabled(True)
+            self.chk_loop.setChecked(False)
+            self.spin_loop.setEnabled(False)
             self.chk_loop.blockSignals(False)
             return
-        if clicked == btn_remove:
-            self._remove_loop_copies()
-        # Keep all: just clear tracking, leave items in queue
+        self._server_loop_active = True
+        n = self._server_loop_n_cycles
+        lbl = "∞" if n == 0 else str(n)
+        self._log(f"Loop enabled — {lbl} cycles, {self._server_loop_cycle_size} plans/cycle")
+
+    def _on_loop_unchecked(self) -> None:
+        """Disable server-side loop mode."""
+        if self.worker and self._server_loop_active:
+            ok, msg = self.worker.queue_mode_set({"loop": False})
+            if not ok:
+                self._log(f"✗ Loop off: {msg}")
         self._clear_loop_state()
 
     def _clear_loop_state(self) -> None:
-        self._loop_template    = []
-        self._loop_copies_list = []
-        self._loop_copies_set  = set()
-        self._loop_cycle_size  = 0
-        self._loop_n_cycles    = 1
-
-    def _remove_loop_copies(self) -> None:
-        """Remove all copy-cycle items from the queueserver queue."""
-        if not self.worker:
-            self._loop_copies_list.clear()
-            self._loop_copies_set.clear()
-            return
-        for uid in list(self._loop_copies_list):
-            self.worker.remove_item(uid)
-        self._loop_copies_list.clear()
-        self._loop_copies_set.clear()
+        self._server_loop_active     = False
+        self._server_loop_cycle_size = 0
+        self._server_loop_n_cycles   = 0
+        self._server_loop_history_start = 0
+        self._loop_patched_uids.clear()
 
     def _on_spin_loop_changed(self, n: int) -> None:
         if self.chk_loop.isChecked():
-            self._apply_loop_count(n)
-
-    def _apply_loop_count(self, n: int) -> None:
-        """Expand or contract the queue to reflect the requested cycle count."""
-        if not self.worker or not self._active_exp_path:
-            self._loop_n_cycles = n
-            return
-        old_n = self._loop_n_cycles
-        self._loop_n_cycles = n
-        # First time loop is enabled: build template from current queue
-        if not self._loop_template:
-            self._loop_template   = list(self._current_queue_items)
-            self._loop_cycle_size = len(self._loop_template)
-            if self._loop_cycle_size == 0:
-                return
-        if n > old_n:
-            self._add_loop_cycles(n - old_n)
-        elif n < old_n:
-            self._remove_loop_cycles(old_n - n)
-        self._update_loop_ui()
-
-    def _inject_loop_metadata(self, item: dict, cycle_num: int) -> None:
-        """Embed loop tracking fields into item's md (only if plan accepts md)."""
-        plan_name = item.get("name", "")
-        plan_info = self._plans.get(plan_name, {})
-        params    = plan_info.get("parameters", []) if plan_info else []
-        if not any(p.get("name") == "md" for p in params):
-            return
-        item.setdefault("kwargs", {}).setdefault("md", {}).update({
-            "_loop_n_cycles":   self._loop_n_cycles,
-            "_loop_cycle_num":  cycle_num,
-            "_loop_cycle_size": self._loop_cycle_size,
-        })
-
-    def _add_loop_cycles(self, count: int) -> None:
-        """Add `count` more copies of the template to the queue end."""
-        import copy as _copy
-        n_existing_copies = len(self._loop_copies_list) // self._loop_cycle_size if self._loop_cycle_size else 0
-        for ci in range(count):
-            cycle_num = n_existing_copies + ci + 2  # cycle 1 = original; copies start at 2
-            for item in self._loop_template:
-                item_copy = _copy.deepcopy(item)
-                # Strip old scan_num so _inject_metadata assigns a fresh one
-                (item_copy.get("kwargs") or {}).get("md", {}).pop("scan_num", None)
-                # Strip old item_uid so queueserver generates a new one
-                item_copy.pop("item_uid", None)
-                self._inject_loop_metadata(item_copy, cycle_num)
-                item_copy = self._inject_metadata(item_copy)
-                ok, new_uid = self.worker.add_item(item_copy)
-                if ok and new_uid:
-                    self._loop_copies_list.append(new_uid)
-                    self._loop_copies_set.add(new_uid)
-
-    def _remove_loop_cycles(self, count: int) -> None:
-        """Remove the last `count` cycles worth of copies from the queue."""
-        items_to_remove = count * self._loop_cycle_size
-        if not self.worker:
-            return
-        removed = 0
-        while removed < items_to_remove and self._loop_copies_list:
-            uid = self._loop_copies_list.pop()
-            self._loop_copies_set.discard(uid)
-            self.worker.remove_item(uid)
-            removed += 1
+            self._server_loop_n_cycles = n
 
     def _update_loop_ui(self) -> None:
         """Sync loop controls and drag state to current loop state."""
-        loop_active = bool(self._loop_copies_list)
-        # Drag: disable when loop is active
         from qtpy.QtWidgets import QAbstractItemView
-        if loop_active:
+        if self._server_loop_active:
             self.queue_compact.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         else:
             self.queue_compact.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self._loop_drag_lbl.setVisible(loop_active)
+        self._loop_drag_lbl.setVisible(self._server_loop_active)
         # Update iteration label
-        if loop_active and self._loop_n_cycles > 1 and self._loop_cycle_size > 0:
-            done  = max(0, self._current_history_count - self._history_count_at_loop_start)
-            cur   = done // self._loop_cycle_size + 1
-            cur   = min(cur, self._loop_n_cycles)
-            self._loop_iter_lbl.setText(f"(cycle {cur}/{self._loop_n_cycles})")
+        if self._server_loop_active and self._server_loop_cycle_size > 0:
+            done = max(0, self._current_history_count - self._server_loop_history_start)
+            cur  = done // self._server_loop_cycle_size + 1
+            n    = self._server_loop_n_cycles
+            if n == 0:
+                self._loop_iter_lbl.setText(f"(cycle {cur}/∞)")
+            else:
+                cur = min(cur, n)
+                self._loop_iter_lbl.setText(f"(cycle {cur}/{n})")
         else:
             self._loop_iter_lbl.setText("")
 
     def on_queue_started(self, history_count: int, total_items: int) -> None:
         """Called by main.py when queue is successfully started."""
-        self._history_count_at_loop_start = history_count
-        self._total_items_at_start        = total_items
+        self._history_count_at_loop_start    = history_count
+        self._server_loop_history_start      = history_count
+        self._loop_patched_uids.clear()
         self._update_progress_bars()
 
     # ── Public setters ─────────────────────────────────────────────────────────
@@ -4260,6 +4189,7 @@ class ExperimentsTab(QWidget):
         self._logged_uids      = set()
         self._logged_scan_nums = set()
         self._last_history_len = 0  # reset incremental pointer on experiment change
+        self._loop_patched_uids.clear()
         # Any UID already in plans_log.jsonl was processed in a prior session;
         # mark it seen so update_history never re-shows its error dialog.
         self._shown_error_uids = set()
@@ -4804,34 +4734,39 @@ class ExperimentsTab(QWidget):
             for i in range(self.queue_compact.count())
             if self.queue_compact.item(i).isSelected()
         }
-        # Multi-client loop detection: if any item has _loop_n_cycles > 1 in md
-        # and we're not already tracking a loop, reconstruct loop state from queue.
-        if not self._loop_copies_list:
+        # Server-side loop: patch stale scan_nums on any queued item whose scan_num
+        # has already been logged (meaning the server re-queued it for the next cycle).
+        # The server adds completed items to the BACK of the queue, so the cycle N+1
+        # copy sits behind cycle N items — giving 1+ plan-durations of window to patch.
+        if self._server_loop_active and self._logged_scan_nums and self.worker:
+            import copy as _copy
             for item in items:
-                md_chk = (item.get("kwargs") or {}).get("md") or {}
-                n_cyc  = md_chk.get("_loop_n_cycles", 1)
-                c_size = md_chk.get("_loop_cycle_size", 0)
-                if n_cyc > 1 and c_size > 0:
-                    # Loop active from another client — reconstruct tracking
-                    self._loop_cycle_size = c_size
-                    self._loop_n_cycles   = n_cyc
-                    for it in items:
-                        it_md  = (it.get("kwargs") or {}).get("md") or {}
-                        it_uid = it.get("item_uid", "")
-                        if it_uid and it_md.get("_loop_cycle_num", 1) > 1:
-                            if it_uid not in self._loop_copies_set:
-                                self._loop_copies_list.append(it_uid)
-                                self._loop_copies_set.add(it_uid)
-                    if not self.chk_loop.isChecked():
-                        self.chk_loop.blockSignals(True)
-                        self.chk_loop.setChecked(True)
-                        self.spin_loop.setEnabled(True)
-                        self.spin_loop.blockSignals(True)
-                        self.spin_loop.setValue(n_cyc)
-                        self.spin_loop.blockSignals(False)
-                        self.chk_loop.blockSignals(False)
-                    self._update_loop_ui()
-                    break
+                uid = item.get("item_uid", "")
+                if not uid or uid in self._loop_patched_uids:
+                    continue
+                name   = item.get("name", "")
+                kwargs = item.get("kwargs", {}) or {}
+                if _is_motion_only(name, kwargs):
+                    continue
+                plan_info = self._plans.get(name, {})
+                params    = plan_info.get("parameters", []) if plan_info else []
+                if not any(p.get("name") == "md" for p in params):
+                    continue
+                current_sn = (kwargs.get("md") or {}).get("scan_num")
+                if current_sn is None:
+                    continue
+                try:
+                    current_sn = int(current_sn)
+                except (ValueError, TypeError):
+                    continue
+                if current_sn in self._logged_scan_nums:
+                    new_sn = self._next_scan_num
+                    self._next_scan_num += 1
+                    patched = _copy.deepcopy(item)
+                    patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = new_sn
+                    ok, _ = self.worker.update_item(patched)
+                    if ok:
+                        self._loop_patched_uids.add(uid)
 
         self.queue_compact.clear()
         for i, item in enumerate(items):
@@ -4843,17 +4778,13 @@ class ExperimentsTab(QWidget):
             md       = kwargs.get("md", {}) or {}
             scan_num = md.get("scan_num")
             prefix   = f"#{scan_num}" if scan_num is not None else f"{i + 1}."
-            cycle_num = md.get("_loop_cycle_num")
-            cycle_tag = f" [C{cycle_num}]" if cycle_num and cycle_num > 1 else ""
-            li = QListWidgetItem(f"{prefix}  {name}{summary}{cycle_tag}")
+            li = QListWidgetItem(f"{prefix}  {name}{summary}")
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
             client_host = md.get("client_host", "")
             if client_host and client_host != socket.gethostname():
                 li.setForeground(QColor("#e8a44a"))
                 li.setToolTip(f"Queued from: {client_host}")
-            elif cycle_num and cycle_num > 1:
-                li.setForeground(QColor("#888888"))
             self.queue_compact.addItem(li)
             if uid and uid in selected_uids:
                 li.setSelected(True)
