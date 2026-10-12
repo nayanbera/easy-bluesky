@@ -2498,9 +2498,20 @@ class ExperimentsTab(QWidget):
         _EXECUTING = ("executing_queue", "executing_plan", "starting_queue")
         if manager_state in _EXECUTING and prev_manager not in _EXECUTING:
             self._queue_in_progress = True
-        if manager_state == "idle" and prev_manager in _EXECUTING:
-            # Queue session ended — reset all session counters here, not in
-            # update_compact_queue, to avoid the poll-loop race condition.
+        # Reset queue session only when BOTH the manager is idle AND the queue
+        # and running-item snapshots (from the previous poll tick) are empty.
+        # This avoids a false reset when bluesky-queueserver v0.0.25 briefly
+        # reports manager_state="idle" between consecutive plans in a queue.
+        # update_re_status fires before queue_updated/running_item_updated in
+        # each tick, so _current_queue_items/_current_running_item still hold
+        # the previous tick's values when this check runs.
+        _queue_truly_done = (
+            manager_state == "idle"
+            and not self._current_queue_items
+            and not self._current_running_item
+            and self._queue_in_progress
+        )
+        if _queue_truly_done:
             self._queue_done_events   = 0
             self._queue_done_plans    = 0
             self._queue_total_events  = 0
@@ -2878,7 +2889,14 @@ class ExperimentsTab(QWidget):
                     and self._manager_state in ("executing_queue", "starting_queue"))
             n_est = max(n_remaining, 1) if (_gap and n_remaining == 0) else n_remaining
 
-            total_ev = started_ev + n_est * avg_ev if avg_ev > 0 else max(started_ev, 1)
+            # If a plan is running but its ZMQ start doc hasn't arrived yet,
+            # the current plan is not counted in started_ev.  Add one extra
+            # avg_ev slot so the bar doesn't briefly show 100%.
+            _cur_unaccounted = (running
+                                and self._running_item_total_points == 0
+                                and self._queue_started_plans > 0)
+            total_ev = (started_ev + (n_est + (1 if _cur_unaccounted else 0)) * avg_ev
+                        if avg_ev > 0 else max(started_ev, 1))
             q_frac   = min(done_ev / total_ev, 1.0) if total_ev > 0 else 0.0
 
             n_done  = self._queue_done_plans
