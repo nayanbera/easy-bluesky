@@ -1320,7 +1320,10 @@ class ExperimentsTab(QWidget):
         self._plan_last_event_time      = 0.0
         self._queue_done_events        = 0    # events from plans already finished
         self._queue_done_plans         = 0    # plans completed this session
+        self._queue_total_events       = 0    # sum of num_points from all started plans (ZMQ start docs)
+        self._queue_started_plans      = 0    # how many plans have started (ZMQ start docs)
         self._queue_in_progress        = False  # True while a queue session is active (including between-plan gaps)
+        self._manager_state_prev: str  = "idle"  # previous manager_state for transition detection
         self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log (fallback)
         self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
@@ -2488,7 +2491,24 @@ class ExperimentsTab(QWidget):
         re_state      = status.get("re_state", "")
         manager_state = status.get("manager_state", "idle")
         self._re_state    = re_state
+        prev_manager      = self._manager_state
         self._manager_state = manager_state
+        self._manager_state_prev = prev_manager
+
+        _EXECUTING = ("executing_queue", "executing_plan", "starting_queue")
+        if manager_state in _EXECUTING and prev_manager not in _EXECUTING:
+            self._queue_in_progress = True
+        if manager_state == "idle" and prev_manager in _EXECUTING:
+            # Queue session ended — reset all session counters here, not in
+            # update_compact_queue, to avoid the poll-loop race condition.
+            self._queue_done_events   = 0
+            self._queue_done_plans    = 0
+            self._queue_total_events  = 0
+            self._queue_started_plans = 0
+            self._queue_in_progress   = False
+            self._plan_event_intervals.clear()
+            self._plan_last_event_time = 0.0
+
         env_open = env_state not in ("", "closed")
         running  = re_state == "running"
         paused   = re_state == "paused"
@@ -2718,6 +2738,10 @@ class ExperimentsTab(QWidget):
             self._record_plan_timing()
 
         self._pending_total_points = num_points
+        # Accumulate queue-wide totals for the event-based queue progress bar.
+        if self._queue_in_progress:
+            self._queue_total_events  += num_points
+            self._queue_started_plans += 1
         # Reset per-run counters so plan #N+1 events don't start from where plan #N left off.
         self._completed_points          = 0
         self._plan_first_event_time     = 0.0
@@ -2833,54 +2857,53 @@ class ExperimentsTab(QWidget):
         else:
             self._plan_bar.setVisible(False)
 
-        # ── Queue progress bar — plan-count based ─────────────────────────────
-        if running or self._queue_in_progress:
-            n_done      = self._queue_done_plans
+        # ── Queue progress bar — event-count based (ZMQ start/event docs) ───────
+        # Using cumulative event counts avoids poll-loop race conditions: the bar
+        # never resets mid-session regardless of queue_updated / running_item_updated
+        # ordering.  _queue_total_events grows as plans start (via on_scan_started);
+        # _queue_done_events accumulates finished plans; _completed_points tracks the
+        # current plan.  All three are monotonically increasing within a session.
+        if self._queue_in_progress:
+            done_ev    = self._queue_done_events + self._completed_points
+            started_ev = self._queue_total_events          # total from started plans
             n_remaining = len(self._current_queue_items)
-            # Between plans (running is falsy but _queue_in_progress is True),
-            # the current plan slot is empty — don't add +1 for it.
-            n_total     = n_done + (1 if running else 0) + n_remaining
+            avg_ev     = (started_ev / self._queue_started_plans
+                          if self._queue_started_plans > 0 else 0)
 
-            # Fraction of the current plan completed (0.0 – <1.0).
-            # Zero during the between-plan gap so the bar holds at n_done/n_total.
-            if running:
-                if total > 0 and total >= done:
-                    cur_frac = min(done / total, 0.97)
-                elif db_est and db_est > 0:
-                    cur_frac = min(elapsed / db_est, 0.97)
-                else:
-                    cur_frac = 0.0
-            else:
-                cur_frac = 0.0
+            # During the between-plan gap the queue may momentarily appear empty
+            # (plan popped before running_item is updated).  If we're still
+            # executing but n_remaining is 0 and no plan is running, assume at
+            # least one more plan is coming so the bar doesn't flash to 100%.
+            _gap = (not running
+                    and self._manager_state in ("executing_queue", "starting_queue"))
+            n_est = max(n_remaining, 1) if (_gap and n_remaining == 0) else n_remaining
 
-            # Express queue progress as fractional plans (n_done + cur_frac).
-            self._queue_bar.setRange(0, max(n_total, 1) * 1000)
-            self._queue_bar.setValue(int((n_done + cur_frac) * 1000))
+            total_ev = started_ev + n_est * avg_ev if avg_ev > 0 else max(started_ev, 1)
+            q_frac   = min(done_ev / total_ev, 1.0) if total_ev > 0 else 0.0
 
-            # Time estimate for remaining queue.
+            n_done  = self._queue_done_plans
+            n_total = n_done + (1 if running else 0) + n_remaining
+
+            self._queue_bar.setRange(0, 1000)
+            self._queue_bar.setValue(int(q_frac * 1000))
+
+            # Time estimate for remaining queue (only when plan is actively running).
             if running and total > 0 and avg_interval is not None:
-                # Best case: live event rate + t_init for final move + queued plans.
                 events_left = max(0, total - done)
                 secs_left   = events_left * avg_interval + t_init
                 if n_remaining > 0:
-                    # Per-queued-plan: use DB estimate if available, else live rate.
                     per_plan = db_est if db_est and db_est > 0 else (total * avg_interval + 2 * t_init)
                     secs_left += n_remaining * per_plan
                 time_str = f"  (~{self._format_duration(secs_left)} left)"
             elif running and db_est and db_est > 0:
-                secs_left = max(0.0, db_est * (1.0 - cur_frac)) + n_remaining * db_est
+                secs_left = max(0.0, db_est * (1.0 - min(elapsed / db_est, 1.0))) + n_remaining * db_est
                 time_str  = f"  (~{self._format_duration(secs_left)} left  [{db_conf}])"
             else:
                 time_str = ""
-            # Show event progress alongside plan progress when total is known.
-            if running and total > 0:
-                event_info = f"  |  {done} / {total} events"
-            elif running and done > 0:
-                event_info = f"  |  {done} events"
-            else:
-                event_info = ""
+
+            ev_str = f"  |  {done_ev} / {int(total_ev)} events" if total_ev > 0 else ""
             self._queue_bar.setFormat(
-                f"Queue: {n_done} / {n_total} plans{event_info}{time_str}")
+                f"Queue: {n_done} / {n_total} plans{ev_str}{time_str}")
             self._queue_bar.setVisible(True)
         else:
             self._queue_bar.setVisible(False)
@@ -4238,19 +4261,9 @@ class ExperimentsTab(QWidget):
         self._queue_has_items = n > 0
         self.queue_count_label.setText(f"{n} item{'s' if n != 1 else ''}")
 
-        # Reset queue-session counters only when the queue is truly idle:
-        # manager_state must be "idle" (not "executing_queue") so we don't
-        # mistakenly reset during the ~1-poll gap when the RE Manager has
-        # popped the next plan from the queue but hasn't started it yet.
-        _queue_executing = self._manager_state in (
-            "executing_queue", "executing_plan", "starting_queue",
-        )
-        if n == 0 and not self._current_running_item and not _queue_executing:
-            self._queue_done_events    = 0
-            self._queue_done_plans     = 0
-            self._queue_in_progress    = False
-            self._plan_event_intervals.clear()
-            self._plan_last_event_time = 0.0
+        # Queue-session counter reset is handled in update_re_status() via
+        # manager_state transition detection — no reset here to avoid the
+        # poll-loop race (queue_updated fires before running_item_updated).
 
         self._update_progress_bars()
 
