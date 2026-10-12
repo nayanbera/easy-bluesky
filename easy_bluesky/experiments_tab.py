@@ -2135,10 +2135,11 @@ class ExperimentsTab(QWidget):
         if not has_md_param and not already_has_md:
             return result_item
         existing_md = result_item.get("kwargs", {}).get("md", {}) or {}
-        # Always strip scan_num from existing metadata — it belongs to whichever
-        # experiment originally queued the plan (history requeue, queue file load,
-        # etc.) and must be recalculated for the current active experiment.
-        existing_md.pop("scan_num", None)
+        # Strip infrastructure fields from existing metadata — they belong to the
+        # original experiment/host and must be refreshed for the current context.
+        # scan_num is recalculated below; exp_dir and client_host come from auto_md.
+        for _k in ("scan_num", "exp_dir", "client_host"):
+            existing_md.pop(_k, None)
         merged = {**auto_md, **existing_md}   # user-supplied md wins
         # Lock in scan_num at queue time so custom_plans.py doesn't need to
         # read scans_log.json at execution time (avoids stale-file off-by-one).

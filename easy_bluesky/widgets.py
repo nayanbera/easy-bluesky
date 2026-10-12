@@ -1249,12 +1249,21 @@ class PlanDialog(QDialog):
 
     def _populate(self, item):
         name = item.get("name", "")
+        found = False
         for i in range(self._plan_tree.topLevelItemCount()):
             it = self._plan_tree.topLevelItem(i)
             if it.text(0) == name:
+                # Block signals so setCurrentItem doesn't trigger _on_plan_changed
+                # via currentItemChanged — we call it explicitly below to guarantee
+                # param_form is built before set_values runs.
+                self._plan_tree.blockSignals(True)
                 self._plan_tree.setCurrentItem(it)
                 self._plan_tree.scrollToItem(it)
+                self._plan_tree.blockSignals(False)
+                found = True
                 break
+        if found and name in self.plans:
+            self._on_plan_changed(name)
         args   = item.get("args", [])
         kwargs = {k: v for k, v in item.get("kwargs", {}).items() if k != "md"}
         self.param_form.set_values(args, kwargs)
