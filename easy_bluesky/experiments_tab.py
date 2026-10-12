@@ -2498,16 +2498,19 @@ class ExperimentsTab(QWidget):
         _EXECUTING = ("executing_queue", "executing_plan", "starting_queue")
         if manager_state in _EXECUTING and prev_manager not in _EXECUTING:
             self._queue_in_progress = True
-        # Reset queue session when manager is idle AND all started plans have
-        # finished (tracked via ZMQ stop docs, so this is immune to the brief
-        # manager_state="idle" blips bluesky-queueserver v0.0.25 emits between
-        # consecutive plans — during those blips _queue_done_plans <
-        # _queue_started_plans because the next plan hasn't started yet).
+        # Reset queue session only when ALL three are true:
+        #  1. manager is idle
+        #  2. all ZMQ-counted plans have finished (stop docs >= start docs)
+        #  3. the queue is empty (previous tick's snapshot, so non-empty during
+        #     the brief inter-plan idle blip bluesky-queueserver v0.0.25 emits)
+        # Condition 3 handles the edge case where stop doc for plan N fires
+        # before start doc for plan N+1 making done==started transiently.
         _queue_truly_done = (
             manager_state == "idle"
             and self._queue_in_progress
             and self._queue_started_plans > 0
             and self._queue_done_plans >= self._queue_started_plans
+            and not self._current_queue_items
         )
         if _queue_truly_done:
             self._queue_done_events   = 0
@@ -2748,10 +2751,12 @@ class ExperimentsTab(QWidget):
             self._record_plan_timing()
 
         self._pending_total_points = num_points
-        # Accumulate queue-wide totals for the event-based queue progress bar.
-        if self._queue_in_progress:
-            self._queue_total_events  += num_points
-            self._queue_started_plans += 1
+        # A ZMQ start doc means a plan is running — the queue session is active.
+        # Set _queue_in_progress unconditionally so we don't miss the first plan
+        # when the start doc arrives before the poll loop detects executing_plan.
+        self._queue_in_progress   = True
+        self._queue_total_events  += num_points
+        self._queue_started_plans += 1
         # Reset per-run counters so plan #N+1 events don't start from where plan #N left off.
         self._completed_points          = 0
         self._plan_first_event_time     = 0.0
@@ -2769,8 +2774,6 @@ class ExperimentsTab(QWidget):
         _queue_done_plans so the queue progress bar advances immediately on
         plan completion, without waiting for the poll loop.
         """
-        if not self._queue_in_progress:
-            return
         self._queue_done_events += self._completed_points
         self._queue_done_plans  += 1
         # _completed_points will be reset by on_scan_started() for the next plan,
