@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QAbstractItemView,
     QMessageBox, QApplication, QSplitter, QSizePolicy, QStackedWidget, QTabBar,
+    QDialog,
 )
 from qtpy.QtCore import Qt, QThread, Signal
 from .config import PLOT_COLORS, ZMQ_DOC_ADDR
@@ -121,6 +122,44 @@ class ZMQDocThread(QThread):
         ctx.term()
 
 
+def _ask_move_position(parent, motor_name, x_clicked, cen, com, x_field=""):
+    """Dialog offering move-to choices: clicked position, CEN, COM. Returns float or None."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Move Motor")
+    lay = QVBoxLayout(dlg)
+    lay.setSpacing(6)
+
+    info = QLabel(f"Move  <b>{motor_name}</b>  to:")
+    info.setTextFormat(Qt.TextFormat.RichText)
+    lay.addWidget(info)
+    if x_field and x_field != motor_name:
+        sub = QLabel(f"<small>(X-axis signal: {x_field})</small>")
+        sub.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(sub)
+
+    chosen = [None]
+
+    def _btn(label, value, color=None):
+        b = QPushButton(label)
+        if color:
+            b.setStyleSheet(f"color: {color}; font-weight: bold;")
+        b.clicked.connect(lambda: (chosen.__setitem__(0, value), dlg.accept()))
+        lay.addWidget(b)
+
+    _btn(f"Clicked position  ({x_clicked:.6g})", x_clicked)
+    if cen is not None:
+        _btn(f"CEN  ({cen:.6g})", cen, "#ffdd00")
+    if com is not None:
+        _btn(f"COM  ({com:.6g})", com, "#00ccff")
+
+    cancel = QPushButton("Cancel")
+    cancel.clicked.connect(dlg.reject)
+    lay.addWidget(cancel)
+
+    dlg.exec()
+    return chosen[0]
+
+
 class LiveViewer(QWidget):
     COLORS = PLOT_COLORS
     move_requested        = Signal(str, float)           # (motor_name, target_position) — 1D
@@ -146,6 +185,8 @@ class LiveViewer(QWidget):
         self._live_fit_curve = None          # dashed fit overlay (PlotDataItem)
         self._live_fit_n_fitted = 0          # point count at last live-fit call
         self._stat_lines: list = []          # pg.InfiniteLine markers for cen / COM
+        self._cen_val: float | None = None   # last computed centroid (for move dialog)
+        self._com_val: float | None = None   # last computed COM     (for move dialog)
         self._crosshair_cleanup = None
         self._map_mode    = False            # True when 2D map is active
         self._pending_2d  = False            # auto-switch when descriptor arrives
@@ -903,6 +944,8 @@ class LiveViewer(QWidget):
             if pi.legend:
                 pi.legend.clear()
         self._stat_lines  = []
+        self._cen_val = None
+        self._com_val = None
         self._curves = {}
         self._error_items = {}
         self.x_combo.blockSignals(True)
@@ -998,6 +1041,8 @@ class LiveViewer(QWidget):
                          f"    COM = {com:.5g}")
 
             self.plot_widget.setTitle(title, color="#aaaaaa", size="11pt")
+            self._cen_val = cen
+            self._com_val = com
 
             _dash = Qt.PenStyle.DashLine
             if cen is not None:
@@ -1094,16 +1139,12 @@ class LiveViewer(QWidget):
                 motor_guess = motor_guess[: -len(suffix)]
                 break
 
-        r = QMessageBox.question(
-            self, "Move Motor",
-            f"Move  '{motor_guess}'  to  {x_val:.5g} ?\n\n"
-            f"(X-axis signal: {x_label})",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        target = _ask_move_position(
+            self, motor_guess, x_val, self._cen_val, self._com_val, x_label
         )
-        if r != QMessageBox.StandardButton.Yes:
+        if target is None:
             return
-
-        self.move_requested.emit(motor_guess, x_val)
+        self.move_requested.emit(motor_guess, target)
 
     # ── Screenshot ─────────────────────────────────────────────────────────────
 

@@ -688,6 +688,44 @@ class _MotorReproDialog(QDialog):
         layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
 
 
+def _ask_move_position(parent, motor_name, x_clicked, cen, com, x_field=""):
+    """Dialog offering move-to choices: clicked position, CEN, COM. Returns float or None."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Move Motor")
+    lay = QVBoxLayout(dlg)
+    lay.setSpacing(6)
+
+    info = QLabel(f"Move  <b>{motor_name}</b>  to:")
+    info.setTextFormat(Qt.TextFormat.RichText)
+    lay.addWidget(info)
+    if x_field and x_field != motor_name:
+        sub = QLabel(f"<small>(X-axis signal: {x_field})</small>")
+        sub.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(sub)
+
+    chosen = [None]
+
+    def _btn(label, value, color=None):
+        b = QPushButton(label)
+        if color:
+            b.setStyleSheet(f"color: {color}; font-weight: bold;")
+        b.clicked.connect(lambda: (chosen.__setitem__(0, value), dlg.accept()))
+        lay.addWidget(b)
+
+    _btn(f"Clicked position  ({x_clicked:.6g})", x_clicked)
+    if cen is not None:
+        _btn(f"CEN  ({cen:.6g})", cen, "#ffdd00")
+    if com is not None:
+        _btn(f"COM  ({com:.6g})", com, "#00ccff")
+
+    cancel = QPushButton("Cancel")
+    cancel.clicked.connect(dlg.reject)
+    lay.addWidget(cancel)
+
+    dlg.exec()
+    return chosen[0]
+
+
 # ── Main tab ───────────────────────────────────────────────────────────────────
 
 class MongoDataBrowserTab(QWidget):
@@ -725,6 +763,8 @@ class MongoDataBrowserTab(QWidget):
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
         self._crosshair_cleanup = None
         self._stat_lines: list  = []   # pg.InfiniteLine markers for cen / COM
+        self._cen_val: float | None = None   # last computed centroid (for move dialog)
+        self._com_val: float | None = None   # last computed COM      (for move dialog)
         self._fill_items: list  = []   # pg.FillBetweenItem for ±σ bands
         self._mean_curves: list = []   # mean PlotDataItems on main plot
         self._stats_panel       = None # secondary PlotWidget for RSD
@@ -1807,6 +1847,8 @@ class MongoDataBrowserTab(QWidget):
                 except Exception:
                     pass
             self._stat_lines = []
+            self._cen_val = None
+            self._com_val = None
             # For a single curve, show peak stats (cen/FWHM/COM) in the title
             # and draw vertical dotted marker lines for cen (yellow) and COM (cyan).
             if len(self._curves) == 1 and not stats_on:
@@ -1816,6 +1858,8 @@ class MongoDataBrowserTab(QWidget):
                     if ps:
                         self._plot_widget.setTitle(ps, color="#aaaaaa", size="11pt")
                         cen, com = _compute_peak_values(*sole_xy)
+                        self._cen_val = cen
+                        self._com_val = com
                         _dash = Qt.PenStyle.DashLine
                         if cen is not None:
                             ln = pg.InfiniteLine(
@@ -1867,6 +1911,8 @@ class MongoDataBrowserTab(QWidget):
             except Exception:
                 pass
         self._stat_lines = []
+        self._cen_val = None
+        self._com_val = None
         # Clean up stats overlays on the main plot
         for item in self._fill_items + self._mean_curves:
             try:
@@ -2705,19 +2751,12 @@ class MongoDataBrowserTab(QWidget):
             if arr is not None and len(arr):
                 last_pos = float(arr[-1])
 
-        msg = f"Move  '{motor_guess}'  to  {x_val:.6g}"
-        if last_pos is not None:
-            msg += f"\n\nLast scan end position: {last_pos:.6g}"
-        msg += f"\n\n(X-axis signal: {x_field})"
-
-        r = QMessageBox.question(
-            self, "Move Motor", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        target = _ask_move_position(
+            self, motor_guess, x_val, self._cen_val, self._com_val, x_field
         )
-        if r != QMessageBox.StandardButton.Yes:
+        if target is None:
             return
-
-        self.move_requested.emit(motor_guess, x_val)
+        self.move_requested.emit(motor_guess, target)
 
     # ── Screenshot ─────────────────────────────────────────────────────────────
 
