@@ -261,6 +261,109 @@ class ScanArgsWidget(QWidget):
         return result if result else None
 
 
+class MvArgsWidget(QWidget):
+    """
+    Motor selector for mv/mvr plans.
+    One position spinbox per selected motor.
+    Outputs flat list [motor1, pos1, motor2, pos2, ...].
+    """
+
+    def __init__(self, devices, label="position", parent=None):
+        super().__init__(parent)
+        self.devices = list(devices) if devices else []
+        self._label = label
+        self._spinboxes = {}    # motor_name -> spinbox
+        self._row_widgets = {}  # motor_name -> row QWidget
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        lay.addWidget(QLabel("Select motors:"))
+
+        self._motor_list = QListWidget()
+        self._motor_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.MultiSelection)
+        self._motor_list.setMaximumHeight(100)
+        for d in self.devices:
+            self._motor_list.addItem(QListWidgetItem(d))
+        self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
+        lay.addWidget(self._motor_list)
+
+        self._motor_summary = QLabel("None selected")
+        self._motor_summary.setStyleSheet(
+            "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+        self._motor_summary.setWordWrap(True)
+        lay.addWidget(self._motor_summary)
+
+        self._rows_container = QWidget()
+        self._rows_layout = QVBoxLayout(self._rows_container)
+        self._rows_layout.setContentsMargins(0, 2, 0, 0)
+        self._rows_layout.setSpacing(2)
+        lay.addWidget(self._rows_container)
+
+        for d in self.devices:
+            spin = NoScrollDoubleSpinBox()
+            spin.setRange(-1e9, 1e9)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.1)
+
+            self._spinboxes[d] = spin
+
+            row = QWidget()
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(4)
+            lbl = QLabel(f"{d}:")
+            lbl.setMinimumWidth(80)
+            row_lay.addWidget(lbl)
+            row_lay.addWidget(QLabel(self._label))
+            row_lay.addWidget(spin, 2)
+
+            self._row_widgets[d] = row
+            self._rows_layout.addWidget(row)
+            row.hide()
+
+    def _on_selection_changed(self):
+        selected = {self._motor_list.item(i).text()
+                    for i in range(self._motor_list.count())
+                    if self._motor_list.item(i).isSelected()}
+        for motor, row in self._row_widgets.items():
+            row.setVisible(motor in selected)
+        if selected:
+            self._motor_summary.setText("✓  " + ",   ".join(sorted(selected)))
+            self._motor_summary.setStyleSheet(
+                "color: #2ca02c; font-size: 11px; font-weight: bold; padding: 1px 2px;")
+        else:
+            self._motor_summary.setText("None selected")
+            self._motor_summary.setStyleSheet(
+                "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
+
+    def populate(self, flat_args):
+        """Pre-fill from [motor1, pos1, motor2, pos2, ...]."""
+        pairs = [flat_args[i:i + 2] for i in range(0, len(flat_args) - 1, 2)]
+        for pair in pairs:
+            motor, pos = str(pair[0]), pair[1]
+            for i in range(self._motor_list.count()):
+                if self._motor_list.item(i).text() == motor:
+                    self._motor_list.item(i).setSelected(True)
+            if motor in self._spinboxes:
+                try:
+                    self._spinboxes[motor].setValue(float(pos))
+                except (TypeError, ValueError):
+                    pass
+
+    def get_value(self):
+        """Return [motor1, pos1, ...] in device-list order, or None."""
+        result = []
+        for d in self.devices:
+            if self._row_widgets.get(d, None) and self._row_widgets[d].isVisible():
+                result.extend([d, self._spinboxes[d].value()])
+        return result if result else None
+
+
 class GridScanArgsWidget(QWidget):
     """
     Motor selector for grid_scan-style plans.
@@ -651,6 +754,8 @@ class ParamForm(QWidget):
             return None
 
         # ── VAR_POSITIONAL motor args ─────────────────────────────────────────────
+        # mv / mvr:   plan name is "mv" or "mvr"
+        #             → MvArgsWidget        (motor, position) pairs
         # list_scan:  annotation contains "list[" OR plan name contains "list"
         #             → ListScanArgsWidget  (motor, [positions]) pairs
         # grid_scan:  plan name contains "grid"
@@ -661,6 +766,9 @@ class ParamForm(QWidget):
         # Custom plans with unannotated *args fall back to name-based detection.
         if kind == "VAR_POSITIONAL" and ("__MOVABLE__" in typ or n in ("args",)):
             motor_list = self.motors or self.devices
+            if self._plan_name in ("mv", "mvr"):
+                lbl = "delta" if self._plan_name == "mvr" else "position"
+                return MvArgsWidget(motor_list, label=lbl)
             is_list = (
                 "list[" in typ.lower()
                 or (
@@ -799,7 +907,7 @@ class ParamForm(QWidget):
             w = self.widgets[name]
             if kind == "VAR_POSITIONAL":
                 remaining = list(arg_iter)  # consume all remaining positional args
-                if isinstance(w, (ScanArgsWidget, GridScanArgsWidget, ListScanArgsWidget)) and remaining:
+                if isinstance(w, (ScanArgsWidget, MvArgsWidget, GridScanArgsWidget, ListScanArgsWidget)) and remaining:
                     w.populate(remaining)
                 continue  # arg_iter exhausted; KEYWORD_ONLY params may still follow
             elif kind == "KEYWORD_ONLY":
@@ -856,7 +964,7 @@ class ParamForm(QWidget):
             w    = self.widgets[name]
             kind = p.get("kind", {}).get("name", "POSITIONAL_OR_KEYWORD")
             if kind == "VAR_POSITIONAL":
-                val = w.get_value() if isinstance(w, (ScanArgsWidget, GridScanArgsWidget, ListScanArgsWidget)) else self._read_widget(w, p)
+                val = w.get_value() if isinstance(w, (ScanArgsWidget, MvArgsWidget, GridScanArgsWidget, ListScanArgsWidget)) else self._read_widget(w, p)
                 if val:
                     args.extend(val)
             elif kind == "KEYWORD_ONLY":
