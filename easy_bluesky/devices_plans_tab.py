@@ -525,7 +525,7 @@ class DevicesPlansTab(QWidget):
         status_row.addStretch()
         self._chk_poll_sim = QCheckBox("Poll Sim Devices")
         self._chk_poll_sim.setChecked(False)
-        self._chk_poll_sim.setToolTip("Enable automatic 2-second polling of sim device values")
+        self._chk_poll_sim.setToolTip("Enable automatic 0.2-second polling of sim device values")
         self._chk_poll_sim.setVisible(False)
         self._chk_poll_sim.toggled.connect(self._on_poll_sim_toggled)
         status_row.addWidget(self._chk_poll_sim)
@@ -756,7 +756,7 @@ class DevicesPlansTab(QWidget):
         Partitions devices into two groups:
         - EPICS devices: pv_map entry has ≥1 non-empty pvname → CA subscriptions
         - Polled devices: all pvnames empty (SynAxis, PseudoSingle, SynSignal…)
-          → 2-second read_devices_status() polling
+          → 0.2-second read_devices_status() polling
 
         Both groups can coexist (mixed beamline).
         """
@@ -889,7 +889,7 @@ class DevicesPlansTab(QWidget):
         # ── Start polling timer for any polled devices ───────────────────
         if self._sim_device_names:
             self._sim_timer = QTimer(self)
-            self._sim_timer.setInterval(2000)
+            self._sim_timer.setInterval(200)
             self._sim_timer.timeout.connect(self._on_sim_poll)
             self._chk_poll_sim.setVisible(True)
             if self._chk_poll_sim.isChecked():
