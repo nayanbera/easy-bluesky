@@ -676,59 +676,90 @@ class QueueManager(QWidget):
         self.queue_count.setText(f"{len(items)} item{'s' if len(items) != 1 else ''}")
 
     @staticmethod
-    def _plan_summary(name: str, kwargs: dict, args: list = None) -> str:
+    def _plan_summary(name: str, kwargs: dict, args: list = None) -> str:  # noqa: C901
         args    = list(args or [])
         parts   = []
         name_lc = name.lower()
 
-        # ── Readable (detectors) ──────────────────────────────────────────────
+        # ── mv / mvr: flat [motor, pos, motor, pos, ...] ─────────────────────
+        if name_lc in ("mv", "mvr"):
+            pairs = [(args[i], args[i + 1]) for i in range(0, len(args) - 1, 2)]
+            if pairs:
+                mot_strs = []
+                for mot, pos in pairs:
+                    try:
+                        mot_strs.append(f"{mot} → {float(pos):.4g}")
+                    except (TypeError, ValueError):
+                        mot_strs.append(f"{mot} → {pos}")
+                parts.append("mot: " + ",  ".join(mot_strs))
+            return ("  " + "  |  ".join(parts)) if parts else ""
+
+        # ── Detectors ─────────────────────────────────────────────────────────
         dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
         if isinstance(dets, str):
             dets = [dets]
-        # Fallback: first positional arg is often the detectors list
         if not dets and args and isinstance(args[0], list):
             dets = args[0]
         if dets:
             parts.append("det: [" + ", ".join(str(d) for d in dets) + "]")
 
-        # ── Movable (motor) ───────────────────────────────────────────────────
+        # ── Motor(s) with range ───────────────────────────────────────────────
         motor  = kwargs.get("motor")
         motors = kwargs.get("motors")
-        if not motor and isinstance(motors, list) and motors:
-            motor = motors[0]
-        if not motor and name_lc in _MOTION_PLANS and args:
-            motor = args[0]
-        # scan-style: [dets_list, motor, start, stop, ...] in positional args
-        if not motor and name_lc not in _MOTION_PLANS:
-            if len(args) >= 2 and isinstance(args[0], list) and not isinstance(args[1], (int, float)):
-                motor = args[1]
+        start  = kwargs.get("start")
+        stop   = kwargs.get("stop")
+        num    = kwargs.get("num")
+        mot_parts = []
 
-        if motor:
-            start = kwargs.get("start")
-            stop  = kwargs.get("stop")
-            num   = kwargs.get("num")
-            # args-based layout: [dets_list, motor, start, stop, ...]
-            if start is None and len(args) >= 4 and isinstance(args[0], list):
+        if motor and start is not None and stop is not None:
+            s = f"{motor} [{start:.4g} → {stop:.4g}"
+            if num is not None:
+                s += f", {num} pts"
+                num = None
+            mot_parts.append(s + "]")
+        elif motor:
+            mot_parts.append(str(motor))
+        elif isinstance(motors, list) and motors:
+            mot_parts = [str(m) for m in motors]
+        else:
+            # Parse from positional args: [dets_list, motor, start, stop, ..., num?]
+            # grid_scan:                  [dets_list, motor, start, stop, num_per_axis, ...]
+            rest = args[1:] if (args and isinstance(args[0], list)) else args
+            is_grid = "grid" in name_lc
+            chunk = 4 if is_grid else 3
+            i = 0
+            while i + chunk <= len(rest):
+                mot_candidate = rest[i]
+                if not isinstance(mot_candidate, str):
+                    break
                 try:
-                    start, stop = float(args[2]), float(args[3])
+                    s_val = float(rest[i + 1])
+                    e_val = float(rest[i + 2])
+                    seg = f"{mot_candidate} [{s_val:.4g} → {e_val:.4g}"
+                    if is_grid:
+                        seg += f", {int(rest[i + 3])} pts"
+                    seg += "]"
+                    mot_parts.append(seg)
+                    i += chunk
+                except (TypeError, ValueError, IndexError):
+                    break
+            # Remaining single item after triplets is global num for non-grid scans
+            if not is_grid and i < len(rest) and not mot_parts:
+                try:
+                    num = int(rest[i])
                 except (TypeError, ValueError):
                     pass
-            s = f"mot: {motor}"
-            if start is not None and stop is not None:
-                s += f" [{start} → {stop}"
-                if num is not None:
-                    s += f", {num} pts"
-                s += "]"
-            elif name_lc in ("mv", "mvr") and len(args) >= 2:
+            elif not is_grid and mot_parts and i < len(rest):
                 try:
-                    s += f" → {float(args[1]):.4g}"
+                    num = int(rest[i])
                 except (TypeError, ValueError):
-                    s += f" → {args[1]}"
-            parts.insert(0, s)
+                    pass
 
-        # ── num pts / delay (when not already shown inside the motor range) ───
+        if mot_parts:
+            parts.append("mot: " + ",  ".join(mot_parts))
+
+        # ── num pts / delay ───────────────────────────────────────────────────
         num_shown = any("pts" in p for p in parts)
-        num = kwargs.get("num")
         if num is not None and not num_shown:
             parts.append(f"{num} pts")
         delay = kwargs.get("delay")
