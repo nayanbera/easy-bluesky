@@ -1561,15 +1561,19 @@ class MongoDataBrowserTab(QWidget):
         for k in sorted(keys):
             self._y_list.addItem(QListWidgetItem(k))
 
-        # Restore saved Y if any saved field is present; otherwise select all non-motors
+        # Restore saved Y if any saved field is present; otherwise select the first non-motor
+        first_y = next(
+            (k for k in sorted(keys)
+             if not any(k == m or k.startswith(m) for m in motor_names)),
+            sorted(keys)[0] if keys else "",
+        )
         for i in range(self._y_list.count()):
             item = self._y_list.item(i)
             k = item.text()
             if self._saved_y & key_set:
                 item.setSelected(k in self._saved_y)
             else:
-                is_motor = any(k == m or k.startswith(m) for m in motor_names)
-                item.setSelected(not is_motor)
+                item.setSelected(k == first_y)
         self._y_list.blockSignals(False)
 
         # ── Norm by ───────────────────────────────────────────────────────────

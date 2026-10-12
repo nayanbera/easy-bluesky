@@ -595,10 +595,11 @@ class HDF5Viewer(QWidget):
             for i in range(self.y_list.count()):
                 self.y_list.item(i).setSelected(self.y_list.item(i).text() in saved_y)
         else:
+            first_y = (det_cols[0] if det_cols
+                       else next((c for c in cols if c != x_cur), None))
             for i in range(self.y_list.count()):
-                sig = self.y_list.item(i).text()
                 self.y_list.item(i).setSelected(
-                    sig in det_cols or (not det_cols and sig != x_cur))
+                    self.y_list.item(i).text() == first_y)
 
         n = len(self._dfs)
         self.run_label.setText(f"{n} scan{'s' if n != 1 else ''} selected")
