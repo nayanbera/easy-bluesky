@@ -627,10 +627,11 @@ class LiveViewer(QWidget):
             if plottable:
                 y_chosen = {plottable[0]}
             elif det_fields:
-                y_chosen = set(det_fields)
+                y_chosen = {det_fields[0]}
             else:
-                y_chosen = {k for k in keys
-                            if k != x_chosen and k not in ("time", "seq_num")}
+                fallback = [k for k in keys
+                            if k != x_chosen and k not in ("time", "seq_num")]
+                y_chosen = {fallback[0]} if fallback else set()
 
         for i in range(self.y_list.count()):
             self.y_list.item(i).setSelected(
