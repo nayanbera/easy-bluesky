@@ -2185,16 +2185,20 @@ class ExperimentsTab(QWidget):
         selected = self.queue_compact.selectedItems()
         if not selected:
             return
+        # Extract UIDs and labels immediately — the queue poll may rebuild the
+        # list widget while the confirmation dialog is open, invalidating the
+        # QListWidgetItem C++ objects.
         n = len(selected)
+        first_label = selected[0].text().split("  ", 1)[-1].split("  ")[0]
+        uids = [li.data(Qt.ItemDataRole.UserRole) for li in selected]
         msg = (f"Remove {n} plan{'s' if n > 1 else ''} from the queue?"
                if n > 1 else
-               f"Remove '{selected[0].text().split('  ', 1)[-1].split('  ')[0]}' from the queue?")
+               f"Remove '{first_label}' from the queue?")
         r = QMessageBox.question(self, "Remove Plan", msg)
         if r != QMessageBox.StandardButton.Yes:
             return
         removed = 0
-        for li in selected:
-            uid = li.data(Qt.ItemDataRole.UserRole)
+        for uid in uids:
             if uid:
                 ok, msg = self.worker.remove_item(uid)
                 if ok:
