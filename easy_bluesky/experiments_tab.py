@@ -2498,18 +2498,16 @@ class ExperimentsTab(QWidget):
         _EXECUTING = ("executing_queue", "executing_plan", "starting_queue")
         if manager_state in _EXECUTING and prev_manager not in _EXECUTING:
             self._queue_in_progress = True
-        # Reset queue session only when BOTH the manager is idle AND the queue
-        # and running-item snapshots (from the previous poll tick) are empty.
-        # This avoids a false reset when bluesky-queueserver v0.0.25 briefly
-        # reports manager_state="idle" between consecutive plans in a queue.
-        # update_re_status fires before queue_updated/running_item_updated in
-        # each tick, so _current_queue_items/_current_running_item still hold
-        # the previous tick's values when this check runs.
+        # Reset queue session when manager is idle AND all started plans have
+        # finished (tracked via ZMQ stop docs, so this is immune to the brief
+        # manager_state="idle" blips bluesky-queueserver v0.0.25 emits between
+        # consecutive plans — during those blips _queue_done_plans <
+        # _queue_started_plans because the next plan hasn't started yet).
         _queue_truly_done = (
             manager_state == "idle"
-            and not self._current_queue_items
-            and not self._current_running_item
             and self._queue_in_progress
+            and self._queue_started_plans > 0
+            and self._queue_done_plans >= self._queue_started_plans
         )
         if _queue_truly_done:
             self._queue_done_events   = 0
@@ -2542,8 +2540,9 @@ class ExperimentsTab(QWidget):
         uid = (item or {}).get("item_uid", "")
         if uid != self._running_item_uid:
             if self._running_item_uid:
-                self._queue_done_events += self._completed_points
-                self._queue_done_plans  += 1
+                # Plan-completion accounting is now driven by the ZMQ stop doc
+                # (on_scan_stopped), so only record timing here; event/plan counts
+                # are already updated.
                 self._record_plan_timing()
             self._running_item_uid = uid
             # Pick up num_points if the ZMQ start doc arrived before this poll tick;
@@ -2761,6 +2760,22 @@ class ExperimentsTab(QWidget):
         self._plan_last_event_time      = 0.0
         if self._running_item_uid:
             self._running_item_total_points = num_points
+        self._update_progress_bars()
+
+    def on_scan_stopped(self) -> None:
+        """Called when a ZMQ stop doc arrives — plan finished (success or fail).
+
+        Moves _completed_points into _queue_done_events and increments
+        _queue_done_plans so the queue progress bar advances immediately on
+        plan completion, without waiting for the poll loop.
+        """
+        if not self._queue_in_progress:
+            return
+        self._queue_done_events += self._completed_points
+        self._queue_done_plans  += 1
+        # _completed_points will be reset by on_scan_started() for the next plan,
+        # but zero it here so the queue bar doesn't double-count while we wait.
+        self._completed_points = 0
         self._update_progress_bars()
 
     def on_scan_point_completed(self, seq_num: int) -> None:

@@ -1412,6 +1412,8 @@ class MainWindow(QMainWindow):
             self.experiments_tab.on_scan_point_completed)
         self.experiments_tab.live_viewer.scan_total_points.connect(
             self.experiments_tab.on_scan_started)
+        self.experiments_tab.live_viewer.scan_stopped.connect(
+            self.experiments_tab.on_scan_stopped)
         self.worker.disconnected.connect(self.experiments_tab.on_disconnected)
 
         self.experiments_tab.auto_start_toggled.connect(self._on_auto_start_toggled)

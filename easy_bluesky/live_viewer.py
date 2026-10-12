@@ -127,6 +127,7 @@ class LiveViewer(QWidget):
     move_2d_requested     = Signal(str, float, str, float)  # (x_motor, x_val, y_motor, y_val)
     scan_point_completed  = Signal(int)          # seq_num of each event doc
     scan_total_points     = Signal(int)          # num_points from start doc (0 if unknown)
+    scan_stopped          = Signal()             # stop doc received — plan completed/failed
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -497,6 +498,7 @@ class LiveViewer(QWidget):
             self.status_bar.setText("Run finished — waiting for next run…")
             self._show_peak_stats()
             self._run_live_fit(force=True)
+            self.scan_stopped.emit()
 
     def _ingest_event(self, seq, t, data):
         self._data.setdefault("seq_num", []).append(float(seq))
