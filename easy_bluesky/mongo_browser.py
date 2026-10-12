@@ -82,6 +82,33 @@ def _compute_peak_stats(x, y) -> str:
         return ""
 
 
+def _compute_peak_values(x, y):
+    """Return (cen_or_None, com) as floats for vertical marker lines, or (None, None)."""
+    try:
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y)
+        x, y = x[mask], y[mask]
+        if len(x) < 4:
+            return None, None
+        i_max = int(np.argmax(y))
+        y_pos = y - y.min()
+        denom = float(np.sum(y_pos))
+        com = float(np.sum(x * y_pos) / denom) if denom > 0 else float(x[i_max])
+        half  = (float(y.max()) + float(y.min())) / 2.0
+        above = y >= half
+        edges = np.where(np.diff(above.astype(int)))[0]
+        if len(edges) >= 2:
+            def _ic(i):
+                x0, x1, y0, y1 = float(x[i]), float(x[i+1]), float(y[i]), float(y[i+1])
+                return x0 + (half - y0) / (y1 - y0) * (x1 - x0) if y1 != y0 else (x0+x1)/2
+            xl = _ic(edges[0]);  xr = _ic(edges[-1])
+            return (xl + xr) / 2.0, com
+        return None, com
+    except Exception:
+        return None, None
+
+
 def _fetch_streams(db, uid: str) -> dict:
     """Fetch all event streams for one run UID from an open pymongo Database.
 
@@ -697,6 +724,7 @@ class MongoDataBrowserTab(QWidget):
         self._saved_x: str   = ""       # last X field key — restored on run switch
         self._saved_y: set   = set()    # last checked Y field names — restored on run switch
         self._crosshair_cleanup = None
+        self._stat_lines: list  = []   # pg.InfiniteLine markers for cen / COM
         self._fill_items: list  = []   # pg.FillBetweenItem for ±σ bands
         self._mean_curves: list = []   # mean PlotDataItems on main plot
         self._stats_panel       = None # secondary PlotWidget for RSD
@@ -1772,14 +1800,42 @@ class MongoDataBrowserTab(QWidget):
             title   = f"Scan {seq_num}  —  {plan}"
             if len(rows) > 1:
                 title += f"  (+{len(rows)-1} more)"
-            # For a single curve, show peak stats (cen/FWHM/COM) in the title,
-            # matching the live-plot display style.
+            # Clear previous stat lines then redraw for single-curve case.
+            for _ln in self._stat_lines:
+                try:
+                    self._plot_widget.removeItem(_ln)
+                except Exception:
+                    pass
+            self._stat_lines = []
+            # For a single curve, show peak stats (cen/FWHM/COM) in the title
+            # and draw vertical dotted marker lines for cen (yellow) and COM (cyan).
             if len(self._curves) == 1 and not stats_on:
                 sole_xy = list(self._curves.values())[0].getData()
                 if sole_xy[0] is not None:
                     ps = _compute_peak_stats(*sole_xy)
                     if ps:
                         self._plot_widget.setTitle(ps, color="#aaaaaa", size="11pt")
+                        cen, com = _compute_peak_values(*sole_xy)
+                        _dash = Qt.PenStyle.DashLine
+                        if cen is not None:
+                            ln = pg.InfiniteLine(
+                                pos=cen, angle=90,
+                                pen=pg.mkPen("#ffdd00", width=1.5, style=_dash),
+                                label=f"cen={cen:.5g}",
+                                labelOpts={"color": "#ffdd00", "position": 0.92,
+                                           "fill": pg.mkBrush(30, 30, 30, 160)},
+                            )
+                            self._plot_widget.addItem(ln)
+                            self._stat_lines.append(ln)
+                        ln = pg.InfiniteLine(
+                            pos=com, angle=90,
+                            pen=pg.mkPen("#00ccff", width=1.5, style=_dash),
+                            label=f"COM={com:.5g}",
+                            labelOpts={"color": "#00ccff", "position": 0.82,
+                                       "fill": pg.mkBrush(30, 30, 30, 160)},
+                        )
+                        self._plot_widget.addItem(ln)
+                        self._stat_lines.append(ln)
                     else:
                         self._plot_widget.setTitle(title, color="#aaaaaa", size="10pt")
             else:
@@ -1805,6 +1861,12 @@ class MongoDataBrowserTab(QWidget):
         if self._plot_widget is None:
             return
         self._clear_fit_overlays()
+        for _ln in self._stat_lines:
+            try:
+                self._plot_widget.removeItem(_ln)
+            except Exception:
+                pass
+        self._stat_lines = []
         # Clean up stats overlays on the main plot
         for item in self._fill_items + self._mean_curves:
             try:

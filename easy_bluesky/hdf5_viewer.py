@@ -77,6 +77,33 @@ def _compute_peak_stats(x, y) -> str:
         return ""
 
 
+def _compute_peak_values(x, y):
+    """Return (cen_or_None, com) as floats for vertical marker lines, or (None, None)."""
+    try:
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y)
+        x, y = x[mask], y[mask]
+        if len(x) < 4:
+            return None, None
+        i_max = int(np.argmax(y))
+        y_pos = y - y.min()
+        denom = float(np.sum(y_pos))
+        com = float(np.sum(x * y_pos) / denom) if denom > 0 else float(x[i_max])
+        half  = (float(y.max()) + float(y.min())) / 2.0
+        above = y >= half
+        edges = np.where(np.diff(above.astype(int)))[0]
+        if len(edges) >= 2:
+            def _ic(i):
+                x0, x1, y0, y1 = float(x[i]), float(x[i+1]), float(y[i]), float(y[i+1])
+                return x0 + (half - y0) / (y1 - y0) * (x1 - x0) if y1 != y0 else (x0+x1)/2
+            xl = _ic(edges[0]);  xr = _ic(edges[-1])
+            return (xl + xr) / 2.0, com
+        return None, com
+    except Exception:
+        return None, None
+
+
 _MOTION_PLANS = frozenset({
     "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
     "kickoff", "complete", "collect", "null",
@@ -168,6 +195,7 @@ class HDF5Viewer(QWidget):
         self._fit_datasets: list     = []     # datasets passed to the open dialog
         self._saved_fit_state: dict  = None   # {model_name, bg_name, params} — persists
         self._crosshair_cleanup = None
+        self._stat_lines: list  = []   # pg.InfiniteLine markers for cen / COM
         self._map_mode    = False
         self._2d_map_data = None   # (xs, ys, zs, x_field, z_field, scan_labels)
         self._build()
@@ -813,13 +841,43 @@ class HDF5Viewer(QWidget):
             y_label = f"log₁₀({y_label})"
         self.plot_widget.setLabel("left", y_label)
 
-        # Single curve: show peak stats in plot title (mirrors live viewer style).
+        # Clear previous stat marker lines.
+        for _ln in self._stat_lines:
+            try:
+                self.plot_widget.removeItem(_ln)
+            except Exception:
+                pass
+        self._stat_lines = []
+
+        # Single curve: show peak stats in plot title and draw vertical markers.
         # Multiple curves: clear title, show per-curve stats in the bottom label.
         if len(self._curves) == 1:
             sole_xy = list(self._curves.values())[0].getData()
             ps = _compute_peak_stats(*sole_xy) if sole_xy[0] is not None else ""
             self.plot_widget.setTitle(ps, color="#aaaaaa", size="11pt")
             self.stats_label.setText("")
+            if ps and sole_xy[0] is not None:
+                cen, com = _compute_peak_values(*sole_xy)
+                _dash = Qt.PenStyle.DashLine
+                if cen is not None:
+                    ln = pg.InfiniteLine(
+                        pos=cen, angle=90,
+                        pen=pg.mkPen("#ffdd00", width=1.5, style=_dash),
+                        label=f"cen={cen:.5g}",
+                        labelOpts={"color": "#ffdd00", "position": 0.92,
+                                   "fill": pg.mkBrush(30, 30, 30, 160)},
+                    )
+                    self.plot_widget.addItem(ln)
+                    self._stat_lines.append(ln)
+                ln = pg.InfiniteLine(
+                    pos=com, angle=90,
+                    pen=pg.mkPen("#00ccff", width=1.5, style=_dash),
+                    label=f"COM={com:.5g}",
+                    labelOpts={"color": "#00ccff", "position": 0.82,
+                               "fill": pg.mkBrush(30, 30, 30, 160)},
+                )
+                self.plot_widget.addItem(ln)
+                self._stat_lines.append(ln)
         else:
             self.plot_widget.setTitle("")
             self.stats_label.setText("   ".join(stats))
@@ -898,6 +956,12 @@ class HDF5Viewer(QWidget):
     def _clear_fit_overlays(self):
         if not PG_AVAILABLE:
             return
+        for _ln in self._stat_lines:
+            try:
+                self.plot_widget.removeItem(_ln)
+            except Exception:
+                pass
+        self._stat_lines = []
         for item in self._fit_texts:
             try:
                 self.plot_widget.removeItem(item)

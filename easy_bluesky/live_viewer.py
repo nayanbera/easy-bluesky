@@ -145,6 +145,7 @@ class LiveViewer(QWidget):
         self._start_detectors: list = []   # from start doc — used for Y default
         self._live_fit_curve = None          # dashed fit overlay (PlotDataItem)
         self._live_fit_n_fitted = 0          # point count at last live-fit call
+        self._stat_lines: list = []          # pg.InfiniteLine markers for cen / COM
         self._crosshair_cleanup = None
         self._map_mode    = False            # True when 2D map is active
         self._pending_2d  = False            # auto-switch when descriptor arrives
@@ -883,6 +884,11 @@ class LiveViewer(QWidget):
         if PYQTGRAPH_AVAILABLE:
             self.plot_widget.setTitle("")
         if PYQTGRAPH_AVAILABLE:
+            for _ln in self._stat_lines:
+                try:
+                    self.plot_widget.removeItem(_ln)
+                except Exception:
+                    pass
             for curve in self._curves.values():
                 try:
                     self.plot_widget.removeItem(curve)
@@ -896,6 +902,7 @@ class LiveViewer(QWidget):
             pi = self.plot_widget.getPlotItem()
             if pi.legend:
                 pi.legend.clear()
+        self._stat_lines  = []
         self._curves = {}
         self._error_items = {}
         self.x_combo.blockSignals(True)
@@ -949,13 +956,20 @@ class LiveViewer(QWidget):
         return x_, y_, model_name
 
     def _show_peak_stats(self):
-        """Compute peak statistics from accumulated data and show in plot title."""
+        """Compute peak statistics from accumulated data, show in plot title and draw markers."""
         if not PYQTGRAPH_AVAILABLE or not self._data:
             return
         result = self._get_fit_xy()
         if result is None:
             return
         x, y, _ = result
+        # Clear previous stat marker lines.
+        for _ln in self._stat_lines:
+            try:
+                self.plot_widget.removeItem(_ln)
+            except Exception:
+                pass
+        self._stat_lines = []
         try:
             i_max  = int(np.argmax(y))
             y_pos  = y - y.min()
@@ -966,6 +980,7 @@ class LiveViewer(QWidget):
             above  = y >= half
             edges  = np.where(np.diff(above.astype(int)))[0]
 
+            cen = None
             if len(edges) >= 2:
                 def _ic(i):
                     x0, x1 = float(x[i]), float(x[i+1])
@@ -983,6 +998,27 @@ class LiveViewer(QWidget):
                          f"    COM = {com:.5g}")
 
             self.plot_widget.setTitle(title, color="#aaaaaa", size="11pt")
+
+            _dash = Qt.PenStyle.DashLine
+            if cen is not None:
+                ln = pg.InfiniteLine(
+                    pos=cen, angle=90,
+                    pen=pg.mkPen("#ffdd00", width=1.5, style=_dash),
+                    label=f"cen={cen:.5g}",
+                    labelOpts={"color": "#ffdd00", "position": 0.92,
+                               "fill": pg.mkBrush(30, 30, 30, 160)},
+                )
+                self.plot_widget.addItem(ln)
+                self._stat_lines.append(ln)
+            ln = pg.InfiniteLine(
+                pos=com, angle=90,
+                pen=pg.mkPen("#00ccff", width=1.5, style=_dash),
+                label=f"COM={com:.5g}",
+                labelOpts={"color": "#00ccff", "position": 0.82,
+                           "fill": pg.mkBrush(30, 30, 30, 160)},
+            )
+            self.plot_widget.addItem(ln)
+            self._stat_lines.append(ln)
         except Exception:
             pass
 
