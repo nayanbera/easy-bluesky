@@ -1271,6 +1271,7 @@ class ExperimentsTab(QWidget):
         self._remote_exp_dir: str = ""   # Linux path on RE machine for detector files
         self._esaf_info: dict  = {}      # esaf_id, pi_group, proposal_id, esaf_start_date
         self._logged_uids: set = set()
+        self._logged_scan_nums: set = set()   # scan_nums already in plans_log.jsonl
         self._shown_error_uids: set = set()
         self._error_dialog_after: float = 0.0
         self._exp_created_at: float = 0.0
@@ -1987,6 +1988,7 @@ class ExperimentsTab(QWidget):
         self._remote_exp_dir   = ""
         self._esaf_info        = {}
         self._logged_uids      = set()
+        self._logged_scan_nums = set()
         self._suppressed_uids  = set()
         self._shown_error_uids = set()
         self._exp_created_at   = 0.0
@@ -3801,6 +3803,7 @@ class ExperimentsTab(QWidget):
         log_file = Path(exp_path) / "plans_log.jsonl"
         self.plan_log_list.clear()
         self._logged_uids = set()
+        self._logged_scan_nums = set()
         # Any UID already in plans_log.jsonl was processed in a prior session;
         # mark it seen so update_history never re-shows its error dialog.
         self._shown_error_uids = set()
@@ -3855,6 +3858,12 @@ class ExperimentsTab(QWidget):
                                 continue   # skip duplicate written by a second client
                             _seen_uids.add(uid)
                             self._logged_uids.add(uid)
+                        sn = entry.get("scan_num")
+                        if sn is not None:
+                            try:
+                                self._logged_scan_nums.add(int(sn))
+                            except (ValueError, TypeError):
+                                pass
                         all_entries.append(entry)
                     except Exception:
                         pass
@@ -4057,6 +4066,15 @@ class ExperimentsTab(QWidget):
                 except (ValueError, TypeError):
                     scan_num = self._next_scan_num
 
+            # Skip re-runs with a scan_num already in plans_log.jsonl.  This
+            # can happen when a previous session's history was never written
+            # (frozen poll) and the user re-ran the same plans — the counter
+            # reused the same numbers.  Keep the first occurrence processed
+            # (chronological order) to avoid duplicate rows.
+            if not is_motion and scan_num is not None and scan_num in self._logged_scan_nums:
+                self._logged_uids.add(uid)
+                continue
+
             timestamp = (
                 datetime.fromtimestamp(t_stop).isoformat()
                 if t_stop else datetime.now().isoformat()
@@ -4096,6 +4114,8 @@ class ExperimentsTab(QWidget):
                 with open(log_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
                 self._logged_uids.add(uid)
+                if not is_motion and scan_num is not None:
+                    self._logged_scan_nums.add(scan_num)
                 if not is_motion and scan_num is not None and self._active_exp_path:
                     _write_scan_num_json(self._active_exp_path, int(scan_num))
                 # Advance both counters so the next queued scan gets a fresh number
