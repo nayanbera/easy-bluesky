@@ -809,7 +809,18 @@ class ParamForm(QWidget):
         #             → ScanArgsWidget      (motor, start, stop) per axis
         #
         # Custom plans with unannotated *args fall back to name-based detection.
-        if kind == "VAR_POSITIONAL" and ("__MOVABLE__" in typ or n in ("args",)):
+        _plan_lc = self._plan_name.lower()
+        _is_plain_scan = (
+            not typ
+            and "scan" in _plan_lc
+            and "grid" not in _plan_lc
+            and "list" not in _plan_lc
+        )
+        if kind == "VAR_POSITIONAL" and (
+            "__MOVABLE__" in typ
+            or n in ("args",)
+            or _is_plain_scan
+        ):
             motor_list = self.motors or self.devices
             if self._plan_name in ("mv", "mvr"):
                 lbl = "delta" if self._plan_name == "mvr" else "position"

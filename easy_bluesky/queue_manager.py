@@ -700,6 +700,14 @@ class QueueManager(QWidget):
             dets = [dets]
         if not dets and args and isinstance(args[0], list):
             dets = args[0]
+        # Flat positional format: [det_str, motor, start, stop, ...]
+        if not dets and len(args) >= 3 and isinstance(args[0], str) and isinstance(args[1], str):
+            try:
+                float(args[2])
+                dets = [args[0]]
+                args = args[1:]
+            except (TypeError, ValueError):
+                pass
         if dets:
             parts.append("det: [" + ", ".join(str(d) for d in dets) + "]")
 
