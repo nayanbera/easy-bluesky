@@ -45,11 +45,21 @@ class MultiSelectWidget(QWidget):
         self._list.itemSelectionChanged.connect(self._update_summary)
         lay.addWidget(self._list)
 
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(4)
         self._summary = QLabel("None selected")
         self._summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._summary.setWordWrap(True)
-        lay.addWidget(self._summary)
+        foot.addWidget(self._summary, 1)
+        clr = QPushButton("Clear")
+        clr.setFixedHeight(18)
+        clr.setFlat(True)
+        clr.setStyleSheet("font-size: 10px; color: #888; text-decoration: underline;")
+        clr.clicked.connect(self._list.clearSelection)
+        foot.addWidget(clr)
+        lay.addLayout(foot)
 
     def _update_summary(self):
         selected = [self._list.item(i).text()
@@ -176,11 +186,21 @@ class ScanArgsWidget(QWidget):
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._motor_list)
 
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(4)
         self._motor_summary = QLabel("None selected")
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
-        lay.addWidget(self._motor_summary)
+        foot.addWidget(self._motor_summary, 1)
+        clr = QPushButton("Clear")
+        clr.setFixedHeight(18)
+        clr.setFlat(True)
+        clr.setStyleSheet("font-size: 10px; color: #888; text-decoration: underline;")
+        clr.clicked.connect(self._motor_list.clearSelection)
+        foot.addWidget(clr)
+        lay.addLayout(foot)
 
         # Container for start/stop rows
         self._rows_container = QWidget()
@@ -292,11 +312,21 @@ class MvArgsWidget(QWidget):
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._motor_list)
 
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(4)
         self._motor_summary = QLabel("None selected")
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
-        lay.addWidget(self._motor_summary)
+        foot.addWidget(self._motor_summary, 1)
+        clr = QPushButton("Clear")
+        clr.setFixedHeight(18)
+        clr.setFlat(True)
+        clr.setStyleSheet("font-size: 10px; color: #888; text-decoration: underline;")
+        clr.clicked.connect(self._motor_list.clearSelection)
+        foot.addWidget(clr)
+        lay.addLayout(foot)
 
         self._rows_container = QWidget()
         self._rows_layout = QVBoxLayout(self._rows_container)
@@ -394,11 +424,21 @@ class GridScanArgsWidget(QWidget):
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._motor_list)
 
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(4)
         self._motor_summary = QLabel("None selected")
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
-        lay.addWidget(self._motor_summary)
+        foot.addWidget(self._motor_summary, 1)
+        clr = QPushButton("Clear")
+        clr.setFixedHeight(18)
+        clr.setFlat(True)
+        clr.setStyleSheet("font-size: 10px; color: #888; text-decoration: underline;")
+        clr.clicked.connect(self._motor_list.clearSelection)
+        foot.addWidget(clr)
+        lay.addLayout(foot)
 
         self._rows_container = QWidget()
         self._rows_layout    = QVBoxLayout(self._rows_container)
@@ -522,11 +562,21 @@ class ListScanArgsWidget(QWidget):
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
         lay.addWidget(self._motor_list)
 
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(4)
         self._motor_summary = QLabel("None selected")
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
-        lay.addWidget(self._motor_summary)
+        foot.addWidget(self._motor_summary, 1)
+        clr = QPushButton("Clear")
+        clr.setFixedHeight(18)
+        clr.setFlat(True)
+        clr.setStyleSheet("font-size: 10px; color: #888; text-decoration: underline;")
+        clr.clicked.connect(self._motor_list.clearSelection)
+        foot.addWidget(clr)
+        lay.addLayout(foot)
 
         btn_csv = QPushButton("Load from CSV…")
         btn_csv.setToolTip(
