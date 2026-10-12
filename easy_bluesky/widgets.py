@@ -969,6 +969,9 @@ class ParamForm(QWidget):
                     args.extend(val)
             elif kind == "KEYWORD_ONLY":
                 val = self._read_widget(w, p)
+                # timeout <= 0 means "use plan default" (None/unlimited)
+                if name == "timeout" and isinstance(val, (int, float)) and val <= 0:
+                    val = None
                 if val is not None:
                     kwargs[name] = val
             else:
