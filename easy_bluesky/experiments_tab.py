@@ -4878,11 +4878,33 @@ class ExperimentsTab(QWidget):
             entry = li.data(Qt.ItemDataRole.UserRole)
             if not entry:
                 continue
+            saved_args   = entry.get("args", []) or []
+            saved_kwargs = {k: v for k, v in (entry.get("kwargs", {}) or {}).items()
+                           if k != "md"}
+            # If both args and kwargs are empty, the plan was submitted without
+            # parameters (e.g. due to the old _populate race condition). Open
+            # PlanDialog so the user can fill in the settings before re-queuing.
+            if not saved_args and not saved_kwargs:
+                base = {
+                    "name":      entry.get("name", ""),
+                    "args":      [],
+                    "kwargs":    {},
+                    "item_type": "plan",
+                }
+                dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
+                if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
+                    item = self._inject_metadata(dlg.result_item)
+                    ok, result = self.worker.add_item(item)
+                    if ok:
+                        self._needs_renumber = True
+                        added += 1
+                    else:
+                        self._log(f"✗ Re-queue '{base['name']}': {result}")
+                continue
             item = {
                 "name":      entry.get("name", ""),
-                "args":      entry.get("args", []) or [],
-                "kwargs":    {k: v for k, v in (entry.get("kwargs", {}) or {}).items()
-                              if k != "md"},
+                "args":      saved_args,
+                "kwargs":    saved_kwargs,
                 "item_type": "plan",
             }
             item = self._inject_metadata(item)
