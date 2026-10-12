@@ -1401,7 +1401,8 @@ class MainWindow(QMainWindow):
         self.experiments_tab.pause_requested.connect(self._on_pause_requested)
         self.experiments_tab.resume_requested.connect(self._on_resume_requested)
         self.experiments_tab.abort_requested.connect(self._on_abort_requested)
-        self.experiments_tab.stop_requested.connect(self._on_stop_requested)
+        self.experiments_tab.skip_requested.connect(self._on_skip_requested)
+        self.experiments_tab.queue_stop_requested.connect(self._on_queue_stop_requested)
 
         self.worker.status_updated.connect(self.experiments_tab.update_re_status)
         self.worker.running_item_updated.connect(self.experiments_tab.update_running_item)
@@ -2153,29 +2154,40 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(500, self._abort_after_pause)
             # else: unexpected error — already logged, stop retrying
 
-    def _on_stop_requested(self):
+    def _on_skip_requested(self):
+        """Stop current plan cleanly; experiments_tab auto-restarts queue when idle."""
         ok, msg = self.worker.re_stop()
         if ok:
-            self._log(f"[{self._ts()}] ✓ Stop: {msg}")
+            self._log(f"[{self._ts()}] ✓ Skip: {msg}")
             return
         if "not paused" in msg.lower():
-            self._log(f"[{self._ts()}]   → pausing RE before stop…")
+            self._log(f"[{self._ts()}]   → pausing RE before skip…")
             ok_p, msg_p = self.worker.re_pause(option="immediate")
-            self._log(f"[{self._ts()}] {'✓' if ok_p else '✗'} Pause (pre-stop): {msg_p}")
+            self._log(f"[{self._ts()}] {'✓' if ok_p else '✗'} Pause (pre-skip): {msg_p}")
             if ok_p:
-                self._stop_deadline = time.monotonic() + 15.0
-                QTimer.singleShot(500, self._stop_after_pause)
+                self._skip_deadline = time.monotonic() + 15.0
+                QTimer.singleShot(500, self._skip_after_pause)
             else:
-                self._log(f"[{self._ts()}] ✗ Stop: could not pause RE — {msg_p}")
+                self._log(f"[{self._ts()}] ✗ Skip: could not pause RE — {msg_p}")
+                self.experiments_tab._skip_requested = False
         else:
-            self._log(f"[{self._ts()}] ✗ Stop: {msg}")
+            self._log(f"[{self._ts()}] ✗ Skip: {msg}")
+            self.experiments_tab._skip_requested = False
 
-    def _stop_after_pause(self):
+    def _skip_after_pause(self):
         ok, msg = self.worker.re_stop()
-        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}")
-        if not ok and time.monotonic() < getattr(self, "_stop_deadline", 0.0):
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Skip: {msg}")
+        if not ok and time.monotonic() < getattr(self, "_skip_deadline", 0.0):
             if "not paused" in msg.lower() or "busy" in msg.lower():
-                QTimer.singleShot(500, self._stop_after_pause)
+                QTimer.singleShot(500, self._skip_after_pause)
+                return
+        if not ok:
+            self.experiments_tab._skip_requested = False
+
+    def _on_queue_stop_requested(self):
+        """Let current plan finish then stop the queue."""
+        ok, msg = self.worker.queue_stop()
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop Queue: {msg}")
 
     # ── Auto-start and loop handlers ──────────────────────────────────────────
 

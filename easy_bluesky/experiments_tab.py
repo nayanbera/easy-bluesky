@@ -1257,9 +1257,10 @@ class ExperimentsTab(QWidget):
     start_requested    = Signal()
     pause_requested    = Signal()
     resume_requested   = Signal()
-    abort_requested    = Signal()
-    stop_requested     = Signal()
-    auto_start_toggled = Signal(bool)
+    abort_requested      = Signal()
+    skip_requested       = Signal()   # re_stop + auto-restart queue
+    queue_stop_requested = Signal()   # queue_stop: finish current plan then stop
+    auto_start_toggled   = Signal(bool)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -1330,6 +1331,7 @@ class ExperimentsTab(QWidget):
         self._queue_started_plans      = 0    # how many plans have started (ZMQ start docs)
         self._queue_in_progress        = False  # True while a queue session is active (including between-plan gaps)
         self._manager_state_prev: str  = "idle"  # previous manager_state for transition detection
+        self._skip_requested: bool     = False   # True while waiting to auto-restart after Skip
         self._queue_plans_at_start     = 0    # items in queue when Start was pressed (set by main.py)
         # Server-side loop state
         self._server_loop_active: bool = False   # True when queue_mode.loop=True
@@ -1660,19 +1662,31 @@ class ExperimentsTab(QWidget):
         self.queue_compact.currentItemChanged.connect(self._on_queue_compact_selection)
         vlay.addWidget(self.queue_compact, 1)
 
-        # ── Queue execution buttons (Start / Pause / Resume / Abort / Stop) ──────
+        # ── Queue execution buttons ────────────────────────────────────────────────
         exec_row = QHBoxLayout()
         exec_row.setSpacing(4)
-        self.btn_q_start  = QPushButton("▶ Start")
+        self.btn_q_start      = QPushButton("▶ Start")
         self.btn_q_start.setObjectName("btn_primary")
-        self.btn_q_pause  = QPushButton("⏸ Pause")
-        self.btn_q_resume = QPushButton("▶▶ Resume")
+        self.btn_q_pause      = QPushButton("⏸ Pause")
+        self.btn_q_resume     = QPushButton("▶▶ Resume")
         self.btn_q_resume.setObjectName("btn_success")
-        self.btn_q_abort  = QPushButton("✕ Abort")
+        self.btn_q_skip       = QPushButton("⏭ Skip")
+        self.btn_q_skip.setToolTip(
+            "Stop current plan cleanly and continue to the next one.\n"
+            "In loop mode the skipped plan is re-queued to the back."
+        )
+        self.btn_q_stop_queue = QPushButton("⏹ Stop Queue")
+        self.btn_q_stop_queue.setToolTip(
+            "Let the current plan finish, then stop the queue."
+        )
+        self.btn_q_abort      = QPushButton("✕ Abort")
         self.btn_q_abort.setObjectName("btn_danger")
-        self.btn_q_stop   = QPushButton("⬛ Stop")
+        self.btn_q_abort.setToolTip(
+            "Kill the current plan immediately and stop the queue.\n"
+            "The aborted plan is pushed back to the front of the queue."
+        )
         for btn in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
-                    self.btn_q_abort, self.btn_q_stop):
+                    self.btn_q_skip, self.btn_q_stop_queue, self.btn_q_abort):
             btn.setEnabled(False)
             exec_row.addWidget(btn)
         exec_row.addStretch()
@@ -1682,8 +1696,9 @@ class ExperimentsTab(QWidget):
         self.btn_q_start.clicked.connect(self.start_requested)
         self.btn_q_pause.clicked.connect(self.pause_requested)
         self.btn_q_resume.clicked.connect(self.resume_requested)
+        self.btn_q_skip.clicked.connect(self._on_skip_clicked)
+        self.btn_q_stop_queue.clicked.connect(self.queue_stop_requested)
         self.btn_q_abort.clicked.connect(self.abort_requested)
-        self.btn_q_stop.clicked.connect(self.stop_requested)
 
         # Auto-start + Loop row
         opt_row = QHBoxLayout()
@@ -1733,10 +1748,25 @@ class ExperimentsTab(QWidget):
         opt_row.addStretch()
         vlay.addLayout(opt_row)
 
-        # Wire auto-start + loop
+        vsep2 = QFrame()
+        vsep2.setFrameShape(QFrame.Shape.VLine)
+        vsep2.setFrameShadow(QFrame.Shadow.Sunken)
+        vsep2.setFixedWidth(1)
+        opt_row.addWidget(vsep2)
+
+        self.chk_ignore_failures = QCheckBox("Ignore failures")
+        self.chk_ignore_failures.setToolTip(
+            "When checked, a plan that raises an exception is treated as\n"
+            "completed and the queue continues to the next plan.\n"
+            "In loop mode the failed plan is re-queued to the back."
+        )
+        opt_row.addWidget(self.chk_ignore_failures)
+
+        # Wire auto-start + loop + ignore_failures
         self.chk_auto_start.toggled.connect(self.auto_start_toggled)
         self.chk_loop.toggled.connect(self._on_loop_checkbox)
         self.spin_loop.valueChanged.connect(self._on_spin_loop_changed)
+        self.chk_ignore_failures.toggled.connect(self._on_ignore_failures_changed)
 
         self._plan_bar = QProgressBar()
         self._plan_bar.setTextVisible(True)
@@ -2702,8 +2732,17 @@ class ExperimentsTab(QWidget):
         self.btn_q_start.setEnabled(idle and self._queue_has_items)
         self.btn_q_pause.setEnabled(running)
         self.btn_q_resume.setEnabled(paused)
+        self.btn_q_skip.setEnabled(running or paused)
+        self.btn_q_stop_queue.setEnabled(manager_state == "executing_queue")
         self.btn_q_abort.setEnabled(running or paused)
-        self.btn_q_stop.setEnabled(running or paused)
+        # Auto-restart after skip: when manager transitions executing_queue→idle
+        # and queue still has items, re-emit start_requested to continue.
+        if (self._skip_requested
+                and self._manager_state_prev == "executing_queue"
+                and manager_state == "idle"
+                and self._queue_has_items):
+            self._skip_requested = False
+            self.start_requested.emit()
         if not (running or paused):
             self._running_banner.setVisible(False)
 
@@ -3138,7 +3177,7 @@ class ExperimentsTab(QWidget):
 
     def on_disconnected(self) -> None:
         for b in (self.btn_q_start, self.btn_q_pause, self.btn_q_resume,
-                  self.btn_q_abort, self.btn_q_stop):
+                  self.btn_q_skip, self.btn_q_stop_queue, self.btn_q_abort):
             b.setEnabled(False)
         self.btn_add.setEnabled(False)
         self.btn_add.setToolTip("Waiting for RE Manager to load plans…")
@@ -3191,6 +3230,24 @@ class ExperimentsTab(QWidget):
     def _on_spin_loop_changed(self, n: int) -> None:
         if self.chk_loop.isChecked():
             self._server_loop_n_cycles = n
+
+    def _on_skip_clicked(self) -> None:
+        """Set the skip flag then signal main.py to call re_stop()."""
+        self._skip_requested = True
+        self.skip_requested.emit()
+
+    def _on_ignore_failures_changed(self, checked: bool) -> None:
+        if not self.worker:
+            return
+        ok, msg = self.worker.queue_mode_set({"ignore_failures": checked})
+        if ok:
+            state = "enabled" if checked else "disabled"
+            self._log(f"Ignore failures {state}")
+        else:
+            self._log(f"✗ Ignore failures: {msg}")
+            self.chk_ignore_failures.blockSignals(True)
+            self.chk_ignore_failures.setChecked(not checked)
+            self.chk_ignore_failures.blockSignals(False)
 
     def _update_loop_ui(self) -> None:
         """Sync loop controls and drag state to current loop state."""
