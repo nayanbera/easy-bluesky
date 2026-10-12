@@ -77,6 +77,14 @@ Or from PyPI (once released):
 pip install easy-bluesky
 ```
 
+Or directly from GitHub:
+
+```bash
+pip install git+https://github.com/nayanbera/easy-bluesky.git
+# pin to a specific branch:
+pip install git+https://github.com/nayanbera/easy-bluesky.git@master
+```
+
 Core dependencies installed automatically: `PyQt6`, `pyqtgraph`, `numpy`, `scipy`, `lmfit`, `pandas`, `pyzmq`, `h5py`, `paramiko`, `pymongo`, `pdfplumber`. EPICS support (`pyepics`) is auto-installed on first use of the Live Device Monitor.
 
 ### RE Manager host
@@ -703,16 +711,29 @@ No Plot button to click — the plot always reflects the current selection.
 
 Each unique (run, field) pair gets a distinct color. A legend identifies every curve.
 
+### Peak stats and marker lines
+
+When exactly one curve is plotted, peak statistics are displayed in the plot title (`cen / FWHM / COM`) and two dotted vertical marker lines are drawn:
+
+- **Yellow** line — centroid (`cen`), shown only when the peak shape is clear enough to determine FWHM.
+- **Cyan** line — center of mass (`COM`), always shown.
+
+Each line carries a floating label with the numeric value. The lines update whenever the plot changes and are cleared when multiple curves are selected.
+
+### Auto-selected Y signal
+
+On first load (no saved selection), the viewer pre-selects only the **first** non-motor numeric signal as the Y axis, producing a clean single-curve plot. Previously all non-motor signals were selected simultaneously. Saved selections are still restored when switching between runs.
+
 ### Double-click to move motor
 
 Double-click any point on the plot to move the X-axis motor to that position. This works when the X-axis is a motor field (not time or sequence number).
 
-The confirmation dialog shows:
-- The motor name (derived by stripping readback suffixes like `_user_readback`)
-- The target position (where you clicked)
-- The last known position from the scan data
+A dialog offers up to three move targets:
+- **Clicked position** — where you double-clicked
+- **CEN** (yellow) — the centroid, shown only when a single curve is plotted and cen is defined
+- **COM** (cyan) — the center of mass, shown only when a single curve is plotted
 
-Click **Yes** to execute `mv(motor, position)` immediately on the RE Manager.
+The dialog also shows the motor name (derived by stripping readback suffixes like `_user_readback`). Click the desired target to execute `mv(motor, position)` immediately, or **Cancel** to abort.
 
 ### Screenshot
 
@@ -779,9 +800,22 @@ The **Live Viewer** tab shows real-time plots as a scan runs. Documents are rece
 
 Check **± Errors** to display Poisson error bars on every curve. For raw counts the uncertainty is σ = √|y|. When a normalisation signal is selected, the uncertainty is propagated as σ_f = √(y/n² + y²/n³), where n is the normalisation value. Error bars update in real time as new scan events arrive.
 
+### Peak stats and marker lines
+
+When a scan completes with a single Y signal selected, peak statistics appear in the plot title (`cen / FWHM / COM`) and two dotted vertical marker lines are drawn:
+
+- **Yellow** line — centroid (`cen`), shown only when the peak shape allows a FWHM computation.
+- **Cyan** line — center of mass (`COM`), always shown.
+
 ### Double-click motor move
 
-Double-click any point on the live plot to move the X-axis motor to that position. The confirmation dialog shows the motor name and target value.
+Double-click any point on the live plot to move the X-axis motor to that position. A dialog offers:
+- **Clicked position** — where you double-clicked
+- **CEN** (yellow) — the centroid from the completed scan, if available
+- **COM** (cyan) — the center of mass from the completed scan, if available
+- **Cancel**
+
+CEN and COM options are only shown after the scan has stopped (peak stats have been computed).
 
 ### Crosshair cursor
 
@@ -815,6 +849,12 @@ Select one or more scans in the list. The app finds the common set of fields acr
 | Log Y | Logarithmic Y axis |
 | Fit | Open the Curve Fit dialog for the current plot |
 | Screenshot | Save plot as PNG |
+
+### Peak stats and marker lines
+
+When exactly one curve is plotted, peak statistics appear in the plot title (`cen / FWHM / COM`) and two dotted vertical lines are drawn: **yellow** for centroid (when defined) and **cyan** for center of mass. The lines clear automatically when multiple curves are overlaid.
+
+On first load (no saved selection), the viewer pre-selects only the **first** non-motor numeric signal, producing a clean single-curve plot.
 
 ### Metadata
 
@@ -1765,6 +1805,15 @@ easy-bluesky/
 ---
 
 ## Changelog
+
+### 2026-10-11 / 2026-10-12
+
+- **Feat: Peak stats vertical marker lines** — When exactly one curve is plotted in the Live Viewer, MongoDB Browser, or HDF5 Viewer, two dotted `pg.InfiniteLine` markers are drawn: yellow (#ffdd00) at the centroid (`cen`, when FWHM-computable) and cyan (#00ccff) at the center of mass (`COM`). Each carries a floating numeric label. Lines are cleared on reset, dataset clear, or when multiple curves are overlaid.
+- **Feat: CEN/COM move targets in double-click dialog** — Double-clicking the plot in the Live Viewer or MongoDB Browser now opens a custom dialog with up to three move targets: **Clicked position**, **CEN** (yellow, post-scan only), and **COM** (cyan, post-scan only), plus **Cancel**. Replaces the old Yes/No `QMessageBox`.
+- **Feat: Default single-signal Y selection** — All three 1D viewers (Live Viewer, MongoDB Browser, HDF5 Viewer) now pre-select only the first non-motor numeric signal on first load, producing a clean single-curve plot instead of a cluttered overlay of all signals. Saved selections are restored when switching between runs/scans.
+- **Feat: ZMQ-based queue progress bar** — The queue progress bar in the Experiments tab is now driven by ZMQ document events (`on_scan_started` / `on_scan_stopped`) rather than poll-loop state. `_queue_total_events` accumulates `num_points` from start docs; `_queue_done_events` / `_queue_done_plans` accumulate from stop docs. A `_queue_truly_done` guard prevents false resets during the brief inter-plan idle gap.
+- **Feat: Background history fetch** — `ZMQWorker` now runs a dedicated `_history_fetch_loop` daemon thread that waits on a `threading.Event`. History is fetched on running-UID change, count change, periodic fallback (every 30 ticks), and 2.5 s after plan end. `_last_running_uid` is `None` on reconnect so the first poll always triggers a fetch (catches plans completed during disconnect).
+- **Fix: `status_expiration_period` stays at default 0.5 s** — Master branch had set this to 3600 s, which caused `queue_get()`/`history_get()` to return stale data using cached UIDs. Reverted to default to keep cache coherent.
 
 ### 2026-10-02 / 2026-10-03
 

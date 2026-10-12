@@ -209,6 +209,10 @@ in the log and therefore in the RE console widget.
 - Error propagation: exact central-difference formula `σ_dy[i] = √(σ[i+1]² + σ[i−1]²) / (x[i+1] − x[i−1])`; 2nd order iterates the formula.
 - Fit overlays: raw fit data cached in `_fit_items_cache`; `_auto_plot` clears stale fit items from the plot and redraws from cache with the current log/deriv settings on every replot.
 
+### Peak stats and move dialog
+- When a single curve is plotted, `_auto_plot` calls `_compute_peak_stats` (title) and `_compute_peak_values` (numeric cen/com). Yellow (#ffdd00) and cyan (#00ccff) dotted `pg.InfiniteLine` markers are added to the plot and stored in `self._stat_lines`. Values are cached in `self._cen_val` / `self._com_val`.
+- Double-click on the plot opens `_ask_move_position(...)` (module-level helper) instead of the old Yes/No `QMessageBox`. The dialog offers Clicked position, CEN (if not None), COM, and Cancel.
+
 ## Experiments tab — scan numbering
 
 - **`_next_scan_num_for(exp_path)`** (module-level): reads `max(scan_num)` from both
@@ -244,6 +248,50 @@ in the log and therefore in the RE console widget.
   `fit_key → {model_name, bg_name, params}`. Key = `(sorted UIDs, stream, x_field,
   sorted y_fields)`. On dialog open with saved state, `QTimer.singleShot(0, _run_fit)`
   auto-runs the fit to restore the full results table and curve overlay.
+
+## Peak stats in 1D viewers (Live Viewer, MongoDB Browser, HDF5 Viewer)
+
+### Vertical marker lines
+When exactly one curve is plotted, two dotted `pg.InfiniteLine` markers are drawn:
+- **Yellow (#ffdd00)**: centroid (`cen`) — FWHM half-maximum crossing midpoint. Only shown when peak shape is clear enough to compute FWHM.
+- **Cyan (#00ccff)**: center of mass (`COM`) — always shown.
+
+Each line has a floating label with the numeric value.
+
+`_compute_peak_values(x, y)` (module-level in `mongo_browser.py` and `hdf5_viewer.py`) returns `(cen_or_None, com)` as floats. `_compute_peak_stats(x, y)` (existing) returns the formatted title string.
+
+State:
+- `self._stat_lines: list` — holds the `InfiniteLine` objects; cleared on plot reset/clear or when multiple curves are shown.
+- `self._cen_val: float | None` and `self._com_val: float | None` — cached in `LiveViewer` and `MongoDataBrowserTab` for use by the move dialog.
+
+### Double-click move dialog
+`_ask_move_position(parent, motor_name, x_clicked, cen, com, x_field)` (module-level in `live_viewer.py` and `mongo_browser.py`):
+- Replaces the old Yes/No `QMessageBox` in `_on_plot_clicked`.
+- Shows a `QDialog` with buttons: **Clicked position**, **CEN** (yellow, if not None), **COM** (cyan, if not None), **Cancel**.
+- Returns the chosen `float` or `None`.
+
+### Default Y selection
+All three viewers now select only the **first** non-motor numeric signal on first load (no saved selection). Previously they selected all non-motor signals, producing cluttered multi-curve plots. Saved selections are restored when switching between runs/scans.
+
+## Queue progress bar (experiments_tab.py)
+
+The queue bar uses ZMQ document counts, not poll-loop state:
+- `_queue_in_progress: bool` — set `True` on first `on_scan_started()` ZMQ call; cleared on `_queue_truly_done`.
+- `_queue_total_events: int` — accumulated sum of `num_points` from all ZMQ start docs.
+- `_queue_started_plans: int` — count of plans that have started.
+- `_queue_done_events: int`, `_queue_done_plans: int` — driven by `on_scan_stopped()` (ZMQ stop doc), not poll loop.
+- `on_scan_stopped()`: called via `live_viewer.scan_stopped` signal; adds `_completed_points` to `_queue_done_events`, increments `_queue_done_plans`.
+- `_queue_truly_done` guard in `update_re_status()`:
+  `manager_state=="idle" AND _queue_in_progress AND _queue_started_plans>0 AND _queue_done_plans>=_queue_started_plans AND not _current_queue_items`
+  Prevents false resets during the brief inter-plan gap where `bluesky-queueserver` reports `"idle"`.
+- `update_compact_queue()` no longer resets queue counters.
+
+## worker.py — background history fetch
+
+- `_history_fetch_loop()`: daemon thread that waits on `threading.Event` (`_history_fetch_event`), calls `self.rm.history_get()`, emits `history_updated`.
+- Triggered by: `items_in_history` count change, running item UID change, 2.5 s delayed refetch after plan end, periodic fallback every 30 poll ticks.
+- `_last_running_uid`: `None` on reconnect (sentinel) so first poll always triggers a history fetch — catches plans that completed during sleep/disconnect.
+- **`status_expiration_period` stays at default (0.5 s)** — do NOT set it to 3600. With a stale expiration, `queue_get()`/`history_get()` use cached `plan_queue_uid`/`plan_history_uid` and return stale data even when plans complete.
 
 ## Known issues / non-obvious decisions
 
