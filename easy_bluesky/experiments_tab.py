@@ -1303,6 +1303,7 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
         self._re_state: str    = ""
+        self._manager_state: str = "idle"
         self._pv_map: dict             = {}
         self._velocity_cache: dict     = {}
         self._acquire_time_cache: dict = {}
@@ -2486,7 +2487,8 @@ class ExperimentsTab(QWidget):
             env_state = "idle" if status.get("worker_environment_exists") else "closed"
         re_state      = status.get("re_state", "")
         manager_state = status.get("manager_state", "idle")
-        self._re_state = re_state
+        self._re_state    = re_state
+        self._manager_state = manager_state
         env_open = env_state not in ("", "closed")
         running  = re_state == "running"
         paused   = re_state == "paused"
@@ -4236,7 +4238,14 @@ class ExperimentsTab(QWidget):
         self._queue_has_items = n > 0
         self.queue_count_label.setText(f"{n} item{'s' if n != 1 else ''}")
 
-        if n == 0 and not self._current_running_item:
+        # Reset queue-session counters only when the queue is truly idle:
+        # manager_state must be "idle" (not "executing_queue") so we don't
+        # mistakenly reset during the ~1-poll gap when the RE Manager has
+        # popped the next plan from the queue but hasn't started it yet.
+        _queue_executing = self._manager_state in (
+            "executing_queue", "executing_plan", "starting_queue",
+        )
+        if n == 0 and not self._current_running_item and not _queue_executing:
             self._queue_done_events    = 0
             self._queue_done_plans     = 0
             self._queue_in_progress    = False
