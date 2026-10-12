@@ -518,9 +518,11 @@ class QueueManager(QWidget):
         selected = self.queue_list.selectedItems()
         if not selected:
             return
+        # Extract UIDs before any ZMQ call — remove_item() can trigger queue_updated
+        # which rebuilds queue_list, invalidating QListWidgetItem refs mid-loop.
+        uids = [li.data(Qt.ItemDataRole.UserRole) for li in selected]
         removed = 0
-        for li in selected:
-            uid = li.data(Qt.ItemDataRole.UserRole)
+        for uid in uids:
             if uid:
                 ok, msg = self.worker.remove_item(uid)
                 if ok:

@@ -4926,6 +4926,39 @@ class ExperimentsTab(QWidget):
         entry = li.data(Qt.ItemDataRole.UserRole)
         if not entry or not self.worker:
             return
+        self._requeue_from_plan_log_entry(entry)
+
+    def _plan_log_context_menu(self, pos):
+        li = self.plan_log_list.itemAt(pos)
+        if not li:
+            return
+        entry = li.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+        # If the right-clicked item is not already selected, select it alone.
+        if not li.isSelected():
+            self.plan_log_list.clearSelection()
+            li.setSelected(True)
+        # Extract all data from Qt items NOW — menu.exec() runs the event loop
+        # and may cause plan_log_list to be rebuilt, invalidating item refs.
+        selected_entries = [
+            it.data(Qt.ItemDataRole.UserRole)
+            for it in self.plan_log_list.selectedItems()
+        ]
+        selected_entries = [e for e in selected_entries if e]
+        menu = QMenu(self)
+        menu.addAction("Edit & Re-queue", lambda: self._requeue_from_plan_log_entry(entry))
+        menu.addAction("View Details",    lambda: self._view_plan_detail(entry))
+        menu.addSeparator()
+        n = len(selected_entries)
+        lbl = f"Remove {n} entr{'ies' if n != 1 else 'y'} from log"
+        menu.addAction(lbl, lambda: self._remove_from_plan_log(selected_entries))
+        menu.exec(self.plan_log_list.viewport().mapToGlobal(pos))
+
+    def _requeue_from_plan_log_entry(self, entry: dict):
+        """Open PlanDialog pre-populated from a plan log entry dict."""
+        if not entry or not self.worker:
+            return
         base = {
             "name":      entry.get("name", ""),
             "args":      entry.get("args", []) or [],
@@ -4943,31 +4976,22 @@ class ExperimentsTab(QWidget):
             else:
                 self._log(f"✗ Re-queue '{base['name']}': {result}")
 
-    def _plan_log_context_menu(self, pos):
-        li = self.plan_log_list.itemAt(pos)
-        if not li:
-            return
-        entry = li.data(Qt.ItemDataRole.UserRole)
-        if not entry:
-            return
-        # If the right-clicked item is not already selected, select it alone.
-        if not li.isSelected():
-            self.plan_log_list.clearSelection()
-            li.setSelected(True)
-        selected = self.plan_log_list.selectedItems()
-        menu = QMenu(self)
-        menu.addAction("Edit & Re-queue", lambda: self._on_plan_log_double_clicked(li))
-        menu.addAction("View Details",    lambda: self._view_plan_detail(entry))
-        menu.addSeparator()
-        n = len(selected)
-        lbl = f"Remove {n} entr{'ies' if n != 1 else 'y'} from log"
-        menu.addAction(lbl, lambda: self._remove_from_plan_log(selected))
-        menu.exec(self.plan_log_list.viewport().mapToGlobal(pos))
-
-    def _remove_from_plan_log(self, items: list):
+    def _remove_from_plan_log(self, items):
+        """Remove plan log entries. Accepts a list of entry dicts or QListWidgetItems."""
         if not items or not self._active_exp_path:
             return
-        n = len(items)
+        # Accept either plain entry dicts (new path) or QListWidgetItems (legacy).
+        entries = []
+        for it in items:
+            if isinstance(it, dict):
+                entries.append(it)
+            else:
+                e = it.data(Qt.ItemDataRole.UserRole)
+                if e:
+                    entries.append(e)
+        if not entries:
+            return
+        n = len(entries)
         if n > 1:
             r = QMessageBox.question(
                 self, "Remove Entries",
@@ -4981,10 +5005,8 @@ class ExperimentsTab(QWidget):
 
         # Collect UIDs to remove
         uids_to_remove = set()
-        for item in items:
-            entry = item.data(Qt.ItemDataRole.UserRole)
-            if entry:
-                uids_to_remove.add(entry.get("uid", ""))
+        for entry in entries:
+            uids_to_remove.add(entry.get("uid", ""))
         uids_to_remove.discard("")
 
         # Rewrite plans_log.jsonl keeping only entries not in the removal set
