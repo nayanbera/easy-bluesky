@@ -2696,8 +2696,25 @@ class ExperimentsTab(QWidget):
         The ZMQ start doc often arrives before the RE Manager poll fires and sets
         _running_item_uid, so we buffer the value in _pending_total_points so that
         update_running_item() can pick it up on the next poll tick.
+
+        Also resets per-run event counters here so that event docs from the new run
+        don't inherit the completed_points count from the previous plan.  The start
+        doc always arrives before the first event doc, so this is safe.
+
+        We record timing for the previous plan first (before clearing its intervals)
+        so that update_running_item()'s duplicate _record_plan_timing() call is a no-op.
         """
+        # Save timing for the previous plan before clearing its counters.
+        if self._running_item_uid and self._plan_event_intervals:
+            self._record_plan_timing()
+
         self._pending_total_points = num_points
+        # Reset per-run counters so plan #N+1 events don't start from where plan #N left off.
+        self._completed_points          = 0
+        self._plan_first_event_time     = 0.0
+        self._plan_last_event_wall_time = 0.0
+        self._plan_event_intervals.clear()
+        self._plan_last_event_time      = 0.0
         if self._running_item_uid:
             self._running_item_total_points = num_points
         self._update_progress_bars()
