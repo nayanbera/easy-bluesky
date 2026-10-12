@@ -1319,6 +1319,7 @@ class ExperimentsTab(QWidget):
         self._plan_last_event_time      = 0.0
         self._queue_done_events        = 0    # events from plans already finished
         self._queue_done_plans         = 0    # plans completed this session
+        self._queue_in_progress        = False  # True while a queue session is active (including between-plan gaps)
         self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log (fallback)
         self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
@@ -2519,6 +2520,7 @@ class ExperimentsTab(QWidget):
             if uid:
                 self._running_item_total_points = self._pending_total_points
                 self._pending_total_points      = 0
+                self._queue_in_progress         = True
             else:
                 self._running_item_total_points = 0
             self._running_item_start_time   = time.time() if uid else 0.0
@@ -2830,27 +2832,31 @@ class ExperimentsTab(QWidget):
             self._plan_bar.setVisible(False)
 
         # ── Queue progress bar — plan-count based ─────────────────────────────
-        if running:
+        if running or self._queue_in_progress:
             n_done      = self._queue_done_plans
             n_remaining = len(self._current_queue_items)
-            n_total     = n_done + 1 + n_remaining  # completed + running + queued
+            # Between plans (running is falsy but _queue_in_progress is True),
+            # the current plan slot is empty — don't add +1 for it.
+            n_total     = n_done + (1 if running else 0) + n_remaining
 
             # Fraction of the current plan completed (0.0 – <1.0).
-            # Cap at 0.97 so the queue bar never shows the current plan as done
-            # before running_item actually clears.
-            if total > 0 and total >= done:
-                cur_frac = min(done / total, 0.97)
-            elif db_est and db_est > 0:
-                cur_frac = min(elapsed / db_est, 0.97)
+            # Zero during the between-plan gap so the bar holds at n_done/n_total.
+            if running:
+                if total > 0 and total >= done:
+                    cur_frac = min(done / total, 0.97)
+                elif db_est and db_est > 0:
+                    cur_frac = min(elapsed / db_est, 0.97)
+                else:
+                    cur_frac = 0.0
             else:
                 cur_frac = 0.0
 
             # Express queue progress as fractional plans (n_done + cur_frac).
-            self._queue_bar.setRange(0, n_total * 1000)
+            self._queue_bar.setRange(0, max(n_total, 1) * 1000)
             self._queue_bar.setValue(int((n_done + cur_frac) * 1000))
 
             # Time estimate for remaining queue.
-            if total > 0 and avg_interval is not None:
+            if running and total > 0 and avg_interval is not None:
                 # Best case: live event rate + t_init for final move + queued plans.
                 events_left = max(0, total - done)
                 secs_left   = events_left * avg_interval + t_init
@@ -2859,15 +2865,15 @@ class ExperimentsTab(QWidget):
                     per_plan = db_est if db_est and db_est > 0 else (total * avg_interval + 2 * t_init)
                     secs_left += n_remaining * per_plan
                 time_str = f"  (~{self._format_duration(secs_left)} left)"
-            elif db_est and db_est > 0:
+            elif running and db_est and db_est > 0:
                 secs_left = max(0.0, db_est * (1.0 - cur_frac)) + n_remaining * db_est
                 time_str  = f"  (~{self._format_duration(secs_left)} left  [{db_conf}])"
             else:
                 time_str = ""
             # Show event progress alongside plan progress when total is known.
-            if total > 0:
+            if running and total > 0:
                 event_info = f"  |  {done} / {total} events"
-            elif done > 0:
+            elif running and done > 0:
                 event_info = f"  |  {done} events"
             else:
                 event_info = ""
@@ -4233,6 +4239,7 @@ class ExperimentsTab(QWidget):
         if n == 0 and not self._current_running_item:
             self._queue_done_events    = 0
             self._queue_done_plans     = 0
+            self._queue_in_progress    = False
             self._plan_event_intervals.clear()
             self._plan_last_event_time = 0.0
 
