@@ -1339,6 +1339,7 @@ class ExperimentsTab(QWidget):
         self._server_loop_n_cycles: int   = 0    # requested cycles (0=∞)
         self._server_loop_history_start: int = 0 # items_in_history when loop was enabled
         self._loop_patched_uids: set = set()     # item_uids already patched with new scan_num
+        self._loop_used_scan_nums: set = set()   # scan_nums consumed by loop cycles so far
         self._loop_mode_lost_warned: bool = False  # guard for one-time warning per loss event
         self._history_count_at_loop_start: int = 0  # items_in_history when queue started
         self._current_history_count: int        = 0  # latest items_in_history from status
@@ -3254,6 +3255,7 @@ class ExperimentsTab(QWidget):
         self._server_loop_n_cycles   = 0
         self._server_loop_history_start = 0
         self._loop_patched_uids.clear()
+        self._loop_used_scan_nums.clear()
         self._loop_mode_lost_warned  = False
 
     def _on_spin_loop_changed(self, n: int) -> None:
@@ -3304,6 +3306,18 @@ class ExperimentsTab(QWidget):
         self._history_count_at_loop_start    = history_count
         self._server_loop_history_start      = history_count
         self._loop_patched_uids.clear()
+        # Seed the loop scan-num tracking set with every scan_num currently in the queue.
+        # Any item re-queued by the server will carry one of these scan_nums → detectable
+        # without waiting for update_history (race-condition-free).
+        if self._server_loop_active:
+            self._loop_used_scan_nums.clear()
+            for _item in self._current_queue_items:
+                _sn = (((_item.get("kwargs") or {}).get("md")) or {}).get("scan_num")
+                if _sn is not None:
+                    try:
+                        self._loop_used_scan_nums.add(int(_sn))
+                    except (ValueError, TypeError):
+                        pass
         self._update_progress_bars()
 
     # ── Public setters ─────────────────────────────────────────────────────────
@@ -4821,10 +4835,11 @@ class ExperimentsTab(QWidget):
             if self.queue_compact.item(i).isSelected()
         }
         # Server-side loop: patch stale scan_nums on any queued item whose scan_num
-        # has already been logged (meaning the server re-queued it for the next cycle).
-        # The server adds completed items to the BACK of the queue, so the cycle N+1
-        # copy sits behind cycle N items — giving 1+ plan-durations of window to patch.
-        if self._server_loop_active and self._logged_scan_nums and self.worker:
+        # is in _loop_used_scan_nums (seeded from the original queue at Start time,
+        # then extended with each patched number so future cycles are also caught).
+        # Uses _loop_used_scan_nums rather than _logged_scan_nums to avoid the
+        # race condition where update_history hasn't run yet for the just-completed plan.
+        if self._server_loop_active and self._loop_used_scan_nums and self.worker:
             import copy as _copy
             for item in items:
                 uid = item.get("item_uid", "")
@@ -4845,14 +4860,26 @@ class ExperimentsTab(QWidget):
                     current_sn = int(current_sn)
                 except (ValueError, TypeError):
                     continue
-                if current_sn in self._logged_scan_nums:
-                    new_sn = self._next_scan_num
-                    self._next_scan_num += 1
+                if current_sn in self._loop_used_scan_nums:
+                    # Compute the next scan_num fresh from disk so it accounts for
+                    # any plans logged by other clients since the last _inject_metadata.
+                    if self._active_exp_path:
+                        new_sn = _next_scan_num_for(self._active_exp_path)
+                        self._next_scan_num = new_sn + 1
+                    else:
+                        new_sn = self._next_scan_num
+                        self._next_scan_num += 1
+                    # Track the new number so the NEXT cycle can be detected too.
+                    self._loop_used_scan_nums.add(new_sn)
                     patched = _copy.deepcopy(item)
                     patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = new_sn
-                    ok, _ = self.worker.update_item(patched)
+                    ok, err = self.worker.update_item(patched)
                     if ok:
                         self._loop_patched_uids.add(uid)
+                        if self._active_exp_path:
+                            _write_scan_num_json(self._active_exp_path, new_sn)
+                    else:
+                        self._log(f"⚠ Loop scan_num patch failed for uid {uid[:8]}: {err}")
 
         self.queue_compact.clear()
         for i, item in enumerate(items):
