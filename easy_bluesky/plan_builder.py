@@ -201,15 +201,44 @@ def _gen_node(node: "FlowNode", depth: int = 1) -> str:
     return f"{pad}pass  # unknown: {k}"
 
 
-def generate_code(nodes: list, plan_name: str = "my_plan") -> str:
+def generate_code(nodes: list, plan_name: str = "my_plan",
+                  params: list = None) -> str:
+    """Generate a complete Python plan function from a list of FlowNodes.
+
+    params: list of dicts with keys 'name', 'default', 'annotation'
+    """
     if not plan_name or not plan_name.replace("_", "").isalnum():
         plan_name = "my_plan"
     body = _gen_list(nodes, depth=1) if nodes else "    pass"
+
+    if params:
+        parts = []
+        for p in params:
+            n = p.get("name", "").strip()
+            if not n:
+                continue
+            ann = p.get("annotation", "").strip()
+            dflt = p.get("default", "").strip()
+            tok = f"{n}: {ann}" if ann else n
+            if dflt:
+                tok += f" = {dflt}"
+            parts.append(tok)
+        parts.append("md=None")
+        # Wrap long signatures: one param per line if > 80 chars total
+        indent = " " * (len(f"def {plan_name}("))
+        one_line = ", ".join(parts)
+        if len(one_line) + len(f"def {plan_name}(") > 88:
+            sig = f",\n{indent}".join(parts)
+        else:
+            sig = one_line
+    else:
+        sig = "md=None"
+
     return (
         "import numpy as np\n"
         "import bluesky.plan_stubs as bps\n"
         "import bluesky.plans as bp\n\n\n"
-        f"def {plan_name}(md=None):\n"
+        f"def {plan_name}({sig}):\n"
         '    """\n'
         "    Plan composed with EasyBluesky Visual Composer.\n"
         '    """\n'
@@ -391,11 +420,14 @@ class _IterableWidget(QWidget):
 
         motor_row = QHBoxLayout()
         motor_row.setContentsMargins(0, 0, 0, 0)
-        motor_row.addWidget(QLabel("<font color='white'>move motor:</font>"))
+        motor_lbl = QLabel("<font color='white'>→ motor (opt):</font>")
+        motor_lbl.setToolTip("Optional: move this motor to the loop variable before each iteration")
+        motor_row.addWidget(motor_lbl)
         self._motor = QComboBox()
         self._motor.setEditable(True)
         self._motor.setFixedWidth(120)
         self._motor.addItem("")
+        self._motor.setToolTip("Motor to move to the iterable value before each loop body.\nLeave blank to iterate without moving a motor.")
         self._motor.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
         motor_row.addWidget(self._motor)
         motor_row.addStretch()
@@ -711,6 +743,15 @@ class BlockWidget(QWidget):
             pass  # plan name shown in header label already
 
         elif k == KIND_CUSTOM_PY:
+            # Show first non-blank line of code as a hint
+            code = p.get("code", "")
+            first_line = next((ln.strip() for ln in code.splitlines() if ln.strip()), "")
+            if len(first_line) > 40:
+                first_line = first_line[:38] + "…"
+            if first_line:
+                hint = QLabel(f"<font color='rgba(255,255,255,0.6)' style='font-size:10px'>{first_line}</font>")
+                hint.setMaximumWidth(220)
+                lay.addWidget(hint)
             btn = QPushButton("Edit Code…")
             btn.setStyleSheet("color: white; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.3); padding: 2px 6px;")
             btn.clicked.connect(self._edit_custom_py)
@@ -1031,28 +1072,43 @@ class PalettePanel(QWidget):
     plan_activated = Signal(str)
 
     _STRUCTURAL = [
-        (KIND_MOVE,          "→  Move"),
-        (KIND_RMOVE,         "↔  Relative Move"),
-        (KIND_SLEEP,         "⏱  Sleep"),
-        (KIND_SET_ATTR,      "⚙  Set Attribute"),
-        (KIND_STAGE,         "▲  Stage Device"),
-        (KIND_UNSTAGE,       "▼  Unstage Device"),
-        (KIND_OPEN_SHUTTER,  "⊙  Open Shutter"),
-        (KIND_CLOSE_SHUTTER, "⊗  Close Shutter"),
-        (KIND_TRIGGER_READ,  "◎  Trigger & Read"),
-        (KIND_CUSTOM_PY,     "⌨  Custom Python"),
+        (KIND_MOVE,          "→  Move",
+         "Move a motor to an absolute position.\nyield from bps.mv(motor, position)"),
+        (KIND_RMOVE,         "↔  Relative Move",
+         "Move a motor by a relative delta from its current position.\nyield from bps.mvr(motor, delta)"),
+        (KIND_SLEEP,         "⏱  Sleep",
+         "Wait a fixed number of seconds.\nyield from bps.sleep(seconds)"),
+        (KIND_SET_ATTR,      "⚙  Set Attribute",
+         "Set a device attribute (e.g. cam.acquire_time) to a value.\nyield from bps.mv(device.attribute, value)"),
+        (KIND_STAGE,         "▲  Stage Device",
+         "Stage a device — arms it for acquisition (opens file, enables triggers).\nyield from bps.stage(device)"),
+        (KIND_UNSTAGE,       "▼  Unstage Device",
+         "Unstage a device — closes files and disarms triggers.\nyield from bps.unstage(device)"),
+        (KIND_OPEN_SHUTTER,  "⊙  Open Shutter",
+         "Open a shutter (set to 'open').\nyield from bps.mv(shutter, 'open')"),
+        (KIND_CLOSE_SHUTTER, "⊗  Close Shutter",
+         "Close a shutter (set to 'closed').\nyield from bps.mv(shutter, 'closed')"),
+        (KIND_TRIGGER_READ,  "◎  Trigger & Read",
+         "Trigger detectors and read their values into the data stream.\nyield from bps.trigger_and_read(detectors)"),
+        (KIND_CUSTOM_PY,     "⌨  Custom Python",
+         "Write arbitrary Bluesky plan code.\nUse 'yield from bps.*' or 'yield from bp.*' inside."),
     ]
 
     _FLOW = [
-        (KIND_REPEAT,   "↻  Repeat N"),
-        (KIND_FOR_EACH, "∀  For Each"),
-        (KIND_WHILE,    "∞  While"),
-        (KIND_IF_ELSE,  "?  If / Else"),
+        (KIND_REPEAT,   "↻  Repeat N",
+         "Repeat a block of steps N times.\nfor _i in range(N): ..."),
+        (KIND_FOR_EACH, "∀  For Each",
+         "Iterate over a list, range (linspace), or CSV column.\nOptionally move a motor to each value before the loop body."),
+        (KIND_WHILE,    "∞  While",
+         "Repeat while a condition is True.\nwhile condition: ..."),
+        (KIND_IF_ELSE,  "?  If / Else",
+         "Conditional branch — True body and optional False body.\nif condition: ... else: ..."),
     ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._plan_names: list = []
+        self._plan_descs: dict = {}
         self._build()
 
     def _build(self):
@@ -1110,28 +1166,40 @@ class PalettePanel(QWidget):
         item.setData(Qt.ItemDataRole.UserRole, None)
         self._list.addItem(item)
 
-    def _add_item(self, kind: str, label: str):
+    def _add_item(self, kind: str, label: str, tooltip: str = ""):
         item = QListWidgetItem(label)
         item.setData(Qt.ItemDataRole.UserRole, {"type": "block", "kind": kind})
+        if tooltip:
+            item.setToolTip(tooltip)
         self._list.addItem(item)
 
     def _populate(self):
         self._list.clear()
         self._add_section("Structural")
-        for kind, label in self._STRUCTURAL:
-            self._add_item(kind, label)
+        for kind, label, tip in self._STRUCTURAL:
+            self._add_item(kind, label, tip)
         self._add_section("Flow Control")
-        for kind, label in self._FLOW:
-            self._add_item(kind, label)
+        for kind, label, tip in self._FLOW:
+            self._add_item(kind, label, tip)
         if self._plan_names:
             self._add_section("RE Plans")
             for name in sorted(self._plan_names):
                 item = QListWidgetItem(f"▶  {name}")
                 item.setData(Qt.ItemDataRole.UserRole, {"type": "plan", "name": name})
+                desc = self._plan_descs.get(name, "")
+                if desc:
+                    item.setToolTip(desc[:600])
                 self._list.addItem(item)
 
     def set_plans(self, plans: dict):
         self._plan_names = list(plans.keys()) if plans else []
+        # Extract docstrings / descriptions from plan metadata
+        self._plan_descs = {}
+        for name, meta in (plans or {}).items():
+            if isinstance(meta, dict):
+                desc = meta.get("description", "") or ""
+                if desc:
+                    self._plan_descs[name] = desc
         self._populate()
 
     def _on_double_click(self, item: QListWidgetItem):
@@ -1228,6 +1296,167 @@ def _build_example_nodes() -> list:
     ]
 
 
+# ── _ParamEditor ──────────────────────────────────────────────────────────────
+
+class _ParamEditor(QWidget):
+    """Collapsible plan-parameter editor.
+
+    Lets the user define named parameters that appear in the generated
+    function signature:  def plan_name(param1 = default1, ..., md=None)
+    """
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._params: list = []   # list of {name, default, annotation}
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(2)
+
+        header_row = QHBoxLayout()
+        self._toggle = QPushButton("▸ Plan Parameters (0)")
+        self._toggle.setCheckable(True)
+        self._toggle.setChecked(False)
+        self._toggle.setStyleSheet(
+            "text-align: left; padding: 2px 6px; border: none; "
+            "background: transparent; color: #aaa; font-weight: bold;")
+        self._toggle.toggled.connect(self._on_toggle)
+        header_row.addWidget(self._toggle)
+
+        btn_add = QPushButton("+ Add")
+        btn_add.setFixedWidth(54)
+        btn_add.setToolTip("Add a plan parameter (e.g. detectors, motor, acquire_time)")
+        btn_add.clicked.connect(self._add_row)
+        header_row.addWidget(btn_add)
+
+        btn_preset = QPushButton("ASWAXS preset")
+        btn_preset.setFixedWidth(100)
+        btn_preset.setToolTip("Load the ASWAXS energy scan parameter preset")
+        btn_preset.clicked.connect(self._load_aswaxs_preset)
+        header_row.addWidget(btn_preset)
+        header_row.addStretch()
+        lay.addLayout(header_row)
+
+        # Table: Name | Default | Type hint | (delete)
+        from qtpy.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["Name", "Default value", "Type hint", ""])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(3, 28)
+        self._table.setMaximumHeight(180)
+        self._table.setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.cellChanged.connect(self._on_cell_changed)
+        self._table.setToolTip(
+            "Define plan parameters.\n"
+            "Name: parameter name used in the plan body (e.g. energy_motor)\n"
+            "Default: default value expression (e.g. mono, [Pil300K], 1.0)\n"
+            "Type hint: optional annotation (e.g. float, int, list)")
+        lay.addWidget(self._table)
+
+    def _on_toggle(self, checked: bool):
+        self._table.setVisible(checked)
+        n = len(self.get_params())
+        self._toggle.setText(f"{'▾' if checked else '▸'} Plan Parameters ({n})")
+
+    def _add_row(self, name="param", default="", annotation=""):
+        from qtpy.QtWidgets import QTableWidgetItem
+        self._table.blockSignals(True)
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        self._table.setItem(row, 0, QTableWidgetItem(name))
+        self._table.setItem(row, 1, QTableWidgetItem(default))
+        self._table.setItem(row, 2, QTableWidgetItem(annotation))
+        del_btn = QToolButton()
+        del_btn.setText("×")
+        del_btn.setFixedSize(24, 24)
+        del_btn.setStyleSheet("border: none; color: #aaa;")
+        del_btn.clicked.connect(lambda _=False, r=row: self._delete_row(r))
+        self._table.setCellWidget(row, 3, del_btn)
+        self._table.blockSignals(False)
+        self._update_toggle_label()
+        self.changed.emit()
+
+    def _delete_row(self, row: int):
+        # Find the actual current row for this button
+        btn = self.sender()
+        for r in range(self._table.rowCount()):
+            w = self._table.cellWidget(r, 3)
+            if w is btn:
+                self._table.removeRow(r)
+                break
+        self._update_toggle_label()
+        self.changed.emit()
+
+    def _on_cell_changed(self, row, col):
+        self._update_toggle_label()
+        self.changed.emit()
+
+    def _update_toggle_label(self):
+        n = len(self.get_params())
+        checked = self._toggle.isChecked()
+        self._toggle.setText(f"{'▾' if checked else '▸'} Plan Parameters ({n})")
+
+    def get_params(self) -> list:
+        from qtpy.QtWidgets import QTableWidgetItem
+        params = []
+        for row in range(self._table.rowCount()):
+            name = (self._table.item(row, 0) or QTableWidgetItem()).text().strip()
+            default = (self._table.item(row, 1) or QTableWidgetItem()).text().strip()
+            ann = (self._table.item(row, 2) or QTableWidgetItem()).text().strip()
+            if name:
+                params.append({"name": name, "default": default, "annotation": ann})
+        return params
+
+    def set_params(self, params: list):
+        self._table.blockSignals(True)
+        self._table.setRowCount(0)
+        for p in params:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            from qtpy.QtWidgets import QTableWidgetItem
+            self._table.setItem(row, 0, QTableWidgetItem(p.get("name", "")))
+            self._table.setItem(row, 1, QTableWidgetItem(p.get("default", "")))
+            self._table.setItem(row, 2, QTableWidgetItem(p.get("annotation", "")))
+            del_btn = QToolButton()
+            del_btn.setText("×")
+            del_btn.setFixedSize(24, 24)
+            del_btn.setStyleSheet("border: none; color: #aaa;")
+            del_btn.clicked.connect(lambda _=False: self._delete_row(-1))
+            self._table.setCellWidget(row, 3, del_btn)
+        self._table.blockSignals(False)
+        self._update_toggle_label()
+
+    _ASWAXS_PARAMS = [
+        {"name": "energy_motor",  "default": "mono",                        "annotation": ""},
+        {"name": "energy_list",   "default": "np.linspace(7.0, 7.5, 6)",   "annotation": ""},
+        {"name": "detectors",     "default": "[Pil300K]",                   "annotation": "list"},
+        {"name": "scalers",       "default": "scalers",                     "annotation": ""},
+        {"name": "sx",            "default": "sx",                          "annotation": ""},
+        {"name": "sy",            "default": "sy",                          "annotation": ""},
+        {"name": "acquire_time",  "default": "1.0",                         "annotation": "float"},
+        {"name": "num_frame",     "default": "3",                           "annotation": "int"},
+        {"name": "delay_time",    "default": "1.0",                         "annotation": "float"},
+        {"name": "sleep_time",    "default": "2.0",                         "annotation": "float"},
+        {"name": "shutter",       "default": "None",                        "annotation": ""},
+        {"name": "undulator",     "default": "None",                        "annotation": ""},
+        {"name": "move_undulator","default": "False",                       "annotation": "bool"},
+        {"name": "hdf_autosave",  "default": "True",                        "annotation": "bool"},
+    ]
+
+    def _load_aswaxs_preset(self):
+        self.set_params(self._ASWAXS_PARAMS)
+        if not self._toggle.isChecked():
+            self._toggle.setChecked(True)
+        self.changed.emit()
+
+
 # ── ComposerWidget ─────────────────────────────────────────────────────────────
 
 class ComposerWidget(QWidget):
@@ -1269,6 +1498,17 @@ class ComposerWidget(QWidget):
         top.addWidget(btn_clear)
         top.addStretch()
         root_lay.addLayout(top)
+
+        # Parameters editor (collapsible)
+        self._param_editor = _ParamEditor()
+        self._param_editor.changed.connect(self._update_preview)
+        root_lay.addWidget(self._param_editor)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #333;")
+        root_lay.addWidget(sep)
 
         # Main split: palette | canvas | code preview
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1326,15 +1566,20 @@ class ComposerWidget(QWidget):
             self._update_preview()
 
     def _update_preview(self):
-        if not self._preview_pane.isVisible():
-            return
-        code = generate_code(self._canvas.get_nodes(), self._plan_name.text() or "my_plan")
+        code = generate_code(
+            self._canvas.get_nodes(),
+            self._plan_name.text() or "my_plan",
+            self._param_editor.get_params(),
+        )
         self._preview.setPlainText(code)
 
     def _load_example(self):
         self._plan_name.setText("aswaxs_energy_scan")
         self._canvas.set_nodes(_build_example_nodes())
-        self._update_preview()
+        if hasattr(self, "_param_editor"):
+            self._param_editor.set_params(_ParamEditor._ASWAXS_PARAMS)
+        # Defer preview update so widget is visible before we render
+        QTimer.singleShot(0, self._update_preview)
 
     def _add_block(self, kind: str):
         self._canvas.add_node(FlowNode(kind=kind))
@@ -1343,7 +1588,11 @@ class ComposerWidget(QWidget):
         self._canvas.add_node(FlowNode(kind=KIND_PLAN, params={"plan_name": plan_name}))
 
     def _send_to_editor(self):
-        code = generate_code(self._canvas.get_nodes(), self._plan_name.text() or "my_plan")
+        code = generate_code(
+            self._canvas.get_nodes(),
+            self._plan_name.text() or "my_plan",
+            self._param_editor.get_params(),
+        )
         self.send_to_editor.emit(code)
 
     def _save_ebplan(self):
@@ -1355,6 +1604,7 @@ class ComposerWidget(QWidget):
             path += ".ebplan"
         data = {
             "plan_name": self._plan_name.text(),
+            "params": self._param_editor.get_params(),
             "nodes": [n.to_dict() for n in self._canvas.get_nodes()],
         }
         try:
@@ -1374,6 +1624,8 @@ class ComposerWidget(QWidget):
             return
         if "plan_name" in data:
             self._plan_name.setText(data["plan_name"])
+        if "params" in data:
+            self._param_editor.set_params(data["params"])
         if "nodes" in data:
             nodes = [FlowNode.from_dict(d) for d in data["nodes"]]
             self._canvas.set_nodes(nodes)
