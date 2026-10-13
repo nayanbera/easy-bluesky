@@ -1,6 +1,8 @@
-"""plan_builder.py — Plan Composer: visual sequence builder + code editor."""
+"""plan_builder.py — Plan Composer: visual flowchart builder + code editor."""
 
+import json
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -10,1332 +12,1294 @@ from qtpy.QtWidgets import (
     QAbstractItemView, QPlainTextEdit, QComboBox, QLineEdit, QMessageBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
     QFileDialog, QCheckBox, QInputDialog, QMenu, QDialog, QTextBrowser,
+    QSizePolicy, QStackedWidget, QToolButton,
 )
-from qtpy.QtCore import Qt, QTimer, Signal, QMimeData, QThread
-from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox
-from qtpy.QtGui import QFont, QColor, QDrag
+from qtpy.QtCore import Qt, QTimer, Signal, QMimeData, QThread, QPoint, QByteArray
+from qtpy.QtGui import QFont, QColor, QDrag, QCursor
 
 from .highlighter import PythonHighlighter
 from .code_editor import CodeEditor
-from .widgets import ParamForm
+from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, ParamForm
 
 
-# ── RE Console Monitor Dialog ──────────────────────────────────────────────────
+# ── FlowNode data model ────────────────────────────────────────────────────────
 
-# ── Block type registry ────────────────────────────────────────────────────────
+KIND_MOVE          = "move"
+KIND_RMOVE         = "rmove"
+KIND_SLEEP         = "sleep"
+KIND_SET_ATTR      = "set_attr"
+KIND_OPEN_SHUTTER  = "open_shutter"
+KIND_CLOSE_SHUTTER = "close_shutter"
+KIND_TRIGGER_READ  = "trigger_read"
+KIND_STAGE         = "stage"
+KIND_UNSTAGE       = "unstage"
+KIND_PLAN          = "plan"
+KIND_CUSTOM_PY     = "custom_python"
+KIND_REPEAT        = "repeat"
+KIND_FOR_EACH      = "for_each"
+KIND_WHILE         = "while_loop"
+KIND_IF_ELSE       = "if_else"
 
-BLOCK_DEFS = {
-    "move": {
-        "label": "Move", "category": "Motion", "icon": "→",
-        "params": [
-            {"name": "device",   "type": "str",   "default": "", "hint": "motor name",        "widget": "device_single"},
-            {"name": "position", "type": "float", "default": 0.0, "hint": "target position"},
-        ],
-    },
-    "rel_move": {
-        "label": "Relative Move", "category": "Motion", "icon": "↔",
-        "params": [
-            {"name": "device", "type": "str",   "default": "", "hint": "motor name",        "widget": "device_single"},
-            {"name": "delta",  "type": "float", "default": 0.0, "hint": "relative distance"},
-        ],
-    },
-    "sleep": {
-        "label": "Sleep", "category": "Timing", "icon": "⏱",
-        "params": [
-            {"name": "seconds", "type": "float", "default": 1.0, "hint": "delay in seconds"},
-        ],
-    },
-    "set_attr": {
-        "label": "Set Attribute", "category": "Device", "icon": "⚙",
-        "params": [
-            {"name": "device",    "type": "str", "default": "", "hint": "device name",            "widget": "device_any"},
-            {"name": "attribute", "type": "str", "default": "", "hint": "e.g. cam.acquire_time"},
-            {"name": "value",     "type": "str", "default": "", "hint": "value to set"},
-        ],
-    },
-    "set_exposure": {
-        "label": "Set Exposure", "category": "Detector", "icon": "⏲",
-        "params": [
-            {"name": "detectors",     "type": "str",   "default": "",  "hint": "detector names",          "widget": "device_multi"},
-            {"name": "exposure_attr", "type": "str",   "default": "cam.acquire_time", "hint": "attribute path on each detector"},
-            {"name": "exposure_time", "type": "float", "default": 1.0, "hint": "exposure time in seconds"},
-        ],
-    },
-    "set_file": {
-        "label": "Set AD File", "category": "Detector", "icon": "🗂",
-        "params": [
-            {"name": "detector",   "type": "str", "default": "",         "hint": "AreaDetector device name", "widget": "device_multi"},
-            {"name": "plugin",     "type": "str", "default": "hdf1",     "hint": "file plugin (hdf1, tiff1, etc.)"},
-            {"name": "file_path",  "type": "str", "default": "/data/",   "hint": "save directory"},
-            {"name": "file_name",  "type": "str", "default": "scan",     "hint": "file name prefix"},
-        ],
-    },
-    "stage": {
-        "label": "Stage Device", "category": "Device", "icon": "▲",
-        "params": [
-            {"name": "device", "type": "str", "default": "", "hint": "device to stage",   "widget": "device_any"},
-        ],
-    },
-    "unstage": {
-        "label": "Unstage Device", "category": "Device", "icon": "▼",
-        "params": [
-            {"name": "device", "type": "str", "default": "", "hint": "device to unstage", "widget": "device_any"},
-        ],
-    },
-    "open_shutter": {
-        "label": "Open Shutter", "category": "Shutter", "icon": "◉",
-        "params": [
-            {"name": "shutter", "type": "str", "default": "", "hint": "shutter device name", "widget": "device_single"},
-        ],
-    },
-    "close_shutter": {
-        "label": "Close Shutter", "category": "Shutter", "icon": "○",
-        "params": [
-            {"name": "shutter", "type": "str", "default": "", "hint": "shutter device name", "widget": "device_single"},
-        ],
-    },
-    "trigger_read": {
-        "label": "Trigger & Read", "category": "Detector", "icon": "📷",
-        "params": [
-            {"name": "detectors", "type": "str", "default": "", "hint": "detector names", "widget": "device_multi"},
-        ],
-    },
-    "scan": {
-        "label": "Scan", "category": "Plans", "icon": "⟳",
-        "params": [
-            {"name": "detectors", "type": "str", "default": "",    "hint": "detectors",                                         "widget": "device_multi"},
-            {"name": "motor",     "type": "str", "default": "",    "hint": "motor name(s)",                                     "widget": "device_single"},
-            {"name": "start",     "type": "str", "default": "0.0", "hint": "start position(s) — comma-separated if multi-motor"},
-            {"name": "stop",      "type": "str", "default": "1.0", "hint": "stop position(s)  — comma-separated if multi-motor"},
-            {"name": "num",       "type": "int", "default": 11,    "hint": "number of points"},
-        ],
-    },
-    "count": {
-        "label": "Count", "category": "Plans", "icon": "●",
-        "params": [
-            {"name": "detectors", "type": "str",   "default": "", "hint": "detectors",   "widget": "device_multi"},
-            {"name": "num",       "type": "int",   "default": 1,  "hint": "number of acquisitions"},
-            {"name": "delay",     "type": "float", "default": 0.0, "hint": "delay between acquisitions"},
-        ],
-    },
-    "rel_scan": {
-        "label": "Relative Scan", "category": "Plans", "icon": "↔",
-        "params": [
-            {"name": "detectors", "type": "str", "default": "",    "hint": "detectors",                                          "widget": "device_multi"},
-            {"name": "motor",     "type": "str", "default": "",    "hint": "motor name(s)",                                      "widget": "device_single"},
-            {"name": "start",     "type": "str", "default": "-1.0","hint": "start (relative to current), comma-sep if multi-motor"},
-            {"name": "stop",      "type": "str", "default": "1.0", "hint": "stop (relative to current),  comma-sep if multi-motor"},
-            {"name": "num",       "type": "int", "default": 11,    "hint": "number of points"},
-        ],
-    },
-    "grid_scan": {
-        "label": "Grid Scan", "category": "Plans", "icon": "⊞",
-        "params": [
-            {"name": "detectors",    "type": "str",  "default": "",         "hint": "detectors",                                     "widget": "device_multi"},
-            {"name": "motor",        "type": "str",  "default": "",         "hint": "spatial motors, comma-sep (≥2)",                "widget": "device_single"},
-            {"name": "start",        "type": "str",  "default": "0.0, 0.0", "hint": "start positions, comma-sep per motor"},
-            {"name": "stop",         "type": "str",  "default": "1.0, 1.0", "hint": "stop positions,  comma-sep per motor"},
-            {"name": "num",          "type": "str",  "default": "5, 5",     "hint": "num points,       comma-sep per motor"},
-            {"name": "snake_axes",   "type": "bool", "default": False,      "hint": "snake-boustrophedon scan axes"},
-            {"name": "energy_motor", "type": "str",  "default": "",         "hint": "energy motor — added as innermost axis (leave blank to skip)", "widget": "device_single"},
-            {"name": "energy_start", "type": "str",  "default": "7000",     "hint": "energy start (eV)"},
-            {"name": "energy_stop",  "type": "str",  "default": "7100",     "hint": "energy stop (eV)"},
-            {"name": "energy_num",   "type": "int",  "default": 10,         "hint": "energy points"},
-        ],
-    },
-    "list_scan": {
-        "label": "List Scan", "category": "Plans", "icon": "≣",
-        "params": [
-            {"name": "detectors",    "type": "str", "default": "",               "hint": "detectors",                                            "widget": "device_multi"},
-            {"name": "motor",        "type": "str", "default": "",               "hint": "spatial motor",                                        "widget": "device_single"},
-            {"name": "positions",    "type": "str", "default": "0.0, 1.0, 2.0", "hint": "explicit positions, comma-sep"},
-            {"name": "energy_motor", "type": "str", "default": "",               "hint": "energy motor — inner loop at each position (leave blank to skip)", "widget": "device_single"},
-            {"name": "energy_start", "type": "str", "default": "7000",           "hint": "energy start (eV)"},
-            {"name": "energy_stop",  "type": "str", "default": "7100",           "hint": "energy stop (eV)"},
-            {"name": "energy_num",   "type": "int", "default": 10,               "hint": "energy points"},
-        ],
-    },
-    "adaptive_scan": {
-        "label": "Adaptive Scan", "category": "Plans", "icon": "≈",
-        "params": [
-            {"name": "detectors",    "type": "str",   "default": "",    "hint": "detectors",                                             "widget": "device_multi"},
-            {"name": "target_field", "type": "str",   "default": "",    "hint": "field to adapt on, e.g. Pil300K_stats1_total"},
-            {"name": "motor",        "type": "str",   "default": "",    "hint": "motor to scan",                                         "widget": "device_single"},
-            {"name": "start",        "type": "float", "default": 0.0,   "hint": "start position"},
-            {"name": "stop",         "type": "float", "default": 1.0,   "hint": "stop position"},
-            {"name": "min_step",     "type": "float", "default": 0.001, "hint": "minimum step size"},
-            {"name": "max_step",     "type": "float", "default": 0.1,   "hint": "maximum step size"},
-            {"name": "target_delta", "type": "float", "default": 0.05,  "hint": "target fractional change in target_field per step"},
-            {"name": "backstep",     "type": "bool",  "default": True,  "hint": "allow motor to step back toward better signal"},
-            {"name": "threshold",    "type": "float", "default": 0.8,   "hint": "fraction of target_delta that triggers a backstep"},
-        ],
-    },
-    "flyscan": {
-        "label": "Fly Scan", "category": "Plans", "icon": "✈",
-        "params": [
-            {"name": "flyer",    "type": "str",   "default": "",   "hint": "flyer device (must implement Flyable protocol)", "widget": "device_any"},
-            {"name": "motor",    "type": "str",   "default": "",   "hint": "motor to position/configure before fly (optional)", "widget": "device_single"},
-            {"name": "start",    "type": "float", "default": 0.0,  "hint": "move motor to this position before triggering fly"},
-            {"name": "velocity", "type": "float", "default": 0.5,  "hint": "motor.velocity to set before fly (units/s)"},
-        ],
-    },
-    "plan_stub": {
-        "label": "Plan Stub", "category": "Plans", "icon": "⋯",
-        "params": [
-            {"name": "stub_name", "type": "str", "default": "", "hint": "e.g. bps.abs_set"},
-            {"name": "args",      "type": "str", "default": "", "hint": "comma-separated args"},
-        ],
-    },
-    # ── Flow control ─────────────────────────────────────────────────────────────
-    "repeat_n": {
-        "label": "Repeat N Times", "category": "Flow", "icon": "↻",
-        "params": [
-            {"name": "count", "type": "int", "default": 2, "hint": "number of repetitions"},
-        ],
-    },
-    "for_each_position": {
-        "label": "For Each Position", "category": "Flow", "icon": "⟳",
-        "params": [
-            {"name": "motor",      "type": "str",   "default": "",               "hint": "motor name",                  "widget": "device_single"},
-            {"name": "detectors",  "type": "str",   "default": "",               "hint": "detectors to read",           "widget": "device_multi"},
-            {"name": "positions",  "type": "str",   "default": "0.0, 1.0, 2.0",  "hint": "comma-separated positions"},
-            {"name": "num",        "type": "int",   "default": 1,                "hint": "acquisitions per position"},
-            {"name": "delay",      "type": "float", "default": 0.0,              "hint": "delay between acquisitions (s)"},
-        ],
-    },
-    "custom_python": {
-        "label": "Custom Python", "category": "Flow", "icon": "⌨",
-        "params": [
-            {"name": "code", "type": "str", "default": "# custom code\npass", "hint": "Python code", "widget": "code"},
-        ],
-    },
-}
+CONTAINER_KINDS = {KIND_REPEAT, KIND_FOR_EACH, KIND_WHILE, KIND_IF_ELSE}
 
-_PLAN_BLOCKS = {"scan", "count", "rel_scan", "grid_scan", "list_scan"}   # blocks that support per-step injection
-_FLOW_BLOCKS = {"repeat_n", "for_each_position", "custom_python"}
+_MIME = "application/x-ebflow-node"
 
-_CATEGORY_ORDER = ["Motion", "Timing", "Detector", "Shutter", "Device", "Plans", "Flow"]
-
-# Convenience groups shown as workflow hints in the palette tooltip
-_WORKFLOW_HINT = (
-    "Typical scan workflow:\n"
-    "  Main:     Set Exposure → Set AD File → Scan\n"
-    "  Per-step: Open Shutter → Trigger & Read → Close Shutter → Sleep\n"
-    "\n"
-    "Flow blocks (purple):\n"
-    "  Repeat N Times — wraps whole sequence in a loop\n"
-    "  For Each Position — move motor, repeat at each\n"
-    "  Custom Python — inject arbitrary code"
-)
+# Module-level drag state (in-process D&D only)
+_drag_state: dict = {}
 
 
-# ── Block helpers ──────────────────────────────────────────────────────────────
+@dataclass
+class FlowNode:
+    kind: str
+    params: dict = field(default_factory=dict)
+    children: list = field(default_factory=list)
+    children_else: list = field(default_factory=list)
+    per_step: list = field(default_factory=list)
+    node_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
-def _new_block(btype: str) -> dict:
-    defn = BLOCK_DEFS[btype]
-    return {
-        "id":     str(uuid.uuid4())[:8],
-        "type":   btype,
-        "params": {p["name"]: p["default"] for p in defn["params"]},
-    }
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "params": dict(self.params),
+            "node_id": self.node_id,
+            "children": [c.to_dict() for c in self.children],
+            "children_else": [c.to_dict() for c in self.children_else],
+            "per_step": [c.to_dict() for c in self.per_step],
+        }
 
-
-def _block_summary(block: dict) -> str:
-    defn = BLOCK_DEFS[block["type"]]
-    p = block["params"]
-    icon = defn["icon"]
-    name = defn["label"]
-    btype = block["type"]
-    if btype == "move":
-        return f"{icon}  Move  {p['device']} → {p['position']}"
-    if btype == "rel_move":
-        return f"{icon}  Rel Move  {p['device']} ±{p['delta']}"
-    if btype == "sleep":
-        return f"{icon}  Sleep  {p['seconds']} s"
-    if btype == "set_attr":
-        return f"{icon}  Set  {p['device']}.{p['attribute']} = {p['value']}"
-    if btype == "open_shutter":
-        return f"{icon}  Open  {p['shutter']}"
-    if btype == "close_shutter":
-        return f"{icon}  Close  {p['shutter']}"
-    if btype == "set_exposure":
-        return f"{icon}  Set Exposure  [{p['detectors']}]  {p['exposure_attr']}={p['exposure_time']}s"
-    if btype == "set_file":
-        return f"{icon}  Set AD File  {p['detector']}.{p['plugin']}  {p['file_path']}{p['file_name']}"
-    if btype == "stage":
-        return f"{icon}  Stage  {p['device']}"
-    if btype == "unstage":
-        return f"{icon}  Unstage  {p['device']}"
-    if btype == "trigger_read":
-        return f"{icon}  Trigger & Read  [{p['detectors']}]"
-    if btype == "scan":
-        return f"{icon}  Scan  {p['motor']}  {p['start']}→{p['stop']}  ×{p['num']}"
-    if btype == "count":
-        return f"{icon}  Count  [{p['detectors']}]  ×{p['num']}"
-    if btype == "rel_scan":
-        return f"{icon}  RelScan  {p['motor']}  {p['start']}→{p['stop']}  ×{p['num']}"
-    if btype == "grid_scan":
-        snake  = " ~" if p.get("snake_axes") else ""
-        e_part = f"  ⚡{p['energy_motor']} {p['energy_start']}→{p['energy_stop']}×{p['energy_num']}" if p.get("energy_motor") else ""
-        return f"{icon}  GridScan  {p['motor']}  [{p['start']}]→[{p['stop']}]  {p['num']}{snake}{e_part}"
-    if btype == "list_scan":
-        e_part = f"  ⚡{p['energy_motor']} {p['energy_start']}→{p['energy_stop']}×{p['energy_num']}" if p.get("energy_motor") else ""
-        return f"{icon}  ListScan  {p['motor']}  [{p['positions']}]{e_part}"
-    if btype == "adaptive_scan":
-        return (f"{icon}  AdaptScan  {p['motor']}  {p['start']}→{p['stop']}"
-                f"  Δ{p['target_delta']}  [{p['min_step']},{p['max_step']}]")
-    if btype == "flyscan":
-        motor_part = f"  {p['motor']}@{p['velocity']}/s→{p['start']}" if p.get("motor") else ""
-        return f"{icon}  FlyScan  {p['flyer']}{motor_part}"
-    if btype == "plan_stub":
-        return f"{icon}  {p['stub_name']}({p['args']})"
-    if btype == "repeat_n":
-        return f"{icon}  Repeat  ×{p['count']}"
-    if btype == "for_each_position":
-        return f"{icon}  For  {p['motor']} in [{p['positions']}]  ×{p.get('num', 1)}"
-    if btype == "custom_python":
-        first = str(p.get("code", "")).split("\n")[0].strip()
-        return f"{icon}  {first[:50]}" if first else f"{icon}  Custom Python"
-    return f"{icon}  {name}"
-
-
-def _block_to_code(block: dict, indent: int = 4, per_step_name: str = None,
-                   param_map: dict = None) -> str:
-    """Generate code for one block.
-
-    param_map maps semantic names ("detectors", "motor", "shutter", …) to the
-    variable name to emit.  When a key is present the parameter variable is used
-    instead of the hardcoded value from Block Properties.
-    """
-    p   = block["params"]
-    pm  = param_map or {}
-    pad = " " * indent
-    btype = block["type"]
-
-    if btype == "move":
-        return f"{pad}yield from bps.mv({p['device']}, {p['position']})"
-    if btype == "rel_move":
-        return f"{pad}yield from bps.mvr({p['device']}, {p['delta']})"
-    if btype == "sleep":
-        return f"{pad}yield from bps.sleep({p['seconds']})"
-    if btype == "set_attr":
-        return f"{pad}yield from bps.mv({p['device']}.{p['attribute']}, {p['value']})"
-    if btype == "open_shutter":
-        shutter = pm.get("shutter", p["shutter"])
-        return f"{pad}yield from bps.mv({shutter}, 'open')"
-    if btype == "close_shutter":
-        shutter = pm.get("shutter", p["shutter"])
-        return f"{pad}yield from bps.mv({shutter}, 'closed')"
-    if btype == "set_exposure":
-        exp_time = pm.get("exposure_time", p["exposure_time"])
-        attr     = p["exposure_attr"]
-        if "detectors" in pm:
-            dets_var = pm["detectors"]
-            return (f"{pad}for _det in {dets_var}:\n"
-                    f"{pad}    yield from bps.mv(_det.{attr}, {exp_time})")
-        dets = [d.strip() for d in p["detectors"].split(",") if d.strip()]
-        lines = [f"{pad}yield from bps.mv({d}.{attr}, {exp_time})" for d in dets]
-        return "\n".join(lines) if lines else f"{pad}pass  # no detectors specified"
-    if btype == "set_file":
-        det, plug = p["detector"], p["plugin"]
-        return (
-            f"{pad}yield from bps.abs_set({det}.{plug}.file_path, '{p['file_path']}', wait=True)\n"
-            f"{pad}yield from bps.abs_set({det}.{plug}.file_name, '{p['file_name']}', wait=True)"
+    @classmethod
+    def from_dict(cls, d: dict) -> "FlowNode":
+        n = cls(
+            kind=d["kind"],
+            params=dict(d.get("params", {})),
+            node_id=d.get("node_id", uuid.uuid4().hex[:8]),
         )
-    if btype == "stage":
-        return f"{pad}yield from bps.stage({p['device']})"
-    if btype == "unstage":
-        return f"{pad}yield from bps.unstage({p['device']})"
-    if btype == "trigger_read":
-        # detectors is already a list variable; no extra brackets needed
-        dets = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
+        n.children = [cls.from_dict(c) for c in d.get("children", [])]
+        n.children_else = [cls.from_dict(c) for c in d.get("children_else", [])]
+        n.per_step = [cls.from_dict(c) for c in d.get("per_step", [])]
+        return n
+
+
+# ── Code generator ─────────────────────────────────────────────────────────────
+
+def _gen_list(nodes: list, depth: int) -> str:
+    if not nodes:
+        return "    " * depth + "pass"
+    return "\n".join(_gen_node(n, depth) for n in nodes)
+
+
+def _gen_node(node: "FlowNode", depth: int = 1) -> str:
+    pad = "    " * depth
+    k = node.kind
+    p = node.params
+
+    if k == KIND_MOVE:
+        dev = p.get("device", "motor") or "motor"
+        pos = p.get("position", 0.0)
+        return f"{pad}yield from bps.mv({dev}, {pos})"
+
+    if k == KIND_RMOVE:
+        dev = p.get("device", "motor") or "motor"
+        delta = p.get("delta", 0.0)
+        return f"{pad}yield from bps.mvr({dev}, {delta})"
+
+    if k == KIND_SLEEP:
+        secs = p.get("seconds", 1.0)
+        return f"{pad}yield from bps.sleep({secs})"
+
+    if k == KIND_SET_ATTR:
+        dev = p.get("device", "device") or "device"
+        attr = p.get("attribute", "attr") or "attr"
+        val = p.get("value", "0") or "0"
+        return f"{pad}yield from bps.mv({dev}.{attr}, {val})"
+
+    if k == KIND_OPEN_SHUTTER:
+        dev = p.get("device", "shutter") or "shutter"
+        return f"{pad}yield from bps.mv({dev}, 'open')"
+
+    if k == KIND_CLOSE_SHUTTER:
+        dev = p.get("device", "shutter") or "shutter"
+        return f"{pad}yield from bps.mv({dev}, 'closed')"
+
+    if k == KIND_TRIGGER_READ:
+        dets = p.get("detectors", "detectors") or "detectors"
         return f"{pad}yield from bps.trigger_and_read({dets})"
-    if btype == "scan":
-        dets    = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
-        mot_raw = pm.get("motor", p["motor"])
-        start   = pm.get("start", p["start"])
-        stop    = pm.get("stop",  p["stop"])
-        num     = pm.get("num",   p["num"])
-        ps_arg  = f", per_step={per_step_name}" if per_step_name else ""
 
-        if "," in str(mot_raw) and "motor" not in pm:
-            # Multi-motor hardcoded: zip each motor with its own start/stop.
-            # start/stop may be comma-separated too; pad to motor count if fewer.
-            motors = [m.strip() for m in str(mot_raw).split(",") if m.strip()]
-            starts = [s.strip() for s in str(start).split(",") if s.strip()]
-            stops  = [s.strip() for s in str(stop).split(",")  if s.strip()]
-            while len(starts) < len(motors):
-                starts.append(starts[-1] if starts else "0.0")
-            while len(stops)  < len(motors):
-                stops.append(stops[-1]  if stops  else "1.0")
-            triplets = ", ".join(
-                f"{m}, {s0}, {s1}" for m, s0, s1 in zip(motors, starts, stops)
-            )
-            return f"{pad}yield from bp.scan({dets}, {triplets}, {num}{ps_arg})"
-        elif mot_raw == "motor":
-            # Parametric single motor — list-unpack handles Movable or List[Movable]
-            return (f"{pad}yield from bp.scan("
-                    f"{dets}, *[x for _m in (motor if isinstance(motor, list) else [motor])"
-                    f" for x in (_m, {start}, {stop})], {num}{ps_arg})")
-        else:
-            return (f"{pad}yield from bp.scan({dets}, {mot_raw}, "
-                    f"{start}, {stop}, {num}{ps_arg})")
-    if btype == "count":
-        dets  = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
-        num   = pm.get("num",   p["num"])
-        delay = pm.get("delay", p["delay"])
-        ps_arg = f", per_step={per_step_name}" if per_step_name else ""
-        return (f"{pad}yield from bp.count({dets}, num={num}, delay={delay}{ps_arg})")
-    if btype == "rel_scan":
-        dets    = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
-        mot_raw = pm.get("motor", p["motor"])
-        start   = pm.get("start", p["start"])
-        stop    = pm.get("stop",  p["stop"])
-        num     = pm.get("num",   p["num"])
-        ps_arg  = f", per_step={per_step_name}" if per_step_name else ""
-        if "," in str(mot_raw) and "motor" not in pm:
-            motors = [m.strip() for m in str(mot_raw).split(",") if m.strip()]
-            starts = [s.strip() for s in str(start).split(",") if s.strip()]
-            stops  = [s.strip() for s in str(stop).split(",")  if s.strip()]
-            while len(starts) < len(motors): starts.append(starts[-1] if starts else "-1.0")
-            while len(stops)  < len(motors): stops.append(stops[-1]   if stops  else "1.0")
-            triplets = ", ".join(f"{m}, {s0}, {s1}" for m, s0, s1 in zip(motors, starts, stops))
-            return f"{pad}yield from bp.rel_scan({dets}, {triplets}, {num}{ps_arg})"
-        elif mot_raw == "motor":
-            return (f"{pad}yield from bp.rel_scan("
-                    f"{dets}, *[x for _m in (motor if isinstance(motor, list) else [motor])"
-                    f" for x in (_m, {start}, {stop})], {num}{ps_arg})")
-        else:
-            return f"{pad}yield from bp.rel_scan({dets}, {mot_raw}, {start}, {stop}, {num}{ps_arg})"
+    if k == KIND_STAGE:
+        dev = p.get("device", "device") or "device"
+        return f"{pad}yield from bps.stage({dev})"
 
-    if btype == "grid_scan":
-        dets   = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
-        motors = [m.strip() for m in str(p["motor"]).split(",") if m.strip()]
-        starts = [s.strip() for s in str(p["start"]).split(",") if s.strip()]
-        stops  = [s.strip() for s in str(p["stop"]).split(",")  if s.strip()]
-        nums   = [n.strip() for n in str(p["num"]).split(",")   if n.strip()]
-        while len(starts) < len(motors): starts.append(starts[-1] if starts else "0.0")
-        while len(stops)  < len(motors): stops.append(stops[-1]   if stops  else "1.0")
-        while len(nums)   < len(motors): nums.append(nums[-1]     if nums   else "5")
-        args = ", ".join(
-            f"{m}, {s0}, {s1}, {n}"
-            for m, s0, s1, n in zip(motors, starts, stops, nums)
-        )
-        # Optional energy inner axis: appended last so it varies fastest
-        e_motor = p.get("energy_motor", "")
-        if e_motor:
-            e_start = p.get("energy_start", "7000")
-            e_stop  = p.get("energy_stop",  "7100")
-            e_num   = p.get("energy_num",   10)
-            args += f", {e_motor}, {e_start}, {e_stop}, {e_num}"
-        snake  = p.get("snake_axes", False)
-        ps_arg = f", per_step={per_step_name}" if per_step_name else ""
-        return f"{pad}yield from bp.grid_scan({dets}, {args}, snake_axes={snake}{ps_arg})"
+    if k == KIND_UNSTAGE:
+        dev = p.get("device", "device") or "device"
+        return f"{pad}yield from bps.unstage({dev})"
 
-    if btype == "list_scan":
-        dets   = pm["detectors"] if "detectors" in pm else f"[{p['detectors']}]"
-        motor  = pm.get("motor", p.get("motor", ""))
-        pos    = [x.strip() for x in str(p.get("positions", "")).split(",") if x.strip()]
-        ps_arg = f", per_step={per_step_name}" if per_step_name else ""
-        e_motor = p.get("energy_motor", "")
-        if e_motor:
-            # Nested loop: move to each spatial position, then do an energy scan
-            e_start = p.get("energy_start", "7000")
-            e_stop  = p.get("energy_stop",  "7100")
-            e_num   = p.get("energy_num",   10)
-            inner   = pad + "    "
-            return "\n".join([
-                f"{pad}for _pos in [{', '.join(pos)}]:",
-                f"{inner}yield from bps.mv({motor}, _pos)",
-                f"{inner}yield from bp.scan({dets}, {e_motor}, {e_start}, {e_stop}, {e_num}{ps_arg})",
-            ])
-        return f"{pad}yield from bp.list_scan({dets}, {motor}, [{', '.join(pos)}]{ps_arg})"
-
-    if btype == "adaptive_scan":
-        dets     = pm["detectors"]    if "detectors"    in pm else f"[{p['detectors']}]"
-        motor    = pm.get("motor",        p.get("motor",        ""))
-        start    = pm.get("start",        p.get("start",        0.0))
-        stop     = pm.get("stop",         p.get("stop",         1.0))
-        min_step = pm.get("min_step",     p.get("min_step",   0.001))
-        max_step = pm.get("max_step",     p.get("max_step",     0.1))
-        t_delta  = pm.get("target_delta", p.get("target_delta", 0.05))
-        backstep = p.get("backstep", True)
-        threshold= pm.get("threshold",    p.get("threshold",    0.8))
-        field    = p.get("target_field", "")
-        return (
-            f"{pad}yield from bp.adaptive_scan(\n"
-            f"{pad}    {dets}, \"{field}\",\n"
-            f"{pad}    {motor}, {start}, {stop},\n"
-            f"{pad}    {min_step}, {max_step},\n"
-            f"{pad}    {t_delta}, {backstep},\n"
-            f"{pad}    threshold={threshold})"
-        )
-    if btype == "flyscan":
-        flyer    = p.get("flyer", "")
-        motor    = p.get("motor", "")
-        start    = p.get("start", 0.0)
-        velocity = p.get("velocity", 0.5)
-        lines = []
-        if motor:
-            lines.append(f"{pad}yield from bps.abs_set({motor}.velocity, {velocity}, wait=True)")
-            lines.append(f"{pad}yield from bps.mv({motor}, {start})")
-        lines.append(f"{pad}yield from bp.fly([{flyer}])")
-        return "\n".join(lines)
-    if btype == "plan_stub":
-        return f"{pad}yield from {p['stub_name']}({p['args']})"
-    if btype == "repeat_n":
-        return ""   # handled at generate_plan_code level as a body wrapper
-    if btype == "for_each_position":
-        motor = pm.get("motor", p.get("motor", "motor"))
-        dets  = pm.get("detectors", p.get("detectors", ""))
-        dets_expr = f"[{dets}]" if dets else "detectors"
-        raw_pos = str(p.get("positions", ""))
-        pos_list = "[" + ", ".join(
-            x.strip() for x in raw_pos.split(",") if x.strip()
-        ) + "]"
-        num   = p.get("num", 1)
-        delay = p.get("delay", 0.0)
-        inner = f"{pad}    "
-        lines = [
-            f"{pad}for _pos in {pos_list}:",
-            f"{inner}yield from bps.mv({motor}, _pos)",
-            f"{inner}yield from bp.count({dets_expr}, num={num}, delay={delay})",
-        ]
-        return "\n".join(lines)
-    if btype == "custom_python":
-        code = p.get("code", "pass")
-        lines = []
-        for line in code.splitlines():
-            lines.append(pad + line if line.strip() else "")
+    if k == KIND_CUSTOM_PY:
+        code = p.get("code", "pass") or "pass"
+        lines = [pad + ln if ln.strip() else "" for ln in code.splitlines()]
         return "\n".join(lines) if lines else f"{pad}pass"
-    return f"{pad}pass  # unknown: {btype}"
 
+    if k == KIND_PLAN:
+        plan_name = p.get("plan_name", "unknown_plan") or "unknown_plan"
+        if node.per_step:
+            fn = f"_per_step_{node.node_id}"
+            ps_lines = [
+                f"{pad}def {fn}(detectors, step, pos_cache):",
+                f"{pad}    yield from bps.move_per_step(step, pos_cache)",
+            ]
+            for ps_node in node.per_step:
+                ps_lines.append(_gen_node(ps_node, depth + 1))
+            call = f"{pad}yield from {plan_name}(per_step={fn})"
+            return "\n".join(ps_lines) + "\n" + call
+        return f"{pad}yield from {plan_name}()"
 
-# ── Sequence list widget ───────────────────────────────────────────────────────
+    if k == KIND_REPEAT:
+        n = p.get("n", 1)
+        body = _gen_list(node.children, depth + 1)
+        return f"{pad}for _i in range({n}):\n{body}"
 
-class SequenceList(QListWidget):
-    """Drag-to-reorder list of plan blocks."""
-    block_selected = Signal(object)   # emits block dict or None
-    sequence_changed = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._blocks = []   # authoritative list; avoids item.data() copy issues
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setMinimumHeight(120)
-        self.currentItemChanged.connect(self._on_selection)
-        self.model().rowsMoved.connect(self._on_rows_moved)
-
-    def _on_rows_moved(self, *_):
-        # Re-sync _blocks to match the new visual order after a drag.
-        self._blocks = [self.item(i).data(Qt.ItemDataRole.UserRole)
-                        for i in range(self.count())]
-        self.sequence_changed.emit()
-
-    def _make_item(self, block: dict) -> QListWidgetItem:
-        item = QListWidgetItem(self._make_label(block))
-        item.setData(Qt.ItemDataRole.UserRole, block)
-        if block["type"] in _PLAN_BLOCKS:
-            item.setForeground(QColor("#1f77b4"))
-            f = QFont(); f.setBold(True)
-            item.setFont(f)
-        elif block["type"] in _FLOW_BLOCKS:
-            item.setForeground(QColor("#9467bd"))
-            f = QFont(); f.setItalic(True)
-            item.setFont(f)
-        return item
-
-    def add_block(self, block: dict):
-        self._blocks.append(block)
-        self.addItem(self._make_item(block))
-        self.setCurrentItem(self.item(self.count() - 1))
-        self.sequence_changed.emit()
-
-    def insert_block(self, row: int, block: dict):
-        row = max(0, min(row, self.count()))
-        self._blocks.insert(row, block)
-        self.insertItem(row, self._make_item(block))
-        self.setCurrentItem(self.item(row))
-        self.sequence_changed.emit()
-
-    def remove_selected(self):
-        row = self.currentRow()
-        if row >= 0:
-            self._blocks.pop(row)
-            self.takeItem(row)
-            self.sequence_changed.emit()
-
-    def get_blocks(self) -> list:
-        return list(self._blocks)
-
-    def refresh_labels(self):
-        for i in range(self.count()):
-            item = self.item(i)
-            if i < len(self._blocks):
-                item.setText(self._make_label(self._blocks[i]))
-
-    def _make_label(self, block: dict) -> str:
-        return _block_summary(block)
-
-    def _on_selection(self, current, _prev):
-        if current is None:
-            self.block_selected.emit(None)
-            return
-        row = self.row(current)
-        block = self._blocks[row] if 0 <= row < len(self._blocks) else None
-        self.block_selected.emit(block)
-
-    # ── External drag-drop (from Block Palette) ────────────────────────────────
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasText() and event.mimeData().text() in BLOCK_DEFS:
-            event.acceptProposedAction()
+    if k == KIND_FOR_EACH:
+        varname = p.get("varname", "_val") or "_val"
+        iter_type = p.get("iter_type", "list")
+        motor = p.get("motor", "")
+        if iter_type == "range":
+            start = p.get("start", 0)
+            stop = p.get("stop", 1)
+            num = p.get("num", 10)
+            iterable = f"np.linspace({start}, {stop}, {num})"
+        elif iter_type == "csv":
+            fpath = p.get("csv_file", "data.csv")
+            col = p.get("csv_col", "0")
+            try:
+                col_idx = int(col)
+                usecols = f"[{col_idx}]"
+            except ValueError:
+                usecols = f"['{col}']"
+            iterable = f"np.loadtxt(r'{fpath}', delimiter=',', usecols={usecols})"
         else:
-            super().dragEnterEvent(event)  # internal reorder
+            vals = p.get("values", "")
+            iterable = f"[{vals}]"
+        lines = [f"{pad}for {varname} in {iterable}:"]
+        if motor:
+            lines.append(f"{pad}    yield from bps.mv({motor}, {varname})")
+        lines.append(_gen_list(node.children, depth + 1))
+        return "\n".join(lines)
 
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasText() and event.mimeData().text() in BLOCK_DEFS:
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
+    if k == KIND_WHILE:
+        cond = p.get("condition", "True") or "True"
+        body = _gen_list(node.children, depth + 1)
+        return f"{pad}while {cond}:\n{body}"
 
-    def dropEvent(self, event):
-        if event.mimeData().hasText() and event.mimeData().text() in BLOCK_DEFS:
-            btype = event.mimeData().text()
-            target = self.itemAt(event.position().toPoint())
-            row = self.row(target) if target else self.count()
-            self.insert_block(row, _new_block(btype))
-            event.acceptProposedAction()
-        else:
-            super().dropEvent(event)  # internal reorder
+    if k == KIND_IF_ELSE:
+        cond = p.get("condition", "True") or "True"
+        true_body = _gen_list(node.children, depth + 1)
+        result = f"{pad}if {cond}:\n{true_body}"
+        if node.children_else:
+            else_body = _gen_list(node.children_else, depth + 1)
+            result += f"\n{pad}else:\n{else_body}"
+        return result
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Delete:
-            self.remove_selected()
-        else:
-            super().keyPressEvent(event)
-
-
-# ── Block palette tree (with drag support) ────────────────────────────────────
-
-class _PaletteTree(QTreeWidget):
-    """Block palette that encodes the block type as mime text on drag-start."""
-
-    def startDrag(self, supported_actions):
-        item = self.currentItem()
-        if not item:
-            return
-        btype = item.data(0, Qt.ItemDataRole.UserRole)
-        if not btype:
-            return   # category header — not draggable
-        drag = QDrag(self)
-        mime = QMimeData()
-        mime.setText(btype)
-        drag.setMimeData(mime)
-        drag.exec(Qt.DropAction.CopyAction)
+    return f"{pad}pass  # unknown: {k}"
 
 
-# ── Device picker widget ───────────────────────────────────────────────────────
-
-class DevicePickerWidget(QWidget):
-    """Scrollable device list with a live selection-summary label.
-
-    Replaces the fragile closure-based approach so that selection changes
-    reliably propagate back to PropertyPanel via a proper Qt signal.
-    """
-    value_changed = Signal(str)   # emits comma-sep string (or single name)
-
-    def __init__(self, value, multi: bool, devices: list, parent=None):
-        super().__init__(parent)
-        self._multi = multi
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(2)
-
-        self._lw = QListWidget()
-        self._lw.setSelectionMode(
-            QAbstractItemView.SelectionMode.MultiSelection if multi
-            else QAbstractItemView.SelectionMode.SingleSelection)
-        self._lw.setMaximumHeight(90)
-        self._lw.addItems(devices)
-
-        current = ({x.strip() for x in str(value).split(",") if x.strip()}
-                   if multi else ({str(value).strip()} if value else set()))
-        for i in range(self._lw.count()):
-            if self._lw.item(i).text() in current:
-                self._lw.item(i).setSelected(True)
-
-        self._summary = QLabel("None selected")
-        self._summary.setStyleSheet(
-            "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
-        self._summary.setWordWrap(True)
-
-        lay.addWidget(self._lw)
-        lay.addWidget(self._summary)
-
-        self._lw.itemSelectionChanged.connect(self._on_changed)
-        self._on_changed()   # initialise summary without emitting (block not set yet)
-
-    def _on_changed(self):
-        sel = [self._lw.item(i).text() for i in range(self._lw.count())
-               if self._lw.item(i).isSelected()]
-        if sel:
-            self._summary.setText("✓  " + ",   ".join(sel))
-            self._summary.setStyleSheet(
-                "color: #2ca02c; font-size: 11px; font-weight: bold; padding: 1px 2px;")
-        else:
-            self._summary.setText("None selected")
-            self._summary.setStyleSheet(
-                "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
-        self.value_changed.emit(
-            ", ".join(sel) if self._multi else (sel[0] if sel else ""))
-
-    def get_value(self) -> str:
-        sel = [self._lw.item(i).text() for i in range(self._lw.count())
-               if self._lw.item(i).isSelected()]
-        return ", ".join(sel) if self._multi else (sel[0] if sel else "")
+def generate_code(nodes: list, plan_name: str = "my_plan") -> str:
+    if not plan_name or not plan_name.replace("_", "").isalnum():
+        plan_name = "my_plan"
+    body = _gen_list(nodes, depth=1) if nodes else "    pass"
+    return (
+        "import numpy as np\n"
+        "import bluesky.plan_stubs as bps\n"
+        "import bluesky.plans as bp\n\n\n"
+        f"def {plan_name}(md=None):\n"
+        '    """\n'
+        "    Plan composed with EasyBluesky Visual Composer.\n"
+        '    """\n'
+        f"{body}\n"
+    )
 
 
-# ── Property panel ─────────────────────────────────────────────────────────────
+# ── _ConditionWidget ───────────────────────────────────────────────────────────
 
-class PropertyPanel(QWidget):
-    """Dynamic parameter form for the selected block."""
+class _ConditionWidget(QWidget):
     changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._block     = None
-        self._widgets   = {}   # param_name → widget, for direct value reads
-        self._handlers  = []   # strong refs to lambdas so Qt doesn't GC them
-        self._loading   = False
-        self._devices   = []
-        self._motors    = []
-        self._detectors = []
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        # Simple mode
+        self._simple_w = QWidget()
+        s_lay = QHBoxLayout(self._simple_w)
+        s_lay.setContentsMargins(0, 0, 0, 0)
+        s_lay.setSpacing(2)
+        self._lhs = QLineEdit()
+        self._lhs.setPlaceholderText("signal")
+        self._lhs.setFixedWidth(110)
+        self._lhs.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
+        self._op = QComboBox()
+        self._op.addItems([">", ">=", "<", "<=", "==", "!="])
+        self._op.setFixedWidth(52)
+        self._op.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
+        self._rhs = QLineEdit()
+        self._rhs.setPlaceholderText("value")
+        self._rhs.setFixedWidth(70)
+        self._rhs.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
+        s_lay.addWidget(self._lhs)
+        s_lay.addWidget(self._op)
+        s_lay.addWidget(self._rhs)
+
+        # Advanced mode
+        self._adv_w = QLineEdit()
+        self._adv_w.setPlaceholderText("Python expression…")
+        self._adv_w.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._simple_w)
+        self._stack.addWidget(self._adv_w)
+
+        self._adv_btn = QPushButton("Adv →")
+        self._adv_btn.setFixedWidth(55)
+        self._adv_btn.setCheckable(True)
+        self._adv_btn.setStyleSheet("color: white; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.3);")
+        self._adv_btn.toggled.connect(self._toggle_mode)
+
+        lay.addWidget(self._stack)
+        lay.addWidget(self._adv_btn)
+
+        self._lhs.textChanged.connect(self.changed)
+        self._op.currentIndexChanged.connect(self.changed)
+        self._rhs.textChanged.connect(self.changed)
+        self._adv_w.textChanged.connect(self.changed)
+
+    def _toggle_mode(self, adv: bool):
+        if adv:
+            self._adv_w.setText(self.get_condition())
+            self._stack.setCurrentIndex(1)
+            self._adv_btn.setText("← Sim")
+        else:
+            self._stack.setCurrentIndex(0)
+            self._adv_btn.setText("Adv →")
+        self.changed.emit()
+
+    def get_condition(self) -> str:
+        if self._adv_btn.isChecked():
+            return self._adv_w.text() or "True"
+        lhs = self._lhs.text() or "True"
+        op = self._op.currentText()
+        rhs = self._rhs.text() or "0"
+        if lhs == "True":
+            return "True"
+        return f"{lhs} {op} {rhs}"
+
+    def set_condition(self, cond: str):
+        for op in [">=", "<=", "!=", "==", ">", "<"]:
+            if op in cond:
+                parts = cond.split(op, 1)
+                if len(parts) == 2:
+                    self._lhs.setText(parts[0].strip())
+                    self._op.setCurrentText(op)
+                    self._rhs.setText(parts[1].strip())
+                    self._stack.setCurrentIndex(0)
+                    self._adv_btn.setChecked(False)
+                    return
+        self._adv_w.setText(cond)
+        self._adv_btn.setChecked(True)
+
+
+# ── _IterableWidget ────────────────────────────────────────────────────────────
+
+class _IterableWidget(QWidget):
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(8)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
 
-        self._title = QLabel("Select a block to edit")
-        self._title.setObjectName("section_title")
-        lay.addWidget(self._title)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addWidget(QLabel("<font color='white'>var:</font>"))
+        self._varname = QLineEdit("_val")
+        self._varname.setFixedWidth(55)
+        self._varname.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
+        top.addWidget(self._varname)
+        top.addWidget(QLabel("<font color='white'>in:</font>"))
+        self._type = QComboBox()
+        self._type.addItems(["List", "Range", "CSV"])
+        self._type.setFixedWidth(60)
+        self._type.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
+        top.addWidget(self._type)
+        top.addStretch()
+        lay.addLayout(top)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._form_host = QWidget()
-        self._form = QFormLayout(self._form_host)
-        self._form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self._form.setHorizontalSpacing(12)
-        self._form.setVerticalSpacing(6)
-        scroll.setWidget(self._form_host)
-        lay.addWidget(scroll, 1)
+        self._stack = QStackedWidget()
+
+        list_w = QWidget()
+        ll = QHBoxLayout(list_w)
+        ll.setContentsMargins(0, 0, 0, 0)
+        self._list_vals = QLineEdit()
+        self._list_vals.setPlaceholderText("0.5, 1.0, 2.5")
+        self._list_vals.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
+        ll.addWidget(self._list_vals)
+
+        range_w = QWidget()
+        rl = QHBoxLayout(range_w)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(2)
+        self._r_start = QDoubleSpinBox()
+        self._r_start.setRange(-1e9, 1e9)
+        self._r_start.setFixedWidth(65)
+        self._r_start.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
+        self._r_stop = QDoubleSpinBox()
+        self._r_stop.setRange(-1e9, 1e9)
+        self._r_stop.setValue(1)
+        self._r_stop.setFixedWidth(65)
+        self._r_stop.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
+        self._r_num = QSpinBox()
+        self._r_num.setRange(2, 100000)
+        self._r_num.setValue(10)
+        self._r_num.setFixedWidth(55)
+        self._r_num.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
+        for lbl, w in [("start:", self._r_start), ("stop:", self._r_stop), ("N:", self._r_num)]:
+            rl.addWidget(QLabel(f"<font color='white'>{lbl}</font>"))
+            rl.addWidget(w)
+
+        csv_w = QWidget()
+        cl = QHBoxLayout(csv_w)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(2)
+        self._csv_file = QLineEdit()
+        self._csv_file.setPlaceholderText("data.csv")
+        self._csv_file.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
+        csv_browse = QPushButton("…")
+        csv_browse.setFixedWidth(24)
+        csv_browse.clicked.connect(self._browse_csv)
+        self._csv_col = QLineEdit("0")
+        self._csv_col.setFixedWidth(32)
+        self._csv_col.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
+        cl.addWidget(self._csv_file)
+        cl.addWidget(csv_browse)
+        cl.addWidget(QLabel("<font color='white'>col:</font>"))
+        cl.addWidget(self._csv_col)
+
+        self._stack.addWidget(list_w)
+        self._stack.addWidget(range_w)
+        self._stack.addWidget(csv_w)
+        lay.addWidget(self._stack)
+
+        motor_row = QHBoxLayout()
+        motor_row.setContentsMargins(0, 0, 0, 0)
+        motor_row.addWidget(QLabel("<font color='white'>move motor:</font>"))
+        self._motor = QComboBox()
+        self._motor.setEditable(True)
+        self._motor.setFixedWidth(120)
+        self._motor.addItem("")
+        self._motor.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
+        motor_row.addWidget(self._motor)
+        motor_row.addStretch()
+        lay.addLayout(motor_row)
+
+        self._type.currentIndexChanged.connect(self._stack.setCurrentIndex)
+        self._type.currentIndexChanged.connect(self.changed)
+        self._varname.textChanged.connect(self.changed)
+        self._list_vals.textChanged.connect(self.changed)
+        self._r_start.valueChanged.connect(self.changed)
+        self._r_stop.valueChanged.connect(self.changed)
+        self._r_num.valueChanged.connect(self.changed)
+        self._csv_file.textChanged.connect(self.changed)
+        self._csv_col.textChanged.connect(self.changed)
+        self._motor.currentTextChanged.connect(self.changed)
+
+    def _browse_csv(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select CSV", "", "CSV (*.csv *.txt *.dat)")
+        if f:
+            self._csv_file.setText(f)
+
+    def set_motors(self, motor_names: list):
+        cur = self._motor.currentText()
+        self._motor.clear()
+        self._motor.addItem("")
+        for m in motor_names:
+            self._motor.addItem(m)
+        idx = self._motor.findText(cur)
+        self._motor.setCurrentIndex(max(0, idx))
+
+    def get_params(self) -> dict:
+        t = ["list", "range", "csv"][self._type.currentIndex()]
+        p = {"varname": self._varname.text() or "_val", "iter_type": t,
+             "motor": self._motor.currentText()}
+        if t == "list":
+            p["values"] = self._list_vals.text()
+        elif t == "range":
+            p["start"] = self._r_start.value()
+            p["stop"] = self._r_stop.value()
+            p["num"] = self._r_num.value()
+        else:
+            p["csv_file"] = self._csv_file.text()
+            p["csv_col"] = self._csv_col.text()
+        return p
+
+    def set_params(self, p: dict):
+        t = p.get("iter_type", "list")
+        idx = ["list", "range", "csv"].index(t) if t in ["list", "range", "csv"] else 0
+        self._type.setCurrentIndex(idx)
+        self._varname.setText(p.get("varname", "_val"))
+        self._list_vals.setText(p.get("values", ""))
+        self._r_start.setValue(float(p.get("start", 0)))
+        self._r_stop.setValue(float(p.get("stop", 1)))
+        self._r_num.setValue(int(p.get("num", 10)))
+        self._csv_file.setText(p.get("csv_file", ""))
+        self._csv_col.setText(p.get("csv_col", "0"))
+        motor = p.get("motor", "")
+        midx = self._motor.findText(motor)
+        if midx >= 0:
+            self._motor.setCurrentIndex(midx)
+        else:
+            self._motor.setCurrentText(motor)
+
+
+# ── BlockWidget ────────────────────────────────────────────────────────────────
+
+_KIND_COLORS = {
+    KIND_MOVE: "#2d5f7a", KIND_RMOVE: "#2d5f7a",
+    KIND_SLEEP: "#4a4a6a",
+    KIND_SET_ATTR: "#5a3a6a", KIND_STAGE: "#5a3a6a", KIND_UNSTAGE: "#5a3a6a",
+    KIND_OPEN_SHUTTER: "#4a6a3a", KIND_CLOSE_SHUTTER: "#4a6a3a",
+    KIND_TRIGGER_READ: "#3a6a5a",
+    KIND_PLAN: "#3a5a2a",
+    KIND_CUSTOM_PY: "#6a5a3a",
+    KIND_REPEAT: "#7a3a2a",
+    KIND_FOR_EACH: "#7a4a2a",
+    KIND_WHILE: "#6a2a5a",
+    KIND_IF_ELSE: "#4a2a7a",
+}
+
+_KIND_ICONS = {
+    KIND_MOVE: "→", KIND_RMOVE: "↔", KIND_SLEEP: "⏱",
+    KIND_SET_ATTR: "⚙", KIND_STAGE: "▲", KIND_UNSTAGE: "▼",
+    KIND_OPEN_SHUTTER: "⊙", KIND_CLOSE_SHUTTER: "⊗",
+    KIND_TRIGGER_READ: "◎", KIND_PLAN: "▶", KIND_CUSTOM_PY: "⌨",
+    KIND_REPEAT: "↻", KIND_FOR_EACH: "∀", KIND_WHILE: "∞", KIND_IF_ELSE: "?",
+}
+
+_KIND_LABELS = {
+    KIND_MOVE: "Move", KIND_RMOVE: "Relative Move", KIND_SLEEP: "Sleep",
+    KIND_SET_ATTR: "Set Attr", KIND_STAGE: "Stage", KIND_UNSTAGE: "Unstage",
+    KIND_OPEN_SHUTTER: "Open Shutter", KIND_CLOSE_SHUTTER: "Close Shutter",
+    KIND_TRIGGER_READ: "Trigger & Read",
+    KIND_CUSTOM_PY: "Custom Python",
+    KIND_REPEAT: "Repeat", KIND_FOR_EACH: "For Each",
+    KIND_WHILE: "While", KIND_IF_ELSE: "If / Else",
+}
+
+_FIELD_STYLE = "background: rgba(0,0,0,0.35); color: white; border: 1px solid rgba(255,255,255,0.25);"
+
+
+class BlockWidget(QWidget):
+    node_changed = Signal()
+    delete_requested = Signal(object)
+    drag_started = Signal(object)
+
+    def __init__(self, node: "FlowNode", devices: dict = None, parent=None):
+        super().__init__(parent)
+        self.node = node
+        self._devices = devices or {}
+        self._expanded = True
+        self._drag_pos = None
+        self._build()
+
+    def _build(self):
+        root_lay = QVBoxLayout(self)
+        root_lay.setContentsMargins(0, 2, 0, 2)
+        root_lay.setSpacing(0)
+
+        color = _KIND_COLORS.get(self.node.kind, "#444")
+        header = QWidget()
+        header.setStyleSheet(
+            f"background: {color}; border-radius: 4px;"
+        )
+        h_lay = QHBoxLayout(header)
+        h_lay.setContentsMargins(4, 3, 4, 3)
+        h_lay.setSpacing(4)
+
+        # Drag handle
+        handle = QLabel("⠿")
+        handle.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        handle.setFixedWidth(14)
+        handle.setStyleSheet("color: rgba(255,255,255,0.5); font-size: 13px;")
+        handle.mousePressEvent = self._handle_press
+        handle.mouseMoveEvent = self._handle_move
+        h_lay.addWidget(handle)
+
+        icon = _KIND_ICONS.get(self.node.kind, "●")
+        kind_lbl = self.node.params.get("plan_name", "") if self.node.kind == KIND_PLAN else _KIND_LABELS.get(self.node.kind, self.node.kind)
+        lbl = QLabel(f"<b>{icon}  {kind_lbl}</b>")
+        lbl.setStyleSheet("color: white; font-size: 12px;")
+        lbl.setMinimumWidth(10)
+        h_lay.addWidget(lbl)
+        h_lay.addSpacing(6)
+
+        # Inline params
+        self._build_inline(h_lay)
+
+        h_lay.addStretch()
+
+        # Expand button for containers and plan blocks
+        is_container = self.node.kind in CONTAINER_KINDS or self.node.kind == KIND_PLAN
+        if is_container:
+            self._exp_btn = QToolButton()
+            self._exp_btn.setText("▾")
+            self._exp_btn.setFixedSize(18, 18)
+            self._exp_btn.setStyleSheet("color: white; border: none; background: transparent;")
+            self._exp_btn.clicked.connect(self._toggle_expand)
+            h_lay.addWidget(self._exp_btn)
+
+        del_btn = QToolButton()
+        del_btn.setText("×")
+        del_btn.setFixedSize(18, 18)
+        del_btn.setStyleSheet("color: rgba(255,255,255,0.7); border: none; background: transparent; font-size: 14px;")
+        del_btn.clicked.connect(lambda: self.delete_requested.emit(self))
+        h_lay.addWidget(del_btn)
+
+        root_lay.addWidget(header)
+
+        # Body for containers and plan blocks
+        if is_container:
+            self._body = QWidget()
+            b_lay = QVBoxLayout(self._body)
+            b_lay.setContentsMargins(16, 2, 0, 2)
+            b_lay.setSpacing(2)
+
+            if self.node.kind == KIND_IF_ELSE:
+                true_lbl = QLabel("▶ True branch")
+                true_lbl.setStyleSheet("color: #88ff88; font-size: 10px; font-weight: bold;")
+                b_lay.addWidget(true_lbl)
+
+            self._children_area = _ChildrenArea(self.node.children, self._devices)
+            self._children_area.changed.connect(self.node_changed)
+            self._children_area.drag_started.connect(self.drag_started)
+            b_lay.addWidget(self._children_area)
+
+            if self.node.kind == KIND_IF_ELSE:
+                else_lbl = QLabel("▶ False branch")
+                else_lbl.setStyleSheet("color: #ff8888; font-size: 10px; font-weight: bold;")
+                b_lay.addWidget(else_lbl)
+                self._else_area = _ChildrenArea(self.node.children_else, self._devices)
+                self._else_area.changed.connect(self.node_changed)
+                self._else_area.drag_started.connect(self.drag_started)
+                b_lay.addWidget(self._else_area)
+
+            if self.node.kind == KIND_PLAN:
+                self._ps_toggle = QPushButton("+ Add Per-step Actions")
+                self._ps_toggle.setCheckable(True)
+                self._ps_toggle.setChecked(bool(self.node.per_step))
+                self._ps_toggle.setStyleSheet(
+                    "color: #aaaaff; border: 1px solid #aaaaff; background: transparent; font-size: 10px; padding: 1px 4px;")
+                self._ps_toggle.toggled.connect(self._on_ps_toggled)
+                b_lay.addWidget(self._ps_toggle)
+
+                self._ps_area = _ChildrenArea(self.node.per_step, self._devices)
+                self._ps_area.changed.connect(self.node_changed)
+                self._ps_area.drag_started.connect(self.drag_started)
+                self._ps_area.setVisible(bool(self.node.per_step))
+                b_lay.addWidget(self._ps_area)
+
+            root_lay.addWidget(self._body)
+
+    def _on_ps_toggled(self, checked: bool):
+        if hasattr(self, "_ps_area"):
+            self._ps_area.setVisible(checked)
+            if not checked:
+                self.node.per_step.clear()
+                self.node_changed.emit()
+
+    def _build_inline(self, lay: QHBoxLayout):
+        k = self.node.kind
+        p = self.node.params
+
+        motors = sorted(n for n, d in self._devices.items()
+                        if isinstance(d, dict) and d.get("is_movable"))
+        any_devs = sorted(self._devices.keys())
+
+        def combo(opts, default="", w=120):
+            c = QComboBox()
+            c.setEditable(True)
+            c.setFixedWidth(w)
+            c.setStyleSheet(_FIELD_STYLE)
+            c.addItems(opts)
+            idx = c.findText(default)
+            if idx >= 0:
+                c.setCurrentIndex(idx)
+            else:
+                c.setCurrentText(default)
+            return c
+
+        def spin(val=0.0, mn=-1e9, mx=1e9, w=75):
+            s = QDoubleSpinBox()
+            s.setRange(mn, mx); s.setValue(val); s.setFixedWidth(w)
+            s.setDecimals(4)
+            s.setStyleSheet(_FIELD_STYLE)
+            return s
+
+        def ispin(val=1, mn=1, mx=100000, w=60):
+            s = QSpinBox()
+            s.setRange(mn, mx); s.setValue(val); s.setFixedWidth(w)
+            s.setStyleSheet(_FIELD_STYLE)
+            return s
+
+        def edit(text="", placeholder="", w=100):
+            e = QLineEdit(text)
+            e.setPlaceholderText(placeholder)
+            e.setFixedWidth(w)
+            e.setStyleSheet(_FIELD_STYLE)
+            return e
+
+        def wlbl(t):
+            l = QLabel(f"<font color='white'>{t}</font>")
+            return l
+
+        if k == KIND_MOVE:
+            c = combo(motors, p.get("device", ""), 130)
+            c.currentTextChanged.connect(lambda v: p.update({"device": v}) or self.node_changed.emit())
+            lay.addWidget(c)
+            lay.addWidget(wlbl("→"))
+            s = spin(p.get("position", 0.0))
+            s.valueChanged.connect(lambda v: p.update({"position": v}) or self.node_changed.emit())
+            lay.addWidget(s)
+
+        elif k == KIND_RMOVE:
+            c = combo(motors, p.get("device", ""), 130)
+            c.currentTextChanged.connect(lambda v: p.update({"device": v}) or self.node_changed.emit())
+            lay.addWidget(c)
+            lay.addWidget(wlbl("±"))
+            s = spin(p.get("delta", 0.0))
+            s.valueChanged.connect(lambda v: p.update({"delta": v}) or self.node_changed.emit())
+            lay.addWidget(s)
+
+        elif k == KIND_SLEEP:
+            s = spin(p.get("seconds", 1.0), 0, 86400, 75)
+            s.valueChanged.connect(lambda v: p.update({"seconds": v}) or self.node_changed.emit())
+            lay.addWidget(s)
+            lay.addWidget(wlbl("s"))
+
+        elif k == KIND_SET_ATTR:
+            c = combo(any_devs, p.get("device", ""), 120)
+            c.currentTextChanged.connect(lambda v: p.update({"device": v}) or self.node_changed.emit())
+            lay.addWidget(c)
+            lay.addWidget(wlbl("."))
+            e1 = edit(p.get("attribute", ""), "attr", 90)
+            e1.textChanged.connect(lambda v: p.update({"attribute": v}) or self.node_changed.emit())
+            lay.addWidget(e1)
+            lay.addWidget(wlbl("="))
+            e2 = edit(p.get("value", ""), "value", 70)
+            e2.textChanged.connect(lambda v: p.update({"value": v}) or self.node_changed.emit())
+            lay.addWidget(e2)
+
+        elif k in (KIND_OPEN_SHUTTER, KIND_CLOSE_SHUTTER, KIND_STAGE, KIND_UNSTAGE):
+            c = combo(any_devs, p.get("device", ""), 130)
+            c.currentTextChanged.connect(lambda v: p.update({"device": v}) or self.node_changed.emit())
+            lay.addWidget(c)
+
+        elif k == KIND_TRIGGER_READ:
+            e = edit(p.get("detectors", ""), "detectors", 140)
+            e.textChanged.connect(lambda v: p.update({"detectors": v}) or self.node_changed.emit())
+            lay.addWidget(e)
+
+        elif k == KIND_PLAN:
+            pass  # plan name shown in header label already
+
+        elif k == KIND_CUSTOM_PY:
+            btn = QPushButton("Edit Code…")
+            btn.setStyleSheet("color: white; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.3); padding: 2px 6px;")
+            btn.clicked.connect(self._edit_custom_py)
+            lay.addWidget(btn)
+
+        elif k == KIND_REPEAT:
+            lay.addWidget(wlbl("N:"))
+            s = ispin(p.get("n", 3))
+            s.valueChanged.connect(lambda v: p.update({"n": v}) or self.node_changed.emit())
+            lay.addWidget(s)
+            lay.addWidget(wlbl("times"))
+
+        elif k == KIND_FOR_EACH:
+            self._iter_w = _IterableWidget()
+            self._iter_w.set_params(p)
+            self._iter_w.set_motors(motors)
+            def _on_iter():
+                p.clear(); p.update(self._iter_w.get_params())
+                self.node_changed.emit()
+            self._iter_w.changed.connect(_on_iter)
+            lay.addWidget(self._iter_w)
+
+        elif k in (KIND_WHILE, KIND_IF_ELSE):
+            self._cond_w = _ConditionWidget()
+            self._cond_w.set_condition(p.get("condition", "True"))
+            def _on_cond():
+                p["condition"] = self._cond_w.get_condition()
+                self.node_changed.emit()
+            self._cond_w.changed.connect(_on_cond)
+            lay.addWidget(self._cond_w)
+
+    def _edit_custom_py(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Custom Python Block")
+        dlg.resize(520, 320)
+        lay = QVBoxLayout(dlg)
+        editor = QPlainTextEdit()
+        editor.setFont(QFont("Courier New", 12))
+        editor.setPlainText(self.node.params.get("code", "pass"))
+        PythonHighlighter(editor.document())
+        lay.addWidget(editor)
+        brow = QHBoxLayout()
+        ok_btn = QPushButton("OK"); cancel_btn = QPushButton("Cancel")
+        ok_btn.clicked.connect(dlg.accept); cancel_btn.clicked.connect(dlg.reject)
+        brow.addStretch(); brow.addWidget(ok_btn); brow.addWidget(cancel_btn)
+        lay.addLayout(brow)
+        if dlg.exec():
+            self.node.params["code"] = editor.toPlainText()
+            self.node_changed.emit()
+
+    def _toggle_expand(self):
+        self._expanded = not self._expanded
+        if hasattr(self, "_body"):
+            self._body.setVisible(self._expanded)
+        if hasattr(self, "_exp_btn"):
+            self._exp_btn.setText("▾" if self._expanded else "▸")
+
+    def _handle_press(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = ev.position().toPoint()
+
+    def _handle_move(self, ev):
+        if self._drag_pos is None:
+            return
+        if (ev.position().toPoint() - self._drag_pos).manhattanLength() < 6:
+            return
+        self._drag_pos = None
+        self.drag_started.emit(self)
 
     def set_devices(self, devices: dict):
-        devices = devices or {}
-        self._devices   = sorted(devices.keys())
-        self._motors    = sorted(k for k, v in devices.items()
-                                 if isinstance(v, dict) and v.get("is_movable", False))
-        self._detectors = sorted(k for k, v in devices.items()
-                                 if isinstance(v, dict) and v.get("is_readable", False))
-        if self._block:
-            self.load_block(self._block)
+        self._devices = devices
 
-    def load_block(self, block):
-        self._block    = block
-        self._widgets  = {}
-        self._handlers = []   # drop old lambdas; keep strong refs to new ones
-        self._loading  = True  # suppress changed() during widget init
-        while self._form.rowCount():
-            self._form.removeRow(0)
+    def get_node(self) -> "FlowNode":
+        return self.node
 
-        if not block:
-            self._loading = False
-            self._title.setText("Select a block to edit")
+
+# ── _ChildrenArea ──────────────────────────────────────────────────────────────
+
+class _ChildrenArea(QWidget):
+    changed = Signal()
+    drag_started = Signal(object)
+
+    _DROP_STRIP_STYLE = "background: transparent;"
+    _DROP_STRIP_HOVER = "background: #4a9eff; border-radius: 1px;"
+
+    def __init__(self, node_list: list, devices: dict = None, parent=None):
+        super().__init__(parent)
+        self._nodes = node_list
+        self._devices = devices or {}
+        self._block_widgets: list = []
+        self._drop_strips: list = []
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(0)
+        self.setAcceptDrops(True)
+        self._rebuild()
+
+    def _rebuild(self):
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+        self._block_widgets = []
+        self._drop_strips = []
+
+        def make_strip():
+            strip = QFrame()
+            strip.setFixedHeight(4)
+            strip.setStyleSheet(self._DROP_STRIP_STYLE)
+            strip.setObjectName("drop_strip")
+            return strip
+
+        strip0 = make_strip()
+        self._drop_strips.append(strip0)
+        self._lay.addWidget(strip0)
+
+        for node in self._nodes:
+            bw = BlockWidget(node, self._devices)
+            bw.node_changed.connect(self.changed)
+            bw.delete_requested.connect(self._on_delete)
+            bw.drag_started.connect(self.drag_started)
+            self._block_widgets.append(bw)
+            self._lay.addWidget(bw)
+
+            strip = make_strip()
+            self._drop_strips.append(strip)
+            self._lay.addWidget(strip)
+
+        if not self._nodes:
+            empty = QLabel("  ← drop here")
+            empty.setStyleSheet("color: rgba(255,255,255,0.25); font-size: 10px; padding: 2px;")
+            empty.setObjectName("empty_hint")
+            self._lay.addWidget(empty)
+
+        self._lay.addStretch()
+        self.updateGeometry()
+
+    def _on_delete(self, bw: BlockWidget):
+        node = bw.get_node()
+        if node in self._nodes:
+            self._nodes.remove(node)
+        self._rebuild()
+        self.changed.emit()
+
+    def insert_node(self, node: "FlowNode", index: int = -1):
+        if index < 0 or index > len(self._nodes):
+            self._nodes.append(node)
+        else:
+            self._nodes.insert(index, node)
+        self._rebuild()
+        self.changed.emit()
+
+    def remove_node(self, node: "FlowNode"):
+        if node in self._nodes:
+            self._nodes.remove(node)
+            self._rebuild()
+            self.changed.emit()
+
+    def _drop_index(self, pos: QPoint) -> int:
+        y = pos.y()
+        for i, bw in enumerate(self._block_widgets):
+            bw_top = bw.mapTo(self, QPoint(0, 0)).y()
+            bw_mid = bw_top + bw.height() // 2
+            if y < bw_mid:
+                return i
+        return len(self._nodes)
+
+    def _highlight_strips(self, pos: QPoint):
+        y = pos.y()
+        best_i = 0
+        best_dist = float("inf")
+        for i, strip in enumerate(self._drop_strips):
+            sy = strip.mapTo(self, QPoint(0, strip.height() // 2)).y()
+            dist = abs(y - sy)
+            if dist < best_dist:
+                best_dist = dist
+                best_i = i
+        for i, strip in enumerate(self._drop_strips):
+            strip.setStyleSheet(
+                self._DROP_STRIP_HOVER if i == best_i else self._DROP_STRIP_STYLE)
+
+    def _clear_strips(self):
+        for strip in self._drop_strips:
+            strip.setStyleSheet(self._DROP_STRIP_STYLE)
+
+    def dragEnterEvent(self, ev):
+        if ev.mimeData().hasFormat(_MIME):
+            ev.acceptProposedAction()
+
+    def dragMoveEvent(self, ev):
+        if ev.mimeData().hasFormat(_MIME):
+            ev.acceptProposedAction()
+            self._highlight_strips(ev.position().toPoint())
+
+    def dragLeaveEvent(self, ev):
+        self._clear_strips()
+
+    def dropEvent(self, ev):
+        self._clear_strips()
+        if not ev.mimeData().hasFormat(_MIME):
+            return
+        raw = bytes(ev.mimeData().data(_MIME)).decode()
+        try:
+            d = json.loads(raw)
+        except Exception:
             return
 
-        defn = BLOCK_DEFS[block["type"]]
-        self._title.setText(f"{defn['icon']}  {defn['label']}")
+        node_id = d.get("node_id")
+        src_area = _drag_state.get("source_area")
+        src_node = _drag_state.get("node")
 
-        for param in defn["params"]:
-            name  = param["name"]
-            ptype = param["type"]
-            value = block["params"].get(name, param["default"])
-            hint  = param.get("hint", "")
-            wtype = param.get("widget", "")
+        if src_node and src_area:
+            if src_node in src_area._nodes:
+                src_area._nodes.remove(src_node)
+                src_area._rebuild()
+                src_area.changed.emit()
+            node = src_node
+        else:
+            node = FlowNode.from_dict(d)
 
-            if ptype == "float":
-                w = NoScrollDoubleSpinBox()
-                w.setRange(-1e9, 1e9)
-                w.setDecimals(4)
-                w.setSingleStep(0.1)
-                # Connect BEFORE setValue so the initial value is written into
-                # block params; store strong ref so the lambda isn't GC'd.
-                handler = lambda v, n=name: self._update(n, v)
-                self._handlers.append(handler)
-                w.valueChanged.connect(handler)
-                w.setValue(float(value))
+        idx = self._drop_index(ev.position().toPoint())
+        self._nodes.insert(idx, node)
+        self._rebuild()
+        self.changed.emit()
+        ev.acceptProposedAction()
 
-            elif ptype == "int":
-                w = NoScrollSpinBox()
-                w.setRange(1, 1000000)
-                handler = lambda v, n=name: self._update(n, v)
-                self._handlers.append(handler)
-                w.valueChanged.connect(handler)
-                w.setValue(int(value))
+    def set_devices(self, devices: dict):
+        self._devices = devices
+        for bw in self._block_widgets:
+            bw.set_devices(devices)
 
-            elif ptype == "bool":
-                w = QCheckBox()
-                checked = (value if isinstance(value, bool)
-                           else str(value).lower() in ("true", "1", "yes"))
-                handler = lambda v, n=name: self._update(n, bool(v))
-                self._handlers.append(handler)
-                w.stateChanged.connect(handler)
-                w.setChecked(checked)
 
-            elif wtype == "code":
-                w = QPlainTextEdit()
-                w.setPlainText(str(value))
-                w.setMinimumHeight(80)
-                w.setMaximumHeight(160)
-                f2 = QFont("Courier New", 10)
-                w.setFont(f2)
-                handler = lambda n=name, ww=w: self._update(n, ww.toPlainText())
-                self._handlers.append(handler)
-                w.textChanged.connect(handler)
-                block["params"][name] = w.toPlainText()
+# ── FlowCanvas ─────────────────────────────────────────────────────────────────
 
-            elif wtype in ("device_single", "device_multi", "device_any") and self._devices:
-                if wtype == "device_multi":
-                    devs, multi = self._detectors or self._devices, True
-                elif wtype == "device_single":
-                    devs, multi = self._motors or self._devices, True
-                else:  # device_any
-                    devs, multi = self._devices, True
-                picker = DevicePickerWidget(value, multi, devs)
-                handler = lambda v, n=name: self._update(n, v)
-                self._handlers.append(handler)
-                picker.value_changed.connect(handler)
-                # Flush initial selection into block params now — picker's
-                # _on_changed() fired during __init__ before we connected.
-                block["params"][name] = picker.get_value()
-                w = picker
+class FlowCanvas(QScrollArea):
+    changed = Signal()
 
-            else:
-                w = QLineEdit(str(value))
-                w.setPlaceholderText(hint)
-                handler = lambda v, n=name: self._update(n, v)
-                self._handlers.append(handler)
-                w.textChanged.connect(handler)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._nodes: list = []
+        self._devices: dict = {}
 
-            self._widgets[name] = w
-            label = name.replace("_", " ").title() + ":"
-            self._form.addRow(label, w)
+        self._root_area = _ChildrenArea(self._nodes, self._devices)
+        self._root_area.changed.connect(self.changed)
+        self._root_area.drag_started.connect(self._on_drag_started)
 
-        self._loading = False  # widget init done; user changes now emit changed()
+        self.setWidget(self._root_area)
+        self.setWidgetResizable(True)
+        self.setAcceptDrops(True)
+        self.setStyleSheet("background: #1e1e1e; border: 1px solid #333;")
 
-    def sync_to_block(self):
-        """Read each widget's current value directly into the active block params.
+    def _on_drag_started(self, bw: BlockWidget):
+        node = bw.get_node()
+        src = self._find_children_area(bw)
+        _drag_state["node"] = node
+        _drag_state["source_area"] = src
 
-        Bypasses the value_changed signal so initial picker selections (set
-        before the signal is connected) are always flushed before code gen.
-        """
-        if not self._block:
+        mime = QMimeData()
+        mime.setData(_MIME, QByteArray(json.dumps(node.to_dict()).encode()))
+        drag = QDrag(bw)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+        _drag_state.clear()
+        self.changed.emit()
+
+    def _find_children_area(self, widget) -> "_ChildrenArea | None":
+        p = widget.parent()
+        while p:
+            if isinstance(p, _ChildrenArea):
+                return p
+            p = p.parent()
+        return None
+
+    def add_node(self, node: "FlowNode"):
+        self._nodes.append(node)
+        self._root_area._rebuild()
+        self.changed.emit()
+
+    def clear(self):
+        self._nodes.clear()
+        self._root_area._rebuild()
+        self.changed.emit()
+
+    def get_nodes(self) -> list:
+        return self._nodes
+
+    def set_nodes(self, nodes: list):
+        self._nodes.clear()
+        self._nodes.extend(nodes)
+        self._root_area._rebuild()
+        self.changed.emit()
+
+    def set_devices(self, devices: dict):
+        self._devices = devices
+        self._root_area.set_devices(devices)
+
+    def to_json(self) -> str:
+        return json.dumps([n.to_dict() for n in self._nodes], indent=2)
+
+    def from_json(self, s: str):
+        try:
+            data = json.loads(s)
+            nodes = [FlowNode.from_dict(d) for d in data]
+        except Exception as e:
+            QMessageBox.warning(None, "Load Error", f"Cannot parse .ebplan file:\n{e}")
             return
-        for name, w in self._widgets.items():
-            if isinstance(w, DevicePickerWidget):
-                self._block["params"][name] = w.get_value()
-            elif isinstance(w, QDoubleSpinBox):
-                self._block["params"][name] = w.value()
-            elif isinstance(w, QSpinBox):
-                self._block["params"][name] = w.value()
-            elif isinstance(w, QCheckBox):
-                self._block["params"][name] = w.isChecked()
-            elif isinstance(w, QPlainTextEdit):
-                self._block["params"][name] = w.toPlainText()
-            elif isinstance(w, QLineEdit):
-                self._block["params"][name] = w.text()
+        self.set_nodes(nodes)
 
-    def _update(self, name, value):
-        if self._block:
-            self._block["params"][name] = value
-            if not self._loading:
-                self.changed.emit()
+    def keyPressEvent(self, ev):
+        super().keyPressEvent(ev)
 
 
-# ── Code generation ────────────────────────────────────────────────────────────
+# ── PalettePanel ───────────────────────────────────────────────────────────────
 
-def generate_plan_code(main_blocks: list, ps_blocks: list, plan_name: str = "") -> tuple:
-    """Return (code_str, plan_name).
+class PalettePanel(QWidget):
+    block_activated = Signal(str)
+    plan_activated = Signal(str)
 
-    Generates a fully parametric plan: scan/count blocks contribute
-    detectors, motor, start/stop/num as function parameters; shutter and
-    exposure blocks contribute shutter / exposure_time parameters.
-    Block-Properties selections become the default values shown in the
-    docstring and used at runtime when callers omit the argument.
-    """
-    import re
-    name = re.sub(r"[^a-zA-Z0-9_]", "_", plan_name.strip()) if plan_name.strip() else ""
-    if not name:
-        name = "composed_plan"
+    _STRUCTURAL = [
+        (KIND_MOVE,          "→  Move"),
+        (KIND_RMOVE,         "↔  Relative Move"),
+        (KIND_SLEEP,         "⏱  Sleep"),
+        (KIND_SET_ATTR,      "⚙  Set Attribute"),
+        (KIND_STAGE,         "▲  Stage Device"),
+        (KIND_UNSTAGE,       "▼  Unstage Device"),
+        (KIND_OPEN_SHUTTER,  "⊙  Open Shutter"),
+        (KIND_CLOSE_SHUTTER, "⊗  Close Shutter"),
+        (KIND_TRIGGER_READ,  "◎  Trigger & Read"),
+        (KIND_CUSTOM_PY,     "⌨  Custom Python"),
+    ]
 
-    # ── 1. Collect parameterisable values from all blocks ─────────────────────
-    # func_params: ordered dict  param_name → {ann, default, desc}
-    func_params = {}
+    _FLOW = [
+        (KIND_REPEAT,   "↻  Repeat N"),
+        (KIND_FOR_EACH, "∀  For Each"),
+        (KIND_WHILE,    "∞  While"),
+        (KIND_IF_ELSE,  "?  If / Else"),
+    ]
 
-    def _first(val):
-        """Return first comma-separated value (for single-device params)."""
-        s = str(val).strip()
-        return s.split(",")[0].strip() if "," in s else s
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._plan_names: list = []
+        self._build()
 
-    def _add(pname, ann, default, desc):
-        # For Movable params that may have multiple devices selected (the picker
-        # is now multi-select), store the full comma-separated string in
-        # 'all_defaults' for the docstring and only the first device as
-        # 'default' for the runtime fallback assignment.
-        if ann == "Movable":
-            first = _first(default)
-        else:
-            first = default
-        if pname not in func_params:
-            func_params[pname] = {
-                "ann": ann, "default": first,
-                "all_defaults": str(default).strip(), "desc": desc,
-            }
-        elif not func_params[pname]["default"] and first:
-            func_params[pname]["default"]     = first
-            func_params[pname]["all_defaults"] = str(default).strip()
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
 
-    for block in main_blocks + ps_blocks:
-        btype, p = block["type"], block["params"]
-        if btype == "scan":
-            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
-            motor_val = p.get("motor", "")
-            # Multi-motor: keep motor/start/stop hardcoded — they can't map to
-            # a single typed parameter.  Single motor: parametrize all three.
-            if "," not in str(motor_val):
-                _add("motor", "Movable", motor_val, "Motor to scan")
-                try:
-                    _add("start", "float", float(str(p.get("start", "0.0")).split(",")[0]), "Scan start position")
-                    _add("stop",  "float", float(str(p.get("stop",  "1.0")).split(",")[0]), "Scan stop position")
-                except ValueError:
-                    pass
-            _add("num", "int", p.get("num", 11), "Number of scan points")
-        elif btype == "count":
-            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
-            _add("num",       "int",            p.get("num",    1),     "Number of acquisitions")
-            _add("delay",     "float",          p.get("delay",  0.0),   "Delay between acquisitions (s)")
-        elif btype == "rel_scan":
-            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
-            motor_val = p.get("motor", "")
-            if "," not in str(motor_val):
-                _add("motor", "Movable", motor_val, "Motor to scan (relative)")
-                try:
-                    _add("start", "float", float(str(p.get("start", "-1.0")).split(",")[0]), "Relative start position")
-                    _add("stop",  "float", float(str(p.get("stop",  "1.0")).split(",")[0]),  "Relative stop position")
-                except ValueError:
-                    pass
-            _add("num", "int", p.get("num", 11), "Number of scan points")
-        elif btype == "adaptive_scan":
-            _add("detectors",    "List[Readable]", p.get("detectors",    ""),    "Detectors to read")
-            motor_val = p.get("motor", "")
-            if "," not in str(motor_val):
-                _add("motor",        "Movable",        motor_val,               "Motor to scan")
-                _add("start",        "float",          p.get("start",     0.0), "Scan start position")
-                _add("stop",         "float",          p.get("stop",      1.0), "Scan stop position")
-                _add("min_step",     "float",          p.get("min_step",  0.001),"Minimum step size")
-                _add("max_step",     "float",          p.get("max_step",  0.1), "Maximum step size")
-                _add("target_delta", "float",          p.get("target_delta", 0.05), "Target fractional change per step")
-                _add("threshold",    "float",          p.get("threshold", 0.8), "Backstep threshold")
-        elif btype == "grid_scan":
-            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
-            # All grid axes are hardcoded (per-motor); only detectors parametrized
-        elif btype == "list_scan":
-            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
-            motor_val = p.get("motor", "")
-            if "," not in str(motor_val):
-                _add("motor", "Movable", motor_val, "Motor to scan")
-        elif btype in ("set_exposure", "trigger_read"):
-            _add("detectors", "List[Readable]", p.get("detectors", ""), "Detectors to read")
-            if btype == "set_exposure":
-                _add("exposure_time", "float", p.get("exposure_time", 1.0), "Exposure time (s)")
-        elif btype in ("open_shutter", "close_shutter"):
-            _add("shutter", "Movable", p.get("shutter", ""), "Shutter device")
+        title = QLabel("BLOCKS")
+        title.setObjectName("section_title")
+        lay.addWidget(title)
 
-    # param_map: block-level param name → variable name in generated code
-    param_map = {k: k for k in func_params}
+        outer = self
 
-    # ── 2. Function signature ─────────────────────────────────────────────────
-    sig_lines = []
-    for pname, info in func_params.items():
-        ann, d = info["ann"], info["default"]
-        if ann in ("List[Readable]", "Movable"):
-            sig_lines.append(f"        {pname}: {ann} = None,")
-        elif ann == "float":
-            sig_lines.append(f"        {pname}: float = {d},")
-        elif ann == "int":
-            sig_lines.append(f"        {pname}: int = {d},")
-    if sig_lines:
-        sig_lines[-1] = sig_lines[-1].rstrip(",")   # no trailing comma on last param
+        class _DragList(QListWidget):
+            def startDrag(self, actions):
+                item = self.currentItem()
+                if not item:
+                    return
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if not data:
+                    return
+                if data.get("type") == "block":
+                    node = FlowNode(kind=data["kind"])
+                elif data.get("type") == "plan":
+                    node = FlowNode(kind=KIND_PLAN, params={"plan_name": data["name"]})
+                else:
+                    return
+                mime = QMimeData()
+                mime.setData(_MIME, QByteArray(json.dumps(node.to_dict()).encode()))
+                drag = QDrag(self)
+                drag.setMimeData(mime)
+                drag.exec(Qt.DropAction.MoveAction | Qt.DropAction.CopyAction)
 
-    # ── 3. Docstring ──────────────────────────────────────────────────────────
-    # Detect repeat_n wrapper; filter it out of the actual code blocks
-    repeat_block = next((b for b in main_blocks if b["type"] == "repeat_n"), None)
-    repeat_count = int(repeat_block["params"].get("count", 1)) if repeat_block else None
-    code_main_blocks = [b for b in main_blocks if b["type"] != "repeat_n"]
+        self._list = _DragList()
+        self._list.setDragEnabled(True)
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.setStyleSheet(
+            "QListWidget { background: #252525; border: none; }"
+            "QListWidget::item { padding: 4px 6px; color: #ddd; }"
+            "QListWidget::item:selected { background: #3a6a8a; color: white; }"
+        )
+        lay.addWidget(self._list, 1)
 
-    seq_blocks = [b for b in code_main_blocks if b["type"] != "custom_python"]
-    main_seq = " → ".join(BLOCK_DEFS[b["type"]]["label"] for b in seq_blocks)
-    if repeat_count and repeat_count > 1:
-        main_seq = f"[×{repeat_count}] {main_seq}"
-    ps_seq   = (" → ".join(BLOCK_DEFS[b["type"]]["label"] for b in ps_blocks)
-                if ps_blocks else "")
+        self._populate()
 
-    doc = ['    """']
-    doc.append(f"    Plan generated by EasyBluesky Visual Composer.")
-    doc.append("")
-    doc.append("    Sequence")
-    doc.append("    --------")
-    doc.append(f"    Main     : {main_seq}")
-    if ps_seq:
-        doc.append(f"    Per-step : {ps_seq}")
-    if func_params:
-        doc.append("")
-        doc.append("    Parameters")
-        doc.append("    ----------")
-        for pname, info in func_params.items():
-            d_runtime = info["default"]
-            d_display = info.get("all_defaults", d_runtime)
-            desc = info["desc"]
-            show = d_display if (d_display and d_display != "0.0" and d_display != "0") else ""
-            note = f"  Default selection: {show}." if show else ""
-            doc.append(f"    {pname} : {info['ann']}")
-            doc.append(f"        {desc}.{note}")
-    doc.append('    """')
+    def _add_section(self, title: str):
+        item = QListWidgetItem(f"── {title} ──")
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setForeground(QColor("#888"))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(9)
+        item.setFont(font)
+        item.setData(Qt.ItemDataRole.UserRole, None)
+        self._list.addItem(item)
 
-    # ── 4. Assemble code ──────────────────────────────────────────────────────
-    need_protocols = any(v["ann"] in ("List[Readable]", "Movable")
-                         for v in func_params.values())
-    lines = []
-    if need_protocols:
-        lines += ["from typing import List",
-                  "from bluesky.protocols import Readable, Movable",
-                  "import bluesky.plans as bp",
-                  "import bluesky.plan_stubs as bps",
-                  ""]
-    else:
-        lines += ["import bluesky.plans as bp",
-                  "import bluesky.plan_stubs as bps",
-                  ""]
+    def _add_item(self, kind: str, label: str):
+        item = QListWidgetItem(label)
+        item.setData(Qt.ItemDataRole.UserRole, {"type": "block", "kind": kind})
+        self._list.addItem(item)
 
-    if sig_lines:
-        lines.append(f"def {name}(")
-        lines.extend(sig_lines)
-        lines.append("):")
-    else:
-        lines.append(f"def {name}():")
+    def _populate(self):
+        self._list.clear()
+        self._add_section("Structural")
+        for kind, label in self._STRUCTURAL:
+            self._add_item(kind, label)
+        self._add_section("Flow Control")
+        for kind, label in self._FLOW:
+            self._add_item(kind, label)
+        if self._plan_names:
+            self._add_section("RE Plans")
+            for name in sorted(self._plan_names):
+                item = QListWidgetItem(f"▶  {name}")
+                item.setData(Qt.ItemDataRole.UserRole, {"type": "plan", "name": name})
+                self._list.addItem(item)
 
-    lines.extend(doc)
+    def set_plans(self, plans: dict):
+        self._plan_names = list(plans.keys()) if plans else []
+        self._populate()
 
-    if not code_main_blocks:
-        lines.append("    pass")
-        return "\n".join(lines), name
-
-    # Runtime defaults: device params use = None in signature; assign in body.
-    device_lines = []
-    for pname, info in func_params.items():
-        ann, d = info["ann"], info["default"]
-        if ann == "List[Readable]":
-            device_lines.append(
-                f"    {pname} = {pname} or [{d}]" if d
-                else f"    if {pname} is None: {pname} = []"
-            )
-        elif ann == "Movable" and d:
-            device_lines.append(f"    {pname} = {pname} or {d}")
-    if device_lines:
-        lines.extend(device_lines)
-        lines.append("")
-
-    # repeat_n: emit the for-loop header; body indented an extra 4 spaces
-    body_indent = 4
-    if repeat_count is not None and repeat_count > 1:
-        lines.append(f"    for _i in range({repeat_count}):")
-        body_indent = 8
-
-    has_ps = bool(ps_blocks)
-    for block in code_main_blocks:
-        if block["type"] in _PLAN_BLOCKS and has_ps:
-            ps_name = "_per_step"
-            ps_indent = body_indent
-            lines.append(f"{' ' * ps_indent}def {ps_name}(detectors, step, pos_cache):")
-            lines.append(f"{' ' * (ps_indent + 4)}yield from bps.move_per_step(step, pos_cache)")
-            for ps in ps_blocks:
-                lines.append(_block_to_code(ps, indent=ps_indent + 4, param_map=param_map))
-            lines.append("")
-            lines.append(_block_to_code(block, indent=body_indent,
-                                         per_step_name=ps_name,
-                                         param_map=param_map))
-        else:
-            code_line = _block_to_code(block, indent=body_indent, param_map=param_map)
-            if code_line:   # repeat_n returns "" — skip blank lines
-                lines.append(code_line)
-
-    return "\n".join(lines), name
+    def _on_double_click(self, item: QListWidgetItem):
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        if data.get("type") == "block":
+            self.block_activated.emit(data["kind"])
+        elif data.get("type") == "plan":
+            self.plan_activated.emit(data["name"])
 
 
-# ── Composer widget ────────────────────────────────────────────────────────────
+
+# ── ComposerWidget ─────────────────────────────────────────────────────────────
 
 class ComposerWidget(QWidget):
-    """Three-panel visual plan composer."""
-    send_to_editor = Signal(str)   # emits generated code
+    send_to_editor = Signal(str)
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
         self.worker = worker
-        self._active_seq = None   # which sequence last had focus
+        self._devices: dict = {}
+        self._plans: dict = {}
         self._build()
 
     def _build(self):
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        root_lay = QVBoxLayout(self)
+        root_lay.setContentsMargins(4, 4, 4, 4)
+        root_lay.setSpacing(4)
 
+        # Top bar: plan name + save/load
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Plan name:"))
+        self._plan_name = QLineEdit("my_plan")
+        self._plan_name.setFixedWidth(140)
+        self._plan_name.textChanged.connect(self._update_preview)
+        top.addWidget(self._plan_name)
+        top.addSpacing(12)
+        btn_save = QPushButton("💾 Save .ebplan")
+        btn_load = QPushButton("📂 Load .ebplan")
+        btn_clear = QPushButton("🗑 Clear")
+        btn_save.clicked.connect(self._save_ebplan)
+        btn_load.clicked.connect(self._load_ebplan)
+        btn_clear.clicked.connect(self._clear_canvas)
+        top.addWidget(btn_save)
+        top.addWidget(btn_load)
+        top.addWidget(btn_clear)
+        top.addStretch()
+        root_lay.addLayout(top)
+
+        # Main split: palette | canvas | code preview
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._build_palette())
-        splitter.addWidget(self._build_sequences())
-        splitter.addWidget(self._build_properties())
-        splitter.setSizes([190, 440, 280])
-        lay.addWidget(splitter)
 
-        # Connect property panel (built last)
-        self._main_seq.block_selected.connect(self._props.load_block)
-        self._main_seq.block_selected.connect(lambda _: self._update_preview())
-        self._main_seq.sequence_changed.connect(self._update_preview)
-        self._perstep_seq.block_selected.connect(self._props.load_block)
-        self._perstep_seq.block_selected.connect(lambda _: self._update_preview())
-        self._perstep_seq.sequence_changed.connect(self._update_preview)
-        self._props.changed.connect(self._on_prop_changed)
+        # Palette
+        self._palette = PalettePanel()
+        self._palette.setMinimumWidth(160)
+        self._palette.setMaximumWidth(220)
+        self._palette.block_activated.connect(self._add_block)
+        self._palette.plan_activated.connect(self._add_plan)
+        splitter.addWidget(self._palette)
 
-        # Track active sequence for palette "add" buttons
-        self._main_seq.focusInEvent = lambda e: self._set_active(self._main_seq)
-        self._perstep_seq.focusInEvent = lambda e: self._set_active(self._perstep_seq)
-        self._active_seq = self._main_seq
+        # Canvas
+        self._canvas = FlowCanvas()
+        self._canvas.changed.connect(self._update_preview)
+        splitter.addWidget(self._canvas)
 
-    def _set_active(self, seq):
-        self._active_seq = seq
-
-    # ── Palette panel ──────────────────────────────────────────────────────────
-
-    def _build_palette(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
-
-        lbl = QLabel("BLOCK PALETTE")
-        lbl.setObjectName("section_title")
-        lay.addWidget(lbl)
-
-        self._palette = _PaletteTree()
-        self._palette.setHeaderHidden(True)
-        self._palette.setRootIsDecorated(True)
-        self._palette.setDragEnabled(True)
-        self._palette.itemDoubleClicked.connect(self._palette_double_clicked)
-
-        cats = {}
-        for btype, defn in BLOCK_DEFS.items():
-            cats.setdefault(defn["category"], []).append((btype, defn))
-
-        bold = QFont(); bold.setBold(True)
-        for cat in _CATEGORY_ORDER:
-            if cat not in cats:
-                continue
-            cat_item = QTreeWidgetItem([cat])
-            cat_item.setFont(0, bold)
-            cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            for btype, defn in cats[cat]:
-                child = QTreeWidgetItem([f"{defn['icon']}  {defn['label']}"])
-                child.setData(0, Qt.ItemDataRole.UserRole, btype)
-                child.setToolTip(0, "Double-click or use buttons below to add")
-                cat_item.addChild(child)
-            self._palette.addTopLevelItem(cat_item)
-
-        self._palette.expandAll()
-        lay.addWidget(self._palette, 1)
-
-        hint = QLabel(_WORKFLOW_HINT)
-        hint.setObjectName("dim_text")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("font-size: 10px; border: 1px solid #444; padding: 4px; border-radius: 3px;")
-        lay.addWidget(hint)
-
-        note = QLabel("Double-click or use buttons below:")
-        note.setObjectName("dim_text")
-        note.setStyleSheet("font-size: 11px;")
-        lay.addWidget(note)
-
-        btn_main = QPushButton("Add to Main ↑")
-        btn_main.setToolTip("Add selected block to the Main Sequence")
-        btn_main.clicked.connect(lambda: self._add_from_palette(self._main_seq))
-        lay.addWidget(btn_main)
-
-        btn_ps = QPushButton("Add to Per-Step ↓")
-        btn_ps.setToolTip("Add selected block to the Per-Step Sequence")
-        btn_ps.clicked.connect(lambda: self._add_from_palette(self._perstep_seq))
-        lay.addWidget(btn_ps)
-
-        return w
-
-    def _palette_double_clicked(self, item, col):
-        btype = item.data(0, Qt.ItemDataRole.UserRole)
-        if btype and self._active_seq:
-            self._active_seq.add_block(_new_block(btype))
-            self._active_seq.setFocus()
-
-    def _add_from_palette(self, target_seq: SequenceList):
-        item = self._palette.currentItem()
-        if not item:
-            return
-        btype = item.data(0, Qt.ItemDataRole.UserRole)
-        if btype:
-            target_seq.add_block(_new_block(btype))
-            target_seq.setFocus()
-
-    # ── Sequences panel ────────────────────────────────────────────────────────
-
-    def _build_sequences(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
-
-        # Plan name field
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("Plan name:"))
-        self._plan_name_edit = QLineEdit("my_plan")
-        self._plan_name_edit.setPlaceholderText("e.g. xrd_scan")
-        self._plan_name_edit.textChanged.connect(self._update_preview)
-        name_row.addWidget(self._plan_name_edit, 1)
-        lay.addLayout(name_row)
-
-        # Main sequence
-        lbl_main = QLabel("MAIN SEQUENCE")
-        lbl_main.setObjectName("section_title")
-        lay.addWidget(lbl_main)
-
-        hint_main = QLabel("Pre-steps, scan/count block, post-steps. Drag to reorder. Del to remove.")
-        hint_main.setObjectName("dim_text")
-        hint_main.setStyleSheet("font-size: 11px;")
-        lay.addWidget(hint_main)
-
-        self._main_seq = SequenceList()
-        lay.addWidget(self._main_seq, 3)
-
-        btn_del_main = QPushButton("Remove selected")
-        btn_del_main.clicked.connect(self._main_seq.remove_selected)
-        lay.addWidget(btn_del_main)
-
-        # Divider
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("color: #444;")
-        lay.addWidget(line)
-
-        # Per-step sequence
-        lbl_ps = QLabel("PER-STEP SEQUENCE")
-        lbl_ps.setObjectName("section_title")
-        lay.addWidget(lbl_ps)
-
-        hint_ps = QLabel("Injected at every point of the scan/count above.")
-        hint_ps.setObjectName("dim_text")
-        hint_ps.setStyleSheet("font-size: 11px;")
-        lay.addWidget(hint_ps)
-
-        self._perstep_seq = SequenceList()
-        lay.addWidget(self._perstep_seq, 2)
-
-        btn_del_ps = QPushButton("Remove selected")
-        btn_del_ps.clicked.connect(self._perstep_seq.remove_selected)
-        lay.addWidget(btn_del_ps)
-
-        # Divider
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.Shape.HLine)
-        line2.setStyleSheet("color: #444;")
-        lay.addWidget(line2)
-
-        # Code preview
-        lbl_prev = QLabel("GENERATED CODE")
-        lbl_prev.setObjectName("section_title")
-        lay.addWidget(lbl_prev)
-
+        # Code preview (right, toggleable)
+        self._preview_pane = QWidget()
+        prev_lay = QVBoxLayout(self._preview_pane)
+        prev_lay.setContentsMargins(0, 0, 0, 0)
+        prev_lbl = QLabel("CODE PREVIEW")
+        prev_lbl.setObjectName("section_title")
+        prev_lay.addWidget(prev_lbl)
         self._preview = QPlainTextEdit()
         self._preview.setReadOnly(True)
-        self._preview.setMaximumHeight(130)
-        f = QFont("Courier New", 9)
-        self._preview.setFont(f)
-        lay.addWidget(self._preview)
+        self._preview.setFont(QFont("Courier New", 11))
+        self._preview.setStyleSheet("background: #1e1e1e; color: #d4d4d4;")
+        PythonHighlighter(self._preview.document())
+        prev_lay.addWidget(self._preview)
+        self._preview_pane.setVisible(False)
+        splitter.addWidget(self._preview_pane)
 
-        btn_send = QPushButton("→   Send to Code Editor")
-        btn_send.setStyleSheet(
-            "QPushButton { background: #1f77b4; color: white; "
-            "font-weight: bold; padding: 6px; border-radius: 4px; }"
-            "QPushButton:hover { background: #2a8fd4; }"
-        )
-        btn_send.clicked.connect(self._on_send_to_editor)
-        lay.addWidget(btn_send)
+        splitter.setSizes([190, 550, 300])
+        root_lay.addWidget(splitter, 1)
 
-        return w
+        # Bottom bar
+        bottom = QHBoxLayout()
+        self._preview_toggle = QPushButton("▶ Show Preview")
+        self._preview_toggle.setCheckable(True)
+        self._preview_toggle.toggled.connect(self._toggle_preview)
+        bottom.addWidget(self._preview_toggle)
+        bottom.addStretch()
+        btn_send = QPushButton("→ Send to Code Editor")
+        btn_send.setStyleSheet("font-weight: bold; padding: 4px 12px;")
+        btn_send.clicked.connect(self._send_to_editor)
+        bottom.addWidget(btn_send)
+        root_lay.addLayout(bottom)
 
-    # ── Properties panel ───────────────────────────────────────────────────────
-
-    def _build_properties(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-
-        lbl = QLabel("BLOCK PROPERTIES")
-        lbl.setObjectName("section_title")
-        lbl.setContentsMargins(8, 8, 8, 4)
-        lay.addWidget(lbl)
-
-        self._props = PropertyPanel()
-        lay.addWidget(self._props, 1)
-
-        return w
-
-    # ── Updates ────────────────────────────────────────────────────────────────
-
-    def _on_prop_changed(self):
-        self._main_seq.refresh_labels()
-        self._perstep_seq.refresh_labels()
-        self._update_preview()
+    def _toggle_preview(self, checked: bool):
+        self._preview_pane.setVisible(checked)
+        self._preview_toggle.setText("▼ Hide Preview" if checked else "▶ Show Preview")
+        if checked:
+            self._update_preview()
 
     def _update_preview(self):
-        code, _ = generate_plan_code(
-            self._main_seq.get_blocks(),
-            self._perstep_seq.get_blocks(),
-            self._plan_name_edit.text(),
-        )
+        if not self._preview_pane.isVisible():
+            return
+        code = generate_code(self._canvas.get_nodes(), self._plan_name.text() or "my_plan")
         self._preview.setPlainText(code)
 
-    # ── Send to editor ─────────────────────────────────────────────────────────
+    def _add_block(self, kind: str):
+        self._canvas.add_node(FlowNode(kind=kind))
 
-    def _on_send_to_editor(self):
-        main_blocks = self._main_seq.get_blocks()
-        if not main_blocks:
-            QMessageBox.warning(self, "Empty", "Add at least one block to the main sequence.")
-            return
-        code, _ = generate_plan_code(
-            main_blocks, self._perstep_seq.get_blocks(), self._plan_name_edit.text()
-        )
+    def _add_plan(self, plan_name: str):
+        self._canvas.add_node(FlowNode(kind=KIND_PLAN, params={"plan_name": plan_name}))
+
+    def _send_to_editor(self):
+        code = generate_code(self._canvas.get_nodes(), self._plan_name.text() or "my_plan")
         self.send_to_editor.emit(code)
 
+    def _save_ebplan(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Plan", str(Path.home()), "EasyBluesky Plan (*.ebplan)")
+        if not path:
+            return
+        if not path.endswith(".ebplan"):
+            path += ".ebplan"
+        data = {
+            "plan_name": self._plan_name.text(),
+            "nodes": [n.to_dict() for n in self._canvas.get_nodes()],
+        }
+        try:
+            Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", str(e))
+
+    def _load_ebplan(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Plan", str(Path.home()), "EasyBluesky Plan (*.ebplan)")
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", str(e))
+            return
+        if "plan_name" in data:
+            self._plan_name.setText(data["plan_name"])
+        if "nodes" in data:
+            nodes = [FlowNode.from_dict(d) for d in data["nodes"]]
+            self._canvas.set_nodes(nodes)
+        else:
+            self._canvas.from_json(Path(path).read_text(encoding="utf-8"))
+
+    def _clear_canvas(self):
+        if self._canvas.get_nodes():
+            r = QMessageBox.question(self, "Clear Canvas", "Remove all blocks?")
+            if r != QMessageBox.StandardButton.Yes:
+                return
+        self._canvas.clear()
+
     def set_devices(self, devices: dict):
-        self._props.set_devices(devices)
+        self._devices = devices
+        self._canvas.set_devices(devices)
 
     def set_plans(self, plans: dict):
-        pass
+        self._plans = plans
+        self._palette.set_plans(plans)
 
 
 # ── Main PlanBuilder widget (two tabs) ─────────────────────────────────────────
@@ -2535,6 +2499,7 @@ class PlanBuilder(QWidget):
 
     def update_plans(self, plans: dict):
         self.plans = plans
+        self._composer.set_plans(plans)
 
     def update_devices(self, devices: dict):
         self.devices = devices
