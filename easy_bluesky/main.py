@@ -1401,7 +1401,8 @@ class MainWindow(QMainWindow):
         self.experiments_tab.pause_requested.connect(self._on_pause_requested)
         self.experiments_tab.resume_requested.connect(self._on_resume_requested)
         self.experiments_tab.abort_requested.connect(self._on_abort_requested)
-        self.experiments_tab.stop_requested.connect(self._on_stop_requested)
+        self.experiments_tab.skip_requested.connect(self._on_skip_requested)
+        self.experiments_tab.queue_stop_requested.connect(self._on_queue_stop_requested)
 
         self.worker.status_updated.connect(self.experiments_tab.update_re_status)
         self.worker.running_item_updated.connect(self.experiments_tab.update_running_item)
@@ -2038,10 +2039,11 @@ class MainWindow(QMainWindow):
                     if msg_box.clickedButton() != btn_start:
                         return
         self.devices_plans_tab.pause_sim_poll()
-        # Ensure server-side loop mode is OFF (client manages looping via queue population)
-        mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
-        if not mode_ok:
-            self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
+        # Ensure loop mode matches checkbox state before start
+        if not self.experiments_tab._server_loop_active:
+            mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
+            if not mode_ok:
+                self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
@@ -2067,9 +2069,10 @@ class MainWindow(QMainWindow):
                                 "RE Manager is still busy after 90 s.\n"
                                 "Check the RE Console tab for the current state.")
             return
-        mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
-        if not mode_ok:
-            self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
+        if not self.experiments_tab._server_loop_active:
+            mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
+            if not mode_ok:
+                self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
         ok, msg = self.worker.queue_start()
         if not ok:
             _m = msg.lower()
@@ -2153,29 +2156,40 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(500, self._abort_after_pause)
             # else: unexpected error — already logged, stop retrying
 
-    def _on_stop_requested(self):
+    def _on_skip_requested(self):
+        """Stop current plan cleanly; experiments_tab auto-restarts queue when idle."""
         ok, msg = self.worker.re_stop()
         if ok:
-            self._log(f"[{self._ts()}] ✓ Stop: {msg}")
+            self._log(f"[{self._ts()}] ✓ Skip: {msg}")
             return
         if "not paused" in msg.lower():
-            self._log(f"[{self._ts()}]   → pausing RE before stop…")
+            self._log(f"[{self._ts()}]   → pausing RE before skip…")
             ok_p, msg_p = self.worker.re_pause(option="immediate")
-            self._log(f"[{self._ts()}] {'✓' if ok_p else '✗'} Pause (pre-stop): {msg_p}")
+            self._log(f"[{self._ts()}] {'✓' if ok_p else '✗'} Pause (pre-skip): {msg_p}")
             if ok_p:
-                self._stop_deadline = time.monotonic() + 15.0
-                QTimer.singleShot(500, self._stop_after_pause)
+                self._skip_deadline = time.monotonic() + 15.0
+                QTimer.singleShot(500, self._skip_after_pause)
             else:
-                self._log(f"[{self._ts()}] ✗ Stop: could not pause RE — {msg_p}")
+                self._log(f"[{self._ts()}] ✗ Skip: could not pause RE — {msg_p}")
+                self.experiments_tab._skip_requested = False
         else:
-            self._log(f"[{self._ts()}] ✗ Stop: {msg}")
+            self._log(f"[{self._ts()}] ✗ Skip: {msg}")
+            self.experiments_tab._skip_requested = False
 
-    def _stop_after_pause(self):
+    def _skip_after_pause(self):
         ok, msg = self.worker.re_stop()
-        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop: {msg}")
-        if not ok and time.monotonic() < getattr(self, "_stop_deadline", 0.0):
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Skip: {msg}")
+        if not ok and time.monotonic() < getattr(self, "_skip_deadline", 0.0):
             if "not paused" in msg.lower() or "busy" in msg.lower():
-                QTimer.singleShot(500, self._stop_after_pause)
+                QTimer.singleShot(500, self._skip_after_pause)
+                return
+        if not ok:
+            self.experiments_tab._skip_requested = False
+
+    def _on_queue_stop_requested(self):
+        """Let current plan finish then stop the queue."""
+        ok, msg = self.worker.queue_stop()
+        self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Stop Queue: {msg}")
 
     # ── Auto-start and loop handlers ──────────────────────────────────────────
 
@@ -2226,12 +2240,13 @@ class MainWindow(QMainWindow):
             self._stuck_loop_count = 0
             # Clear any server-side loop mode that may have been left by a previous
             # session or an ac3a999-era run.  Called once after connect (flag starts
-            # True) and once after each queue run finishes.
+            # True) and once after each queue run finishes (but not if loop is still active).
             if self._loop_mode_reset_pending and self.worker:
                 self._loop_mode_reset_pending = False
-                ok, msg = self.worker.queue_mode_set({"loop": False})
-                if not ok:
-                    self._log(f"[{self._ts()}] ⚠ Reset server loop mode on idle: {msg}")
+                if not self.experiments_tab._server_loop_active:
+                    ok, msg = self.worker.queue_mode_set({"loop": False})
+                    if not ok:
+                        self._log(f"[{self._ts()}] ⚠ Reset server loop mode on idle: {msg}")
 
         if self._prev_queue_running and not queue_running:
             # Queue just finished — request history fetches so completed plans are
