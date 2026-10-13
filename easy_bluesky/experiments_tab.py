@@ -2110,6 +2110,7 @@ class ExperimentsTab(QWidget):
         items = list(self._current_queue_items)
         if not items:
             return
+        self._needs_renumber = False  # consume flag regardless of caller
 
         import copy as _copy
         base = _read_scan_num_json(self._active_exp_path)
@@ -4595,6 +4596,15 @@ class ExperimentsTab(QWidget):
             if not is_motion and scan_num is not None:
                 _write_scan_num_json(self._active_exp_path, int(scan_num))
                 self._needs_renumber = True
+                # For abort/fail the server pushes the plan back to the queue
+                # front with the same scan_num.  Queue-updated may have already
+                # fired before this ZMQ doc arrived, so _needs_renumber would
+                # never be consumed by update_compact_queue.  Schedule a
+                # deferred renumber so _current_queue_items is guaranteed to
+                # include the returned plan (poll period is ~1 s).
+                if exit_status in ("abort", "fail"):
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(1500, self._renumber_queue)
             if not is_motion and scan_num is not None and scan_num >= self._next_scan_num:
                 self._next_scan_num = scan_num + 1
             sn_str = f"#{scan_num} " if scan_num is not None else ""
