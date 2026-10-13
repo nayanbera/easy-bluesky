@@ -4820,12 +4820,20 @@ class ExperimentsTab(QWidget):
             for i in range(self.queue_compact.count())
             if self.queue_compact.item(i).isSelected()
         }
-        # Server-side loop: patch stale scan_nums on any queued item whose scan_num
-        # has already been logged (meaning the server re-queued it for the next cycle).
-        # The server adds completed items to the BACK of the queue, so the cycle N+1
-        # copy sits behind cycle N items — giving 1+ plan-durations of window to patch.
-        if self._server_loop_active and self._logged_scan_nums and self.worker:
+        # Server-side loop: assign a fresh scan_num to any plan the server re-queued
+        # at the end of the queue after completion.
+        #
+        # Detection strategy (N ≥ 2 plans):
+        #   The server always appends a re-queued item with its ORIGINAL (lower) scan_num.
+        #   So when scan_num[second-to-last] > scan_num[last], the last item is stale.
+        #   New scan_num = second-to-last + 1  (no disk reads, no race conditions).
+        #
+        # Single-plan fallback (N = 1):
+        #   No neighbour to compare against → fall back to _logged_scan_nums.
+        if self._server_loop_active and self.worker:
             import copy as _copy
+            # Collect (scan_num, item) for non-motion items, skipping already-patched uids.
+            sn_entries = []
             for item in items:
                 uid = item.get("item_uid", "")
                 if not uid or uid in self._loop_patched_uids:
@@ -4838,21 +4846,41 @@ class ExperimentsTab(QWidget):
                 params    = plan_info.get("parameters", []) if plan_info else []
                 if not any(p.get("name") == "md" for p in params):
                     continue
-                current_sn = (kwargs.get("md") or {}).get("scan_num")
-                if current_sn is None:
+                sn = (kwargs.get("md") or {}).get("scan_num")
+                if sn is None:
                     continue
                 try:
-                    current_sn = int(current_sn)
+                    sn = int(sn)
                 except (ValueError, TypeError):
                     continue
-                if current_sn in self._logged_scan_nums:
-                    new_sn = self._next_scan_num
-                    self._next_scan_num += 1
-                    patched = _copy.deepcopy(item)
-                    patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = new_sn
-                    ok, _ = self.worker.update_item(patched)
-                    if ok:
-                        self._loop_patched_uids.add(uid)
+                sn_entries.append((sn, item))
+
+            patch_item = None
+            new_sn     = None
+            if len(sn_entries) >= 2:
+                prev_sn, _      = sn_entries[-2]
+                last_sn, last_item = sn_entries[-1]
+                if prev_sn > last_sn:
+                    # Last item has a lower scan_num than its predecessor → re-queued copy.
+                    patch_item = last_item
+                    new_sn     = prev_sn + 1
+            elif len(sn_entries) == 1 and self._logged_scan_nums:
+                # Single-plan loop: fall back to _logged_scan_nums (may lag by ≤1 poll tick).
+                last_sn, last_item = sn_entries[0]
+                if last_sn in self._logged_scan_nums:
+                    patch_item = last_item
+                    new_sn     = self._next_scan_num
+
+            if patch_item is not None and new_sn is not None:
+                uid = patch_item.get("item_uid", "")
+                patched = _copy.deepcopy(patch_item)
+                patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = new_sn
+                ok, err = self.worker.update_item(patched)
+                if ok:
+                    self._loop_patched_uids.add(uid)
+                    self._next_scan_num = max(self._next_scan_num, new_sn + 1)
+                else:
+                    self._log(f"⚠ Loop scan_num patch failed: {err}")
 
         self.queue_compact.clear()
         for i, item in enumerate(items):
