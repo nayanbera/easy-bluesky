@@ -4756,6 +4756,11 @@ class ExperimentsTab(QWidget):
                 # even when this scan was aborted (with or without bluesky run_uids).
                 if not is_motion and scan_num >= self._next_scan_num:
                     self._next_scan_num = scan_num + 1
+                # Aborted/halted/failed plan is pushed back to the queue front by
+                # the server with the same scan_num.  Renumber all queued items so
+                # the re-attempt gets the next fresh number and none are duplicated.
+                if exit_status in ("aborted", "halted", "failed") and not is_motion:
+                    self._needs_renumber = True
                 changed = True
                 self._last_history_len += 1
                 sn_str = f"#{scan_num} " if scan_num is not None else ""
