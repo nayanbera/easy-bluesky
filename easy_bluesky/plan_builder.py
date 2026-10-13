@@ -1145,6 +1145,89 @@ class PalettePanel(QWidget):
 
 
 
+# ── Example plan (ASWAXS energy scan) ─────────────────────────────────────────
+
+def _build_example_nodes() -> list:
+    """Build FlowNodes representing aswaxs_energy_scan for the opening example."""
+
+    # ── inner: frames per position (Repeat → open/trigger/close/sleep) ────────
+    frame_nodes = [
+        FlowNode(KIND_OPEN_SHUTTER,  params={"device": "shutter"}),
+        FlowNode(KIND_SLEEP,         params={"seconds": 0.3}),
+        FlowNode(KIND_TRIGGER_READ,  params={"detectors": "[Pil300K, scalers]"}),
+        FlowNode(KIND_CLOSE_SHUTTER, params={"device": "shutter"}),
+        FlowNode(KIND_SLEEP,         params={"seconds": 1.0}),
+    ]
+    repeat_frames = FlowNode(KIND_REPEAT, params={"n": 3}, children=frame_nodes)
+
+    # ── inner: sample positions (For Each sx from List, then move sy via Custom Python) ──
+    move_sy = FlowNode(KIND_CUSTOM_PY,
+                       params={"code": "# Move sy to paired y-position\nyield from bps.mv(sy, _sy)"})
+    foreach_sy = FlowNode(KIND_FOR_EACH,
+                          params={"varname": "_sy", "iter_type": "list",
+                                  "values": "0.0, -2.5, -5.0", "motor": ""},
+                          children=[repeat_frames])
+
+    foreach_sx = FlowNode(KIND_FOR_EACH,
+                          params={"varname": "_sx", "iter_type": "list",
+                                  "values": "0.0, 5.0, 10.0", "motor": "sx"},
+                          children=[foreach_sy])
+
+    # ── inner: undulator tracking (If/Else) ───────────────────────────────────
+    move_undulator = FlowNode(KIND_MOVE, params={"device": "undulator", "position": 0.0})
+    # True branch: move undulator to same energy as mono
+    ifelse_undulator = FlowNode(
+        KIND_IF_ELSE,
+        params={"condition": "move_undulator > 0"},
+        children=[FlowNode(KIND_CUSTOM_PY,
+                           params={"code": "yield from bps.mv(undulator, _energy)"})],
+        children_else=[],
+    )
+
+    sleep_settle = FlowNode(KIND_SLEEP, params={"seconds": 2.0})
+
+    # ── outer: energy loop (For Each, linspace, motor=mono) ───────────────────
+    foreach_energy = FlowNode(KIND_FOR_EACH,
+                              params={"varname": "_energy", "iter_type": "range",
+                                      "start": 7.0, "stop": 7.5, "num": 6,
+                                      "motor": "mono"},
+                              children=[ifelse_undulator, sleep_settle, foreach_sx])
+
+    # ── top-level blocks ──────────────────────────────────────────────────────
+    save_initial = FlowNode(KIND_CUSTOM_PY, params={"code": (
+        "# Record initial positions — restored in cleanup\n"
+        "initial_energy = mono.user_readback.get()\n"
+        "initial_sx = sx.user_readback.get()\n"
+        "initial_sy = sy.user_readback.get()"
+    )})
+    set_acq_time = FlowNode(KIND_SET_ATTR,
+                            params={"device": "Pil300K", "attribute": "cam.acquire_time",
+                                    "value": "1.0"})
+    stage_det = FlowNode(KIND_STAGE, params={"device": "Pil300K"})
+    stage_sca = FlowNode(KIND_STAGE, params={"device": "scalers"})
+
+    unstage_det = FlowNode(KIND_UNSTAGE, params={"device": "Pil300K"})
+    unstage_sca = FlowNode(KIND_UNSTAGE, params={"device": "scalers"})
+    restore = FlowNode(KIND_CUSTOM_PY, params={"code": (
+        "# Return all devices to initial positions\n"
+        "yield from bps.mv(mono, initial_energy,\n"
+        "                  sx,   initial_sx,\n"
+        "                  sy,   initial_sy)\n"
+        "yield from bps.mv(shutter, 1)  # ensure shutter closed"
+    )})
+
+    return [
+        save_initial,
+        set_acq_time,
+        stage_det,
+        stage_sca,
+        foreach_energy,
+        unstage_det,
+        unstage_sca,
+        restore,
+    ]
+
+
 # ── ComposerWidget ─────────────────────────────────────────────────────────────
 
 class ComposerWidget(QWidget):
@@ -1156,6 +1239,7 @@ class ComposerWidget(QWidget):
         self._devices: dict = {}
         self._plans: dict = {}
         self._build()
+        self._load_example()
 
     def _build(self):
         root_lay = QVBoxLayout(self)
@@ -1165,19 +1249,23 @@ class ComposerWidget(QWidget):
         # Top bar: plan name + save/load
         top = QHBoxLayout()
         top.addWidget(QLabel("Plan name:"))
-        self._plan_name = QLineEdit("my_plan")
-        self._plan_name.setFixedWidth(140)
+        self._plan_name = QLineEdit("aswaxs_energy_scan")
+        self._plan_name.setFixedWidth(200)
         self._plan_name.textChanged.connect(self._update_preview)
         top.addWidget(self._plan_name)
         top.addSpacing(12)
         btn_save = QPushButton("💾 Save .ebplan")
         btn_load = QPushButton("📂 Load .ebplan")
+        btn_example = QPushButton("★ Load Example")
+        btn_example.setToolTip("Load the ASWAXS energy scan example plan")
         btn_clear = QPushButton("🗑 Clear")
         btn_save.clicked.connect(self._save_ebplan)
         btn_load.clicked.connect(self._load_ebplan)
+        btn_example.clicked.connect(self._load_example)
         btn_clear.clicked.connect(self._clear_canvas)
         top.addWidget(btn_save)
         top.addWidget(btn_load)
+        top.addWidget(btn_example)
         top.addWidget(btn_clear)
         top.addStretch()
         root_lay.addLayout(top)
@@ -1211,16 +1299,17 @@ class ComposerWidget(QWidget):
         self._preview.setStyleSheet("background: #1e1e1e; color: #d4d4d4;")
         PythonHighlighter(self._preview.document())
         prev_lay.addWidget(self._preview)
-        self._preview_pane.setVisible(False)
+        self._preview_pane.setVisible(True)
         splitter.addWidget(self._preview_pane)
 
-        splitter.setSizes([190, 550, 300])
+        splitter.setSizes([185, 480, 360])
         root_lay.addWidget(splitter, 1)
 
         # Bottom bar
         bottom = QHBoxLayout()
-        self._preview_toggle = QPushButton("▶ Show Preview")
+        self._preview_toggle = QPushButton("▼ Hide Preview")
         self._preview_toggle.setCheckable(True)
+        self._preview_toggle.setChecked(True)
         self._preview_toggle.toggled.connect(self._toggle_preview)
         bottom.addWidget(self._preview_toggle)
         bottom.addStretch()
@@ -1241,6 +1330,11 @@ class ComposerWidget(QWidget):
             return
         code = generate_code(self._canvas.get_nodes(), self._plan_name.text() or "my_plan")
         self._preview.setPlainText(code)
+
+    def _load_example(self):
+        self._plan_name.setText("aswaxs_energy_scan")
+        self._canvas.set_nodes(_build_example_nodes())
+        self._update_preview()
 
     def _add_block(self, kind: str):
         self._canvas.add_node(FlowNode(kind=kind))
