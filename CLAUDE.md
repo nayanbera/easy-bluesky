@@ -273,6 +273,26 @@ State:
 ### Default Y selection
 All three viewers now select only the **first** non-motor numeric signal on first load (no saved selection). Previously they selected all non-motor signals, producing cluttered multi-curve plots. Saved selections are restored when switching between runs/scans.
 
+## Server-side loop mode (experiments_tab.py + main.py)
+
+`queue_mode_set({"loop": True})` makes the queueserver re-queue each completed plan at the back automatically.
+
+### Key state variables (ExperimentsTab)
+- `_server_loop_active: bool` — True while loop mode is enabled via the UI checkbox.
+- `_server_loop_n_cycles: int` — 0 = infinite; >0 = finite cycle count.
+- `_server_loop_cycle_size: int` — number of plans in one cycle (captured when Start is clicked).
+- `_server_loop_history_start: int` — `items_in_history` at loop start; used to count completed cycles.
+- `_loop_patched_uids: set` — UIDs already assigned a fresh scan_num in this loop run; prevents double-patching.
+
+### Scan_num patching (pair-comparison, update_compact_queue)
+The server appends re-queued plans with their original (lower) scan_num. Detection strategy for N ≥ 2 plans: if `sn_entries[-2].sn > sn_entries[-1].sn`, the last item is the stale re-queued copy → assign `prev_sn + 1`. For N = 1 (single-plan loop), falls back to checking `_logged_scan_nums`. Race-condition-free — no disk reads.
+
+### Abort scan_num renumber
+After abort the server pushes the plan back to the queue front with the same scan_num. `on_scan_stop_doc` sets `_needs_renumber = True` and schedules `QTimer.singleShot(1500, self._renumber_queue)` for `exit_status in ("abort", "fail")`. The 1.5 s delay closes the race where `queue_updated` fires before the ZMQ stop doc (leaving `_needs_renumber` unconsumed). `_renumber_queue()` clears `_needs_renumber` itself at call time.
+
+### main.py guards
+Three call sites in main.py previously called `queue_mode_set({"loop": False})` unconditionally before `queue_start()` (leftover from client-side loop). Each is now guarded with `if not self.experiments_tab._server_loop_active:` — `_on_start_requested`, `_retry_start_queue`, and the `_loop_mode_reset_pending` idle block.
+
 ## Queue progress bar (experiments_tab.py)
 
 The queue bar uses ZMQ document counts, not poll-loop state:
@@ -285,6 +305,7 @@ The queue bar uses ZMQ document counts, not poll-loop state:
   `manager_state=="idle" AND _queue_in_progress AND _queue_started_plans>0 AND _queue_done_plans>=_queue_started_plans AND not _current_queue_items`
   Prevents false resets during the brief inter-plan gap where `bluesky-queueserver` reports `"idle"`.
 - `update_compact_queue()` no longer resets queue counters.
+- **Loop mode overrides**: `_update_progress_bars` checks `_server_loop_active` first. Infinite loop (`n_cycles==0`) → bar hidden. Finite loop → bar shows `"Loop: cycle X / N  (Y / Z plans)"` instead of event counts.
 
 ## worker.py — background history fetch
 
