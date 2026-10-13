@@ -1339,6 +1339,7 @@ class ExperimentsTab(QWidget):
         self._server_loop_n_cycles: int   = 0    # requested cycles (0=∞)
         self._server_loop_history_start: int = 0 # items_in_history when loop was enabled
         self._loop_patched_uids: set = set()     # item_uids already patched with new scan_num
+        self._loop_mode_lost_warned: bool = False  # guard for one-time warning per loss event
         self._history_count_at_loop_start: int = 0  # items_in_history when queue started
         self._current_history_count: int        = 0  # latest items_in_history from status
         self._last_history_len: int             = 0  # for incremental update_history
@@ -2695,8 +2696,18 @@ class ExperimentsTab(QWidget):
 
         # Track current history count for progress bar and loop label
         self._current_history_count = status.get("items_in_history", self._current_history_count)
-        # Server-side loop: auto-stop after N cycles
+        # Server-side loop: verify mode is still active on server and auto-reapply if lost
         queue_running = manager_state == "executing_queue"
+        if self._server_loop_active and self.worker:
+            srv_mode = status.get("plan_queue_mode", {})
+            if not srv_mode.get("loop"):
+                if not getattr(self, "_loop_mode_lost_warned", False):
+                    self._loop_mode_lost_warned = True
+                    self._log(f"⚠ Server loop mode was lost (plan_queue_mode={srv_mode}). Re-applying…")
+                self.worker.queue_mode_set({"loop": True})
+            else:
+                self._loop_mode_lost_warned = False
+        # Server-side loop: auto-stop after N cycles
         if (queue_running and self._server_loop_active
                 and self._server_loop_n_cycles > 0
                 and self._server_loop_cycle_size > 0):
@@ -3226,6 +3237,7 @@ class ExperimentsTab(QWidget):
         self._server_loop_n_cycles   = 0
         self._server_loop_history_start = 0
         self._loop_patched_uids.clear()
+        self._loop_mode_lost_warned  = False
 
     def _on_spin_loop_changed(self, n: int) -> None:
         if self.chk_loop.isChecked():

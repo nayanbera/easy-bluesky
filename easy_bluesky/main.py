@@ -2039,10 +2039,11 @@ class MainWindow(QMainWindow):
                     if msg_box.clickedButton() != btn_start:
                         return
         self.devices_plans_tab.pause_sim_poll()
-        # Ensure server-side loop mode is OFF (client manages looping via queue population)
-        mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
-        if not mode_ok:
-            self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
+        # Ensure loop mode matches checkbox state before start
+        if not self.experiments_tab._server_loop_active:
+            mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
+            if not mode_ok:
+                self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
         ok, msg = self.worker.queue_start()
         self._log(f"[{self._ts()}] {'✓' if ok else '✗'} Start queue: {msg}")
         if not ok:
@@ -2068,9 +2069,10 @@ class MainWindow(QMainWindow):
                                 "RE Manager is still busy after 90 s.\n"
                                 "Check the RE Console tab for the current state.")
             return
-        mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
-        if not mode_ok:
-            self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
+        if not self.experiments_tab._server_loop_active:
+            mode_ok, mode_msg = self.worker.queue_mode_set({"loop": False})
+            if not mode_ok:
+                self._log(f"[{self._ts()}] ⚠ queue_mode_set loop=False failed: {mode_msg}")
         ok, msg = self.worker.queue_start()
         if not ok:
             _m = msg.lower()
@@ -2238,12 +2240,13 @@ class MainWindow(QMainWindow):
             self._stuck_loop_count = 0
             # Clear any server-side loop mode that may have been left by a previous
             # session or an ac3a999-era run.  Called once after connect (flag starts
-            # True) and once after each queue run finishes.
+            # True) and once after each queue run finishes (but not if loop is still active).
             if self._loop_mode_reset_pending and self.worker:
                 self._loop_mode_reset_pending = False
-                ok, msg = self.worker.queue_mode_set({"loop": False})
-                if not ok:
-                    self._log(f"[{self._ts()}] ⚠ Reset server loop mode on idle: {msg}")
+                if not self.experiments_tab._server_loop_active:
+                    ok, msg = self.worker.queue_mode_set({"loop": False})
+                    if not ok:
+                        self._log(f"[{self._ts()}] ⚠ Reset server loop mode on idle: {msg}")
 
         if self._prev_queue_running and not queue_running:
             # Queue just finished — request history fetches so completed plans are
