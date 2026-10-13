@@ -3133,54 +3133,71 @@ class ExperimentsTab(QWidget):
         # _queue_done_events accumulates finished plans; _completed_points tracks the
         # current plan.  All three are monotonically increasing within a session.
         if self._queue_in_progress:
-            done_ev    = self._queue_done_events + self._completed_points
-            started_ev = self._queue_total_events          # total from started plans
-            n_remaining = len(self._current_queue_items)
-            avg_ev     = (started_ev / self._queue_started_plans
-                          if self._queue_started_plans > 0 else 0)
-
-            # During the between-plan gap the queue may momentarily appear empty
-            # (plan popped before running_item is updated).  If we're still
-            # executing but n_remaining is 0 and no plan is running, assume at
-            # least one more plan is coming so the bar doesn't flash to 100%.
-            _gap = (not running
-                    and self._manager_state in ("executing_queue", "starting_queue"))
-            n_est = max(n_remaining, 1) if (_gap and n_remaining == 0) else n_remaining
-
-            # If a plan is running but its ZMQ start doc hasn't arrived yet,
-            # the current plan is not counted in started_ev.  Add one extra
-            # avg_ev slot so the bar doesn't briefly show 100%.
-            _cur_unaccounted = (running
-                                and self._running_item_total_points == 0
-                                and self._queue_started_plans > 0)
-            total_ev = (started_ev + (n_est + (1 if _cur_unaccounted else 0)) * avg_ev
-                        if avg_ev > 0 else max(started_ev, 1))
-            q_frac   = min(done_ev / total_ev, 1.0) if total_ev > 0 else 0.0
-
-            n_done  = self._queue_done_plans
-            n_total = n_done + (1 if running else 0) + n_remaining
-
-            self._queue_bar.setRange(0, 1000)
-            self._queue_bar.setValue(int(q_frac * 1000))
-
-            # Time estimate for remaining queue (only when plan is actively running).
-            if running and total > 0 and avg_interval is not None:
-                events_left = max(0, total - done)
-                secs_left   = events_left * avg_interval + t_init
-                if n_remaining > 0:
-                    per_plan = db_est if db_est and db_est > 0 else (total * avg_interval + 2 * t_init)
-                    secs_left += n_remaining * per_plan
-                time_str = f"  (~{self._format_duration(secs_left)} left)"
-            elif running and db_est and db_est > 0:
-                secs_left = max(0.0, db_est * (1.0 - min(elapsed / db_est, 1.0))) + n_remaining * db_est
-                time_str  = f"  (~{self._format_duration(secs_left)} left  [{db_conf}])"
+            if self._server_loop_active and self._server_loop_n_cycles == 0:
+                # Infinite loop — no meaningful total, hide the queue bar.
+                self._queue_bar.setVisible(False)
+            elif self._server_loop_active and self._server_loop_n_cycles > 0:
+                # Finite loop — show cycle-based progress instead of plan counts.
+                cycle_size  = max(self._server_loop_cycle_size, 1)
+                n_cycles    = self._server_loop_n_cycles
+                done_plans  = max(0, self._current_history_count - self._server_loop_history_start)
+                total_plans = n_cycles * cycle_size
+                cur_cycle   = min(done_plans // cycle_size + 1, n_cycles)
+                q_frac      = min(done_plans / total_plans, 1.0) if total_plans > 0 else 0.0
+                self._queue_bar.setRange(0, 1000)
+                self._queue_bar.setValue(int(q_frac * 1000))
+                self._queue_bar.setFormat(
+                    f"Loop: cycle {cur_cycle} / {n_cycles}  ({done_plans} / {total_plans} plans)")
+                self._queue_bar.setVisible(True)
             else:
-                time_str = ""
+                done_ev    = self._queue_done_events + self._completed_points
+                started_ev = self._queue_total_events          # total from started plans
+                n_remaining = len(self._current_queue_items)
+                avg_ev     = (started_ev / self._queue_started_plans
+                              if self._queue_started_plans > 0 else 0)
 
-            ev_str = f"  |  {done_ev} / {int(total_ev)} events" if total_ev > 0 else ""
-            self._queue_bar.setFormat(
-                f"Queue: {n_done} / {n_total} plans{ev_str}{time_str}")
-            self._queue_bar.setVisible(True)
+                # During the between-plan gap the queue may momentarily appear empty
+                # (plan popped before running_item is updated).  If we're still
+                # executing but n_remaining is 0 and no plan is running, assume at
+                # least one more plan is coming so the bar doesn't flash to 100%.
+                _gap = (not running
+                        and self._manager_state in ("executing_queue", "starting_queue"))
+                n_est = max(n_remaining, 1) if (_gap and n_remaining == 0) else n_remaining
+
+                # If a plan is running but its ZMQ start doc hasn't arrived yet,
+                # the current plan is not counted in started_ev.  Add one extra
+                # avg_ev slot so the bar doesn't briefly show 100%.
+                _cur_unaccounted = (running
+                                    and self._running_item_total_points == 0
+                                    and self._queue_started_plans > 0)
+                total_ev = (started_ev + (n_est + (1 if _cur_unaccounted else 0)) * avg_ev
+                            if avg_ev > 0 else max(started_ev, 1))
+                q_frac   = min(done_ev / total_ev, 1.0) if total_ev > 0 else 0.0
+
+                n_done  = self._queue_done_plans
+                n_total = n_done + (1 if running else 0) + n_remaining
+
+                self._queue_bar.setRange(0, 1000)
+                self._queue_bar.setValue(int(q_frac * 1000))
+
+                # Time estimate for remaining queue (only when plan is actively running).
+                if running and total > 0 and avg_interval is not None:
+                    events_left = max(0, total - done)
+                    secs_left   = events_left * avg_interval + t_init
+                    if n_remaining > 0:
+                        per_plan = db_est if db_est and db_est > 0 else (total * avg_interval + 2 * t_init)
+                        secs_left += n_remaining * per_plan
+                    time_str = f"  (~{self._format_duration(secs_left)} left)"
+                elif running and db_est and db_est > 0:
+                    secs_left = max(0.0, db_est * (1.0 - min(elapsed / db_est, 1.0))) + n_remaining * db_est
+                    time_str  = f"  (~{self._format_duration(secs_left)} left  [{db_conf}])"
+                else:
+                    time_str = ""
+
+                ev_str = f"  |  {done_ev} / {int(total_ev)} events" if total_ev > 0 else ""
+                self._queue_bar.setFormat(
+                    f"Queue: {n_done} / {n_total} plans{ev_str}{time_str}")
+                self._queue_bar.setVisible(True)
         else:
             self._queue_bar.setVisible(False)
 
