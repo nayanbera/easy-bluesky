@@ -929,7 +929,7 @@ class _ChildrenArea(QWidget):
 
         if not self._nodes:
             empty = QLabel("  ← drop here")
-            empty.setStyleSheet("color: rgba(255,255,255,0.25); font-size: 10px; padding: 2px;")
+            empty.setStyleSheet("color: palette(mid); font-size: 10px; padding: 2px;")
             empty.setObjectName("empty_hint")
             self._lay.addWidget(empty)
 
@@ -1048,7 +1048,7 @@ class FlowCanvas(QScrollArea):
         self.setWidget(self._root_area)
         self.setWidgetResizable(True)
         self.setAcceptDrops(True)
-        self.setStyleSheet("background: #1e1e1e; border: 1px solid #333;")
+        self.setStyleSheet("QScrollArea { border: 1px solid palette(mid); }")
 
     def _on_drag_started(self, bw: BlockWidget):
         node = bw.get_node()
@@ -1195,9 +1195,9 @@ class PalettePanel(QWidget):
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._list.itemDoubleClicked.connect(self._on_double_click)
         self._list.setStyleSheet(
-            "QListWidget { background: #252525; border: none; }"
-            "QListWidget::item { padding: 4px 6px; color: #ddd; }"
-            "QListWidget::item:selected { background: #3a6a8a; color: white; }"
+            "QListWidget { border: none; }"
+            "QListWidget::item { padding: 4px 6px; }"
+            "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }"
         )
         lay.addWidget(self._list, 1)
 
@@ -1550,7 +1550,7 @@ class ComposerWidget(QWidget):
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #333;")
+        sep.setStyleSheet("color: palette(mid);")
         root_lay.addWidget(sep)
 
         # Main split: palette | canvas | code preview
@@ -1579,7 +1579,6 @@ class ComposerWidget(QWidget):
         self._preview = QPlainTextEdit()
         self._preview.setReadOnly(True)
         self._preview.setFont(QFont("Courier New", 11))
-        self._preview.setStyleSheet("background: #1e1e1e; color: #d4d4d4;")
         PythonHighlighter(self._preview.document())
         prev_lay.addWidget(self._preview)
         self._preview_pane.setVisible(True)
