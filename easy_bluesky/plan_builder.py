@@ -26,6 +26,7 @@ from .widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, ParamForm
 
 KIND_MOVE          = "move"
 KIND_RMOVE         = "rmove"
+KIND_MOVE_MULTI    = "move_multi"
 KIND_SLEEP         = "sleep"
 KIND_SET_ATTR      = "set_attr"
 KIND_OPEN_SHUTTER  = "open_shutter"
@@ -88,6 +89,11 @@ def _gen_list(nodes: list, depth: int) -> str:
     return "\n".join(_gen_node(n, depth) for n in nodes)
 
 
+def _split_csv(text: str) -> list:
+    """Split 'a, b, c' into ['a', 'b', 'c'], dropping blanks."""
+    return [t.strip() for t in str(text).split(",") if t.strip()]
+
+
 def _gen_node(node: "FlowNode", depth: int = 1) -> str:
     pad = "    " * depth
     k = node.kind
@@ -97,6 +103,15 @@ def _gen_node(node: "FlowNode", depth: int = 1) -> str:
         dev = p.get("device", "motor") or "motor"
         pos = p.get("position", 0.0)
         return f"{pad}yield from bps.mv({dev}, {pos})"
+
+    if k == KIND_MOVE_MULTI:
+        motors = _split_csv(p.get("motors", ""))
+        positions = _split_csv(p.get("positions", ""))
+        if not motors:
+            return f"{pad}pass"
+        positions += ["0.0"] * (len(motors) - len(positions))
+        args = ", ".join(f"{m}, {v}" for m, v in zip(motors, positions))
+        return f"{pad}yield from bps.mv({args})"
 
     if k == KIND_RMOVE:
         dev = p.get("device", "motor") or "motor"
@@ -168,19 +183,31 @@ def _gen_node(node: "FlowNode", depth: int = 1) -> str:
             iterable = f"np.linspace({start}, {stop}, {num})"
         elif iter_type == "csv":
             fpath = p.get("csv_file", "data.csv")
-            col = p.get("csv_col", "0")
+            cols = _split_csv(p.get("csv_col", "0")) or ["0"]
             try:
-                col_idx = int(col)
-                usecols = f"[{col_idx}]"
+                idxs = [int(c) for c in cols]
             except ValueError:
-                usecols = f"['{col}']"
-            iterable = f"np.loadtxt(r'{fpath}', delimiter=',', usecols={usecols})"
+                idxs = None
+            if idxs is not None and len(idxs) == 1:
+                iterable = f"np.loadtxt(r'{fpath}', delimiter=',', usecols={idxs})"
+            elif idxs is not None:
+                iterable = f"np.loadtxt(r'{fpath}', delimiter=',', usecols={idxs}, ndmin=2)"
+            else:
+                # named columns (header row) -> rows of (col1, col2, ...)
+                iterable = (f"zip(*[np.genfromtxt(r'{fpath}', delimiter=',', names=True)[c] "
+                            f"for c in {cols}])")
         else:
             vals = p.get("values", "")
             iterable = f"[{vals}]"
         lines = [f"{pad}for {varname} in {iterable}:"]
         if motor:
-            lines.append(f"{pad}    yield from bps.mv({motor}, {varname})")
+            motors = _split_csv(motor)
+            names = _split_csv(varname)
+            if len(motors) > 1 and len(names) == len(motors):
+                args = ", ".join(f"{m}, {v}" for m, v in zip(motors, names))
+                lines.append(f"{pad}    yield from bps.mv({args})")
+            else:
+                lines.append(f"{pad}    yield from bps.mv({motors[0]}, {varname})")
         lines.append(_gen_list(node.children, depth + 1))
         return "\n".join(lines)
 
@@ -351,7 +378,8 @@ class _IterableWidget(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.addWidget(QLabel("<font color='white'>var:</font>"))
         self._varname = QLineEdit("_val")
-        self._varname.setFixedWidth(55)
+        self._varname.setFixedWidth(80)
+        self._varname.setToolTip("Loop variable. Use '_sx, _sy' to unpack paired values (tuples / multi-column CSV).")
         self._varname.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
         top.addWidget(self._varname)
         top.addWidget(QLabel("<font color='white'>in:</font>"))
@@ -369,7 +397,7 @@ class _IterableWidget(QWidget):
         ll = QHBoxLayout(list_w)
         ll.setContentsMargins(0, 0, 0, 0)
         self._list_vals = QLineEdit()
-        self._list_vals.setPlaceholderText("0.5, 1.0, 2.5")
+        self._list_vals.setPlaceholderText("0.5, 1.0, 2.5   or pairs: (0, 0), (5, -2.5)")
         self._list_vals.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
         ll.addWidget(self._list_vals)
 
@@ -406,7 +434,8 @@ class _IterableWidget(QWidget):
         csv_browse.setFixedWidth(24)
         csv_browse.clicked.connect(self._browse_csv)
         self._csv_col = QLineEdit("0")
-        self._csv_col.setFixedWidth(32)
+        self._csv_col.setFixedWidth(60)
+        self._csv_col.setToolTip("Column index or header name. Use '0, 1' for several columns\n(pairs with var '_sx, _sy').")
         self._csv_col.setStyleSheet("background: rgba(0,0,0,0.4); color: white; border: 1px solid rgba(255,255,255,0.3);")
         cl.addWidget(self._csv_file)
         cl.addWidget(csv_browse)
@@ -425,9 +454,9 @@ class _IterableWidget(QWidget):
         motor_row.addWidget(motor_lbl)
         self._motor = QComboBox()
         self._motor.setEditable(True)
-        self._motor.setFixedWidth(120)
+        self._motor.setFixedWidth(160)
         self._motor.addItem("")
-        self._motor.setToolTip("Motor to move to the iterable value before each loop body.\nLeave blank to iterate without moving a motor.")
+        self._motor.setToolTip("Motor to move to the iterable value before each loop body.\nLeave blank to iterate without moving a motor.\nSeveral motors (comma-separated, e.g. 'sx, sy') are moved together;\nthe loop variable must then list the same number of names ('_sx, _sy').")
         self._motor.setStyleSheet("background: rgba(0,0,0,0.4); color: white;")
         motor_row.addWidget(self._motor)
         motor_row.addStretch()
@@ -456,7 +485,10 @@ class _IterableWidget(QWidget):
         for m in motor_names:
             self._motor.addItem(m)
         idx = self._motor.findText(cur)
-        self._motor.setCurrentIndex(max(0, idx))
+        if idx >= 0:
+            self._motor.setCurrentIndex(idx)
+        else:
+            self._motor.setCurrentText(cur)
 
     def get_params(self) -> dict:
         t = ["list", "range", "csv"][self._type.currentIndex()]
@@ -495,7 +527,7 @@ class _IterableWidget(QWidget):
 # ── BlockWidget ────────────────────────────────────────────────────────────────
 
 _KIND_COLORS = {
-    KIND_MOVE: "#2d5f7a", KIND_RMOVE: "#2d5f7a",
+    KIND_MOVE: "#2d5f7a", KIND_RMOVE: "#2d5f7a", KIND_MOVE_MULTI: "#2d5f7a",
     KIND_SLEEP: "#4a4a6a",
     KIND_SET_ATTR: "#5a3a6a", KIND_STAGE: "#5a3a6a", KIND_UNSTAGE: "#5a3a6a",
     KIND_OPEN_SHUTTER: "#4a6a3a", KIND_CLOSE_SHUTTER: "#4a6a3a",
@@ -509,7 +541,7 @@ _KIND_COLORS = {
 }
 
 _KIND_ICONS = {
-    KIND_MOVE: "→", KIND_RMOVE: "↔", KIND_SLEEP: "⏱",
+    KIND_MOVE: "→", KIND_RMOVE: "↔", KIND_MOVE_MULTI: "⇉", KIND_SLEEP: "⏱",
     KIND_SET_ATTR: "⚙", KIND_STAGE: "▲", KIND_UNSTAGE: "▼",
     KIND_OPEN_SHUTTER: "⊙", KIND_CLOSE_SHUTTER: "⊗",
     KIND_TRIGGER_READ: "◎", KIND_PLAN: "▶", KIND_CUSTOM_PY: "⌨",
@@ -517,7 +549,8 @@ _KIND_ICONS = {
 }
 
 _KIND_LABELS = {
-    KIND_MOVE: "Move", KIND_RMOVE: "Relative Move", KIND_SLEEP: "Sleep",
+    KIND_MOVE: "Move", KIND_RMOVE: "Relative Move", KIND_MOVE_MULTI: "Move Multiple",
+    KIND_SLEEP: "Sleep",
     KIND_SET_ATTR: "Set Attr", KIND_STAGE: "Stage", KIND_UNSTAGE: "Unstage",
     KIND_OPEN_SHUTTER: "Open Shutter", KIND_CLOSE_SHUTTER: "Close Shutter",
     KIND_TRIGGER_READ: "Trigger & Read",
@@ -700,6 +733,19 @@ class BlockWidget(QWidget):
             s = spin(p.get("position", 0.0))
             s.valueChanged.connect(lambda v: p.update({"position": v}) or self.node_changed.emit())
             lay.addWidget(s)
+
+        elif k == KIND_MOVE_MULTI:
+            e1 = edit(p.get("motors", ""), "sx, sy", 110)
+            e1.setToolTip("Comma-separated motors, e.g. sx, sy")
+            e1.textChanged.connect(lambda v: p.update({"motors": v}) or self.node_changed.emit())
+            lay.addWidget(e1)
+            lay.addWidget(wlbl("→"))
+            e2 = edit(p.get("positions", ""), "0.0, 5.0", 110)
+            e2.setToolTip("Comma-separated positions, one per motor (same order).\n"
+                          "Expressions and variables (e.g. _sx) are allowed.\n"
+                          "All motors are moved simultaneously: bps.mv(m1, p1, m2, p2)")
+            e2.textChanged.connect(lambda v: p.update({"positions": v}) or self.node_changed.emit())
+            lay.addWidget(e2)
 
         elif k == KIND_RMOVE:
             c = combo(motors, p.get("device", ""), 130)
@@ -1076,6 +1122,8 @@ class PalettePanel(QWidget):
          "Move a motor to an absolute position.\nyield from bps.mv(motor, position)"),
         (KIND_RMOVE,         "↔  Relative Move",
          "Move a motor by a relative delta from its current position.\nyield from bps.mvr(motor, delta)"),
+        (KIND_MOVE_MULTI,    "⇉  Move Multiple",
+         "Move several motors simultaneously (e.g. sx, sy as a pair).\nyield from bps.mv(m1, p1, m2, p2)"),
         (KIND_SLEEP,         "⏱  Sleep",
          "Wait a fixed number of seconds.\nyield from bps.sleep(seconds)"),
         (KIND_SET_ATTR,      "⚙  Set Attribute",
@@ -1098,7 +1146,7 @@ class PalettePanel(QWidget):
         (KIND_REPEAT,   "↻  Repeat N",
          "Repeat a block of steps N times.\nfor _i in range(N): ..."),
         (KIND_FOR_EACH, "∀  For Each",
-         "Iterate over a list, range (linspace), or CSV column.\nOptionally move a motor to each value before the loop body."),
+         "Iterate over a list, range (linspace), or CSV column(s).\nPaired motors: var '_sx, _sy', motor 'sx, sy', list of (x, y) tuples\nor CSV cols '0, 1' — moved together before each iteration."),
         (KIND_WHILE,    "∞  While",
          "Repeat while a condition is True.\nwhile condition: ..."),
         (KIND_IF_ELSE,  "?  If / Else",
@@ -1228,18 +1276,13 @@ def _build_example_nodes() -> list:
     ]
     repeat_frames = FlowNode(KIND_REPEAT, params={"n": 3}, children=frame_nodes)
 
-    # ── inner: sample positions (For Each sx from List, then move sy via Custom Python) ──
-    move_sy = FlowNode(KIND_CUSTOM_PY,
-                       params={"code": "# Move sy to paired y-position\nyield from bps.mv(sy, _sy)"})
-    foreach_sy = FlowNode(KIND_FOR_EACH,
-                          params={"varname": "_sy", "iter_type": "list",
-                                  "values": "0.0, -2.5, -5.0", "motor": ""},
-                          children=[repeat_frames])
-
-    foreach_sx = FlowNode(KIND_FOR_EACH,
-                          params={"varname": "_sx", "iter_type": "list",
-                                  "values": "0.0, 5.0, 10.0", "motor": "sx"},
-                          children=[foreach_sy])
+    # ── inner: sample positions (sx, sy moved together as a pair) ─────────────
+    foreach_pos = FlowNode(KIND_FOR_EACH,
+                           params={"varname": "_sx, _sy", "iter_type": "list",
+                                   "values": "(0.0, 0.0), (5.0, -2.5), (10.0, -5.0)",
+                                   "motor": "sx, sy"},
+                           children=[repeat_frames])
+    foreach_sx = foreach_pos
 
     # ── inner: undulator tracking (If/Else) ───────────────────────────────────
     move_undulator = FlowNode(KIND_MOVE, params={"device": "undulator", "position": 0.0})
