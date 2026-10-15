@@ -2470,6 +2470,7 @@ class ExperimentsTab(QWidget):
             return
         self._last_re_history_fp = new_fp
         self._all_re_history = items
+        self._repair_plan_log_from_history(items)
         n = len(items)
         self._hist_count_lbl.setText(f"of {n}")
         self._apply_re_history_range()
@@ -4427,6 +4428,69 @@ class ExperimentsTab(QWidget):
         if auto_select_newest and self.plan_log_list.count() > 0:
             self.plan_log_list.scrollToTop()
 
+    def _repair_plan_log_from_history(self, items: list) -> None:
+        """Fill in args/kwargs of plan-log entries written without them.
+
+        Entries written from the ZMQ stop doc can end up with empty args/kwargs
+        when the start doc beat the poll loop.  The RE Manager history always
+        has the full item, so match by run_uid and patch both the list widget
+        and plans_log.jsonl.
+        """
+        if not self._active_exp_path or not items:
+            return
+        by_run = {}
+        for it in items:
+            if not (it.get("args") or it.get("kwargs")):
+                continue
+            for ruid in (it.get("result") or {}).get("run_uids", []) or []:
+                by_run[ruid] = it
+        if not by_run:
+            return
+        patched = {}   # entry uid -> (args, kwargs)
+        for i in range(self.plan_log_list.count()):
+            li = self.plan_log_list.item(i)
+            e = li.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(e, dict) or e.get("args") or e.get("kwargs"):
+                continue
+            src = next((by_run[r] for r in e.get("run_uids", []) if r in by_run), None)
+            if src is None:
+                continue
+            e["args"]   = src.get("args", []) or []
+            e["kwargs"] = src.get("kwargs", {}) or {}
+            li.setData(Qt.ItemDataRole.UserRole, e)
+            ts    = e.get("timestamp", "")
+            t_str = ts[11:19] if len(ts) >= 19 else ts[:19]
+            dur   = e.get("duration_s")
+            sn    = e.get("scan_num")
+            ok    = e.get("exit_status", "") in ("completed", "success")
+            aborted = e.get("exit_status", "") == "aborted"
+            icon  = "✓" if ok else ("⊘" if aborted else ("✗" if e.get("exit_status") else "?"))
+            li.setText(
+                f"{f'#{sn:<3} ' if sn is not None else '     '}{icon}  {t_str}  {e.get('name', '?')}"
+                f"{self._plan_summary(e.get('name', '?'), e['kwargs'], e['args'])}"
+                f"{f'  ({dur:.1f}s)' if dur is not None else ''}"
+            )
+            patched[e.get("uid", "")] = (e["args"], e["kwargs"])
+        if not patched:
+            return
+        log_file = Path(self._active_exp_path) / "plans_log.jsonl"
+        try:
+            out = []
+            for line in log_file.read_text().splitlines():
+                try:
+                    d = json.loads(line)
+                    if d.get("uid", "") in patched and not (d.get("args") or d.get("kwargs")):
+                        d["args"], d["kwargs"] = patched[d["uid"]]
+                        line = json.dumps(d)
+                except Exception:
+                    pass
+                out.append(line)
+            log_file.write_text("\n".join(out) + "\n")
+            self._log(f"✓ Plan Log: restored arguments for {len(patched)} entr"
+                      f"{'y' if len(patched) == 1 else 'ies'} from RE history")
+        except Exception as exc:
+            self._log(f"⚠ Plan Log repair write error: {exc}")
+
     def _prepend_plan_log_entry(self, entry: dict) -> None:
         """Insert a single new completed-plan entry at the top of the list widget.
 
@@ -4528,6 +4592,20 @@ class ExperimentsTab(QWidget):
                 "args":      running.get("args", []),
                 "kwargs":    running.get("kwargs", {}),
             }
+
+        # The start doc can arrive before the poll loop has set
+        # _current_running_item, leaving args/kwargs/item_uid empty.  By stop
+        # time the poll has caught up, so fill the gaps from the running item
+        # if it is the same plan.
+        if not start_meta.get("args") and not start_meta.get("kwargs"):
+            _run = self._current_running_item or {}
+            if (_run.get("name") and _run.get("name") == start_meta.get("plan_name")
+                    and _run.get("item_uid") not in self._logged_uids):
+                start_meta["args"]     = _run.get("args", [])
+                start_meta["kwargs"]   = _run.get("kwargs", {})
+                start_meta["item_uid"] = start_meta.get("item_uid") or _run.get("item_uid", "")
+                start_meta["exp_dir"]  = start_meta.get("exp_dir") or (
+                    (start_meta["kwargs"].get("md") or {}).get("exp_dir", ""))
 
         plan_exp_dir = start_meta.get("exp_dir", "")
         if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
