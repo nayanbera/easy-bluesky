@@ -4429,6 +4429,10 @@ class ExperimentsTab(QWidget):
         if auto_select_newest and self.plan_log_list.count() > 0:
             self.plan_log_list.scrollToTop()
 
+        # The RE history usually arrives before the log is loaded (and its
+        # fingerprint then never changes), so repair empty entries here too.
+        self._repair_plan_log_from_history(self._all_re_history)
+
     def _history_item_for_run(self, run_uid: str):
         """Return the RE Manager history item that produced *run_uid*, or None."""
         for it in reversed(self._all_re_history):
