@@ -1344,6 +1344,7 @@ class ExperimentsTab(QWidget):
         self._current_history_count: int        = 0  # latest items_in_history from status
         self._last_history_len: int             = 0  # for incremental update_history
         self._start_doc_cache:  dict            = {}  # run_uid → start-doc metadata
+        self._stop_doc_wait:    dict            = {}  # run_uid → monotonic time first deferred
         self._plan_duration_cache: dict = {}  # plan_name → avg duration (s) from log (fallback)
         self._timing_db = PlanTimingDB(PLAN_TIMING_DB)
         self._prev_queue_was_empty     = True
@@ -4428,6 +4429,13 @@ class ExperimentsTab(QWidget):
         if auto_select_newest and self.plan_log_list.count() > 0:
             self.plan_log_list.scrollToTop()
 
+    def _history_item_for_run(self, run_uid: str):
+        """Return the RE Manager history item that produced *run_uid*, or None."""
+        for it in reversed(self._all_re_history):
+            if run_uid in ((it.get("result") or {}).get("run_uids") or []):
+                return it
+        return None
+
     def _repair_plan_log_from_history(self, items: list) -> None:
         """Fill in args/kwargs of plan-log entries written without them.
 
@@ -4579,7 +4587,7 @@ class ExperimentsTab(QWidget):
         if run_uid in self._logged_uids:
             return  # already written
 
-        start_meta = self._start_doc_cache.pop(run_uid, None)
+        start_meta = self._start_doc_cache.get(run_uid)
         if start_meta is None:
             # Start doc was missed; try to recover from current running item.
             running = self._current_running_item or {}
@@ -4593,25 +4601,52 @@ class ExperimentsTab(QWidget):
                 "kwargs":    running.get("kwargs", {}),
             }
 
-        # The start doc can arrive before the poll loop has set
-        # _current_running_item, leaving args/kwargs/item_uid empty.  By stop
-        # time the poll has caught up, so fill the gaps from the running item
-        # if it is the same plan.
+        # The start doc carries no queue-item arguments; they are copied from
+        # _current_running_item, which can still be empty when the start doc
+        # beats the poll loop.  Fill any gap, preferring the RE Manager history
+        # (always complete), then the running item.  If neither has it yet,
+        # wait briefly for the history to catch up before writing.
         if not start_meta.get("args") and not start_meta.get("kwargs"):
-            _run = self._current_running_item or {}
-            if (_run.get("name") and _run.get("name") == start_meta.get("plan_name")
-                    and _run.get("item_uid") not in self._logged_uids):
-                start_meta["args"]     = _run.get("args", [])
-                start_meta["kwargs"]   = _run.get("kwargs", {})
-                start_meta["item_uid"] = start_meta.get("item_uid") or _run.get("item_uid", "")
-                start_meta["exp_dir"]  = start_meta.get("exp_dir") or (
-                    (start_meta["kwargs"].get("md") or {}).get("exp_dir", ""))
+            hist = self._history_item_for_run(run_uid)
+            if hist is not None:
+                if hist.get("item_uid") in self._logged_uids:
+                    self._logged_uids.add(run_uid)   # update_history already logged it
+                    self._start_doc_cache.pop(run_uid, None)
+                    self._stop_doc_wait.pop(run_uid, None)
+                    return
+                start_meta["args"]     = hist.get("args", []) or []
+                start_meta["kwargs"]   = hist.get("kwargs", {}) or {}
+                start_meta["item_uid"] = hist.get("item_uid", "") or start_meta.get("item_uid", "")
+                if hist.get("name"):
+                    start_meta["plan_name"] = hist["name"]
+            else:
+                _run = self._current_running_item or {}
+                if (_run.get("name") and _run.get("name") == start_meta.get("plan_name")
+                        and _run.get("kwargs")
+                        and _run.get("item_uid") not in self._logged_uids):
+                    start_meta["args"]     = _run.get("args", [])
+                    start_meta["kwargs"]   = _run.get("kwargs", {})
+                    start_meta["item_uid"] = start_meta.get("item_uid") or _run.get("item_uid", "")
+                elif not _is_motion_only(start_meta.get("plan_name", ""), {}):
+                    first = self._stop_doc_wait.setdefault(run_uid, time.monotonic())
+                    if time.monotonic() - first < 10.0:
+                        from PyQt6.QtCore import QTimer
+                        QTimer.singleShot(2500, lambda d=doc: self.on_scan_stop_doc(d))
+                        return
+                    self._log(f"⚠ Plan Log: no history entry for run {run_uid[:8]} after 10 s — "
+                              f"writing without arguments (will be restored from history later)")
+            if not start_meta.get("exp_dir"):
+                start_meta["exp_dir"] = (start_meta.get("kwargs", {}).get("md") or {}).get("exp_dir", "")
 
         plan_exp_dir = start_meta.get("exp_dir", "")
         if plan_exp_dir and not _same_experiment(plan_exp_dir, self._active_exp_path):
             self._logged_uids.add(run_uid)
+            self._start_doc_cache.pop(run_uid, None)
+            self._stop_doc_wait.pop(run_uid, None)
             return  # foreign experiment — silently skip
 
+        self._start_doc_cache.pop(run_uid, None)
+        self._stop_doc_wait.pop(run_uid, None)
         plan_name = start_meta.get("plan_name", "")
         # If _current_running_item still refers to this plan (item_uid matches),
         # use its name — it's the registered queue name, immune to the bluesky
