@@ -2254,11 +2254,7 @@ class PlanBuilder(QWidget):
         tabs = QTabWidget()
         tabs.setTabPosition(QTabWidget.TabPosition.North)
 
-        # Tab 1: Visual Composer
-        self._composer = ComposerWidget(worker=self.worker)
-        tabs.addTab(self._composer, "🎛  Visual Composer")
-
-        # Tab 1b: Blockly Composer (Scratch-style blocks, needs QtWebEngine)
+        # Tab 1: Blockly Composer (Scratch-style blocks, needs QtWebEngine; default tab)
         self._blockly = None
         try:
             from .blockly_composer import BlocklyComposerWidget
@@ -2272,7 +2268,11 @@ class PlanBuilder(QWidget):
             note.setAlignment(Qt.AlignmentFlag.AlignCenter)
             tabs.addTab(note, "🧩  Blockly Composer")
 
-        # Tab 2: Code Editor (kept for advanced use)
+        # Tab 2: classic Visual Composer
+        self._composer = ComposerWidget(worker=self.worker)
+        tabs.addTab(self._composer, "🎛  Visual Composer")
+
+        # Tab 3: Code Editor (kept for advanced use)
         self._editor_tab_index = tabs.count()
         tabs.addTab(self._build_code_editor(), "📝  Code Editor")
 
