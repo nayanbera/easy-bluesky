@@ -41,6 +41,12 @@ from qtpy.QtWidgets import (
     QTextBrowser, QToolBar, QVBoxLayout, QWidget,
 )
 from qtpy.QtCore import Qt, QThread, QTimer, Signal
+# Qt WebEngine (Blockly Composer) must be imported before QApplication exists.
+try:
+    from qtpy import QtWebEngineWidgets as _QtWebEngineWidgets  # noqa: F401
+except ImportError:
+    pass
+
 from .config import APP_NAME, ACCENT
 from .connection_settings import (
     load_connection, save_connection, make_zmq_addrs,

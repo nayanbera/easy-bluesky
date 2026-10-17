@@ -285,9 +285,15 @@ def generate_code(nodes: list, plan_name: str = "my_plan",
 
     params: list of dicts with keys 'name', 'default', 'annotation'
     """
+    body = _gen_list(nodes, depth=1) if nodes else "    pass"
+    return assemble_plan_code(body, plan_name, params, _uses_kind(nodes, KIND_STATS))
+
+
+def assemble_plan_code(body: str, plan_name: str = "my_plan",
+                       params: list = None, stats_imports: bool = False) -> str:
+    """Wrap an already-indented plan *body* in imports, signature and docstring."""
     if not plan_name or not plan_name.replace("_", "").isalnum():
         plan_name = "my_plan"
-    body = _gen_list(nodes, depth=1) if nodes else "    pass"
 
     if params:
         parts = []
@@ -312,16 +318,16 @@ def generate_code(nodes: list, plan_name: str = "my_plan",
     else:
         sig = "md=None"
 
-    stats_imports = (
+    extra = (
         "import bluesky.preprocessors as bpp\n"
         "from bluesky.callbacks.fitting import PeakStats\n"
-        if _uses_kind(nodes, KIND_STATS) else ""
+        if stats_imports else ""
     )
     return (
         "import numpy as np\n"
         "import bluesky.plan_stubs as bps\n"
         "import bluesky.plans as bp\n"
-        f"{stats_imports}\n\n"
+        f"{extra}\n\n"
         f"def {plan_name}({sig}):\n"
         '    """\n'
         "    Plan composed with EasyBluesky Visual Composer.\n"
@@ -2252,12 +2258,28 @@ class PlanBuilder(QWidget):
         self._composer = ComposerWidget(worker=self.worker)
         tabs.addTab(self._composer, "🎛  Visual Composer")
 
+        # Tab 1b: Blockly Composer (Scratch-style blocks, needs QtWebEngine)
+        self._blockly = None
+        try:
+            from .blockly_composer import BlocklyComposerWidget
+            self._blockly = BlocklyComposerWidget(worker=self.worker)
+            tabs.addTab(self._blockly, "🧩  Blockly Composer")
+        except ImportError as exc:
+            note = QLabel(
+                "The Blockly Composer needs Qt WebEngine.\n\n"
+                "    pip install PyQt6-WebEngine\n\n"
+                f"({exc})")
+            note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            tabs.addTab(note, "🧩  Blockly Composer")
+
         # Tab 2: Code Editor (kept for advanced use)
         self._editor_tab_index = tabs.count()
         tabs.addTab(self._build_code_editor(), "📝  Code Editor")
 
         self._tabs = tabs
         self._composer.send_to_editor.connect(self._on_send_to_editor)
+        if self._blockly is not None:
+            self._blockly.send_to_editor.connect(self._on_send_to_editor)
 
         lay.addWidget(tabs)
 
@@ -2981,7 +3003,11 @@ class PlanBuilder(QWidget):
     def update_plans(self, plans: dict):
         self.plans = plans
         self._composer.set_plans(plans)
+        if getattr(self, "_blockly", None) is not None:
+            self._blockly.set_plans(plans)
 
     def update_devices(self, devices: dict):
         self.devices = devices
         self._composer.set_devices(devices)
+        if getattr(self, "_blockly", None) is not None:
+            self._blockly.set_devices(devices)

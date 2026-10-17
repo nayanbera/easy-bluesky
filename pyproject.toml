@@ -52,6 +52,9 @@ epics = [
     "p4p>=3.5",
     "pymca>=5.9",
 ]
+blockly = [
+    "PyQt6-WebEngine>=6.5",
+]
 editor = [
     "jedi>=0.19",
     "pyflakes>=3.0",
@@ -92,7 +95,10 @@ where = ["."]
 include = ["easy_bluesky*"]
 
 [tool.setuptools.package-data]
-"easy_bluesky" = ["scripts/*", "scripts/*.sh", "scripts/*.py", "scripts/*.yaml"]
+"easy_bluesky" = [
+    "scripts/*", "scripts/*.sh", "scripts/*.py", "scripts/*.yaml",
+    "blockly_web/*", "blockly_web/vendor/*", "blockly_web/media/*", "blockly_web/examples/*",
+]
 
 [tool.black]
 line-length = 100

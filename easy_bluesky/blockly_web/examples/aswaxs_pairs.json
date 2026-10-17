@@ -1,0 +1,173 @@
+{
+ "blocks": {
+  "languageVersion": 0,
+  "blocks": [
+   {
+    "type": "eb_stage",
+    "fields": {
+     "DEV": "Pil300K"
+    },
+    "next": {
+     "block": {
+      "type": "eb_set_attr",
+      "fields": {
+       "DEV": "Pil300K",
+       "ATTR": "cam.acquire_time"
+      },
+      "inputs": {
+       "VALUE": {
+        "shadow": {
+         "type": "math_number",
+         "fields": {
+          "NUM": 1
+         }
+        }
+       }
+      },
+      "next": {
+       "block": {
+        "type": "eb_foreach",
+        "extraState": {
+         "mode": "list"
+        },
+        "fields": {
+         "VARS": "_sx, _sy",
+         "MODE": "list",
+         "VALUES": "(0.0, 0.0), (5.0, -2.5), (10.0, -5.0)",
+         "MOTORS": "sx, sy",
+         "START": 0,
+         "STOP": 1,
+         "NUM": 10,
+         "FILE": "data.csv",
+         "COLS": "0, 1"
+        },
+        "inputs": {
+         "DO": {
+          "block": {
+           "type": "controls_repeat_ext",
+           "inputs": {
+            "TIMES": {
+             "shadow": {
+              "type": "math_number",
+              "fields": {
+               "NUM": 3
+              }
+             }
+            },
+            "DO": {
+             "block": {
+              "type": "eb_open_shutter",
+              "fields": {
+               "DEV": "shutter"
+              },
+              "next": {
+               "block": {
+                "type": "eb_sleep",
+                "inputs": {
+                 "SECONDS": {
+                  "shadow": {
+                   "type": "math_number",
+                   "fields": {
+                    "NUM": 0.3
+                   }
+                  }
+                 }
+                },
+                "next": {
+                 "block": {
+                  "type": "eb_trigger_read",
+                  "fields": {
+                   "DETS": "[Pil300K, scalers]"
+                  },
+                  "next": {
+                   "block": {
+                    "type": "eb_close_shutter",
+                    "fields": {
+                     "DEV": "shutter"
+                    },
+                    "next": {
+                     "block": {
+                      "type": "eb_sleep",
+                      "inputs": {
+                       "SECONDS": {
+                        "shadow": {
+                         "type": "math_number",
+                         "fields": {
+                          "NUM": 1
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "next": {
+         "block": {
+          "type": "eb_stats",
+          "fields": {
+           "X": "sx_setpoint",
+           "Y": "sbpmTot",
+           "PREFIX": "stat",
+           "MOVE": "cen",
+           "MOTOR": "sx"
+          },
+          "inputs": {
+           "DO": {
+            "block": {
+             "type": "eb_python",
+             "fields": {
+              "CODE": "yield from bp.rel_scan([Pil300K, scalers], sx, -1, 1, 21)"
+             }
+            }
+           }
+          },
+          "next": {
+           "block": {
+            "type": "eb_mv",
+            "fields": {
+             "DEV": "sy"
+            },
+            "inputs": {
+             "VALUE": {
+              "block": {
+               "type": "eb_stat_value",
+               "fields": {
+                "STAT": "com",
+                "PREFIX": "stat"
+               }
+              }
+             }
+            },
+            "next": {
+             "block": {
+              "type": "eb_unstage",
+              "fields": {
+               "DEV": "Pil300K"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "x": 30,
+    "y": 30
+   }
+  ]
+ }
+}

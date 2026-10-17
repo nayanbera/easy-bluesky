@@ -322,6 +322,23 @@ variables (None when not computable) for later blocks. Optional `move_to` (cen/c
 `motor` appends a guarded `bps.mv`. `x` must be the event-data field name (e.g. `fipi2_setpoint`).
 `bpp`/`PeakStats` imports are added to the generated header only when a Stats block is present.
 
+## Blockly Composer (Plan Builder tab "🧩 Blockly Composer")
+
+Scratch-style block editor: Google Blockly 13.4 (vendored in `easy_bluesky/blockly_web/vendor`, Apache-2.0,
+no CDN — `media: 'media/'` keeps icons offline) inside a `QWebEngineView` (`blockly_composer.py`).
+- Needs `PyQt6-WebEngine` (extra: `pip install -e .[blockly]`). `main.py` imports `QtWebEngineWidgets`
+  **before** `QApplication` is created (Qt requirement); without it the tab shows an install hint.
+- `blockly_web/blocks.js`: custom `eb_*` blocks + Python generators (`yield from bps.*`); `app.js`:
+  toolbox/theme/bridge. Qt↔JS via `QWebChannel` (`_Bridge.onReady/onChanged/editCode`; JS API `EB.load/save/
+  setDevices/setColors/setCode/clear`). Zelos renderer; colours follow the app palette.
+- Statistics block = `PeakStats` wrapped in a nested `def` with `nonlocal <all workspace variables>`
+  (Blockly pre-declares variables at the top of the plan). Stat results: `<prefix>_cen/_com/...` via the
+  `eb_stat_value` reporter. Core Blockly 13 has no multiline field → `CodeField` opens a Qt code dialog.
+- Saved as `.ebplan` with `"format": "blockly"`; classic composer files have `"nodes"` and are not
+  interchangeable. Code assembly shares `assemble_plan_code()` with the classic composer.
+- Headless testing: `QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-gpu-compositing"` +
+  `QT_QPA_PLATFORM=offscreen`, wait for `_ready`, `widget.grab()` renders the canvas.
+
 ## Known issues / non-obvious decisions
 
 - **`pkill` self-kill**: `pkill -f start-re-manager` matches the bash process running
