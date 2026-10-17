@@ -1,6 +1,7 @@
 """plan_builder.py — Plan Composer: visual flowchart builder + code editor."""
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -40,8 +41,9 @@ KIND_REPEAT        = "repeat"
 KIND_FOR_EACH      = "for_each"
 KIND_WHILE         = "while_loop"
 KIND_IF_ELSE       = "if_else"
+KIND_STATS         = "stats"
 
-CONTAINER_KINDS = {KIND_REPEAT, KIND_FOR_EACH, KIND_WHILE, KIND_IF_ELSE}
+CONTAINER_KINDS = {KIND_REPEAT, KIND_FOR_EACH, KIND_WHILE, KIND_IF_ELSE, KIND_STATS}
 
 _MIME = "application/x-ebflow-node"
 
@@ -92,6 +94,22 @@ def _gen_list(nodes: list, depth: int) -> str:
 def _split_csv(text: str) -> list:
     """Split 'a, b, c' into ['a', 'b', 'c'], dropping blanks."""
     return [t.strip() for t in str(text).split(",") if t.strip()]
+
+
+def _ident(text: str, default: str) -> str:
+    """Return *text* as a valid Python identifier (or *default*)."""
+    t = re.sub(r"\W", "_", str(text or "").strip())
+    if not t or t[0].isdigit():
+        return default
+    return t
+
+
+def _uses_kind(nodes: list, kind: str) -> bool:
+    return any(n.kind == kind
+               or _uses_kind(n.children, kind)
+               or _uses_kind(n.children_else, kind)
+               or _uses_kind(n.per_step, kind)
+               for n in nodes)
 
 
 def _gen_node(node: "FlowNode", depth: int = 1) -> str:
@@ -211,6 +229,39 @@ def _gen_node(node: "FlowNode", depth: int = 1) -> str:
         lines.append(_gen_list(node.children, depth + 1))
         return "\n".join(lines)
 
+    if k == KIND_STATS:
+        x = p.get("x", "") or "x"
+        y = p.get("y", "") or "y"
+        pre = _ident(p.get("prefix", "stat"), "stat")
+        ps = f"_ps_{node.node_id}"
+        fn = f"_stats_{node.node_id}"
+        body = _gen_list(node.children, depth + 1) if node.children else \
+            f"{pad}    yield from bps.null()"
+        lines = [
+            f"{pad}{ps} = PeakStats({x!r}, {y!r})",
+            f"{pad}@bpp.subs_decorator({ps})",
+            f"{pad}def {fn}():",
+            body,
+            f"{pad}yield from {fn}()",
+            f"{pad}{pre}_cen = {ps}.cen",
+            f"{pad}{pre}_com = {ps}.com",
+            f"{pad}{pre}_max, {pre}_max_y = {ps}.max if {ps}.max else (None, None)",
+            f"{pad}{pre}_min, {pre}_min_y = {ps}.min if {ps}.min else (None, None)",
+            f"{pad}{pre}_fwhm = getattr({ps}, 'fwhm', None)",
+            f"{pad}print(f'[stats] {y}: cen={{{pre}_cen}} com={{{pre}_com}} "
+            f"max={{{pre}_max}} min={{{pre}_min}} fwhm={{{pre}_fwhm}}')",
+        ]
+        move_to = p.get("move_to", "none")
+        motor = (p.get("motor", "") or "").strip()
+        if move_to in ("cen", "com", "max", "min") and motor:
+            lines += [
+                f"{pad}if {pre}_{move_to} is not None:",
+                f"{pad}    yield from bps.mv({motor}, {pre}_{move_to})",
+                f"{pad}else:",
+                f"{pad}    print('[stats] {move_to} not found - {motor} not moved')",
+            ]
+        return "\n".join(lines)
+
     if k == KIND_WHILE:
         cond = p.get("condition", "True") or "True"
         body = _gen_list(node.children, depth + 1)
@@ -261,10 +312,16 @@ def generate_code(nodes: list, plan_name: str = "my_plan",
     else:
         sig = "md=None"
 
+    stats_imports = (
+        "import bluesky.preprocessors as bpp\n"
+        "from bluesky.callbacks.fitting import PeakStats\n"
+        if _uses_kind(nodes, KIND_STATS) else ""
+    )
     return (
         "import numpy as np\n"
         "import bluesky.plan_stubs as bps\n"
-        "import bluesky.plans as bp\n\n\n"
+        "import bluesky.plans as bp\n"
+        f"{stats_imports}\n\n"
         f"def {plan_name}({sig}):\n"
         '    """\n'
         "    Plan composed with EasyBluesky Visual Composer.\n"
@@ -538,6 +595,7 @@ _KIND_COLORS = {
     KIND_FOR_EACH: "#7a4a2a",
     KIND_WHILE: "#6a2a5a",
     KIND_IF_ELSE: "#4a2a7a",
+    KIND_STATS: "#2a6a6a",
 }
 
 _KIND_ICONS = {
@@ -545,7 +603,7 @@ _KIND_ICONS = {
     KIND_SET_ATTR: "⚙", KIND_STAGE: "▲", KIND_UNSTAGE: "▼",
     KIND_OPEN_SHUTTER: "⊙", KIND_CLOSE_SHUTTER: "⊗",
     KIND_TRIGGER_READ: "◎", KIND_PLAN: "▶", KIND_CUSTOM_PY: "⌨",
-    KIND_REPEAT: "↻", KIND_FOR_EACH: "∀", KIND_WHILE: "∞", KIND_IF_ELSE: "?",
+    KIND_REPEAT: "↻", KIND_FOR_EACH: "∀", KIND_WHILE: "∞", KIND_IF_ELSE: "?", KIND_STATS: "Σ",
 }
 
 _KIND_LABELS = {
@@ -556,7 +614,7 @@ _KIND_LABELS = {
     KIND_TRIGGER_READ: "Trigger & Read",
     KIND_CUSTOM_PY: "Custom Python",
     KIND_REPEAT: "Repeat", KIND_FOR_EACH: "For Each",
-    KIND_WHILE: "While", KIND_IF_ELSE: "If / Else",
+    KIND_WHILE: "While", KIND_IF_ELSE: "If / Else", KIND_STATS: "Statistics",
 }
 
 _FIELD_STYLE = "background: rgba(0,0,0,0.35); color: white; border: 1px solid rgba(255,255,255,0.25);"
@@ -819,6 +877,37 @@ class BlockWidget(QWidget):
                 self.node_changed.emit()
             self._iter_w.changed.connect(_on_iter)
             lay.addWidget(self._iter_w)
+
+        elif k == KIND_STATS:
+            lay.addWidget(wlbl("x:"))
+            ex = edit(p.get("x", ""), "fipi2_setpoint", 110)
+            ex.setToolTip("Event-data field of the scanned axis (as in the viewer's X list)")
+            ex.textChanged.connect(lambda v: p.update({"x": v}) or self.node_changed.emit())
+            lay.addWidget(ex)
+            lay.addWidget(wlbl("y:"))
+            ey = edit(p.get("y", ""), "sbpmTot", 90)
+            ey.setToolTip("Detector / signal field to analyse")
+            ey.textChanged.connect(lambda v: p.update({"y": v}) or self.node_changed.emit())
+            lay.addWidget(ey)
+            lay.addWidget(wlbl("vars:"))
+            ep = edit(p.get("prefix", "stat"), "stat", 60)
+            ep.setToolTip("Variable prefix. Creates <prefix>_cen, _com, _max, _max_y,\n"
+                          "_min, _min_y, _fwhm (None when not computable) for later blocks.")
+            ep.textChanged.connect(lambda v: p.update({"prefix": v}) or self.node_changed.emit())
+            lay.addWidget(ep)
+            lay.addWidget(wlbl("move to:"))
+            cm = QComboBox()
+            cm.addItems(["none", "cen", "com", "max", "min"])
+            cm.setCurrentText(p.get("move_to", "none"))
+            cm.setFixedWidth(65)
+            cm.setStyleSheet(_FIELD_STYLE)
+            cm.setToolTip("After the enclosed blocks finish, move the motor to this statistic.")
+            cm.currentTextChanged.connect(lambda v: p.update({"move_to": v}) or self.node_changed.emit())
+            lay.addWidget(cm)
+            cmot = combo(motors, p.get("motor", ""), 100)
+            cmot.setToolTip("Motor to move (only used when 'move to' is not none)")
+            cmot.currentTextChanged.connect(lambda v: p.update({"motor": v}) or self.node_changed.emit())
+            lay.addWidget(cmot)
 
         elif k in (KIND_WHILE, KIND_IF_ELSE):
             self._cond_w = _ConditionWidget()
@@ -1147,6 +1236,10 @@ class PalettePanel(QWidget):
          "Repeat a block of steps N times.\nfor _i in range(N): ..."),
         (KIND_FOR_EACH, "∀  For Each",
          "Iterate over a list, range (linspace), or CSV column(s).\nPaired motors: var '_sx, _sy', motor 'sx, sy', list of (x, y) tuples\nor CSV cols '0, 1' — moved together before each iteration."),
+        (KIND_STATS,    "Σ  Statistics",
+         "Wrap scan block(s) to compute CEN / COM / MAX / MIN / FWHM of a signal.\n"
+         "Results become variables (<prefix>_cen, _com, ...) for later blocks;\n"
+         "optionally move a motor to the chosen one afterwards."),
         (KIND_WHILE,    "∞  While",
          "Repeat while a condition is True.\nwhile condition: ..."),
         (KIND_IF_ELSE,  "?  If / Else",

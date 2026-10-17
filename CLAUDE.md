@@ -314,6 +314,14 @@ The queue bar uses ZMQ document counts, not poll-loop state:
 - `_last_running_uid`: `None` on reconnect (sentinel) so first poll always triggers a history fetch — catches plans that completed during sleep/disconnect.
 - **`status_expiration_period` stays at default (0.5 s)** — do NOT set it to 3600. With a stale expiration, `queue_get()`/`history_get()` use cached `plan_queue_uid`/`plan_history_uid` and return stale data even when plans complete.
 
+## Visual Composer — Statistics block
+
+`KIND_STATS` (`plan_builder.py`) is a container: it wraps scan block(s) in
+`bpp.subs_decorator(PeakStats(x, y))`, then sets `<prefix>_cen/_com/_max/_max_y/_min/_min_y/_fwhm`
+variables (None when not computable) for later blocks. Optional `move_to` (cen/com/max/min) +
+`motor` appends a guarded `bps.mv`. `x` must be the event-data field name (e.g. `fipi2_setpoint`).
+`bpp`/`PeakStats` imports are added to the generated header only when a Stats block is present.
+
 ## Known issues / non-obvious decisions
 
 - **`pkill` self-kill**: `pkill -f start-re-manager` matches the bash process running
