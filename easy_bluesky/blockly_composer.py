@@ -29,7 +29,7 @@ _WEB_DIR = Path(__file__).parent / "blockly_web"
 
 class _Bridge(QObject):
     """Receives callbacks from the Blockly page via QWebChannel."""
-    changed = Signal(str, str, str)   # workspace JSON, python body, warnings JSON list
+    changed = Signal(str, str, str, str)   # workspace JSON, python body, warnings JSON, steps JSON
     ready = Signal()
     code_edit_requested = Signal(str, str)   # block id, current code
 
@@ -41,9 +41,9 @@ class _Bridge(QObject):
     def editCode(self, block_id: str, code: str):
         self.code_edit_requested.emit(block_id, code)
 
-    @Slot(str, str, str)
-    def onChanged(self, workspace_json: str, body: str, warnings: str):
-        self.changed.emit(workspace_json, body, warnings)
+    @Slot(str, str, str, str)
+    def onChanged(self, workspace_json: str, body: str, warnings: str, steps: str):
+        self.changed.emit(workspace_json, body, warnings, steps)
 
 
 class BlocklyComposerWidget(QWidget):
@@ -56,6 +56,7 @@ class BlocklyComposerWidget(QWidget):
         self._devices: dict = {}
         self._plans: dict = {}
         self._body = ""
+        self._steps: list = []
         self._ready = False
         self._pending_js: list = []
         self._build()
@@ -183,8 +184,12 @@ class BlocklyComposerWidget(QWidget):
         if dlg.exec():
             self._js(f"EB.setCode({json.dumps(block_id)}, {json.dumps(editor.toPlainText())})")
 
-    def _on_changed(self, workspace_json: str, body: str, warnings: str = "[]"):
+    def _on_changed(self, workspace_json: str, body: str, warnings: str = "[]", steps: str = "[]"):
         self._body = body
+        try:
+            self._steps = json.loads(steps)
+        except ValueError:
+            self._steps = []
         self._update_preview()
         try:
             warns = json.loads(warnings)
@@ -252,7 +257,7 @@ class BlocklyComposerWidget(QWidget):
         body = "\n".join(("    " + ln) if ln.strip() else "" for ln in lines) or "    pass"
         return assemble_plan_code(
             body, self._plan_name.text() or "my_plan",
-            self._param_editor.get_params(), "PeakStats(" in self._body)
+            self._param_editor.get_params(), "PeakStats(" in self._body, self._steps)
 
     def _update_preview(self):
         self._preview.setPlainText(self._full_code())

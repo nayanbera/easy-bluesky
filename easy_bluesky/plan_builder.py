@@ -289,8 +289,39 @@ def generate_code(nodes: list, plan_name: str = "my_plan",
     return assemble_plan_code(body, plan_name, params, _uses_kind(nodes, KIND_STATS))
 
 
+def build_docstring(params: list = None, steps: list = None) -> str:
+    """NumPy-style plan docstring (indented 4 spaces, without the quotes).
+
+    *steps* are human-readable lines describing the scans/loops in the plan;
+    *params* are the plan-parameter dicts (name/default/annotation).
+    """
+    def clean(t):
+        return str(t).replace("\\", "/").replace('"""', "'''").replace("\n", " ")
+
+    lines = ["Plan composed with EasyBluesky Visual Composer."]
+    if steps:
+        lines += ["", "Steps", "-----"]
+        for s in steps:
+            lines.append(f"- {clean(s)}" if not s.startswith(" ") else f"  - {clean(s.strip())}")
+    lines += ["", "Parameters", "----------"]
+    for prm in params or []:
+        n = prm.get("name", "").strip()
+        if not n:
+            continue
+        ann = prm.get("annotation", "").strip() or "any"
+        dflt = prm.get("default", "").strip()
+        lines.append(f"{clean(n)} : {clean(ann)}")
+        if dflt:
+            lines.append(f"    Default: {clean(dflt)}.")
+    lines += ["md : dict, optional",
+              "    Metadata for the run start document (exp_dir, scan_num, ... are",
+              "    injected by EasyBluesky when the plan is queued)."]
+    return "\n".join(("    " + ln) if ln else "" for ln in lines)
+
+
 def assemble_plan_code(body: str, plan_name: str = "my_plan",
-                       params: list = None, stats_imports: bool = False) -> str:
+                       params: list = None, stats_imports: bool = False,
+                       steps: list = None) -> str:
     """Wrap an already-indented plan *body* in imports, signature and docstring."""
     if not plan_name or not plan_name.replace("_", "").isalnum():
         plan_name = "my_plan"
@@ -330,7 +361,7 @@ def assemble_plan_code(body: str, plan_name: str = "my_plan",
         f"{extra}\n\n"
         f"def {plan_name}({sig}):\n"
         '    """\n'
-        "    Plan composed with EasyBluesky Visual Composer.\n"
+        f"{build_docstring(params, steps)}\n"
         '    """\n'
         f"{body}\n"
     )

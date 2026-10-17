@@ -110,6 +110,7 @@ const workspace = Blockly.inject('blocklyDiv', {
 });
 
 function generateBody() {
+  EB.summary = [];
   try {
     return gen.workspaceToCode(workspace);
   } catch (e) {
@@ -183,7 +184,7 @@ function notify() {
   clearTimeout(timer);
   timer = setTimeout(() => {
     EB.bridge.onChanged(JSON.stringify(Blockly.serialization.workspaces.save(workspace)), generateBody(),
-      JSON.stringify(validate()));
+      JSON.stringify(validate()), JSON.stringify(EB.summary));
   }, 120);
 }
 workspace.addChangeListener((e) => {

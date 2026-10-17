@@ -305,8 +305,10 @@ gen.forBlock['eb_close_shutter'] = (b) => `yield from bps.mv(${b.getFieldValue('
 gen.forBlock['eb_stage'] = (b) => `yield from bps.stage(${b.getFieldValue('DEV')})\n`;
 gen.forBlock['eb_unstage'] = (b) => `yield from bps.unstage(${b.getFieldValue('DEV')})\n`;
 gen.forBlock['eb_trigger_read'] = (b) => `yield from bps.trigger_and_read(${b.getFieldValue('DETS') || '[]'})\n`;
-gen.forBlock['eb_plan'] = (b) =>
-  `yield from ${b.getFieldValue('PLAN')}(${b.getFieldValue('ARGS')})\n`;
+gen.forBlock['eb_plan'] = (b) => {
+  note(b, `plan ${b.getFieldValue('PLAN')}(${b.getFieldValue('ARGS')})`);
+  return `yield from ${b.getFieldValue('PLAN')}(${b.getFieldValue('ARGS')})\n`;
+};
 gen.forBlock['eb_device'] = (b) => [b.getFieldValue('DEV'), ORD.ATOMIC];
 gen.forBlock['eb_python'] = (b) => {
   const code = b.getFieldValue('CODE') || 'pass';
@@ -315,6 +317,14 @@ gen.forBlock['eb_python'] = (b) => {
 gen.forBlock['eb_python_expr'] = (b) => [b.getFieldValue('CODE') || 'None', ORD.ATOMIC];
 gen.forBlock['eb_stat_value'] = (b) =>
   [`${ident(b.getFieldValue('PREFIX'), 'stat')}_${b.getFieldValue('STAT')}`, ORD.ATOMIC];
+
+// Step notes for the generated docstring (reset by generateBody in app.js).
+EB.summary = [];
+function note(block, text) {
+  let depth = 0;
+  for (let p = block.getSurroundParent(); p; p = p.getSurroundParent()) depth++;
+  EB.summary.push('  '.repeat(depth) + text);
+}
 
 function bodyOrPass(code) { return code && code.trim() ? code : gen.INDENT + 'pass\n'; }
 
@@ -340,6 +350,7 @@ gen.forBlock['eb_foreach'] = (b, g) => {
   let code = `for ${vars} in ${iterable}:\n`;
   const motors = splitCsv(b.getFieldValue('MOTORS'));
   const names = splitCsv(vars);
+  note(b, `loop: for ${vars} in ${iterable}` + (motors.length ? `, moving ${motors.join(', ')}` : ''));
   if (motors.length && motors.length === names.length) {
     code += gen.INDENT + `yield from bps.mv(${motors.map((m, i) => `${m}, ${names[i]}`).join(', ')})\n`;
   } else if (motors.length === 1 && names.length === 1) {
@@ -354,6 +365,11 @@ gen.forBlock['eb_stats'] = (b, g) => {
   const y = b.getFieldValue('Y') || 'y';
   const pre = ident(b.getFieldValue('PREFIX'), 'stat');
   const id = safeId(b);
+  {
+    const mv = b.getFieldValue('MOVE'), mm = b.getFieldValue('MOTOR');
+    note(b, `statistics: ${y} vs ${x} -> ${pre}_cen, ${pre}_com, ${pre}_max, ${pre}_min, ${pre}_fwhm` +
+      (mv !== 'none' && mm ? `; then move ${mm} to ${mv.toUpperCase()}` : ''));
+  }
   const ps = `_ps_${id}`;
   const fn = `_stats_${id}`;
   // Variables assigned inside the nested function must be declared nonlocal.
@@ -436,16 +452,28 @@ Blockly.Blocks['eb_grid_scan'] = {
   },
 };
 
-gen.forBlock['eb_scan'] = (b, g) =>
-  `yield from bp.${b.getFieldValue('KIND')}(${b.getFieldValue('DETS') || '[]'}, ${b.getFieldValue('MOTOR')}, ` +
-  `${val(b, 'START', g, '0')}, ${val(b, 'STOP', g, '1')}, ${val(b, 'NUM', g, '11')}, md=md)\n`;
-gen.forBlock['eb_count'] = (b, g) =>
-  `yield from bp.count(${b.getFieldValue('DETS') || '[]'}, num=${val(b, 'NUM', g, '1')}, delay=${val(b, 'DELAY', g, '0')}, md=md)\n`;
-gen.forBlock['eb_grid_scan'] = (b, g) =>
-  `yield from bp.${b.getFieldValue('KIND')}(${b.getFieldValue('DETS') || '[]'}, ` +
-  `${b.getFieldValue('MOTOR1')}, ${val(b, 'START1', g, '0')}, ${val(b, 'STOP1', g, '1')}, ${val(b, 'NUM1', g, '5')}, ` +
-  `${b.getFieldValue('MOTOR2')}, ${val(b, 'START2', g, '0')}, ${val(b, 'STOP2', g, '1')}, ${val(b, 'NUM2', g, '5')}, ` +
-  `snake_axes=${b.getFieldValue('SNAKE') === 'TRUE' ? 'True' : 'False'}, md=md)\n`;
+gen.forBlock['eb_scan'] = (b, g) => {
+  const kind = b.getFieldValue('KIND'), dets = b.getFieldValue('DETS') || '[]', motor = b.getFieldValue('MOTOR');
+  const start = val(b, 'START', g, '0'), stop = val(b, 'STOP', g, '1'), num = val(b, 'NUM', g, '11');
+  note(b, `${kind}: ${motor} from ${start} to ${stop}, ${num} points; detectors ${dets}`);
+  return `yield from bp.${kind}(${dets}, ${motor}, ${start}, ${stop}, ${num}, md=md)\n`;
+};
+gen.forBlock['eb_count'] = (b, g) => {
+  const dets = b.getFieldValue('DETS') || '[]', num = val(b, 'NUM', g, '1'), delay = val(b, 'DELAY', g, '0');
+  note(b, `count: ${num} reading(s), delay ${delay} s; detectors ${dets}`);
+  return `yield from bp.count(${dets}, num=${num}, delay=${delay}, md=md)\n`;
+};
+gen.forBlock['eb_grid_scan'] = (b, g) => {
+  const kind = b.getFieldValue('KIND'), dets = b.getFieldValue('DETS') || '[]';
+  const m1 = b.getFieldValue('MOTOR1'), m2 = b.getFieldValue('MOTOR2');
+  const s1 = val(b, 'START1', g, '0'), e1 = val(b, 'STOP1', g, '1'), n1 = val(b, 'NUM1', g, '5');
+  const s2 = val(b, 'START2', g, '0'), e2 = val(b, 'STOP2', g, '1'), n2 = val(b, 'NUM2', g, '5');
+  const snake = b.getFieldValue('SNAKE') === 'TRUE';
+  note(b, `${kind}: ${m1} ${s1} to ${e1} (${n1} points) x ${m2} ${s2} to ${e2} (${n2} points)` +
+    `${snake ? ', snake' : ''}; detectors ${dets}`);
+  return `yield from bp.${kind}(${dets}, ${m1}, ${s1}, ${e1}, ${n1}, ${m2}, ${s2}, ${e2}, ${n2}, ` +
+    `snake_axes=${snake ? 'True' : 'False'}, md=md)\n`;
+};
 
 // ── Run plan with the registered plan's own parameters ───────────────────────
 // Parameter specs come from the RE Manager (EB.devices.planParams) and are stored in the
@@ -497,5 +525,7 @@ gen.forBlock['eb_plan_call'] = (b, g) => {
     else kw.push(`${p.name}=${v}`);
   });
   if (b.hasMd_) kw.push('md=md');
-  return `yield from ${b.getFieldValue('PLAN')}(${pos.concat(kw).join(', ')})\n`;
+  const args = pos.concat(kw).join(', ');
+  note(b, `plan ${b.getFieldValue('PLAN')}(${args})`);
+  return `yield from ${b.getFieldValue('PLAN')}(${args})\n`;
 };
