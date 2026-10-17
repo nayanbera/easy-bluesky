@@ -1,0 +1,354 @@
+{
+ "blocks": {
+  "languageVersion": 0,
+  "blocks": [
+   {
+    "type": "variables_set",
+    "fields": {
+     "VAR": {
+      "id": "v_e"
+     }
+    },
+    "inputs": {
+     "VALUE": {
+      "block": {
+       "type": "eb_python_expr",
+       "fields": {
+        "CODE": "mono.user_readback.get()"
+       }
+      }
+     }
+    },
+    "next": {
+     "block": {
+      "type": "variables_set",
+      "fields": {
+       "VAR": {
+        "id": "v_sx"
+       }
+      },
+      "inputs": {
+       "VALUE": {
+        "block": {
+         "type": "eb_python_expr",
+         "fields": {
+          "CODE": "sx.user_readback.get()"
+         }
+        }
+       }
+      },
+      "next": {
+       "block": {
+        "type": "variables_set",
+        "fields": {
+         "VAR": {
+          "id": "v_sy"
+         }
+        },
+        "inputs": {
+         "VALUE": {
+          "block": {
+           "type": "eb_python_expr",
+           "fields": {
+            "CODE": "sy.user_readback.get()"
+           }
+          }
+         }
+        },
+        "next": {
+         "block": {
+          "type": "eb_set_attr",
+          "fields": {
+           "DEV": "Pil300K",
+           "ATTR": "cam.acquire_time"
+          },
+          "inputs": {
+           "VALUE": {
+            "shadow": {
+             "type": "math_number",
+             "fields": {
+              "NUM": 1.0
+             }
+            }
+           }
+          },
+          "next": {
+           "block": {
+            "type": "eb_stage",
+            "fields": {
+             "DEV": "Pil300K"
+            },
+            "next": {
+             "block": {
+              "type": "eb_stage",
+              "fields": {
+               "DEV": "scalers"
+              },
+              "next": {
+               "block": {
+                "type": "eb_foreach",
+                "extraState": {
+                 "mode": "range"
+                },
+                "fields": {
+                 "VARS": "_energy",
+                 "MODE": "range",
+                 "START": 7.0,
+                 "STOP": 7.5,
+                 "NUM": 6,
+                 "MOTORS": "mono",
+                 "VALUES": "0, 1, 2",
+                 "FILE": "data.csv",
+                 "COLS": "0"
+                },
+                "inputs": {
+                 "DO": {
+                  "block": {
+                   "type": "controls_if",
+                   "inputs": {
+                    "IF0": {
+                     "block": {
+                      "type": "eb_python_expr",
+                      "fields": {
+                       "CODE": "move_undulator > 0"
+                      }
+                     }
+                    },
+                    "DO0": {
+                     "block": {
+                      "type": "eb_mv",
+                      "fields": {
+                       "DEV": "undulator"
+                      },
+                      "inputs": {
+                       "VALUE": {
+                        "block": {
+                         "type": "eb_python_expr",
+                         "fields": {
+                          "CODE": "_energy"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   },
+                   "next": {
+                    "block": {
+                     "type": "eb_sleep",
+                     "inputs": {
+                      "SECONDS": {
+                       "shadow": {
+                        "type": "math_number",
+                        "fields": {
+                         "NUM": 2.0
+                        }
+                       }
+                      }
+                     },
+                     "next": {
+                      "block": {
+                       "type": "eb_foreach",
+                       "extraState": {
+                        "mode": "list"
+                       },
+                       "fields": {
+                        "VARS": "_sx, _sy",
+                        "MODE": "list",
+                        "VALUES": "(0.0, 0.0), (5.0, -2.5), (10.0, -5.0)",
+                        "MOTORS": "sx, sy",
+                        "START": 0,
+                        "STOP": 1,
+                        "NUM": 10,
+                        "FILE": "data.csv",
+                        "COLS": "0, 1"
+                       },
+                       "inputs": {
+                        "DO": {
+                         "block": {
+                          "type": "controls_repeat_ext",
+                          "inputs": {
+                           "TIMES": {
+                            "shadow": {
+                             "type": "math_number",
+                             "fields": {
+                              "NUM": 3
+                             }
+                            }
+                           },
+                           "DO": {
+                            "block": {
+                             "type": "eb_open_shutter",
+                             "fields": {
+                              "DEV": "shutter"
+                             },
+                             "next": {
+                              "block": {
+                               "type": "eb_sleep",
+                               "inputs": {
+                                "SECONDS": {
+                                 "shadow": {
+                                  "type": "math_number",
+                                  "fields": {
+                                   "NUM": 0.3
+                                  }
+                                 }
+                                }
+                               },
+                               "next": {
+                                "block": {
+                                 "type": "eb_trigger_read",
+                                 "fields": {
+                                  "DETS": "[Pil300K, scalers]"
+                                 },
+                                 "next": {
+                                  "block": {
+                                   "type": "eb_close_shutter",
+                                   "fields": {
+                                    "DEV": "shutter"
+                                   },
+                                   "next": {
+                                    "block": {
+                                     "type": "eb_sleep",
+                                     "inputs": {
+                                      "SECONDS": {
+                                       "shadow": {
+                                        "type": "math_number",
+                                        "fields": {
+                                         "NUM": 1.0
+                                        }
+                                       }
+                                      }
+                                     }
+                                    }
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                },
+                "next": {
+                 "block": {
+                  "type": "eb_unstage",
+                  "fields": {
+                   "DEV": "Pil300K"
+                  },
+                  "next": {
+                   "block": {
+                    "type": "eb_unstage",
+                    "fields": {
+                     "DEV": "scalers"
+                    },
+                    "next": {
+                     "block": {
+                      "type": "eb_mv_multi",
+                      "extraState": {
+                       "n": 3
+                      },
+                      "fields": {
+                       "DEV0": "mono",
+                       "DEV1": "sx",
+                       "DEV2": "sy"
+                      },
+                      "inputs": {
+                       "POS0": {
+                        "block": {
+                         "type": "variables_get",
+                         "fields": {
+                          "VAR": {
+                           "id": "v_e"
+                          }
+                         }
+                        }
+                       },
+                       "POS1": {
+                        "block": {
+                         "type": "variables_get",
+                         "fields": {
+                          "VAR": {
+                           "id": "v_sx"
+                          }
+                         }
+                        }
+                       },
+                       "POS2": {
+                        "block": {
+                         "type": "variables_get",
+                         "fields": {
+                          "VAR": {
+                           "id": "v_sy"
+                          }
+                         }
+                        }
+                       }
+                      },
+                      "next": {
+                       "block": {
+                        "type": "eb_mv",
+                        "fields": {
+                         "DEV": "shutter"
+                        },
+                        "inputs": {
+                         "VALUE": {
+                          "shadow": {
+                           "type": "math_number",
+                           "fields": {
+                            "NUM": 1
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "x": 30,
+    "y": 30
+   }
+  ]
+ },
+ "variables": [
+  {
+   "name": "initial_energy",
+   "id": "v_e"
+  },
+  {
+   "name": "initial_sx",
+   "id": "v_sx"
+  },
+  {
+   "name": "initial_sy",
+   "id": "v_sy"
+  }
+ ]
+}

@@ -17,7 +17,7 @@ from qtpy.QtWebChannel import QWebChannel
 from qtpy.QtWebEngineWidgets import QWebEngineView
 from qtpy.QtWebEngineCore import QWebEngineSettings
 from qtpy.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QApplication, QDialog, QFileDialog, QMenu, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPlainTextEdit, QPushButton, QSplitter, QVBoxLayout, QWidget, QFrame,
 )
 
@@ -58,6 +58,7 @@ class BlocklyComposerWidget(QWidget):
         self._ready = False
         self._pending_js: list = []
         self._build()
+        self._load_example_aswaxs()   # opening example, loaded once the page is ready
 
     # ── UI ─────────────────────────────────────────────────────────────────────
     def _build(self):
@@ -75,13 +76,22 @@ class BlocklyComposerWidget(QWidget):
         for text, slot, tip in (
             ("💾 Save .ebplan", self._save, "Save the block workspace"),
             ("📂 Load .ebplan", self._load, "Load a Blockly workspace"),
-            ("★ Load Example", self._load_example, "Paired sx/sy positions + statistics example"),
-            ("🗑 Clear", self._clear, "Remove all blocks"),
         ):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(slot)
             top.addWidget(b)
+        btn_ex = QPushButton("★ Examples")
+        btn_ex.setToolTip("Load an example plan")
+        menu = QMenu(btn_ex)
+        menu.addAction("ASWAXS energy scan", self._load_example_aswaxs)
+        menu.addAction("Paired sx/sy positions + statistics", self._load_example_pairs)
+        btn_ex.setMenu(menu)
+        top.addWidget(btn_ex)
+        btn_clear = QPushButton("🗑 Clear")
+        btn_clear.setToolTip("Remove all blocks")
+        btn_clear.clicked.connect(self._clear)
+        top.addWidget(btn_clear)
         top.addStretch()
         root.addLayout(top)
 
@@ -216,11 +226,18 @@ class BlocklyComposerWidget(QWidget):
         self._preview.setPlainText(self._full_code())
 
     # ── File / actions ─────────────────────────────────────────────────────────
-    def _load_example(self):
-        path = _WEB_DIR / "examples" / "aswaxs_pairs.json"
-        self._plan_name.setText("aswaxs_pair_scan")
-        self._param_editor.set_params([])
+    def _load_example(self, filename: str, plan_name: str, params: list):
+        path = _WEB_DIR / "examples" / filename
+        self._plan_name.setText(plan_name)
+        self._param_editor.set_params(params)
         self._js(f"EB.load({json.dumps(path.read_text(encoding='utf-8'))})")
+
+    def _load_example_aswaxs(self):
+        self._load_example("aswaxs_energy_scan.json", "aswaxs_energy_scan",
+                           _ParamEditor._ASWAXS_PARAMS)
+
+    def _load_example_pairs(self):
+        self._load_example("aswaxs_pairs.json", "aswaxs_pair_scan", [])
 
     def _clear(self):
         r = QMessageBox.question(self, "Clear", "Remove all blocks?")
