@@ -104,7 +104,7 @@ const workspace = Blockly.inject('blocklyDiv', {
   grid: { spacing: 24, length: 2, colour: 'rgba(128,128,128,0.25)', snap: true },
   zoom: { controls: true, wheel: true, startScale: 0.9, maxScale: 2, minScale: 0.4 },
   trashcan: true,
-  move: { scrollbars: true, drag: true, wheel: false },
+  move: { scrollbars: true, drag: true, wheel: true },  // scroll pans; Ctrl/Cmd+scroll or pinch zooms
   sounds: false,
   media: 'media/',
 });
