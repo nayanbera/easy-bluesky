@@ -19,7 +19,14 @@ const TOOLBOX = {
       { kind: 'block', type: 'eb_unstage' },
       { kind: 'block', type: 'eb_trigger_read' },
     ] },
+    { kind: 'category', name: 'Scans', colour: EB_COLOURS.scan, contents: [
+      { kind: 'block', type: 'eb_scan', inputs: { START: num(-1), STOP: num(1), NUM: num(21) } },
+      { kind: 'block', type: 'eb_grid_scan', inputs: { START1: num(0), STOP1: num(1), NUM1: num(5),
+                                                       START2: num(0), STOP2: num(1), NUM2: num(5) } },
+      { kind: 'block', type: 'eb_count', inputs: { NUM: num(1), DELAY: num(0) } },
+    ] },
     { kind: 'category', name: 'Plans', colour: EB_COLOURS.plan, contents: [
+      { kind: 'block', type: 'eb_plan_call' },
       { kind: 'block', type: 'eb_plan' },
       { kind: 'block', type: 'eb_device' },
     ] },
@@ -110,12 +117,73 @@ function generateBody() {
   }
 }
 
+// ── Validation: attach warning icons to suspicious blocks ───────────────────
+const SCAN_X_SUFFIXES = ['', '_setpoint', '_user_setpoint', '_readback', '_user_readback'];
+
+function validate() {
+  const dev = EB.devices;
+  const haveDevs = dev.all.length > 0;
+  const all = workspace.getAllBlocks(false);
+  const prefixes = new Set(all.filter((b) => b.type === 'eb_stats')
+    .map((b) => ident(b.getFieldValue('PREFIX'), 'stat')));
+  const msgs = [];
+  all.forEach((b) => {
+    if (!b.type.startsWith('eb_')) return;
+    const w = [];
+    if (haveDevs) {
+      b.inputList.forEach((inp) => inp.fieldRow.forEach((f) => {
+        const nm = f.name || '';
+        if (!/^(DEV\d*|MOTOR\d*)$/.test(nm) || typeof f.getValue !== 'function') return;
+        const v = f.getValue();
+        if (!dev.all.includes(v)) w.push(`'${v}' is not in the loaded device list.`);
+        else if (/^MOTOR/.test(nm) || /^eb_(mv|mvr|mv_multi)$/.test(b.type)) {
+          if (!dev.motors.includes(v)) w.push(`'${v}' is not a movable device.`);
+        }
+      }));
+    }
+    if (b.type === 'eb_foreach') {
+      const motors = splitCsv(b.getFieldValue('MOTORS'));
+      const vars = splitCsv(b.getFieldValue('VARS'));
+      if (motors.length && motors.length !== vars.length) {
+        w.push(`${motors.length} motor(s) but ${vars.length} loop variable(s): they must match to be moved together.`);
+      }
+    }
+    if (b.type === 'eb_stats') {
+      const scans = b.getDescendants(false).filter((d) => d.type === 'eb_scan');
+      if (!b.getInputTargetBlock('DO')) w.push('Put a scan block inside the Statistics block.');
+      if (!(b.getFieldValue('Y') || '').trim()) w.push('Signal (y) is empty.');
+      if (scans.length) {
+        const m = scans[0].getFieldValue('MOTOR');
+        const x = (b.getFieldValue('X') || '').trim();
+        if (!SCAN_X_SUFFIXES.some((s) => x === m + s)) {
+          w.push(`x '${x}' does not look like the scanned motor '${m}' (expected '${m}' or '${m}_setpoint').`);
+        }
+      }
+    }
+    if (b.type === 'eb_stat_value') {
+      const p = ident(b.getFieldValue('PREFIX'), 'stat');
+      if (!prefixes.has(p)) w.push(`No Statistics block uses the variable prefix '${p}'.`);
+    }
+    if (b.type === 'eb_plan_call') {
+      const name = b.getFieldValue('PLAN');
+      if (dev.plans.length && !dev.plans.includes(name)) w.push(`Plan '${name}' is not registered on the RE Manager.`);
+      const missing = (b.params_ || []).filter((p) => p.required && !p.hidden && !b.getInputTargetBlock('ARG_' + p.name))
+        .map((p) => p.name);
+      if (missing.length) w.push('Missing required parameter(s): ' + missing.join(', '));
+    }
+    b.setWarningText(w.length ? w.join('\n') : null);
+    w.forEach((m) => msgs.push(m));
+  });
+  return msgs;
+}
+
 let timer = null;
 function notify() {
   if (!EB.bridge) return;
   clearTimeout(timer);
   timer = setTimeout(() => {
-    EB.bridge.onChanged(JSON.stringify(Blockly.serialization.workspaces.save(workspace)), generateBody());
+    EB.bridge.onChanged(JSON.stringify(Blockly.serialization.workspaces.save(workspace)), generateBody(),
+      JSON.stringify(validate()));
   }, 120);
 }
 workspace.addChangeListener((e) => {
@@ -126,7 +194,8 @@ workspace.addChangeListener((e) => {
 // ── API called from Qt ───────────────────────────────────────────────────────
 EB.setDevices = function (json) {
   const d = JSON.parse(json);
-  EB.devices = { motors: d.motors || [], all: d.all || [], plans: d.plans || [] };
+  EB.devices = { motors: d.motors || [], all: d.all || [], plans: d.plans || [], planParams: d.planParams || {} };
+  notify();
 };
 EB.setColors = function (json) {
   colors = JSON.parse(json);
@@ -137,7 +206,7 @@ function collectNames(o) {
   if (o && typeof o === 'object') {
     if (o.fields) {
       for (const k of Object.keys(o.fields)) {
-        if (/^(DEV\d*|MOTOR|PLAN)$/.test(k) && typeof o.fields[k] === 'string') EB.extraNames.add(o.fields[k]);
+        if (/^(DEV\d*|MOTOR\d*|PLAN)$/.test(k) && typeof o.fields[k] === 'string') EB.extraNames.add(o.fields[k]);
       }
     }
     Object.values(o).forEach(collectNames);

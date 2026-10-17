@@ -12,7 +12,7 @@ const EB = {
 // Colours — Scratch-like category palette
 const EB_COLOURS = {
   motion: '#4C97FF', action: '#9966FF', plan: '#59C059',
-  loop: '#FFAB19', stats: '#00A6A6', python: '#6B6B6B',
+  loop: '#FFAB19', stats: '#00A6A6', python: '#6B6B6B', scan: '#0FBD8C',
 };
 
 function ebOptions(list) {
@@ -380,4 +380,122 @@ gen.forBlock['eb_stats'] = (b, g) => {
       gen.INDENT + `print('[stats] ${move} not found - ${motor} not moved')\n`;
   }
   return code;
+};
+
+
+// ── Scan blocks (bluesky built-in plans) ─────────────────────────────────────
+// All forward md=md so the queue-injected metadata (exp_dir, scan_num, ...) reaches the run.
+Blockly.Blocks['eb_scan'] = {
+  init() {
+    this.appendEndRowInput().appendField(new Blockly.FieldDropdown(
+      [['scan', 'scan'], ['relative scan', 'rel_scan']]), 'KIND')
+      .appendField(new Blockly.FieldDropdown(motorOptions), 'MOTOR');
+    this.appendValueInput('START').appendField('from');
+    this.appendValueInput('STOP').appendField('to');
+    this.appendValueInput('NUM').appendField('points');
+    this.appendEndRowInput().appendField('detectors').appendField(new Blockly.FieldTextInput('[det]'), 'DETS');
+    this.setInputsInline(true);
+    this.setPreviousStatement(true); this.setNextStatement(true);
+    this.setColour(EB_COLOURS.scan);
+    this.setTooltip('1-D scan of one motor.\nyield from bp.scan(detectors, motor, start, stop, num, md=md)\n' +
+      '"relative scan" uses positions relative to the starting point (bp.rel_scan).');
+  },
+};
+
+Blockly.Blocks['eb_count'] = {
+  init() {
+    this.appendEndRowInput().appendField('count').appendField(new Blockly.FieldTextInput('[det]'), 'DETS');
+    this.appendValueInput('NUM').appendField('times');
+    this.appendValueInput('DELAY').appendField('delay');
+    this.appendDummyInput().appendField('s');
+    this.setInputsInline(true);
+    this.setPreviousStatement(true); this.setNextStatement(true);
+    this.setColour(EB_COLOURS.scan);
+    this.setTooltip('Take N readings of the detectors.\nyield from bp.count(detectors, num=N, delay=s, md=md)');
+  },
+};
+
+Blockly.Blocks['eb_grid_scan'] = {
+  init() {
+    this.appendEndRowInput().appendField(new Blockly.FieldDropdown(
+      [['grid scan', 'grid_scan'], ['relative grid scan', 'rel_grid_scan']]), 'KIND')
+      .appendField('detectors').appendField(new Blockly.FieldTextInput('[det]'), 'DETS');
+    this.appendValueInput('START1').appendField(new Blockly.FieldDropdown(motorOptions), 'MOTOR1').appendField('from');
+    this.appendValueInput('STOP1').appendField('to');
+    this.appendValueInput('NUM1').appendField('points');
+    this.appendEndRowInput();
+    this.appendValueInput('START2').appendField(new Blockly.FieldDropdown(motorOptions), 'MOTOR2').appendField('from');
+    this.appendValueInput('STOP2').appendField('to');
+    this.appendValueInput('NUM2').appendField('points');
+    this.appendEndRowInput().appendField(new Blockly.FieldCheckbox('FALSE'), 'SNAKE').appendField('snake (alternate direction of the inner axis)');
+    this.setInputsInline(true);
+    this.setPreviousStatement(true); this.setNextStatement(true);
+    this.setColour(EB_COLOURS.scan);
+    this.setTooltip('2-D mesh scan: the first motor is the outer (slow) axis.\n' +
+      'yield from bp.grid_scan(detectors, m1, s1, e1, n1, m2, s2, e2, n2, snake_axes=..., md=md)');
+  },
+};
+
+gen.forBlock['eb_scan'] = (b, g) =>
+  `yield from bp.${b.getFieldValue('KIND')}(${b.getFieldValue('DETS') || '[]'}, ${b.getFieldValue('MOTOR')}, ` +
+  `${val(b, 'START', g, '0')}, ${val(b, 'STOP', g, '1')}, ${val(b, 'NUM', g, '11')}, md=md)\n`;
+gen.forBlock['eb_count'] = (b, g) =>
+  `yield from bp.count(${b.getFieldValue('DETS') || '[]'}, num=${val(b, 'NUM', g, '1')}, delay=${val(b, 'DELAY', g, '0')}, md=md)\n`;
+gen.forBlock['eb_grid_scan'] = (b, g) =>
+  `yield from bp.${b.getFieldValue('KIND')}(${b.getFieldValue('DETS') || '[]'}, ` +
+  `${b.getFieldValue('MOTOR1')}, ${val(b, 'START1', g, '0')}, ${val(b, 'STOP1', g, '1')}, ${val(b, 'NUM1', g, '5')}, ` +
+  `${b.getFieldValue('MOTOR2')}, ${val(b, 'START2', g, '0')}, ${val(b, 'STOP2', g, '1')}, ${val(b, 'NUM2', g, '5')}, ` +
+  `snake_axes=${b.getFieldValue('SNAKE') === 'TRUE' ? 'True' : 'False'}, md=md)\n`;
+
+// ── Run plan with the registered plan's own parameters ───────────────────────
+// Parameter specs come from the RE Manager (EB.devices.planParams) and are stored in the
+// block's extraState, so saved workspaces load even when the plan list is not available.
+Blockly.Blocks['eb_plan_call'] = {
+  init() {
+    this.params_ = [];
+    this.appendDummyInput('HEAD').appendField('run plan')
+      .appendField(new Blockly.FieldDropdown(planOptions, (v) => { this.setPlan_(v); return v; }), 'PLAN');
+    this.setInputsInline(false);
+    this.setPreviousStatement(true); this.setNextStatement(true);
+    this.setColour(EB_COLOURS.plan);
+    this.setTooltip('Run a registered plan. Pick the plan, then plug values into its parameters.\n' +
+      'Parameters left empty use the plan default.');
+  },
+  setPlan_(name) {
+    const spec = EB.devices.planParams && EB.devices.planParams[name];
+    if (spec) this.rebuild_(spec);
+  },
+  rebuild_(spec) {
+    this.params_.forEach((p) => { if (this.getInput('ARG_' + p.name)) this.removeInput('ARG_' + p.name); });
+    this.params_ = spec.filter((p) => p.name !== 'md' && !/VAR_/.test(p.kind || ''))
+      .concat(spec.filter((p) => p.name === 'md').map((p) => ({ ...p, hidden: true })));
+    this.params_.forEach((p) => {
+      if (p.hidden) return;
+      const label = p.name + (p.required ? ' *' : (p.default !== undefined && p.default !== '' ? ` (=${p.default})` : ''));
+      const inp = this.appendValueInput('ARG_' + p.name).appendField(label);
+      inp.setAlign(Blockly.inputs.Align.RIGHT);
+    });
+    this.hasMd_ = spec.some((p) => p.name === 'md');
+  },
+  saveExtraState() { return { params: this.params_.filter((p) => !p.hidden), md: !!this.hasMd_ }; },
+  loadExtraState(s) {
+    const spec = (s && s.params) || [];
+    if (s && s.md) spec.push({ name: 'md', kind: 'KEYWORD_ONLY' });
+    this.rebuild_(spec);
+  },
+};
+
+gen.forBlock['eb_plan_call'] = (b, g) => {
+  const pos = [];
+  const kw = [];
+  let gap = false;
+  (b.params_ || []).forEach((p) => {
+    if (p.hidden) return;
+    const v = g.valueToCode(b, 'ARG_' + p.name, ORD.NONE);
+    if (!v) { gap = true; return; }
+    if (/POSITIONAL_ONLY/.test(p.kind || '') && !gap) pos.push(v);
+    else kw.push(`${p.name}=${v}`);
+  });
+  if (b.hasMd_) kw.push('md=md');
+  return `yield from ${b.getFieldValue('PLAN')}(${pos.concat(kw).join(', ')})\n`;
 };

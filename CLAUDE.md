@@ -336,6 +336,16 @@ no CDN — `media: 'media/'` keeps icons offline) inside a `QWebEngineView` (`bl
   `eb_stat_value` reporter. Core Blockly 13 has no multiline field → `CodeField` opens a Qt code dialog.
 - Saved as `.ebplan` with `"format": "blockly"`; classic composer files have `"nodes"` and are not
   interchangeable. Code assembly shares `assemble_plan_code()` with the classic composer.
+- **Scan blocks** (`eb_scan`, `eb_grid_scan`, `eb_count`) forward `md=md` so queue-injected metadata
+  (`exp_dir`, `scan_num`) reaches the run. **Run plan** (`eb_plan_call`) builds its parameter inputs from the
+  RE Manager plan spec (`_plan_params()` → `EB.devices.planParams`); specs are stored in the block's
+  `extraState`, so saved workspaces load without the plan list. Required params unplugged → warning.
+- **Validation** (`validate()` in `app.js`): warning icons for devices not loaded / not movable, Statistics
+  `x` not matching the scanned motor, orphan statistic prefixes, For-each var/motor count mismatch, missing
+  required plan params. Count shown in the bottom label (`onChanged` 3rd arg = warnings JSON).
+- **Classic import**: `ebplan_import.classic_to_blockly()` converts classic `.ebplan` nodes (Load .ebplan on the
+  Blockly tab accepts both); unmappable blocks (plan with per-step actions) become Python blocks. The classic
+  Visual Composer tab is kept, labelled "(legacy)", until the importer is trusted on real plans.
 - Headless testing: `QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-gpu-compositing"` +
   `QT_QPA_PLATFORM=offscreen`, wait for `_ready`, `widget.grab()` renders the canvas.
 

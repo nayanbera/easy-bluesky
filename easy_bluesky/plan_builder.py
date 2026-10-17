@@ -2270,7 +2270,7 @@ class PlanBuilder(QWidget):
 
         # Tab 2: classic Visual Composer
         self._composer = ComposerWidget(worker=self.worker)
-        tabs.addTab(self._composer, "🎛  Visual Composer")
+        tabs.addTab(self._composer, "🎛  Visual Composer (legacy)")
 
         # Tab 3: Code Editor (kept for advanced use)
         self._editor_tab_index = tabs.count()

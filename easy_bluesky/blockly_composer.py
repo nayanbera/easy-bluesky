@@ -29,7 +29,7 @@ _WEB_DIR = Path(__file__).parent / "blockly_web"
 
 class _Bridge(QObject):
     """Receives callbacks from the Blockly page via QWebChannel."""
-    changed = Signal(str, str)   # workspace JSON, generated python body
+    changed = Signal(str, str, str)   # workspace JSON, python body, warnings JSON list
     ready = Signal()
     code_edit_requested = Signal(str, str)   # block id, current code
 
@@ -41,13 +41,14 @@ class _Bridge(QObject):
     def editCode(self, block_id: str, code: str):
         self.code_edit_requested.emit(block_id, code)
 
-    @Slot(str, str)
-    def onChanged(self, workspace_json: str, body: str):
-        self.changed.emit(workspace_json, body)
+    @Slot(str, str, str)
+    def onChanged(self, workspace_json: str, body: str, warnings: str):
+        self.changed.emit(workspace_json, body, warnings)
 
 
 class BlocklyComposerWidget(QWidget):
     send_to_editor = Signal(str)
+    _HINT = "Blockly blocks — drag from the toolbox; blocks snap together."
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -135,9 +136,9 @@ class BlocklyComposerWidget(QWidget):
         root.addWidget(splitter, 1)
 
         bottom = QHBoxLayout()
-        hint = QLabel("Blockly blocks — drag from the toolbox; blocks snap together.")
-        hint.setStyleSheet("color: palette(mid);")
-        bottom.addWidget(hint)
+        self._hint = QLabel(self._HINT)
+        self._hint.setStyleSheet("color: palette(mid);")
+        bottom.addWidget(self._hint)
         bottom.addStretch()
         btn = QPushButton("→ Send to Code Editor")
         btn.setStyleSheet("font-weight: bold; padding: 4px 12px;")
@@ -182,9 +183,21 @@ class BlocklyComposerWidget(QWidget):
         if dlg.exec():
             self._js(f"EB.setCode({json.dumps(block_id)}, {json.dumps(editor.toPlainText())})")
 
-    def _on_changed(self, workspace_json: str, body: str):
+    def _on_changed(self, workspace_json: str, body: str, warnings: str = "[]"):
         self._body = body
         self._update_preview()
+        try:
+            warns = json.loads(warnings)
+        except ValueError:
+            warns = []
+        if warns:
+            self._hint.setText(f"⚠ {len(warns)} warning(s) — hover the ⚠ icons on blocks")
+            self._hint.setToolTip("\n".join(warns[:15]))
+            self._hint.setStyleSheet("color: #e8a33d;")
+        else:
+            self._hint.setText(self._HINT)
+            self._hint.setToolTip("")
+            self._hint.setStyleSheet("color: palette(mid);")
 
     def _push_colors(self):
         pal = QApplication.palette()
@@ -200,8 +213,27 @@ class BlocklyComposerWidget(QWidget):
         motors = sorted(n for n, d in self._devices.items()
                         if isinstance(d, dict) and d.get("is_movable"))
         data = {"motors": motors, "all": sorted(self._devices),
-                "plans": sorted(self._plans)}
+                "plans": sorted(self._plans), "planParams": self._plan_params()}
         self._js(f"EB.setDevices({json.dumps(json.dumps(data))})")
+
+    def _plan_params(self) -> dict:
+        """Compact {plan: [param specs]} for the 'run plan' block."""
+        out = {}
+        for name, info in self._plans.items():
+            specs = []
+            for p in (info or {}).get("parameters", []) or []:
+                kind = p.get("kind", {})
+                kind = kind.get("name", "") if isinstance(kind, dict) else str(kind)
+                has_default = "default" in p
+                specs.append({
+                    "name": p.get("name", ""),
+                    "kind": kind,
+                    "required": not has_default and not kind.startswith("VAR_"),
+                    "default": "" if not has_default else str(p.get("default")),
+                    "description": p.get("description", "") or "",
+                })
+            out[name] = specs
+        return out
 
     def changeEvent(self, ev):
         if ev.type() in (QEvent.Type.ApplicationPaletteChange, QEvent.Type.PaletteChange):
@@ -277,11 +309,12 @@ class BlocklyComposerWidget(QWidget):
             QMessageBox.warning(self, "Load Error", str(e))
             return
         if data.get("format") != "blockly":
-            QMessageBox.information(
-                self, "Different plan type",
-                "This .ebplan was made with the classic Visual Composer.\n"
-                "Open it in the 'Visual Composer' tab.")
-            return
+            if "nodes" not in data:
+                QMessageBox.warning(self, "Load Error", "Unrecognised .ebplan file.")
+                return
+            from .ebplan_import import classic_to_blockly
+            data = {**data, "workspace": classic_to_blockly(data["nodes"])}
+            self._hint.setText("Imported from a classic Visual Composer plan — review the blocks, then save as a new .ebplan.")
         self._plan_name.setText(data.get("plan_name", "blockly_plan"))
         self._param_editor.set_params(data.get("params", []))
         self._js(f"EB.load({json.dumps(json.dumps(data.get('workspace', {})))})")
