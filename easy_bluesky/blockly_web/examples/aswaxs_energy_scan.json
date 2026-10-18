@@ -178,9 +178,12 @@
                            },
                            "DO": {
                             "block": {
-                             "type": "eb_open_shutter",
+                             "type": "eb_mv",
                              "fields": {
                               "DEV": "shutter"
+                             },
+                             "inputs": {
+                              "VALUE": {"block": {"type": "text", "fields": {"TEXT": "open"}}}
                              },
                              "next": {
                               "block": {
@@ -203,9 +206,12 @@
                                  },
                                  "next": {
                                   "block": {
-                                   "type": "eb_close_shutter",
+                                   "type": "eb_mv",
                                    "fields": {
                                     "DEV": "shutter"
+                                   },
+                                   "inputs": {
+                                    "VALUE": {"block": {"type": "text", "fields": {"TEXT": "closed"}}}
                                    },
                                    "next": {
                                     "block": {

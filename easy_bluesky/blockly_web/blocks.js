@@ -133,6 +133,7 @@ function simpleDeviceBlock(type, label, colour, tip) {
     },
   };
 }
+// open/close shutter: no longer in the toolbox (use "move shutter to 'open'"); kept so old workspaces still load
 simpleDeviceBlock('eb_open_shutter', 'open shutter', EB_COLOURS.action, "yield from bps.mv(shutter, 'open')");
 simpleDeviceBlock('eb_close_shutter', 'close shutter', EB_COLOURS.action, "yield from bps.mv(shutter, 'closed')");
 simpleDeviceBlock('eb_stage', 'stage', EB_COLOURS.action, 'Arm a device for acquisition.\nyield from bps.stage(device)');

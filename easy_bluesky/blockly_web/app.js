@@ -13,8 +13,6 @@ const TOOLBOX = {
     ] },
     { kind: 'category', name: 'Actions', colour: EB_COLOURS.action, contents: [
       { kind: 'block', type: 'eb_sleep', inputs: { SECONDS: num(1) } },
-      { kind: 'block', type: 'eb_open_shutter' },
-      { kind: 'block', type: 'eb_close_shutter' },
       { kind: 'block', type: 'eb_stage' },
       { kind: 'block', type: 'eb_unstage' },
       { kind: 'block', type: 'eb_trigger_read' },

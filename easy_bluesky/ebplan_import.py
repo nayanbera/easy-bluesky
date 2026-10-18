@@ -67,9 +67,11 @@ def _convert(node: FlowNode) -> dict:
                 "fields": {"DEV": dev or "device", "ATTR": p.get("attribute", "attr")},
                 "inputs": {"VALUE": _value(p.get("value", "0"))}}
     if k == KIND_OPEN_SHUTTER:
-        return {"type": "eb_open_shutter", "fields": {"DEV": dev or "shutter"}}
+        return {"type": "eb_mv", "fields": {"DEV": dev or "shutter"},
+                "inputs": {"VALUE": {"block": {"type": "text", "fields": {"TEXT": "open"}}}}}
     if k == KIND_CLOSE_SHUTTER:
-        return {"type": "eb_close_shutter", "fields": {"DEV": dev or "shutter"}}
+        return {"type": "eb_mv", "fields": {"DEV": dev or "shutter"},
+                "inputs": {"VALUE": {"block": {"type": "text", "fields": {"TEXT": "closed"}}}}}
     if k == KIND_STAGE:
         return {"type": "eb_stage", "fields": {"DEV": dev or "device"}}
     if k == KIND_UNSTAGE:
