@@ -393,9 +393,8 @@ class _ParamEditor(QWidget):
         self._toggle = QPushButton("▸ Plan Parameters (0)")
         self._toggle.setCheckable(True)
         self._toggle.setChecked(False)
-        self._toggle.setStyleSheet(
-            "text-align: left; padding: 2px 6px; border: none; "
-            "background: transparent; color: #aaa; font-weight: bold;")
+        self._toggle.setStyleSheet("text-align: left; padding: 3px 8px; font-weight: bold;")
+        self._toggle.setToolTip("Click to show / hide the table of plan parameters")
         self._toggle.toggled.connect(self._on_toggle)
         header_row.addWidget(self._toggle)
 
@@ -510,6 +509,8 @@ class _ParamEditor(QWidget):
             self._table.setCellWidget(row, 3, del_btn)
         self._table.blockSignals(False)
         self._update_toggle_label()
+        if params and not self._toggle.isChecked():
+            self._toggle.setChecked(True)   # show the loaded parameters
 
     _ASWAXS_PARAMS = [
         {"name": "energy_motor",  "default": "mono",                        "annotation": "Movable"},
