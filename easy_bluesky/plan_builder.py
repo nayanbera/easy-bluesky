@@ -10,7 +10,7 @@ from pathlib import Path
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
-    QAbstractItemView, QPlainTextEdit, QComboBox, QLineEdit, QMessageBox,
+    QAbstractItemView, QPlainTextEdit, QComboBox, QStyledItemDelegate, QLineEdit, QMessageBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QFrame, QScrollArea, QTabWidget,
     QFileDialog, QCheckBox, QInputDialog, QMenu, QDialog, QTextBrowser,
     QSizePolicy, QStackedWidget, QToolButton,
@@ -371,6 +371,27 @@ def assemble_plan_code(body: str, plan_name: str = "my_plan",
 
 # ── _ParamEditor ──────────────────────────────────────────────────────────────
 
+_TYPE_HINTS = ["", "Movable", "Optional[Movable]", "List[Movable]", "Readable", "List[Readable]",
+               "float", "int", "str", "bool", "List[float]", "List[int]", "List[str]"]
+
+
+class _TypeHintDelegate(QStyledItemDelegate):
+    """Editable drop-down of common plan-parameter type hints (free text still allowed)."""
+
+    def createEditor(self, parent, option, index):
+        cb = QComboBox(parent)
+        cb.setEditable(True)
+        cb.addItems(_TYPE_HINTS)
+        cb.setToolTip("Movable = motor picker, List[Readable] = detector list, float/int = number")
+        return cb
+
+    def setEditorData(self, editor, index):
+        editor.setCurrentText(index.data() or "")
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.currentText().strip())
+
+
 class _ParamEditor(QWidget):
     """Collapsible plan-parameter editor.
 
@@ -421,6 +442,7 @@ class _ParamEditor(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self._table.setColumnWidth(3, 28)
+        self._table.setItemDelegateForColumn(2, _TypeHintDelegate(self._table))
         self._table.setMaximumHeight(180)
         self._table.setVisible(False)
         self._table.setAlternatingRowColors(True)
