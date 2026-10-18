@@ -4,7 +4,7 @@ import csv
 import json
 from qtpy.QtWidgets import (
     QWidget, QDialog, QDialogButtonBox, QFormLayout, QScrollArea,
-    QListWidget, QListWidgetItem, QComboBox, QLineEdit, QDoubleSpinBox,
+    QListWidget, QListWidgetItem, QComboBox, QLineEdit, QDoubleSpinBox, QSizePolicy,
     QSpinBox, QCheckBox, QLabel, QVBoxLayout, QHBoxLayout, QGroupBox,
     QAbstractItemView, QMessageBox, QPushButton, QFileDialog,
     QTreeView, QTreeWidget, QTreeWidgetItem,
@@ -21,6 +21,31 @@ class NoScrollSpinBox(QSpinBox):
 class NoScrollDoubleSpinBox(QDoubleSpinBox):
     def wheelEvent(self, event):
         event.ignore()
+
+
+def _list_filter(lst) -> "QWidget":
+    """Row with a search box (hides non-matching rows of *lst*, selection kept) and a Clear button."""
+    row = QWidget()
+    row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    rl = QHBoxLayout(row)
+    rl.setContentsMargins(0, 0, 0, 0)
+    rl.setSpacing(4)
+    box = QLineEdit()
+    box.setPlaceholderText("Filter…")
+    box.setClearButtonEnabled(True)
+
+    def _apply(text):
+        t = text.strip().lower()
+        for i in range(lst.count()):
+            it = lst.item(i)
+            it.setHidden(bool(t) and t not in it.text().lower())
+    box.textChanged.connect(_apply)
+    rl.addWidget(box, 1)
+    clr = QPushButton("✕ Clear")
+    clr.setToolTip("Deselect everything")
+    clr.clicked.connect(lst.clearSelection)
+    rl.addWidget(clr)
+    return row
 
 
 class MultiSelectWidget(QWidget):
@@ -43,6 +68,7 @@ class MultiSelectWidget(QWidget):
         for item in items:
             self._list.addItem(QListWidgetItem(item))
         self._list.itemSelectionChanged.connect(self._update_summary)
+        lay.addWidget(_list_filter(self._list))
         lay.addWidget(self._list)
 
         foot = QHBoxLayout()
@@ -52,12 +78,9 @@ class MultiSelectWidget(QWidget):
         self._summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._summary.setWordWrap(True)
+        self._summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._summary.setMaximumHeight(52)
         foot.addWidget(self._summary, 1)
-        clr = QPushButton("✕ Clear")
-        clr.setFixedHeight(20)
-        clr.setStyleSheet("font-size: 10px; padding: 1px 5px;")
-        clr.clicked.connect(self._list.clearSelection)
-        foot.addWidget(clr)
         lay.addLayout(foot)
 
     def _update_summary(self):
@@ -230,6 +253,7 @@ class ScanArgsWidget(QWidget):
         for d in self.devices:
             self._motor_list.addItem(QListWidgetItem(d))
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
+        lay.addWidget(_list_filter(self._motor_list))
         lay.addWidget(self._motor_list)
 
         foot = QHBoxLayout()
@@ -239,12 +263,9 @@ class ScanArgsWidget(QWidget):
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
+        self._motor_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._motor_summary.setMaximumHeight(52)
         foot.addWidget(self._motor_summary, 1)
-        clr = QPushButton("✕ Clear")
-        clr.setFixedHeight(18)
-        clr.setStyleSheet("font-size: 10px; padding: 1px 5px;")
-        clr.clicked.connect(self._motor_list.clearSelection)
-        foot.addWidget(clr)
         lay.addLayout(foot)
 
         # Container for start/stop rows
@@ -355,6 +376,7 @@ class MvArgsWidget(QWidget):
         for d in self.devices:
             self._motor_list.addItem(QListWidgetItem(d))
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
+        lay.addWidget(_list_filter(self._motor_list))
         lay.addWidget(self._motor_list)
 
         foot = QHBoxLayout()
@@ -364,12 +386,9 @@ class MvArgsWidget(QWidget):
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
+        self._motor_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._motor_summary.setMaximumHeight(52)
         foot.addWidget(self._motor_summary, 1)
-        clr = QPushButton("✕ Clear")
-        clr.setFixedHeight(18)
-        clr.setStyleSheet("font-size: 10px; padding: 1px 5px;")
-        clr.clicked.connect(self._motor_list.clearSelection)
-        foot.addWidget(clr)
         lay.addLayout(foot)
 
         self._rows_container = QWidget()
@@ -466,6 +485,7 @@ class GridScanArgsWidget(QWidget):
         for d in self.devices:
             self._motor_list.addItem(QListWidgetItem(d))
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
+        lay.addWidget(_list_filter(self._motor_list))
         lay.addWidget(self._motor_list)
 
         foot = QHBoxLayout()
@@ -475,12 +495,9 @@ class GridScanArgsWidget(QWidget):
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
+        self._motor_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._motor_summary.setMaximumHeight(52)
         foot.addWidget(self._motor_summary, 1)
-        clr = QPushButton("✕ Clear")
-        clr.setFixedHeight(18)
-        clr.setStyleSheet("font-size: 10px; padding: 1px 5px;")
-        clr.clicked.connect(self._motor_list.clearSelection)
-        foot.addWidget(clr)
         lay.addLayout(foot)
 
         self._rows_container = QWidget()
@@ -603,6 +620,7 @@ class ListScanArgsWidget(QWidget):
         for d in self.devices:
             self._motor_list.addItem(QListWidgetItem(d))
         self._motor_list.itemSelectionChanged.connect(self._on_selection_changed)
+        lay.addWidget(_list_filter(self._motor_list))
         lay.addWidget(self._motor_list)
 
         foot = QHBoxLayout()
@@ -612,12 +630,9 @@ class ListScanArgsWidget(QWidget):
         self._motor_summary.setStyleSheet(
             "color: #888; font-size: 11px; font-style: italic; padding: 1px 2px;")
         self._motor_summary.setWordWrap(True)
+        self._motor_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._motor_summary.setMaximumHeight(52)
         foot.addWidget(self._motor_summary, 1)
-        clr = QPushButton("✕ Clear")
-        clr.setFixedHeight(18)
-        clr.setStyleSheet("font-size: 10px; padding: 1px 5px;")
-        clr.clicked.connect(self._motor_list.clearSelection)
-        foot.addWidget(clr)
         lay.addLayout(foot)
 
         btn_csv = QPushButton("Load from CSV…")
@@ -1131,7 +1146,7 @@ class PlanDialog(QDialog):
         self.item    = item
         self.result_item = None
         self.setWindowTitle("Edit Plan" if item else "Add Plan")
-        self.setMinimumSize(560, 580)
+        self.setMinimumSize(640, 680)
         self._build()
         if item:
             self._populate(item)
@@ -1163,7 +1178,7 @@ class PlanDialog(QDialog):
         self._plan_tree.header().resizeSection(1, 72)
         self._plan_tree.setRootIsDecorated(False)
         self._plan_tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._plan_tree.setFixedHeight(170)
+        self._plan_tree.setFixedHeight(110)
         self._plan_tree.currentItemChanged.connect(self._on_tree_selection)
         layout.addWidget(self._plan_tree)
         self._populate_plan_tree()
@@ -1186,6 +1201,7 @@ class PlanDialog(QDialog):
         # ── Param form ─────────────────────────────────────────────────────────
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.form_widget = QWidget()
         self.scroll.setWidget(self.form_widget)
         layout.addWidget(self.scroll, 1)
