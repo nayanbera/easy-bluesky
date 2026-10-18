@@ -2267,6 +2267,7 @@ class PlanFileTreePanel(QWidget):
 
 class PlanBuilder(QWidget):
     plans_uploading = Signal(str)   # emitted when local plan upload starts (msg)
+    add_plan_requested = Signal(dict)   # queue item from the Blockly composer's Add Plan dialog
 
     def __init__(self, worker=None, parent=None):
         super().__init__(parent)
@@ -2316,6 +2317,7 @@ class PlanBuilder(QWidget):
         self._composer.send_to_editor.connect(self._on_send_to_editor)
         if self._blockly is not None:
             self._blockly.send_to_editor.connect(self._on_send_to_editor)
+            self._blockly.add_plan_requested.connect(self.add_plan_requested)
 
         lay.addWidget(tabs)
 

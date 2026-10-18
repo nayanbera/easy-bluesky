@@ -48,6 +48,7 @@ class _Bridge(QObject):
 
 class BlocklyComposerWidget(QWidget):
     send_to_editor = Signal(str)
+    add_plan_requested = Signal(dict)   # queue item {name,args,kwargs,item_type}
     _HINT = "Blockly blocks — drag from the toolbox; blocks snap together."
 
     def __init__(self, worker=None, parent=None):
@@ -141,11 +142,66 @@ class BlocklyComposerWidget(QWidget):
         self._hint.setStyleSheet("color: palette(mid);")
         bottom.addWidget(self._hint)
         bottom.addStretch()
+        btn_add = QPushButton("➕ Add Plan dialog…")
+        btn_add.setToolTip("Preview how this plan looks in the Add Plan dialog; OK uploads it "
+                           "to the RE Manager session and adds it to the queue")
+        btn_add.clicked.connect(self._open_add_plan_dialog)
+        bottom.addWidget(btn_add)
         btn = QPushButton("→ Send to Code Editor")
         btn.setStyleSheet("font-weight: bold; padding: 4px 12px;")
         btn.clicked.connect(lambda: self.send_to_editor.emit(self._full_code()))
         bottom.addWidget(btn)
         root.addLayout(bottom)
+
+    # ── Add Plan dialog preview / direct queueing ──────────────────────────────
+    @staticmethod
+    def _default_value(expr: str):
+        """Plan-parameter default expression → value for the dialog (None = required)."""
+        import ast
+        expr = (expr or "").strip()
+        if not expr:
+            return None
+        try:
+            return ast.literal_eval(expr)
+        except Exception:
+            pass
+        try:   # [dev1, dev2] / dev → device names
+            node = ast.parse(expr, mode="eval").body
+            if isinstance(node, ast.Name):
+                return node.id
+            if isinstance(node, (ast.List, ast.Tuple)) and all(isinstance(e, ast.Name) for e in node.elts):
+                return [e.id for e in node.elts]
+        except Exception:
+            pass
+        return expr
+
+    def _open_add_plan_dialog(self):
+        import re
+        from qtpy.QtWidgets import QDialog, QMessageBox
+        from .widgets import PlanDialog
+        code = self._full_code()
+        m = re.search(r"^def\s+(\w+)\s*\(", code, re.M)
+        name = m.group(1) if m else "my_plan"
+        specs = [{"name": p["name"],
+                  "annotation": {"type": p.get("annotation", "")},
+                  "default": self._default_value(p.get("default", "")),
+                  "kind": {"name": "POSITIONAL_OR_KEYWORD"}}
+                 for p in self._param_editor.get_params()]
+        info = {"name": name, "description": "Plan built in the Blockly Composer", "parameters": specs}
+        dlg = PlanDialog({name: info}, self._devices, parent=self)
+        dlg.setWindowTitle(f"Add Plan — {name} (from Blockly Composer)")
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result_item:
+            return
+        if not self.worker or not getattr(self.worker, "rm", None):
+            QMessageBox.warning(self, "Not connected", "Connect to the RE Manager to add the plan.")
+            return
+        ok, msg = self.worker.upload_script(code)
+        if not ok:
+            QMessageBox.warning(self, "Upload failed", msg or "unknown error")
+            return
+        QTimer.singleShot(300, self.worker.reload_plans_devices)
+        item = dlg.result_item
+        QTimer.singleShot(1500, lambda: self.add_plan_requested.emit(item))   # let the plan list refresh
 
     # ── JS plumbing ────────────────────────────────────────────────────────────
     def _js(self, code: str):

@@ -2203,6 +2203,18 @@ class ExperimentsTab(QWidget):
                 self._log(f"✗ Add plan: {result}")
 
 
+    def queue_plan_item(self, result_item: dict):
+        """Queue an item built elsewhere (e.g. Blockly composer's Add Plan dialog)."""
+        if not self.worker:
+            return
+        item = self._inject_metadata(result_item)
+        ok, result = self.worker.add_item(item)
+        if ok:
+            self._needs_renumber = True
+            self._log(f"✓ Add plan: {item.get('name')} queued")
+        else:
+            self._log(f"✗ Add plan: {result}")
+
     def _on_compact_queue_reorder(self, parent, start, end, dest, row):
         QTimer.singleShot(100, self._sync_compact_queue_order)
 
