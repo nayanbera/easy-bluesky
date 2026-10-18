@@ -347,7 +347,16 @@ class BlocklyComposerWidget(QWidget):
                            _ParamEditor._ASWAXS_PARAMS)
 
     def _load_example_pairs(self):
-        self._load_example("aswaxs_pairs.json", "aswaxs_pair_scan", [])
+        self._load_example("aswaxs_pairs.json", "aswaxs_pair_scan", [
+            {"name": "detectors",    "default": "[Pil300K, scalers]", "annotation": "List[Readable]"},
+            {"name": "sx",           "default": "sx",                 "annotation": "Movable"},
+            {"name": "sy",           "default": "sy",                 "annotation": "Movable"},
+            {"name": "shutter",      "default": "shutter",            "annotation": "Movable"},
+            {"name": "acquire_time", "default": "1.0",                "annotation": "float"},
+            {"name": "num_frame",    "default": "3",                  "annotation": "int"},
+            {"name": "scan_range",   "default": "1.0",                "annotation": "float"},
+            {"name": "num_points",   "default": "21",                 "annotation": "int"},
+        ])
 
     def _clear(self):
         r = QMessageBox.question(self, "Clear", "Remove all blocks?")

@@ -5,21 +5,21 @@
    {
     "type": "eb_stage",
     "fields": {
-     "DEV": "Pil300K"
+     "DEV": "detectors"
     },
     "next": {
      "block": {
       "type": "eb_set_attr",
       "fields": {
-       "DEV": "Pil300K",
+       "DEV": "detectors",
        "ATTR": "cam.acquire_time"
       },
       "inputs": {
        "VALUE": {
-        "shadow": {
-         "type": "math_number",
+        "block": {
+         "type": "eb_python_expr",
          "fields": {
-          "NUM": 1
+          "CODE": "acquire_time"
          }
         }
        }
@@ -47,10 +47,10 @@
            "type": "controls_repeat_ext",
            "inputs": {
             "TIMES": {
-             "shadow": {
-              "type": "math_number",
+             "block": {
+              "type": "eb_python_expr",
               "fields": {
-               "NUM": 3
+               "CODE": "num_frame"
               }
              }
             },
@@ -80,7 +80,7 @@
                  "block": {
                   "type": "eb_trigger_read",
                   "fields": {
-                   "DETS": "[Pil300K, scalers]"
+                   "DETS": "detectors"
                   },
                   "next": {
                    "block": {
@@ -133,7 +133,7 @@
             "block": {
              "type": "eb_python",
              "fields": {
-              "CODE": "yield from bp.rel_scan([Pil300K, scalers], sx, -1, 1, 21)"
+              "CODE": "yield from bp.rel_scan(detectors, sx, -scan_range, scan_range, num_points, md=md)"
              }
             }
            }
@@ -159,7 +159,7 @@
              "block": {
               "type": "eb_unstage",
               "fields": {
-               "DEV": "Pil300K"
+               "DEV": "detectors"
               }
              }
             }
