@@ -355,7 +355,9 @@ def assemble_plan_code(body: str, plan_name: str = "my_plan",
         if stats_imports else ""
     )
     return (
+        "from typing import List, Optional\n"
         "import numpy as np\n"
+        "from bluesky.protocols import Readable, Movable\n"
         "import bluesky.plan_stubs as bps\n"
         "import bluesky.plans as bp\n"
         f"{extra}\n\n"
@@ -510,18 +512,18 @@ class _ParamEditor(QWidget):
         self._update_toggle_label()
 
     _ASWAXS_PARAMS = [
-        {"name": "energy_motor",  "default": "mono",                        "annotation": ""},
-        {"name": "energy_list",   "default": "np.linspace(7.0, 7.5, 6)",   "annotation": ""},
-        {"name": "detectors",     "default": "[Pil300K]",                   "annotation": "list"},
+        {"name": "energy_motor",  "default": "mono",                        "annotation": "Movable"},
+        {"name": "energy_list",   "default": "np.linspace(7.0, 7.5, 6)",   "annotation": "List[float]"},
+        {"name": "detectors",     "default": "[Pil300K]",                   "annotation": "List[Readable]"},
         {"name": "scalers",       "default": "scalers",                     "annotation": ""},
-        {"name": "sx",            "default": "sx",                          "annotation": ""},
-        {"name": "sy",            "default": "sy",                          "annotation": ""},
+        {"name": "sx",            "default": "sx",                          "annotation": "Movable"},
+        {"name": "sy",            "default": "sy",                          "annotation": "Movable"},
         {"name": "acquire_time",  "default": "1.0",                         "annotation": "float"},
         {"name": "num_frame",     "default": "3",                           "annotation": "int"},
         {"name": "delay_time",    "default": "1.0",                         "annotation": "float"},
         {"name": "sleep_time",    "default": "2.0",                         "annotation": "float"},
-        {"name": "shutter",       "default": "None",                        "annotation": ""},
-        {"name": "undulator",     "default": "None",                        "annotation": ""},
+        {"name": "shutter",       "default": "None",                        "annotation": "Optional[Movable]"},
+        {"name": "undulator",     "default": "None",                        "annotation": "Optional[Movable]"},
         {"name": "move_undulator","default": "False",                       "annotation": "bool"},
         {"name": "hdf_autosave",  "default": "True",                        "annotation": "bool"},
     ]
