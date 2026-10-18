@@ -437,10 +437,13 @@ class _ParamEditor(QWidget):
         from qtpy.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
         self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(["Name", "Default value", "Type hint", ""])
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        hh = self._table.horizontalHeader()
+        for c in range(3):                      # drag the header borders to resize
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        hh.setStretchLastSection(False)
+        for c, w in enumerate((150, 240, 170)):
+            self._table.setColumnWidth(c, w)
         self._table.setColumnWidth(3, 28)
         self._table.setItemDelegateForColumn(2, _TypeHintDelegate(self._table))
         self._table.setMaximumHeight(180)
