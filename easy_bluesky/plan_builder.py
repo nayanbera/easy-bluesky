@@ -1502,7 +1502,7 @@ class _ParamEditor(QWidget):
         btn_add = QPushButton("+ Add")
         btn_add.setFixedWidth(54)
         btn_add.setToolTip("Add a plan parameter (e.g. detectors, motor, acquire_time)")
-        btn_add.clicked.connect(self._add_row)
+        btn_add.clicked.connect(lambda _=False: self._add_row())
         header_row.addWidget(btn_add)
 
         btn_preset = QPushButton("ASWAXS preset")
