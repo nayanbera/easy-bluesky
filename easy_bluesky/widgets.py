@@ -102,7 +102,16 @@ class PositionListWidget(QWidget):
 
         self._edit = QLineEdit()
         self._edit.setPlaceholderText("e.g.  1.0, 2.5, 3.0, 5.5  (comma-separated)")
-        lay.addWidget(self._edit)
+        edit_row = QHBoxLayout()
+        edit_row.setSpacing(4)
+        edit_row.addWidget(self._edit, 1)
+        btn_csv = QPushButton("CSV…")
+        btn_csv.setFixedWidth(52)
+        btn_csv.setToolTip("Load the values from a CSV file (one column of numbers; "
+                           "a header row is skipped, you choose the column if there are several)")
+        btn_csv.clicked.connect(self._load_csv)
+        edit_row.addWidget(btn_csv)
+        lay.addLayout(edit_row)
 
         gen_row = QHBoxLayout()
         gen_row.setSpacing(4)
@@ -128,6 +137,44 @@ class PositionListWidget(QWidget):
         gen_row.addWidget(self._ls_num, 1)
         gen_row.addWidget(btn_gen)
         lay.addLayout(gen_row)
+
+    def _load_csv(self):
+        from qtpy.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load values from CSV", "", "CSV files (*.csv *.txt);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
+        except Exception as exc:
+            QMessageBox.warning(self, "CSV", f"Could not read file:\n{exc}")
+            return
+
+        def _num(x):
+            try:
+                return float(x)
+            except ValueError:
+                return None
+
+        header = None
+        if rows and any(_num(c.strip()) is None for c in rows[0] if c.strip()):
+            header, rows = rows[0], rows[1:]
+        ncols = max((len(r) for r in rows), default=0)
+        col = 0
+        if ncols > 1:
+            names = [(header[i].strip() if header and i < len(header) and header[i].strip()
+                      else f"column {i + 1}") for i in range(ncols)]
+            choice, ok = QInputDialog.getItem(self, "CSV column", "Use values from:", names, 0, False)
+            if not ok:
+                return
+            col = names.index(choice)
+        vals = [_num(r[col].strip()) for r in rows if col < len(r)]
+        vals = [v for v in vals if v is not None]
+        if not vals:
+            QMessageBox.warning(self, "CSV", "No numeric values found in that column.")
+            return
+        self._edit.setText(", ".join(f"{v:.8g}" for v in vals))
 
     def _generate(self):
         start = self._ls_start.value()
