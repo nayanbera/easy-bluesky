@@ -153,6 +153,8 @@ class PositionListWidget(QWidget):
         btn_gen.setFixedWidth(44)
         btn_gen.setToolTip("Generate evenly spaced positions")
         btn_gen.clicked.connect(self._generate)
+        for _sp in (self._ls_start, self._ls_stop, self._ls_num):
+            _sp.setMinimumWidth(56)   # explicit minimum: the default hint is very wide
         gen_row.addWidget(self._ls_start, 2)
         gen_row.addWidget(QLabel("→"))
         gen_row.addWidget(self._ls_stop, 2)
@@ -803,6 +805,7 @@ class ParamForm(QWidget):
         layout = QFormLayout(self)
         layout.setSpacing(10)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)   # no sideways scrolling
 
         for p in self.params:
             name     = p["name"]
