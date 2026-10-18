@@ -136,6 +136,7 @@ function validate() {
         const nm = f.name || '';
         if (!/^(DEV\d*|MOTOR\d*)$/.test(nm) || typeof f.getValue !== 'function') return;
         const v = f.getValue();
+        if ((dev.paramNames || []).includes(v)) return;   // a plan parameter, not a device
         if (!dev.all.includes(v)) w.push(`'${v}' is not in the loaded device list.`);
         else if (/^MOTOR/.test(nm) || /^eb_(mv|mvr|mv_multi)$/.test(b.type)) {
           if (!dev.motors.includes(v)) w.push(`'${v}' is not a movable device.`);
@@ -195,7 +196,8 @@ workspace.addChangeListener((e) => {
 // ── API called from Qt ───────────────────────────────────────────────────────
 EB.setDevices = function (json) {
   const d = JSON.parse(json);
-  EB.devices = { motors: d.motors || [], all: d.all || [], plans: d.plans || [], planParams: d.planParams || {} };
+  EB.devices = { motors: d.motors || [], all: d.all || [], plans: d.plans || [], planParams: d.planParams || {},
+    paramNames: d.paramNames || [], listParams: d.listParams || [] };
   notify();
 };
 EB.setColors = function (json) {

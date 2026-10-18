@@ -100,6 +100,11 @@ class BlocklyComposerWidget(QWidget):
 
         self._param_editor = _ParamEditor()
         self._param_editor.changed.connect(self._update_preview)
+        self._param_timer = QTimer(self)
+        self._param_timer.setSingleShot(True)
+        self._param_timer.setInterval(300)
+        self._param_timer.timeout.connect(self._push_devices)
+        self._param_editor.changed.connect(self._param_timer.start)
         root.addWidget(self._param_editor)
 
         sep = QFrame()
@@ -273,8 +278,19 @@ class BlocklyComposerWidget(QWidget):
     def _push_devices(self):
         motors = sorted(n for n, d in self._devices.items()
                         if isinstance(d, dict) and d.get("is_movable"))
+        # plan parameters that hold devices, offered in device dropdowns; list-typed
+        # ones make stage / unstage / set-attribute blocks act on every device in the list
+        names, lists = [], []
+        for p in self._param_editor.get_params():
+            ann, dflt = p.get("annotation", ""), p.get("default", "")
+            is_list = ann.startswith("List[") and ("Readable" in ann or "Movable" in ann)
+            if is_list or "Movable" in ann or "Readable" in ann:
+                names.append(p["name"])
+                if is_list:
+                    lists.append(p["name"])
         data = {"motors": motors, "all": sorted(self._devices),
-                "plans": sorted(self._plans), "planParams": self._plan_params()}
+                "plans": sorted(self._plans), "planParams": self._plan_params(),
+                "paramNames": names, "listParams": lists}
         self._js(f"EB.setDevices({json.dumps(json.dumps(data))})")
 
     def _plan_params(self) -> dict:
@@ -323,6 +339,7 @@ class BlocklyComposerWidget(QWidget):
         path = _WEB_DIR / "examples" / filename
         self._plan_name.setText(plan_name)
         self._param_editor.set_params(params)
+        self._push_devices()
         self._js(f"EB.load({json.dumps(path.read_text(encoding='utf-8'))})")
 
     def _load_example_aswaxs(self):
@@ -378,6 +395,7 @@ class BlocklyComposerWidget(QWidget):
             self._hint.setText("Imported from a classic Visual Composer plan — review the blocks, then save as a new .ebplan.")
         self._plan_name.setText(data.get("plan_name", "blockly_plan"))
         self._param_editor.set_params(data.get("params", []))
+        self._push_devices()
         self._js(f"EB.load({json.dumps(json.dumps(data.get('workspace', {})))})")
 
     # ── Device / plan lists ────────────────────────────────────────────────────

@@ -59,15 +59,15 @@
          "block": {
           "type": "eb_set_attr",
           "fields": {
-           "DEV": "Pil300K",
+           "DEV": "detectors",
            "ATTR": "cam.acquire_time"
           },
           "inputs": {
            "VALUE": {
-            "shadow": {
-             "type": "math_number",
+            "block": {
+             "type": "eb_python_expr",
              "fields": {
-              "NUM": 1.0
+              "CODE": "acquire_time"
              }
             }
            }
@@ -76,7 +76,7 @@
            "block": {
             "type": "eb_stage",
             "fields": {
-             "DEV": "Pil300K"
+             "DEV": "detectors"
             },
             "next": {
              "block": {
@@ -199,7 +199,7 @@
                                 "block": {
                                  "type": "eb_trigger_read",
                                  "fields": {
-                                  "DETS": "[Pil300K, scalers]"
+                                  "DETS": "detectors + [scalers]"
                                  },
                                  "next": {
                                   "block": {
@@ -245,7 +245,7 @@
                  "block": {
                   "type": "eb_unstage",
                   "fields": {
-                   "DEV": "Pil300K"
+                   "DEV": "detectors"
                   },
                   "next": {
                    "block": {

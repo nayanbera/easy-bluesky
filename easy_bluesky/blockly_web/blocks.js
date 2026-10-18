@@ -25,7 +25,15 @@ function ebOptions(list) {
   };
 }
 const motorOptions = ebOptions(() => EB.devices.motors);
-const deviceOptions = ebOptions(() => EB.devices.all);
+// Device dropdowns also offer the plan's own device parameters (e.g. the `detectors` list)
+const deviceOptions = function () {
+  const lists = new Set(EB.devices.listParams || []);
+  const params = EB.devices.paramNames || [];
+  const base = ebOptions(() => EB.devices.all)().filter((o) => !params.includes(o[1]));
+  const extra = params.map((n) => [lists.has(n) ? `${n}  (all in list)` : `${n}  (plan parameter)`, n]);
+  return extra.concat(base);
+};
+const isListParam = (name) => (EB.devices.listParams || []).includes(name);
 const planOptions = ebOptions(() => EB.devices.plans);
 
 const PLUS_SVG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
@@ -297,13 +305,22 @@ gen.forBlock['eb_mv_multi'] = (b, g) => {
   for (let i = 0; i < b.n_; i++) parts.push(`${b.getFieldValue('DEV' + i)}, ${val(b, 'POS' + i, g, '0')}`);
   return `yield from bps.mv(${parts.join(', ')})\n`;
 };
-gen.forBlock['eb_set_attr'] = (b, g) =>
-  `yield from bps.mv(${b.getFieldValue('DEV')}.${b.getFieldValue('ATTR')}, ${val(b, 'VALUE', g, '0')})\n`;
+gen.forBlock['eb_set_attr'] = (b, g) => {
+  const d = b.getFieldValue('DEV'), a = b.getFieldValue('ATTR'), v = val(b, 'VALUE', g, '0');
+  if (isListParam(d)) return `yield from bps.mv(*[x for _d in ${d} for x in (_d.${a}, ${v})])\n`;
+  return `yield from bps.mv(${d}.${a}, ${v})\n`;
+};
 gen.forBlock['eb_sleep'] = (b, g) => `yield from bps.sleep(${val(b, 'SECONDS', g, '1')})\n`;
 gen.forBlock['eb_open_shutter'] = (b) => `yield from bps.mv(${b.getFieldValue('DEV')}, 'open')\n`;
 gen.forBlock['eb_close_shutter'] = (b) => `yield from bps.mv(${b.getFieldValue('DEV')}, 'closed')\n`;
-gen.forBlock['eb_stage'] = (b) => `yield from bps.stage(${b.getFieldValue('DEV')})\n`;
-gen.forBlock['eb_unstage'] = (b) => `yield from bps.unstage(${b.getFieldValue('DEV')})\n`;
+gen.forBlock['eb_stage'] = (b) => {
+  const d = b.getFieldValue('DEV');
+  return isListParam(d) ? `yield from bps.stage_all(*${d})\n` : `yield from bps.stage(${d})\n`;
+};
+gen.forBlock['eb_unstage'] = (b) => {
+  const d = b.getFieldValue('DEV');
+  return isListParam(d) ? `yield from bps.unstage_all(*${d})\n` : `yield from bps.unstage(${d})\n`;
+};
 gen.forBlock['eb_trigger_read'] = (b) => `yield from bps.trigger_and_read(${b.getFieldValue('DETS') || '[]'})\n`;
 gen.forBlock['eb_plan'] = (b) => {
   note(b, `plan ${b.getFieldValue('PLAN')}(${b.getFieldValue('ARGS')})`);

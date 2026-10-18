@@ -433,3 +433,7 @@ python -m easy_bluesky
 - **Add Plan dialog from the Blockly Composer**: "➕ Add Plan dialog…" builds a synthetic plan spec from the
   Plan Parameters table and opens `PlanDialog`. OK uploads the generated code (`worker.upload_script`, session-only),
   reloads plans, then emits `add_plan_requested` → `ExperimentsTab.queue_plan_item` (injects metadata, queues).
+- **Plan device parameters in blocks**: device dropdowns (set attribute / stage / unstage / shutter …) also list the plan
+  parameters typed `Movable`/`Readable`/`List[...]` (`EB.devices.paramNames/listParams`, pushed by `_push_devices`).
+  Picking a list parameter (e.g. `detectors`) makes stage/unstage/set-attribute act on every device in the list
+  (`bps.stage_all(*detectors)`, `bps.mv(*[x for _d in detectors for x in (_d.cam.acquire_time, v)])`).
