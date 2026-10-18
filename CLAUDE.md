@@ -437,5 +437,5 @@ python -m easy_bluesky
   parameters typed `Movable`/`Readable`/`List[...]` (`EB.devices.paramNames/listParams`, pushed by `_push_devices`).
   Picking a list parameter (e.g. `detectors`) makes stage/unstage/set-attribute act on every device in the list
   (`bps.stage_all(*detectors)`, `bps.mv(*[x for _d in detectors for x in (_d.cam.acquire_time, v)])`).
-- **Run blocks**: Actions has `open run` (`bps.open_run(md=md)`) and `close run` (`bps.close_run()`) for manual runs around
-  `trigger & read`; validation warns on unpaired blocks and on scan blocks placed between them (scans open their own run).
+- **Run block**: Actions has a `run` container (`bps.open_run(md=md)` … `bps.close_run()`) for manual runs around
+  `trigger & read`; validation warns on scan blocks inside it (scans open their own run). Legacy separate open/close blocks still load.

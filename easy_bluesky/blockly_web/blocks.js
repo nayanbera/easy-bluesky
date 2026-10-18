@@ -139,6 +139,18 @@ simpleDeviceBlock('eb_close_shutter', 'close shutter', EB_COLOURS.action, "yield
 simpleDeviceBlock('eb_stage', 'stage', EB_COLOURS.action, 'Arm a device for acquisition.\nyield from bps.stage(device)');
 simpleDeviceBlock('eb_unstage', 'unstage', EB_COLOURS.action, 'Disarm a device.\nyield from bps.unstage(device)');
 
+Blockly.Blocks['eb_run'] = {
+  init() {
+    this.appendDummyInput().appendField('run');
+    this.appendStatementInput('DO');
+    this.setPreviousStatement(true); this.setNextStatement(true);
+    this.setColour(EB_COLOURS.action);
+    this.setTooltip('Everything inside is recorded as ONE run: open run, the blocks, close run.\n' +
+      'Put trigger & read blocks inside. Scan blocks open their own run — do not put them inside.\n' +
+      'yield from bps.open_run(md=md) ... yield from bps.close_run()');
+  },
+};
+// separate open/close blocks: superseded by "run" (kept so old workspaces still load)
 Blockly.Blocks['eb_open_run'] = {
   init() {
     this.appendDummyInput().appendField('open run');
@@ -340,6 +352,13 @@ gen.forBlock['eb_stage'] = (b) => {
 gen.forBlock['eb_unstage'] = (b) => {
   const d = b.getFieldValue('DEV');
   return isListParam(d) ? `yield from bps.unstage_all(*${d})\n` : `yield from bps.unstage(${d})\n`;
+};
+gen.forBlock['eb_run'] = (b, g) => {
+  note(b, 'run');
+  const body = g.statementToCode(b, 'DO')
+    .split('\n').map((ln) => (ln.startsWith(gen.INDENT) ? ln.slice(gen.INDENT.length) : ln)).join('\n');
+  return 'yield from bps.open_run(md=md)\n' + body + (body && !body.endsWith('\n') ? '\n' : '') +
+    'yield from bps.close_run()\n';
 };
 gen.forBlock['eb_open_run'] = (b) => { note(b, 'open run'); return 'yield from bps.open_run(md=md)\n'; };
 gen.forBlock['eb_close_run'] = (b) => { note(b, 'close run'); return 'yield from bps.close_run()\n'; };

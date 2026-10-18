@@ -15,9 +15,8 @@ const TOOLBOX = {
       { kind: 'block', type: 'eb_sleep', inputs: { SECONDS: num(1) } },
       { kind: 'block', type: 'eb_stage' },
       { kind: 'block', type: 'eb_unstage' },
-      { kind: 'block', type: 'eb_open_run' },
+      { kind: 'block', type: 'eb_run' },
       { kind: 'block', type: 'eb_trigger_read' },
-      { kind: 'block', type: 'eb_close_run' },
     ] },
     { kind: 'category', name: 'Scans', colour: EB_COLOURS.scan, contents: [
       { kind: 'block', type: 'eb_scan', inputs: { START: num(-1), STOP: num(1), NUM: num(21) } },
@@ -169,11 +168,14 @@ function validate() {
     }
     if (b.type === 'eb_scan' || b.type === 'eb_grid_scan' || b.type === 'eb_count') {
       let inRun = false;
-      for (let p = b.getPreviousBlock(); p; p = p.getPreviousBlock()) {
+      for (let p = b.getSurroundParent(); p; p = p.getSurroundParent()) {
+        if (p.type === 'eb_run') { inRun = true; break; }
+      }
+      for (let p = b.getPreviousBlock(); p && !inRun; p = p.getPreviousBlock()) {
         if (p.type === 'eb_close_run') break;
         if (p.type === 'eb_open_run') { inRun = true; break; }
       }
-      if (inRun) w.push('This scan opens its own run, so it cannot sit between open run and close run.');
+      if (inRun) w.push('This scan opens its own run, so it cannot be inside a run block (or between open run and close run).');
     }
     if (b.type === 'eb_stat_value') {
       const p = ident(b.getFieldValue('PREFIX'), 'stat');
