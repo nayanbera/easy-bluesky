@@ -345,7 +345,7 @@ no CDN — `media: 'media/'` keeps icons offline) inside a `QWebEngineView` (`bl
   required plan params. Count shown in the bottom label (`onChanged` 3rd arg = warnings JSON).
 - **Classic import**: `ebplan_import.classic_to_blockly()` converts classic `.ebplan` nodes (Load .ebplan on the
   Blockly tab accepts both); unmappable blocks (plan with per-step actions) become Python blocks. The classic
-  Visual Composer tab is kept, labelled "(legacy)", until the importer is trusted on real plans.
+  Visual Composer UI was removed; `FlowNode` and its code generators remain in `plan_builder.py` only for this importer.
 - Headless testing: `QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-gpu-compositing"` +
   `QT_QPA_PLATFORM=offscreen`, wait for `_ready`, `widget.grab()` renders the canvas.
 
