@@ -1502,7 +1502,7 @@ class _ParamEditor(QWidget):
         btn_add = QPushButton("+ Add")
         btn_add.setFixedWidth(54)
         btn_add.setToolTip("Add a plan parameter (e.g. detectors, motor, acquire_time)")
-        btn_add.clicked.connect(lambda _=False: self._add_row())
+        btn_add.clicked.connect(self._on_add_clicked)
         header_row.addWidget(btn_add)
 
         btn_preset = QPushButton("ASWAXS preset")
@@ -1537,6 +1537,11 @@ class _ParamEditor(QWidget):
         self._table.setVisible(checked)
         n = len(self.get_params())
         self._toggle.setText(f"{'▾' if checked else '▸'} Plan Parameters ({n})")
+
+    def _on_add_clicked(self, _=False):
+        self._toggle.setChecked(True)   # reveal the table so the new row is visible
+        self._add_row()
+        self._table.editItem(self._table.item(self._table.rowCount() - 1, 0))
 
     def _add_row(self, name="param", default="", annotation=""):
         from qtpy.QtWidgets import QTableWidgetItem
