@@ -139,6 +139,25 @@ simpleDeviceBlock('eb_close_shutter', 'close shutter', EB_COLOURS.action, "yield
 simpleDeviceBlock('eb_stage', 'stage', EB_COLOURS.action, 'Arm a device for acquisition.\nyield from bps.stage(device)');
 simpleDeviceBlock('eb_unstage', 'unstage', EB_COLOURS.action, 'Disarm a device.\nyield from bps.unstage(device)');
 
+Blockly.Blocks['eb_open_run'] = {
+  init() {
+    this.appendDummyInput().appendField('open run');
+    this.setPreviousStatement(true); this.setNextStatement(true);
+    this.setColour(EB_COLOURS.action);
+    this.setTooltip('Start a new run (one start document); trigger & read blocks then add events to it.\n' +
+      'Pair with "close run". Scan blocks open their own run — do not put them inside.\n' +
+      'yield from bps.open_run(md=md)');
+  },
+};
+Blockly.Blocks['eb_close_run'] = {
+  init() {
+    this.appendDummyInput().appendField('close run');
+    this.setPreviousStatement(true); this.setNextStatement(true);
+    this.setColour(EB_COLOURS.action);
+    this.setTooltip('Finish the current run (stop document).\nyield from bps.close_run()');
+  },
+};
+
 Blockly.Blocks['eb_trigger_read'] = {
   init() {
     this.appendDummyInput().appendField('trigger & read')
@@ -322,6 +341,8 @@ gen.forBlock['eb_unstage'] = (b) => {
   const d = b.getFieldValue('DEV');
   return isListParam(d) ? `yield from bps.unstage_all(*${d})\n` : `yield from bps.unstage(${d})\n`;
 };
+gen.forBlock['eb_open_run'] = (b) => { note(b, 'open run'); return 'yield from bps.open_run(md=md)\n'; };
+gen.forBlock['eb_close_run'] = (b) => { note(b, 'close run'); return 'yield from bps.close_run()\n'; };
 gen.forBlock['eb_trigger_read'] = (b) => `yield from bps.trigger_and_read(${b.getFieldValue('DETS') || '[]'})\n`;
 gen.forBlock['eb_plan'] = (b) => {
   note(b, `plan ${b.getFieldValue('PLAN')}(${b.getFieldValue('ARGS')})`);

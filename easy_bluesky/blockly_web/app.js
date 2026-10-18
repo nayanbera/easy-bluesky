@@ -15,7 +15,9 @@ const TOOLBOX = {
       { kind: 'block', type: 'eb_sleep', inputs: { SECONDS: num(1) } },
       { kind: 'block', type: 'eb_stage' },
       { kind: 'block', type: 'eb_unstage' },
+      { kind: 'block', type: 'eb_open_run' },
       { kind: 'block', type: 'eb_trigger_read' },
+      { kind: 'block', type: 'eb_close_run' },
     ] },
     { kind: 'category', name: 'Scans', colour: EB_COLOURS.scan, contents: [
       { kind: 'block', type: 'eb_scan', inputs: { START: num(-1), STOP: num(1), NUM: num(21) } },
@@ -159,6 +161,19 @@ function validate() {
           w.push(`x '${x}' does not look like the scanned motor '${m}' (expected '${m}' or '${m}_setpoint').`);
         }
       }
+    }
+    if (b.type === 'eb_open_run' || b.type === 'eb_close_run') {
+      const opens = all.filter((x) => x.type === 'eb_open_run').length;
+      const closes = all.filter((x) => x.type === 'eb_close_run').length;
+      if (opens !== closes) w.push(`${opens} 'open run' vs ${closes} 'close run' block(s): they must be paired.`);
+    }
+    if (b.type === 'eb_scan' || b.type === 'eb_grid_scan' || b.type === 'eb_count') {
+      let inRun = false;
+      for (let p = b.getPreviousBlock(); p; p = p.getPreviousBlock()) {
+        if (p.type === 'eb_close_run') break;
+        if (p.type === 'eb_open_run') { inRun = true; break; }
+      }
+      if (inRun) w.push('This scan opens its own run, so it cannot sit between open run and close run.');
     }
     if (b.type === 'eb_stat_value') {
       const p = ident(b.getFieldValue('PREFIX'), 'stat');
