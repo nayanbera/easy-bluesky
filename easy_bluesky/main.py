@@ -1045,12 +1045,19 @@ class _JsonlSyncThread(QThread):
             ssh = _get_client(p)
             self.message.emit(f"SSH connected to {host}")
 
-            # Single find over $HOME and /tmp — much faster than one find per UID.
-            # Collect all JSONL paths, then match against wanted UIDs in Python.
-            find_cmd = "find $HOME /tmp -maxdepth 6 -name '*.jsonl' 2>/dev/null"
+            # Single find over $HOME, /tmp and any extra roots from the profile
+            # ("jsonl_search_dirs") — much faster than one find per UID. Run files
+            # live at <exp_dir>/runs/<uid>.jsonl, which is often 7+ levels below
+            # $HOME on the beamline data tree, so search deep. `timeout` keeps a huge
+            # NFS tree from hanging the sync (partial output is still used).
+            extra = p.get("jsonl_search_dirs", "") or []
+            if isinstance(extra, str):
+                extra = [d.strip() for d in extra.replace(";", ",").split(",") if d.strip()]
+            import shlex
+            roots = " ".join(["$HOME", "/tmp"] + [shlex.quote(d) for d in extra])
+            find_cmd = f"timeout 180 find {roots} -maxdepth 14 -name '*.jsonl' 2>/dev/null"
             _, stdout, _ = ssh.exec_command(find_cmd)
-            stdout.channel.recv_exit_status()
-            all_remote = stdout.read().decode().strip().splitlines()
+            all_remote = stdout.read().decode().strip().splitlines()   # read before waiting: avoids a full-buffer deadlock
 
             # Build basename→fullpath map
             remote_map = {}
@@ -1065,11 +1072,12 @@ class _JsonlSyncThread(QThread):
 
             sftp = ssh.open_sftp()
             os.makedirs(self._runs_dir, exist_ok=True)
+            missing = []
             for uid in self._uid_list:
                 fname  = f"{uid}.jsonl"
                 rpath  = remote_map.get(fname)
                 if not rpath:
-                    self.message.emit(f"  ✗ {uid[:8]}… not on remote")
+                    missing.append(uid)
                     continue
                 local_path = f"{self._runs_dir}/{fname}"
                 try:
@@ -1079,6 +1087,19 @@ class _JsonlSyncThread(QThread):
                 except Exception as exc:
                     self.message.emit(f"  ✗ {uid[:8]}… copy failed: {exc}")
             sftp.close()
+            if missing:
+                self.message.emit(
+                    f"  ✗ {len(missing)} run file(s) not found on the beamline computer "
+                    f"(searched $HOME, /tmp{''.join(', ' + d for d in extra)}, depth 14). "
+                    f"First missing: {missing[0]}")
+                self.message.emit(
+                    f"    locate it with:  find / -name '{missing[0]}.jsonl' 2>/dev/null   "
+                    f"— then add that folder to 'jsonl_search_dirs' in the profile")
+                try:   # full list for reference
+                    Path(self._runs_dir).parent.joinpath("jsonl_not_on_remote.txt").write_text(
+                        "\n".join(missing) + "\n", encoding="utf-8")
+                except Exception:
+                    pass
             ssh.close()
         except Exception as exc:
             self.message.emit(f"SSH/SFTP error: {exc}")
@@ -2798,7 +2819,9 @@ class MainWindow(QMainWindow):
             return
         active   = get_active_profile(settings)
         # Merge active profile's host override (if any) into the top-level settings
-        ssh_cfg  = _settings_for_profile(settings, active)
+        ssh_cfg  = dict(_settings_for_profile(settings, active))
+        ssh_cfg["jsonl_search_dirs"] = (active.get("jsonl_search_dirs")
+                                        or settings.get("jsonl_search_dirs", ""))
         self._jsonl_sync_thread = _JsonlSyncThread(ssh_cfg, uid_list, runs_dir, parent=self)
         self._jsonl_sync_thread.message.connect(
             lambda msg: self._log(f"[{self._ts()}] [JSONL sync] {msg}")

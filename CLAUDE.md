@@ -439,3 +439,9 @@ python -m easy_bluesky
   (`bps.stage_all(*detectors)`, `bps.mv(*[x for _d in detectors for x in (_d.cam.acquire_time, v)])`).
 - **Run block**: Actions has a `run` container (`bps.open_run(md=md)` … `bps.close_run()`) for manual runs around
   `trigger & read`; validation warns on scan blocks inside it (scans open their own run). Legacy separate open/close blocks still load.
+
+## JSONL sync (`_JsonlSyncThread`, main.py)
+Searches `$HOME`, `/tmp` and optional profile key `jsonl_search_dirs` (list or comma-separated; edit
+`~/.easy_bluesky/connection.json`) with `timeout 180 find … -maxdepth 14`. Run files sit at `<exp_dir>/runs/<uid>.jsonl`,
+7+ levels under `$HOME` on the beamline data tree — the old `-maxdepth 6` could never see them. Missing UIDs are summarised
+in one log line (+ a `find / -name '<uid>.jsonl'` hint) and listed in `jsonl_not_on_remote.txt` next to the runs dir.
