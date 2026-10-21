@@ -440,8 +440,17 @@ python -m easy_bluesky
 - **Run block**: Actions has a `run` container (`bps.open_run(md=md)` … `bps.close_run()`) for manual runs around
   `trigger & read`; validation warns on scan blocks inside it (scans open their own run). Legacy separate open/close blocks still load.
 
-## JSONL sync (`_JsonlSyncThread`, main.py)
-Searches `$HOME`, `/tmp` and optional profile key `jsonl_search_dirs` (list or comma-separated; edit
-`~/.easy_bluesky/connection.json`) with `timeout 180 find … -maxdepth 14`. Run files sit at `<exp_dir>/runs/<uid>.jsonl`,
-7+ levels under `$HOME` on the beamline data tree — the old `-maxdepth 6` could never see them. Missing UIDs are summarised
-in one log line (+ a `find / -name '<uid>.jsonl'` hint) and listed in `jsonl_not_on_remote.txt` next to the runs dir.
+## Run files (.jsonl): where they are written, checks, sync
+- **Writer** (`_jsonl_run_factory`, re_startup_mongo.py): `<remote_exp_dir>/runs` (path on the RE machine, shared with the
+  app over NFS; set via the connection's remote data root) → `<exp_dir>/runs` (submitter's path, valid only if the submitter
+  runs on the RE machine) → emergency copy in `~/.easy_bluesky/data/runs` plus a loud `!!!` console line. Normal operation
+  never uses the emergency folder, so no sync is needed.
+- **Warnings**: `check_run_dir()` (function_execute; `worker.check_run_dir` → `ExperimentsTab.check_run_dir`) runs 2 s after an
+  experiment is activated and warns (popup once per experiment + console) if the RE machine cannot write there or
+  `remote_exp_dir` is unset. `_schedule_run_file_check` verifies 10 s after each logged run that `<exp>/runs/<uid>.jsonl`
+  is visible locally (one stat), warning once per session otherwise.
+- **Sync** (`_JsonlSyncThread`, `run_sync.py`) is only a safety net for old/emergency runs: local presence = one `os.listdir`
+  (`missing_run_uids`), never a stat per run (NFS stat storms froze the UI); not-found UIDs are remembered 24 h
+  (`jsonl_not_on_remote.json`); automatic syncs fetch ≤ `AUTO_LIMIT` (40) runs; searches only
+  `~/.easy_bluesky/data[/runs]` + optional profile key `jsonl_search_dirs`; the deep `find` runs only for the manual Sync
+  button (`sync_requested(…, deep=True)`); files are transferred as streamed tar.gz chunks.

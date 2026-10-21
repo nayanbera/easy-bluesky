@@ -565,7 +565,7 @@ class LocalDataBrowserTab(QWidget):
     """Offline experiment data browser — reads plans_log.jsonl + runs/*.jsonl."""
 
     COLORS = PLOT_COLORS
-    sync_requested = Signal(list, str)   # (uid_list, runs_dir_path)
+    sync_requested = Signal(list, str, bool)   # (uid_list, runs_dir_path, deep/manual)
 
     def set_sync_message(self, msg: str):
         """Called by main.py to show SSH progress in this tab's status bar."""
@@ -894,16 +894,10 @@ class LocalDataBrowserTab(QWidget):
             self._load_folder(folder)
 
     def _missing_uids(self) -> list:
-        """Return UIDs from plans_log that have no local JSONL file."""
-        missing = []
-        for entry in self._entries:
-            uids = entry.get("run_uids", [])
-            uid  = uids[0] if uids else ""
-            if uid:
-                p = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
-                if not p.exists():
-                    missing.append(uid)
-        return missing
+        """Return UIDs from plans_log that have no local JSONL file (one directory listing)."""
+        from .run_sync import missing_run_uids
+        uids = [(e.get("run_uids") or [""])[0] for e in self._entries]
+        return missing_run_uids(str(Path(self._exp_path) / "runs"), uids)
 
     def _auto_sync(self):
         """Emit sync_requested for any UIDs with no local JSONL file."""
@@ -919,7 +913,7 @@ class LocalDataBrowserTab(QWidget):
         )
         if missing:
             runs_dir = str(Path(self._exp_path) / "runs")
-            self.sync_requested.emit(missing, runs_dir)
+            self.sync_requested.emit(missing, runs_dir, False)
 
     def _on_sync_clicked(self):
         """Manual re-fetch button — re-checks for missing files and emits sync_requested."""
@@ -932,7 +926,7 @@ class LocalDataBrowserTab(QWidget):
             return
         runs_dir = str(Path(self._exp_path) / "runs")
         self._status_label.setText(f"Fetching {len(missing)} JSONL file(s) from beamline…")
-        self.sync_requested.emit(missing, runs_dir)
+        self.sync_requested.emit(missing, runs_dir, True)   # manual: retry everything, deep search
 
     def on_sync_done(self, n_copied: int, n_total: int):
         """Called by main.py after SSH fetch completes."""

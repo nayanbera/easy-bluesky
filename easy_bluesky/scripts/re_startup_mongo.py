@@ -550,25 +550,52 @@ class _JSONLRunWriter(_CallableCB):
             pass
 
 
-def _jsonl_run_factory(name, doc):
+def _runs_dir_candidates(doc):
+    """Folders to try for a run file, in order: remote_exp_dir (path on THIS machine,
+    shared with the app via NFS), then exp_dir (the submitter's path — only meaningful
+    here when the submitter runs on this machine too)."""
     import re as _re
-    uid     = doc.get("uid", "unknown")
-    exp_dir = doc.get("exp_dir", "")
-    # Windows-style paths (Y:\... or Y:/...) are invalid on Linux and would
-    # create junk subdirectories under $HOME — treat them as unset.
-    if exp_dir and _re.match(r'^[A-Za-z]:[/\\]', exp_dir):
-        print(f"[re_startup_mongo] JSONL: Windows path in exp_dir ({exp_dir!r}) — using fallback")
-        exp_dir = ""
-    if exp_dir:
+    out = []
+    for key in ("remote_exp_dir", "exp_dir"):
+        d = (doc.get(key) or "").strip()
+        # Windows-style paths (Y:\... or Y:/...) are invalid on Linux and would
+        # create junk subdirectories under $HOME — skip them.
+        if d and not _re.match(r'^[A-Za-z]:[/\\]', d):
+            out.append(_P(d) / "runs")
+    return out
+
+
+def _jsonl_run_factory(name, doc):
+    uid = doc.get("uid", "unknown")
+    errors = []
+    for runs_dir in _runs_dir_candidates(doc):
         try:
-            runs_dir = _P(exp_dir) / "runs"
-            writer   = _JSONLRunWriter(runs_dir, uid)
+            return ([_JSONLRunWriter(runs_dir, uid)], [])
         except Exception as _fe:
-            print(f"[re_startup_mongo] JSONL fallback ({_fe}): writing to {_FALLBACK_RUNS_DIR}")
-            writer = _JSONLRunWriter(_FALLBACK_RUNS_DIR, uid)
-    else:
-        writer = _JSONLRunWriter(_FALLBACK_RUNS_DIR, uid)
-    return ([writer], [])
+            errors.append(f"{runs_dir}: {_fe}")
+    # Emergency copy only — NOT the normal path. The app warns when a run file does not
+    # show up in the experiment folder, so make the reason obvious in the console.
+    why = "; ".join(errors) if errors else "no usable remote_exp_dir / exp_dir in the start document"
+    print(f"[re_startup_mongo] !!! JSONL run file for {uid[:8]} could NOT be written to the "
+          f"experiment folder ({why}). Emergency copy: {_FALLBACK_RUNS_DIR}")
+    return ([_JSONLRunWriter(_FALLBACK_RUNS_DIR, uid)], [])
+
+
+def check_run_dir(remote_exp_dir="", exp_dir=""):
+    """Callable via function_execute: can run files be written to the experiment folder?
+    Returns {"ok": bool, "path": str, "error": str}."""
+    tried = []
+    for d in _runs_dir_candidates({"remote_exp_dir": remote_exp_dir, "exp_dir": exp_dir}):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            probe = d / ".eb_write_test"
+            probe.write_text("ok")
+            probe.unlink()
+            return {"ok": True, "path": str(d), "error": ""}
+        except Exception as e:
+            tried.append(f"{d}: {e}")
+    return {"ok": False, "path": "",
+            "error": "; ".join(tried) if tried else "remote_exp_dir is not set (Connection settings → remote data root)"}
 
 
 try:

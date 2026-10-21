@@ -1025,82 +1025,106 @@ class _OperatorLockChecker(QThread):
 
 
 class _JsonlSyncThread(QThread):
-    """Background thread: SFTP-copy missing JSONL run files from the remote machine."""
+    """Background thread: copy missing JSONL run files from the beamline computer.
+
+    Searches only a few known folders (shallow listing); the slow deep search runs
+    only when *deep* is set (manual Sync). Files come over as one streamed tar.gz
+    per chunk. Runs not found are remembered (run_sync negative cache).
+    """
     done    = Signal(int, int)   # (n_copied, n_total)
     message = Signal(str)        # progress / error messages for logging
 
-    def __init__(self, profile: dict, uid_list: list, runs_dir: str, parent=None):
+    CHUNK = 60                   # files per tar stream
+
+    def __init__(self, profile: dict, uid_list: list, runs_dir: str,
+                 deep: bool = False, parent=None):
         super().__init__(parent)
         self._profile  = profile
         self._uid_list = uid_list
         self._runs_dir = runs_dir
+        self._deep     = deep
+
+    def _list_remote(self, ssh, find_args: str, wanted: set, timeout: int) -> dict:
+        """{uid: remote_path} for wanted run files found by `find <find_args>`."""
+        cmd = f"timeout {timeout} find {find_args} -name '*.jsonl' 2>/dev/null"
+        _, stdout, _ = ssh.exec_command(cmd)
+        found = {}
+        for line in stdout.read().decode().splitlines():   # read before waiting (no buffer deadlock)
+            base = line.rsplit("/", 1)[-1]
+            uid = base[:-6]
+            if uid in wanted and uid not in found:
+                found[uid] = line
+        return found
+
+    def _fetch(self, ssh, found: dict) -> int:
+        """Stream the found files as tar.gz, grouped by remote folder. Returns files copied."""
+        import io, os, shlex, tarfile
+        by_dir = {}
+        for uid, rpath in found.items():
+            d, _, base = rpath.rpartition("/")
+            by_dir.setdefault(d or "/", []).append(base)
+        os.makedirs(self._runs_dir, exist_ok=True)
+        n = 0
+        total = len(found)
+        for d, names in by_dir.items():
+            for i in range(0, len(names), self.CHUNK):
+                chunk = names[i:i + self.CHUNK]
+                cmd = f"cd {shlex.quote(d)} && tar czf - " + " ".join(shlex.quote(c) for c in chunk)
+                _, stdout, _ = ssh.exec_command(cmd)
+                data = stdout.read()
+                try:
+                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                        for m in tf.getmembers():
+                            if not m.isfile() or "/" in m.name:
+                                continue
+                            with tf.extractfile(m) as src, open(
+                                    os.path.join(self._runs_dir, m.name), "wb") as dst:
+                                dst.write(src.read())
+                            n += 1
+                except Exception as exc:
+                    self.message.emit(f"  ✗ transfer from {d} failed: {exc}")
+                self.message.emit(f"  … {n}/{total} run file(s) copied")
+        return n
 
     def run(self):
-        import os
         from .ssh_manager import _get_client
+        from .run_sync import record_missing, missing_run_uids
         p    = self._profile
         host = p.get("host", "")
         n_copied = 0
         try:
             ssh = _get_client(p)
-            self.message.emit(f"SSH connected to {host}")
+            wanted = set(self._uid_list)
+            self.message.emit(f"SSH connected to {host}; looking for {len(wanted)} run file(s)")
 
-            # Single find over $HOME, /tmp and any extra roots from the profile
-            # ("jsonl_search_dirs") — much faster than one find per UID. Run files
-            # live at <exp_dir>/runs/<uid>.jsonl, which is often 7+ levels below
-            # $HOME on the beamline data tree, so search deep. `timeout` keeps a huge
-            # NFS tree from hanging the sync (partial output is still used).
             extra = p.get("jsonl_search_dirs", "") or []
             if isinstance(extra, str):
                 extra = [d.strip() for d in extra.replace(";", ",").split(",") if d.strip()]
             import shlex
-            roots = " ".join(["$HOME", "/tmp"] + [shlex.quote(d) for d in extra])
-            find_cmd = f"timeout 180 find {roots} -maxdepth 14 -name '*.jsonl' 2>/dev/null"
-            _, stdout, _ = ssh.exec_command(find_cmd)
-            all_remote = stdout.read().decode().strip().splitlines()   # read before waiting: avoids a full-buffer deadlock
+            # Known folders only, one level (each holds <uid>.jsonl directly).
+            dirs = ["$HOME/.easy_bluesky/data/runs", "$HOME/.easy_bluesky/data"] \
+                   + [shlex.quote(d) for d in extra]
+            found = self._list_remote(ssh, " ".join(dirs) + " -maxdepth 1", wanted, 30)
+            if self._deep and len(found) < len(wanted):
+                left = wanted - set(found)
+                self.message.emit(f"Deep search for {len(left)} remaining run file(s) (up to 2 min)…")
+                found.update(self._list_remote(
+                    ssh, " ".join(["$HOME", "/tmp"] + [shlex.quote(d) for d in extra]) + " -maxdepth 14",
+                    left, 120))
 
-            # Build basename→fullpath map
-            remote_map = {}
-            for rpath in all_remote:
-                basename = rpath.rsplit("/", 1)[-1]  # e.g. "abc123.jsonl"
-                remote_map[basename] = rpath
+            if found:
+                n_copied = self._fetch(ssh, found)
+            ssh.close()
 
-            self.message.emit(
-                f"Remote has {len(all_remote)} JSONL file(s); "
-                f"need {len(self._uid_list)}"
-            )
-
-            sftp = ssh.open_sftp()
-            os.makedirs(self._runs_dir, exist_ok=True)
-            missing = []
-            for uid in self._uid_list:
-                fname  = f"{uid}.jsonl"
-                rpath  = remote_map.get(fname)
-                if not rpath:
-                    missing.append(uid)
-                    continue
-                local_path = f"{self._runs_dir}/{fname}"
-                try:
-                    sftp.get(rpath, local_path)
-                    n_copied += 1
-                    self.message.emit(f"  ✓ {uid[:8]}… ← {rpath}")
-                except Exception as exc:
-                    self.message.emit(f"  ✗ {uid[:8]}… copy failed: {exc}")
-            sftp.close()
+            got = set(self._uid_list) - set(missing_run_uids(self._runs_dir, self._uid_list))
+            missing = [u for u in self._uid_list if u not in got]
             if missing:
+                record_missing(host, missing)
                 self.message.emit(
                     f"  ✗ {len(missing)} run file(s) not found on the beamline computer "
-                    f"(searched $HOME, /tmp{''.join(', ' + d for d in extra)}, depth 14). "
-                    f"First missing: {missing[0]}")
-                self.message.emit(
-                    f"    locate it with:  find / -name '{missing[0]}.jsonl' 2>/dev/null   "
-                    f"— then add that folder to 'jsonl_search_dirs' in the profile")
-                try:   # full list for reference
-                    Path(self._runs_dir).parent.joinpath("jsonl_not_on_remote.txt").write_text(
-                        "\n".join(missing) + "\n", encoding="utf-8")
-                except Exception:
-                    pass
-            ssh.close()
+                    f"(first: {missing[0]}). Not retried automatically for 24 h; the Sync button "
+                    f"does a deep search. Locate with: find / -name '{missing[0]}.jsonl' 2>/dev/null "
+                    f"and add that folder to 'jsonl_search_dirs' in the profile.")
         except Exception as exc:
             self.message.emit(f"SSH/SFTP error: {exc}")
         self.done.emit(n_copied, len(self._uid_list))
@@ -2804,10 +2828,26 @@ class MainWindow(QMainWindow):
         self.mongo_browser.set_active_experiment(exp_dir)
         self.local_data_browser.open_folder(exp_dir)
 
-    def _sync_jsonl_from_beamline(self, uid_list: list, runs_dir: str):
-        """Fetch missing JSONL run files from the beamline computer via SFTP."""
+    def _sync_jsonl_from_beamline(self, uid_list: list, runs_dir: str, deep: bool = False):
+        """Fetch missing JSONL run files from the beamline computer.
+
+        Automatic calls (deep=False) skip runs recently not found and fetch at most
+        AUTO_LIMIT runs; the manual Sync button (deep=True) retries everything.
+        """
         # Ignore if a sync is already in flight
         if getattr(self, "_jsonl_sync_thread", None) and self._jsonl_sync_thread.isRunning():
+            return
+        from .run_sync import drop_known_missing, forget_missing, AUTO_LIMIT
+        _host = get_active_profile(self._conn_settings).get("host") or self._conn_settings.get("host", "")
+        if deep:
+            forget_missing(_host)
+        else:
+            uid_list = drop_known_missing(_host, list(uid_list))
+            if len(uid_list) > AUTO_LIMIT:
+                self._log(f"[{self._ts()}] [JSONL sync] {len(uid_list)} run files missing locally — "
+                          f"fetching the first {AUTO_LIMIT}; use Sync in Local Data for the rest")
+                uid_list = uid_list[:AUTO_LIMIT]
+        if not uid_list:
             return
         from .ssh_manager import _settings_for_profile
         settings = self._conn_settings
@@ -2822,7 +2862,7 @@ class MainWindow(QMainWindow):
         ssh_cfg  = dict(_settings_for_profile(settings, active))
         ssh_cfg["jsonl_search_dirs"] = (active.get("jsonl_search_dirs")
                                         or settings.get("jsonl_search_dirs", ""))
-        self._jsonl_sync_thread = _JsonlSyncThread(ssh_cfg, uid_list, runs_dir, parent=self)
+        self._jsonl_sync_thread = _JsonlSyncThread(ssh_cfg, uid_list, runs_dir, deep=deep, parent=self)
         self._jsonl_sync_thread.message.connect(
             lambda msg: self._log(f"[{self._ts()}] [JSONL sync] {msg}")
         )
