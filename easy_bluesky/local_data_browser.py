@@ -873,7 +873,7 @@ class LocalDataBrowserTab(QWidget):
         folder = QFileDialog.getExistingDirectory(
             self, "Open Experiment Folder", start)
         if folder:
-            self._load_folder(folder)
+            self._load_folder(folder, warn_missing=True)
 
     def update_settings(self, settings: dict):
         """Called by main.py when connection settings change.
@@ -981,20 +981,23 @@ class LocalDataBrowserTab(QWidget):
             self._scan_table.blockSignals(False)
             self._on_scan_selection_changed()
 
-    def _load_folder(self, folder: str):
+    def _load_folder(self, folder: str, warn_missing: bool = False):
         self._exp_path = folder
         self._exp_label.setText(Path(folder).name)
 
         log_file = Path(folder) / "plans_log.jsonl"
         if not log_file.exists():
-            QMessageBox.warning(
-                self, "No Plan Log",
-                f"plans_log.jsonl not found in:\n{folder}\n\n"
-                "Make sure this is a valid EasyBluesky experiment folder.",
-            )
+            # A freshly created experiment has no plan log until its first scan:
+            # only warn when the user opened the folder by hand.
+            if warn_missing:
+                QMessageBox.warning(
+                    self, "No Plan Log",
+                    f"plans_log.jsonl not found in:\n{folder}\n\n"
+                    "Make sure this is a valid EasyBluesky experiment folder.",
+                )
             self._entries = []
             self._scan_table.setRowCount(0)
-            self._status_label.setText("No plan log found")
+            self._status_label.setText("No scans yet" if not warn_missing else "No plan log found")
             return
 
         entries = []
