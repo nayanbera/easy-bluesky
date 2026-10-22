@@ -2242,7 +2242,7 @@ class ExperimentsTab(QWidget):
         # Strip infrastructure fields from existing metadata — they belong to the
         # original experiment/host and must be refreshed for the current context.
         # scan_num is recalculated below; exp_dir and client_host come from auto_md.
-        for _k in ("scan_num", "exp_dir", "client_host"):
+        for _k in ("scan_num", "exp_dir", "remote_exp_dir", "client_host"):
             existing_md.pop(_k, None)
         merged = {**auto_md, **existing_md}   # user-supplied md wins
         # Lock in scan_num at queue time so custom_plans.py doesn't need to
