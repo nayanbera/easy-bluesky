@@ -223,9 +223,28 @@ if os.getenv("EASY_BLUESKY_BASELINE", "1") != "0":
         _baseline_devices = _collect_positioners()
 
         def _baseline_preprocessor(plan):
+            """baseline_wrapper, switchable per plan: md['baseline'] = False (set by the app's
+            "Record baseline" checkbox) skips it; the default is on."""
+            from bluesky.utils import single_gen as _sg
+            import bluesky.plan_stubs as _bps_bl
             # Only connected positioners: reading an unreachable motor would fail the whole plan.
             devs = [d for d in _baseline_devices if getattr(d, "connected", True)]
-            return _bpp_bl.baseline_wrapper(plan, devs) if devs else plan
+            if not devs:
+                return plan
+            state = {"on": False}
+
+            def _read():
+                yield from _bps_bl.trigger_and_read(devs, name="baseline")
+
+            def _insert(msg):
+                if msg.command == "open_run":
+                    state["on"] = bool((msg.kwargs or {}).get("baseline", True))
+                    return (_sg(msg), _read() if state["on"] else None)
+                if msg.command == "close_run":
+                    return (_read(), _sg(msg)) if state["on"] else (_sg(msg), None)
+                return None, None
+
+            return _bpp_bl.plan_mutator(plan, _insert)
 
         RE.preprocessors.append(_baseline_preprocessor)
         print(f"[re_startup_mongo] baseline stream enabled: {len(_baseline_devices)} positioner(s): "

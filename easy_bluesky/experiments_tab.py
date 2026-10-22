@@ -1733,6 +1733,20 @@ class ExperimentsTab(QWidget):
         self.btn_q_stop_queue.clicked.connect(self.queue_stop_requested)
         self.btn_q_abort.clicked.connect(self.abort_requested)
 
+        # Baseline row: whether plans queued from now on record the positioner baseline
+        bl_row = QHBoxLayout()
+        self.chk_baseline = QCheckBox("Record baseline (all positioner positions at scan start/end)")
+        self.chk_baseline.setToolTip(
+            "Plans queued while this is checked save a 'baseline' stream with the position of every\n"
+            "positioner at the start and end of the scan (see MongoDB Browser → Baseline…).\n"
+            "The choice is stored with each queued plan, so changing it does not affect plans\n"
+            "already in the queue.  Needs the updated RE startup script (restart the RE Manager).")
+        self.chk_baseline.setChecked(bool(_load_ui_prefs().get("record_baseline", True)))
+        self.chk_baseline.toggled.connect(self._on_baseline_toggled)
+        bl_row.addWidget(self.chk_baseline)
+        bl_row.addStretch()
+        vlay.addLayout(bl_row)
+
         # Auto-start + Loop row
         opt_row = QHBoxLayout()
         opt_row.setSpacing(8)
@@ -2128,7 +2142,13 @@ class ExperimentsTab(QWidget):
         if getattr(self, "_doi_value", ""):
             md["doi"] = self._doi_value
         md["client_host"] = socket.gethostname()
+        md["baseline"] = self.chk_baseline.isChecked()
         return md
+
+    def _on_baseline_toggled(self, on: bool):
+        prefs = _load_ui_prefs()
+        prefs["record_baseline"] = bool(on)
+        _save_ui_prefs(prefs)
 
     def _renumber_queue(self):
         """Push corrected scan_nums to queueserver for all pending queue items.
@@ -2253,7 +2273,7 @@ class ExperimentsTab(QWidget):
         # Strip infrastructure fields from existing metadata — they belong to the
         # original experiment/host and must be refreshed for the current context.
         # scan_num is recalculated below; exp_dir and client_host come from auto_md.
-        for _k in ("scan_num", "exp_dir", "remote_exp_dir", "client_host"):
+        for _k in ("scan_num", "exp_dir", "remote_exp_dir", "client_host", "baseline"):
             existing_md.pop(_k, None)
         merged = {**auto_md, **existing_md}   # user-supplied md wins
         # Lock in scan_num at queue time so custom_plans.py doesn't need to

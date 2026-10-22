@@ -459,7 +459,7 @@ python -m easy_bluesky
 - `re_startup_mongo.py` appends `_baseline_preprocessor` to `RE.preprocessors`: bluesky's `baseline_wrapper` reads **all
   connected positioners** (`PositionerBase` or settable + `.position`, incl. nested ones; `_collect_positioners`) right after
   `open_run` and before `close_run` into a `baseline` stream (2 events). Saved in JSONL + MongoDB like any stream. Disable with
-  env `EASY_BLUESKY_BASELINE=0`. Takes effect after an RE Manager restart (script re-upload).
+  env `EASY_BLUESKY_BASELINE=0`; per plan via `md["baseline"]=False` (Experiments tab "Record baseline" checkbox, stored in ui_prefs, injected by `_build_metadata`). Takes effect after an RE Manager restart (script re-upload).
 - Everything that reads run documents must ignore non-primary streams: `run_docs.PrimaryOnly` (app readers: live viewer, JSONL
   parsers, queue manager table, progress counter) and the `skip` sets in the RE-side callbacks (console table, PeakStats, scans log).
 - MongoDB Browser → **Baseline…** (`_BaselineDialog`): signal × (run start/end) table, filter, setpoints toggle, "only rows that
