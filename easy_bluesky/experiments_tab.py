@@ -1082,6 +1082,7 @@ class _NewExperimentDialog(QDialog):
         local_form.setHorizontalSpacing(12)
         local_row = QHBoxLayout()
         self._local_edit = QLineEdit(self._local_data_root)
+        self._local_edit.textChanged.connect(lambda _t: self._update_local_label())
         btn_local = QPushButton("Browse…")
         btn_local.setMaximumWidth(70)
         btn_local.clicked.connect(self._browse_local)
@@ -1102,8 +1103,8 @@ class _NewExperimentDialog(QDialog):
             "(shared/NFS). Detector files and the run .jsonl files are written here, so the "
             "last parts must match the local folder (…/&lt;date&gt;/&lt;name&gt;).\n"
             "Injected as  <b>remote_exp_dir</b>  in every plan's metadata. "
-            "Overrides the remote data root of the connection profile (which only pre-fills "
-            "this field and the ESAF tab)."
+            "Pre-filled by replacing the local data root with the remote data root of the "
+            "connection profile; edit it only if the mapping differs."
         )
         remote_note.setTextFormat(Qt.TextFormat.RichText)
         remote_note.setWordWrap(True)
@@ -1117,6 +1118,8 @@ class _NewExperimentDialog(QDialog):
         self._remote_edit.setPlaceholderText(
             "/home/chem_epics/data/experiment_name  (optional)"
         )
+        self._remote_edit.textEdited.connect(
+            lambda _t: setattr(self, "_remote_user_edited", True))
         self._btn_browse_remote = QPushButton("Browse…")
         self._btn_browse_remote.setMaximumWidth(70)
         self._btn_browse_remote.clicked.connect(self._browse_remote)
@@ -1141,19 +1144,25 @@ class _NewExperimentDialog(QDialog):
 
     def _on_name_changed(self, text: str):
         self._update_local_label()
-        if self._remote_data_root:
-            sanitized = self._sanitize(text)
-            self._remote_edit.setText(
-                (self._remote_data_root + "/" + sanitized) if sanitized else ""
-            )
 
     def _update_local_label(self):
         name   = self._name_edit.text().strip()
-        parent = self._local_edit.text().strip()
+        parent = self._local_edit.text().strip().rstrip("/")
         if name and parent:
-            self._local_result_lbl.setText(f"{parent}/{self._sanitize(name)}")
+            local = f"{parent}/{self._sanitize(name)}"
+            self._local_result_lbl.setText(local)
+            self._sync_remote_from_local(local)
         else:
             self._local_result_lbl.setText("")
+
+    def _sync_remote_from_local(self, local: str):
+        """Mirror the local folder on the RE machine: local data root -> remote data root.
+        Not applied once the user typed/browsed a remote path themselves."""
+        if getattr(self, "_remote_user_edited", False) or not self._remote_data_root:
+            return
+        root = self._local_data_root
+        if local == root or local.startswith(root + "/"):
+            self._remote_edit.setText(self._remote_data_root + local[len(root):])
 
     def _browse_local(self):
         path = QFileDialog.getExistingDirectory(
@@ -1175,10 +1184,12 @@ class _NewExperimentDialog(QDialog):
             )
             if path:
                 self._remote_edit.setText(path)
+                self._remote_user_edited = True
             return
         dlg = RemotePathBrowser(settings, initial_path=current, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_path:
             self._remote_edit.setText(dlg.selected_path)
+            self._remote_user_edited = True
 
     # ── Accept ─────────────────────────────────────────────────────────────────
 
@@ -1239,7 +1250,7 @@ class _NewExperimentDialog(QDialog):
             QMessageBox.warning(self, "Required", "Local parent folder is required.")
             return
         self.experiment_name  = name
-        self.local_parent_dir = parent
+        self.local_parent_dir = parent.rstrip("/") or parent
         self.remote_exp_dir   = self._remote_edit.text().strip()
         self.esaf_info        = {}
         self.accept()
