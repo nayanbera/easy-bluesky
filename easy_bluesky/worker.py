@@ -323,7 +323,13 @@ class _LocalDocWriter:
         ctx.term()
 
     def _handle(self, name: str, doc: dict):
-        if name == "event":
+        if not hasattr(self, "_primary_only"):
+            from .run_docs import PrimaryOnly
+            self._primary_only = PrimaryOnly()
+        if name == "start":
+            self._primary_only.reset()
+        _primary = self._primary_only.keep(name, doc)   # baseline events don't count as scan points
+        if name == "event" and _primary:
             self.event_queue.put_nowait(doc.get("seq_num", 0))
         if name in ("start", "stop"):
             self.doc_queue.put_nowait((name, doc))

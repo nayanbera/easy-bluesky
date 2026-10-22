@@ -454,3 +454,13 @@ python -m easy_bluesky
   (`jsonl_not_on_remote.json`); automatic syncs fetch ≤ `AUTO_LIMIT` (40) runs; searches only
   `~/.easy_bluesky/data[/runs]` + optional profile key `jsonl_search_dirs`; the deep `find` runs only for the manual Sync
   button (`sync_requested(…, deep=True)`); files are transferred as streamed tar.gz chunks.
+
+## Baseline stream (positioner values at scan start/end)
+- `re_startup_mongo.py` appends `_baseline_preprocessor` to `RE.preprocessors`: bluesky's `baseline_wrapper` reads **all
+  connected positioners** (`PositionerBase` or settable + `.position`, incl. nested ones; `_collect_positioners`) right after
+  `open_run` and before `close_run` into a `baseline` stream (2 events). Saved in JSONL + MongoDB like any stream. Disable with
+  env `EASY_BLUESKY_BASELINE=0`. Takes effect after an RE Manager restart (script re-upload).
+- Everything that reads run documents must ignore non-primary streams: `run_docs.PrimaryOnly` (app readers: live viewer, JSONL
+  parsers, queue manager table, progress counter) and the `skip` sets in the RE-side callbacks (console table, PeakStats, scans log).
+- MongoDB Browser → **Baseline…** (`_BaselineDialog`): signal × (run start/end) table, filter, setpoints toggle, "only rows that
+  differ", copy.

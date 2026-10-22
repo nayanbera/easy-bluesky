@@ -211,6 +211,8 @@ class RunDetailDialog(QDialog):
         start_doc = {}
         rows = []
         cols_order = []
+        from .run_docs import PrimaryOnly
+        _po = PrimaryOnly()
         try:
             with open(path) as f:
                 for line in f:
@@ -218,6 +220,8 @@ class RunDetailDialog(QDialog):
                     if not line:
                         continue
                     doc_name, doc = json.loads(line)
+                    if not _po.keep(doc_name, doc):
+                        continue
                     if doc_name == "start":
                         start_doc = doc
                     elif doc_name == "event":

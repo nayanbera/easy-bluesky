@@ -22,7 +22,7 @@ from qtpy.QtGui import QColor, QFont
 from qtpy.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QSizePolicy,
+    QLineEdit, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QSizePolicy,
     QSplitter, QStackedWidget, QTabBar, QTabWidget, QTableWidget, QTableWidgetItem,
     QTextEdit, QVBoxLayout, QWidget,
 )
@@ -728,6 +728,121 @@ def _ask_move_position(parent, motor_name, x_clicked, cen, com, x_field=""):
 
 # ── Main tab ───────────────────────────────────────────────────────────────────
 
+class _BaselineDialog(QDialog):
+    """Positioner values read at the start (and end) of each selected run (``baseline`` stream)."""
+
+    def __init__(self, run_data_list: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Baseline — positioner values at the start of the scan")
+        self.resize(900, 560)
+        lay = QVBoxLayout(self)
+
+        # columns: one "start" (+ "end" when present) per run that has a baseline stream
+        self._cols = []      # (header, {field: value}, differs_from_first_start_check)
+        self._sources = {}
+        for rd in run_data_list:
+            bl = (rd.get("streams") or {}).get("baseline")
+            if not bl:
+                continue
+            for k, dk in (bl.get("data_keys") or {}).items():
+                self._sources.setdefault(k, (dk or {}).get("source", ""))
+            fields = [k for k in bl if k not in ("time", "data_keys")]
+            n = len(bl.get("time", []))
+            label = (rd.get("label") or rd.get("uid", "")[:8]).strip()
+            for i, tag in ((0, "start"), (n - 1, "end")):
+                if i < 0 or (tag == "end" and n < 2):
+                    continue
+                self._cols.append((f"{label}\n{tag}", {f: bl[f][i] for f in fields}))
+
+        if not self._cols:
+            lay.addWidget(QLabel(
+                "The selected run(s) have no baseline stream.\n\n"
+                "Baseline is recorded by runs started after the RE Manager was restarted with the "
+                "updated startup script (disable with EASY_BLUESKY_BASELINE=0)."))
+            return
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Filter:"))
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("device or signal name…")
+        self._filter.textChanged.connect(self._apply_filter)
+        top.addWidget(self._filter)
+        self._chk_sp = QCheckBox("Show setpoints")
+        self._chk_sp.toggled.connect(self._apply_filter)
+        top.addWidget(self._chk_sp)
+        self._chk_diff = QCheckBox("Only rows that differ")
+        self._chk_diff.setToolTip("Hide signals with the same value in every column")
+        self._chk_diff.toggled.connect(self._apply_filter)
+        top.addWidget(self._chk_diff)
+        btn_copy = QPushButton("Copy table")
+        btn_copy.clicked.connect(self._copy)
+        top.addWidget(btn_copy)
+        lay.addLayout(top)
+
+        names = sorted({f for _h, d in self._cols for f in d})
+        self._names = names
+        self._table = QTableWidget(len(names), len(self._cols) + 2)
+        self._table.setHorizontalHeaderLabels(["Signal", "Source (PV)"] + [h for h, _d in self._cols])
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        for r, nm in enumerate(names):
+            self._table.setItem(r, 0, QTableWidgetItem(nm))
+            self._table.setItem(r, 1, QTableWidgetItem(self._sources.get(nm, "")))
+            vals = [d.get(nm) for _h, d in self._cols]
+            first = self._fmt(vals[0])
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(self._fmt(v))
+                it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if c and self._fmt(v) != first:
+                    it.setForeground(QColor("#e8a838"))       # changed vs the first column
+                self._table.setItem(r, c + 2, it)
+        hdr = self._table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._table.resizeColumnsToContents()
+        lay.addWidget(self._table, 1)
+        self._info = QLabel("Orange = differs from the first column.")
+        self._info.setObjectName("dim_text")
+        lay.addWidget(self._info)
+        self._apply_filter()
+
+    @staticmethod
+    def _fmt(v) -> str:
+        if v is None:
+            return ""
+        try:
+            f = float(v)
+            return f"{f:.6g}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    def _apply_filter(self, *_):
+        text = self._filter.text().strip().lower()
+        show_sp = self._chk_sp.isChecked()
+        only_diff = self._chk_diff.isChecked()
+        for r, nm in enumerate(self._names):
+            hide = False
+            if text and text not in nm.lower():
+                hide = True
+            if not show_sp and nm.endswith("_setpoint"):
+                hide = True
+            if only_diff and not hide:
+                vals = {self._table.item(r, c).text() for c in range(2, self._table.columnCount())}
+                hide = len(vals) <= 1
+            self._table.setRowHidden(r, hide)
+
+    def _copy(self):
+        rows = []
+        cols = self._table.columnCount()
+        rows.append("\t".join(self._table.horizontalHeaderItem(c).text().replace("\n", " ")
+                              for c in range(cols)))
+        for r in range(self._table.rowCount()):
+            if not self._table.isRowHidden(r):
+                rows.append("\t".join(self._table.item(r, c).text() for c in range(cols)))
+        QApplication.clipboard().setText("\n".join(rows))
+        self._info.setText("Copied to clipboard.")
+
+
 class MongoDataBrowserTab(QWidget):
     """Browse bluesky runs stored in MongoDB; supports multi-run selection,
     common-column overlay plotting, experiment filtering, and HDF5 export."""
@@ -917,6 +1032,12 @@ class MongoDataBrowserTab(QWidget):
         btn_screenshot.setToolTip("Copy plot to clipboard")
         btn_screenshot.clicked.connect(self._save_screenshot)
         top_bar.addWidget(btn_screenshot)
+        btn_baseline = QPushButton("Baseline…")
+        btn_baseline.setFixedHeight(26)
+        btn_baseline.setToolTip("Positioner values at the start/end of the selected run(s) "
+                                "(the 'baseline' stream)")
+        btn_baseline.clicked.connect(self._show_baseline)
+        top_bar.addWidget(btn_baseline)
         top_bar.addStretch()
         rlayout.addLayout(top_bar)
 
@@ -2759,6 +2880,12 @@ class MongoDataBrowserTab(QWidget):
         self.move_requested.emit(motor_guess, target)
 
     # ── Screenshot ─────────────────────────────────────────────────────────────
+
+    def _show_baseline(self):
+        if not self._run_data_list:
+            QMessageBox.information(self, "Baseline", "Select one or more runs first.")
+            return
+        _BaselineDialog(self._run_data_list, self).exec()
 
     def _save_screenshot(self):
         if not PG_AVAILABLE or self._plot_widget is None:

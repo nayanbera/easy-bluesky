@@ -175,6 +175,66 @@ from bluesky.plan_stubs import mv, mvr, sleep, rd
 import bluesky.plan_stubs as _bps
 
 
+# ── Baseline stream: positions of all positioners at the start (and end) of every run ──
+# bluesky's baseline_wrapper reads the devices once right after open_run and once before
+# close_run into a separate event stream called "baseline" (2 events: start, end).  It is
+# saved with the run (JSONL + MongoDB) and shown by the app's MongoDB Browser → Baseline.
+# Disable with EASY_BLUESKY_BASELINE=0.
+def _collect_positioners():
+    """All positioners (EpicsMotor, SynAxis, pseudo/soft positioners, …) in the device
+    namespace, including positioners nested inside other devices, de-duplicated by name."""
+    import ophyd as _oph
+    from ophyd.positioner import PositionerBase as _PBase
+    found, seen = [], set()
+
+    def _is_pos(o):
+        """Real motors/pseudo positioners, and sim axes (SynAxis: settable + has .position)."""
+        if isinstance(o, _PBase):
+            return True
+        try:
+            return callable(getattr(o, "set", None)) and hasattr(o, "position")
+        except Exception:
+            return False
+
+    def _add(obj):
+        nm = getattr(obj, "name", None)
+        if nm and nm not in seen:
+            seen.add(nm)
+            found.append(obj)
+
+    for _k, _v in list(globals().items()):
+        if _k.startswith('_') or not isinstance(_v, _oph.Device):
+            continue
+        if _is_pos(_v):
+            _add(_v)
+            continue
+        try:
+            for _sub in _v.walk_subdevices():
+                if _is_pos(_sub):
+                    _add(_sub)
+        except Exception:
+            pass
+    return found
+
+
+if os.getenv("EASY_BLUESKY_BASELINE", "1") != "0":
+    try:
+        import bluesky.preprocessors as _bpp_bl
+        _baseline_devices = _collect_positioners()
+
+        def _baseline_preprocessor(plan):
+            # Only connected positioners: reading an unreachable motor would fail the whole plan.
+            devs = [d for d in _baseline_devices if getattr(d, "connected", True)]
+            return _bpp_bl.baseline_wrapper(plan, devs) if devs else plan
+
+        RE.preprocessors.append(_baseline_preprocessor)
+        print(f"[re_startup_mongo] baseline stream enabled: {len(_baseline_devices)} positioner(s): "
+              + ", ".join(d.name for d in _baseline_devices[:12])
+              + (" …" if len(_baseline_devices) > 12 else ""))
+    except Exception as _e_bl:
+        print(f"[re_startup_mongo] WARNING: baseline stream not enabled: {_e_bl}")
+
+
 def prime_detector(det):
     """
     Prime an area detector's file-writing plugins (HDF5, TIFF, JPEG).
@@ -440,11 +500,15 @@ try:
 
         def __init__(self):
             self._fields = []
+            self._skip = set()     # descriptor uids of non-primary streams (e.g. baseline)
 
         def start(self, doc):
             pass
 
         def descriptor(self, doc):
+            if doc.get("name", "primary") != "primary":
+                self._skip.add(doc.get("uid", ""))
+                return
             keys = [k for k in doc.get("data_keys", {})
                     if not k.endswith("_setpoint")]
             self._fields = keys
@@ -470,14 +534,14 @@ try:
             print(" | ".join(vals))
 
         def event(self, doc):
-            if not self._fields:
+            if not self._fields or doc.get("descriptor") in self._skip:
                 return
             self._print_row(doc.get("seq_num", ""),
                             doc.get("time", 0),
                             doc.get("data", {}))
 
         def event_page(self, doc):
-            if not self._fields:
+            if not self._fields or doc.get("descriptor") in self._skip:
                 return
             data    = doc.get("data", {})
             seq_arr = doc.get("seq_num", [])
@@ -789,8 +853,15 @@ class _RunPeakStats(_CallableCB):
         self._update   = update_fn   # callable(uid, stats_dict) or None
         self._x        = []
         self._y        = {f: [] for f in y_fields}
+        self._skip     = set()     # non-primary streams (baseline) must not enter the statistics
+
+    def descriptor(self, doc):
+        if doc.get("name", "primary") != "primary":
+            self._skip.add(doc.get("uid", ""))
 
     def event(self, doc):
+        if doc.get("descriptor") in self._skip:
+            return
         d  = doc.get("data", {})
         xv = d.get(self._x_field)
         if xv is None:
@@ -808,6 +879,8 @@ class _RunPeakStats(_CallableCB):
                     pass
 
     def event_page(self, doc):
+        if doc.get("descriptor") in self._skip:
+            return
         data = doc.get("data", {})
         xs   = data.get(self._x_field, [])
         for i, xv in enumerate(xs):
@@ -893,12 +966,19 @@ class _ScanLogCallback(_CallableCB):
         self._plan_args  = list(start_doc.get("plan_args",   []) or [])
         self._plan_kwargs = dict(start_doc.get("plan_kwargs", {}) or {})
         self._num_events = 0
+        self._skip = set()     # non-primary streams (baseline) are not scan points
+
+    def descriptor(self, doc):
+        if doc.get("name", "primary") != "primary":
+            self._skip.add(doc.get("uid", ""))
 
     def event(self, doc):
-        self._num_events += 1
+        if doc.get("descriptor") not in self._skip:
+            self._num_events += 1
 
     def event_page(self, doc):
-        self._num_events += len(doc.get("seq_num", []))
+        if doc.get("descriptor") not in self._skip:
+            self._num_events += len(doc.get("seq_num", []))
 
     def stop(self, doc):
         stop_time   = doc.get("time", 0.0)

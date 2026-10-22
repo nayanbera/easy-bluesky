@@ -166,7 +166,7 @@ def _repair_jsonl(path: str, primary_data: dict, stop_doc: dict | None = None):
     # Find descriptor uid
     desc_uid = ""
     for doc_type, doc in raw_docs:
-        if doc_type == "descriptor":
+        if doc_type == "descriptor" and doc.get("name", "primary") == "primary":
             desc_uid = doc.get("uid", "")
             break
 
@@ -198,7 +198,7 @@ def _repair_jsonl(path: str, primary_data: dict, stop_doc: dict | None = None):
         if doc_type == "stop":
             continue  # added at end after event_page
         new_docs.append((doc_type, doc))
-        if doc_type == "descriptor":
+        if doc_type == "descriptor" and doc.get("uid", "") == desc_uid:
             new_docs.append(("event_page", event_page))
     if final_stop:
         new_docs.append(("stop", final_stop))
@@ -260,6 +260,8 @@ def _parse_jsonl_run(path) -> dict:
     'event_page' documents.  Returns {} when no event data is present.
     """
     fields: dict = {}
+    from .run_docs import PrimaryOnly
+    _po = PrimaryOnly()
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -269,6 +271,8 @@ def _parse_jsonl_run(path) -> dict:
                 try:
                     doc_type, doc = json.loads(line)
                 except Exception:
+                    continue
+                if not _po.keep(doc_type, doc):
                     continue
                 if doc_type == "event":
                     data = doc.get("data", {})

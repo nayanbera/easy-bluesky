@@ -117,12 +117,16 @@ class CatalogLoader(QThread):
             try:
                 docs_by_name = {}
                 events = []
+                from .run_docs import PrimaryOnly
+                _po = PrimaryOnly()
                 with open(fpath) as f:
                     for line in f:
                         line = line.strip()
                         if not line:
                             continue
                         name, doc = json.loads(line)
+                        if not _po.keep(name, doc):
+                            continue
                         if name in ("start", "stop"):
                             docs_by_name[name] = doc
                         elif name == "event":

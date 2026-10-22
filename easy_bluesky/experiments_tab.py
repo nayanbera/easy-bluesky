@@ -282,6 +282,8 @@ def _parse_jsonl_run(path) -> dict:
     import numpy as _np
 
     fields: dict = {}   # field -> list of raw values
+    from .run_docs import PrimaryOnly
+    _po = PrimaryOnly()
 
     try:
         with open(path) as _fh:
@@ -292,6 +294,8 @@ def _parse_jsonl_run(path) -> dict:
                 try:
                     doc_type, doc = json.loads(line)
                 except Exception:
+                    continue
+                if not _po.keep(doc_type, doc):
                     continue
 
                 if doc_type == "event":

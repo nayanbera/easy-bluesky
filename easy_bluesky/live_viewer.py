@@ -404,6 +404,13 @@ class LiveViewer(QWidget):
     # ── Document handler ───────────────────────────────────────────────────────
 
     def _on_doc(self, name, doc):
+        if not hasattr(self, "_primary_only"):
+            from .run_docs import PrimaryOnly
+            self._primary_only = PrimaryOnly()
+        if name == "start":
+            self._primary_only.reset()
+        elif not self._primary_only.keep(name, doc):
+            return      # baseline (or other) stream — not plotted here
         if name == "start":
             self.scan_start_doc.emit(doc)
             self.scan_total_points.emit(int(doc.get("num_points") or 0))
