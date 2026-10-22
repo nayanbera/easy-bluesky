@@ -1098,9 +1098,12 @@ class _NewExperimentDialog(QDialog):
         remote_grp = QGroupBox("Remote Path  (RE machine — for detector files)")
         remote_lay = QVBoxLayout(remote_grp)
         remote_note = QLabel(
-            "Path on the Linux beamline machine where detector data is saved.\n"
-            "Injected as  <b>remote_exp_dir</b>  in every plan's metadata.\n"
-            "Leave empty if not using a remote detector path."
+            "The <b>same folder</b> as 'Will create' above, as the Linux RE machine sees it "
+            "(shared/NFS). Detector files and the run .jsonl files are written here, so the "
+            "last parts must match the local folder (…/&lt;date&gt;/&lt;name&gt;).\n"
+            "Injected as  <b>remote_exp_dir</b>  in every plan's metadata. "
+            "Overrides the remote data root of the connection profile (which only pre-fills "
+            "this field and the ESAF tab)."
         )
         remote_note.setTextFormat(Qt.TextFormat.RichText)
         remote_note.setWordWrap(True)
@@ -3902,6 +3905,12 @@ class ExperimentsTab(QWidget):
         except Exception:
             self._exp_created_at = 0.0
         self._exp_end_time = self._compute_exp_end_time()
+        # Scan counter belongs to the experiment: a new (empty) experiment starts at 1.
+        # _load_plan_log returns early when plans_log.jsonl doesn't exist yet, so
+        # without this the previous experiment's counter leaked into the new one.
+        self._next_scan_num = max(_next_scan_num_for(path) - 1,
+                                  _read_scan_num_json(path)) + 1
+        self._running_scan_num = 0
 
         name = info.get("name", Path(path).name)
         self.exp_name_label.setText(name)
