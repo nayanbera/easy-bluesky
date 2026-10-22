@@ -1322,6 +1322,13 @@ class ExperimentsTab(QWidget):
         self._exp_health_timer = QTimer()
         self._exp_health_timer.setInterval(10_000)
         self._exp_health_timer.timeout.connect(self._check_exp_dir_health)
+        # Stall watchdog: tells the user when a started plan produces no data point for a while.
+        self._stall_active   = False
+        self._stall_ref      = 0.0      # monotonic time of the last sign of progress
+        self._stall_next_s   = 30.0     # next elapsed-time threshold that triggers a message
+        self._stall_timer = QTimer()
+        self._stall_timer.setInterval(5_000)
+        self._stall_timer.timeout.connect(self._check_stall)
         self._re_state: str    = ""
         self._manager_state: str = "idle"
         self._prev_re_state: str = ""
@@ -3071,6 +3078,10 @@ class ExperimentsTab(QWidget):
         if self._running_item_uid and self._plan_event_intervals:
             self._record_plan_timing()
 
+        self._stall_active = True
+        self._stall_ref    = time.monotonic()
+        self._stall_next_s = 30.0
+        self._stall_timer.start()
         self._pending_total_points = num_points
         # A ZMQ start doc means a plan is running — the queue session is active.
         # Set _queue_in_progress unconditionally so we don't miss the first plan
@@ -3095,6 +3106,8 @@ class ExperimentsTab(QWidget):
         _queue_done_plans so the queue progress bar advances immediately on
         plan completion, without waiting for the poll loop.
         """
+        self._stall_active = False
+        self._stall_timer.stop()
         self._queue_done_events += self._completed_points
         self._queue_done_plans  += 1
         # _completed_points will be reset by on_scan_started() for the next plan,
@@ -3107,6 +3120,8 @@ class ExperimentsTab(QWidget):
         if self._scan_gen < 0 or self._scan_gen != self._event_gen:
             return  # stale event from a finished scan or no scan started yet
         now = time.monotonic()
+        self._stall_ref    = now
+        self._stall_next_s = 30.0
         wall_now = time.time()
         if self._plan_first_event_time == 0.0 and self._running_item_start_time > 0.0:
             self._plan_first_event_time = wall_now
@@ -3118,6 +3133,34 @@ class ExperimentsTab(QWidget):
         self._plan_last_event_time = now
         self._completed_points = max(self._completed_points, seq_num)
         self._update_progress_bars()
+
+    def _check_stall(self) -> None:
+        """Explain a silent plan: started (run open) but no data point for a while."""
+        if not self._stall_active or self._re_state != "running":
+            self._stall_ref = time.monotonic()   # paused / not running: restart the clock
+            return
+        waited = time.monotonic() - self._stall_ref
+        # Normal gaps between points scale with the exposure/settle time of the plan.
+        iv = self._plan_event_intervals
+        typical = (sum(iv) / len(iv)) if iv else 0.0
+        if waited < max(self._stall_next_s, 5 * typical):
+            return
+        self._stall_next_s = max(self._stall_next_s * 2, waited * 1.5)
+        item   = self._current_running_item or {}
+        name   = item.get("name", "plan")
+        kw     = item.get("kwargs", {}) or {}
+        sn     = (kw.get("md") or {}).get("scan_num")
+        extra  = [f"{k}={kw[k]}" for k in ("acquire_time", "settle_time", "delay") if k in kw]
+        if self._completed_points == 0:
+            what = ("no data point yet — the plan is probably waiting for a motor to reach its "
+                    "start position, or for a detector/scaler to finish its first acquisition "
+                    "(not responding, count time too long, or a device not connected)")
+        else:
+            what = (f"stuck after point {self._completed_points} — waiting for a motor to "
+                    f"settle or a detector to finish acquiring")
+        self._log(f"⏳ {name}{f' #{sn}' if sn is not None else ''} is running but silent for "
+                  f"{waited:.0f} s: {what}. " + (f"({', '.join(extra)}) " if extra else "") +
+                  "Check the RE Console tab; use Pause/Abort if a device is stuck.")
 
     def _record_plan_timing(self) -> None:
         """Persist timing for the just-completed plan to the SQLite DB."""
