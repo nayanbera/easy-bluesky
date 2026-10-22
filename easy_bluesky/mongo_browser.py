@@ -413,6 +413,11 @@ class _RunDetailDialog(QDialog):
                 "Data not yet loaded — select the run first, then double-click."))
         self._tabs.addTab(data_widget, "Data")
 
+        # ── Tab: Baseline (positioner values at scan start/end) ──────────────
+        self._tabs.addTab(
+            _BaselinePanel([{"uid": uid, "label": f"#{seq_num}", "streams": (run_data or {}).get("streams", {})}]),
+            "Baseline")
+
         # ── Tab 3: Peak Stats (populated now if already in start, or after fetch) ──
         self._ps_tab_idx = -1
         self._build_peak_stats_tab(start.get("peak_stats"))
@@ -729,13 +734,23 @@ def _ask_move_position(parent, motor_name, x_clicked, cen, com, x_field=""):
 # ── Main tab ───────────────────────────────────────────────────────────────────
 
 class _BaselineDialog(QDialog):
-    """Positioner values read at the start (and end) of each selected run (``baseline`` stream)."""
+    """Stand-alone window around _BaselinePanel (used by the plot view's Baseline… button)."""
 
     def __init__(self, run_data_list: list, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Baseline — positioner values at the start of the scan")
         self.resize(900, 560)
         lay = QVBoxLayout(self)
+        lay.addWidget(_BaselinePanel(run_data_list))
+
+
+class _BaselinePanel(QWidget):
+    """Positioner values read at the start (and end) of each run (``baseline`` stream)."""
+
+    def __init__(self, run_data_list: list, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
 
         # columns: one "start" (+ "end" when present) per run that has a baseline stream
         self._cols = []      # (header, {field: value}, differs_from_first_start_check)
