@@ -653,6 +653,8 @@ class ZMQWorker(QObject):
         # Set by main thread after script_upload; polled each cycle so
         # _load_plans_devices() always runs in the poll thread (thread-safe).
         self._reload_plans_requested = False
+        self._reload_follow_ups = 0       # extra reloads after a script upload (task runs async)
+        self._reload_not_before = 0.0     # monotonic time before which a reload is deferred
         self._last_manager_state = "idle"   # updated every poll; read on main thread
         self._current_task: str  = ""       # name of in-flight function_execute task
         self._rm_lock = threading.Lock()    # serialises all self.rm.* ZMQ calls
@@ -819,18 +821,26 @@ class ZMQWorker(QObject):
             self._re_proc.terminate()
             self._re_proc = None
 
-    def _load_plans_devices(self):
+    def _load_plans_devices(self, reload: bool = False) -> bool:
+        """Fetch plans/devices; returns False on a transient failure (caller may retry).
+
+        reload=True bypasses the client-side cache — after script_upload the lists change
+        on the server but the cached copy (keyed by the last status uid) can be stale.
+        """
         try:
             with self._rm_lock:
-                plans   = self.rm.plans_allowed()
-                devices = self.rm.devices_allowed()
+                plans   = self.rm.plans_allowed(reload=reload)
+                devices = self.rm.devices_allowed(reload=reload)
             self.plans_updated.emit(plans.get("plans_allowed", {}))
             self.devices_updated.emit(devices.get("devices_allowed", {}))
+            return True
         except Exception as e:
             msg = str(e).lower()
             # Suppress transient states that resolve on the next poll cycle.
             if "environment is not open" not in msg and "must be in idle state" not in msg:
                 self.error_occurred.emit(f"Failed to load plans/devices: {e}")
+                return True
+            return False
 
     def reload_plans_devices(self):
         """Schedule a plans/devices refresh on the next poll cycle.
@@ -840,6 +850,10 @@ class ZMQWorker(QObject):
         called from the main thread (e.g. after script_upload).
         """
         self._reload_plans_requested = True
+        # script_upload is executed asynchronously by the worker: the new plans may only
+        # appear a second or two after the upload call returned, so refresh a few times.
+        self._reload_follow_ups = 3
+        self._reload_not_before = time.monotonic() + 1.0
 
     def diagnose_console(self, info_addr: str, duration: float = 6.0) -> str:
         """
@@ -964,9 +978,18 @@ class ZMQWorker(QObject):
 
         while self._active:
             if self.rm and not self._is_connecting:
-                if self._reload_plans_requested:
+                if self._reload_plans_requested and time.monotonic() >= self._reload_not_before:
                     self._reload_plans_requested = False
-                    self._load_plans_devices()
+                    if not self._load_plans_devices(reload=True):
+                        # env busy (e.g. script task still running) — retry a few times
+                        if self._reload_follow_ups > 0:
+                            self._reload_follow_ups -= 1
+                            self._reload_plans_requested = True
+                            self._reload_not_before = time.monotonic() + 1.5
+                    elif self._reload_follow_ups > 0:
+                        self._reload_follow_ups -= 1
+                        self._reload_plans_requested = True
+                        self._reload_not_before = time.monotonic() + 2.0
                 try:
                     with self._rm_lock:
                         status = self.rm.status()
