@@ -4878,7 +4878,13 @@ class ExperimentsTab(QWidget):
                             f"Plan Log. Switch to that experiment to see its results."
                         )
                     continue
-                # exp_dir matches → log it; timestamp checks are irrelevant
+                # exp_dir matches → log it.  Only exception: the plan finished before this
+                # experiment folder was created (same folder name re-created after the old
+                # one was deleted) — it belongs to the previous incarnation of the folder.
+                if t_stop and self._exp_created_at and t_stop < self._exp_created_at - 5:
+                    self._logged_uids.add(uid)
+                    self._last_history_len += 1
+                    continue
             else:
                 # No exp_dir metadata (plans queued before _inject_metadata): fall
                 # back to timestamp-based filtering so old history stays clean.
