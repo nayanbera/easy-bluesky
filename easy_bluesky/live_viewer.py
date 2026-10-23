@@ -1,5 +1,6 @@
 """live_viewer.py — Live Viewer tab: ZMQ subscriber + pyqtgraph live plots."""
 
+import time
 import json
 import numpy as np
 
@@ -579,6 +580,12 @@ class LiveViewer(QWidget):
         if self._map_mode:
             self._update_2d_plot()
         self._run_live_fit()
+        # Running statistics (cen / FWHM / max / COM + markers) after every update, throttled
+        # so that fast scans / event pages don't redraw for each point.
+        _now = time.monotonic()
+        if len(self._data.get("seq_num", [])) >= 3 and _now - getattr(self, "_stats_t", 0.0) >= 0.3:
+            self._stats_t = _now
+            self._show_peak_stats()
         self.status_bar.setText(f"Event #{seq}")
 
     def _on_running_item(self, item: dict):
