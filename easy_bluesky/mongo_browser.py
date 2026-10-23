@@ -303,22 +303,11 @@ class _HDF5Exporter(QThread):
                     if dets:
                         grp.attrs["detectors"] = ", ".join(str(d) for d in dets)
 
-                    streams  = _fetch_streams(db, uid)
-                    primary  = streams.get("primary", {})
-                    n_events = 0
-                    for field, arr in primary.items():
-                        if field == "data_keys":
-                            continue
-                        try:
-                            grp.create_dataset(
-                                field, data=arr.astype(float), compression="gzip"
-                            )
-                            if field == "time":
-                                n_events = len(arr)
-                        except Exception:
-                            pass
-                    if n_events:
-                        grp.attrs["n_events"] = n_events
+                    from .hdf5_export import run_from_mongo, write_run
+                    try:
+                        n_events = write_run(grp, run_from_mongo(db, uid))
+                    except Exception as _we:
+                        grp.attrs["export_error"] = str(_we)
 
                     self.progress.emit(i + 1, len(self._runs))
 

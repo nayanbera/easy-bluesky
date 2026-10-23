@@ -208,7 +208,7 @@ class _MongoHDF5Exporter(QThread):
     def run(self):
         try:
             import pymongo
-            from .mongo_browser import _fetch_streams
+            from .hdf5_export import run_from_mongo, write_run
             client = pymongo.MongoClient(
                 self._host, self._port, serverSelectionTimeoutMS=5000
             )
@@ -247,22 +247,10 @@ class _MongoHDF5Exporter(QThread):
                         grp.attrs["uid"] = uid
 
                     if uid:
-                        streams = _fetch_streams(db, uid)
-                        primary = streams.get("primary", {})
-                        n_events = 0
-                        for field, arr in primary.items():
-                            if field == "data_keys":
-                                continue
-                            try:
-                                grp.create_dataset(
-                                    field, data=arr.astype(float), compression="gzip"
-                                )
-                                if field == "time":
-                                    n_events = len(arr)
-                            except Exception:
-                                pass
-                        if n_events:
-                            grp.attrs["n_events"] = n_events
+                        try:
+                            write_run(grp, run_from_mongo(db, uid))
+                        except Exception as _we:
+                            grp.attrs["export_error"] = str(_we)
 
                     self.progress.emit(i + 1, len(self._entries))
 
@@ -344,6 +332,7 @@ class _JSONLHDFExporter(QThread):
 
     def run(self):
         try:
+            from .hdf5_export import run_from_jsonl, write_run
             with h5py.File(self._path, "w") as hf:
                 meta     = hf.create_group("metadata")
                 exp_name = Path(self._exp_path).name if self._exp_path else ""
@@ -379,22 +368,10 @@ class _JSONLHDFExporter(QThread):
                     if uid and self._exp_path:
                         jsonl_path = Path(self._exp_path) / "runs" / f"{uid}.jsonl"
                         if jsonl_path.exists():
-                            data     = _parse_jsonl_run(jsonl_path)
-                            n_events = 0
-                            for field, arr in data.items():
-                                try:
-                                    grp.create_dataset(
-                                        field, data=arr, compression="gzip"
-                                    )
-                                    if field == "time":
-                                        n_events = len(arr)
-                                except Exception:
-                                    pass
-                            if n_events:
-                                grp.attrs["n_events"] = n_events
-                            elif data:
-                                # 'time' may not be present; count the first field
-                                grp.attrs["n_events"] = len(next(iter(data.values())))
+                            try:
+                                write_run(grp, run_from_jsonl(jsonl_path))
+                            except Exception as _we:
+                                grp.attrs["export_error"] = str(_we)
 
                     self.progress.emit(i + 1, len(self._entries))
 
