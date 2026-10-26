@@ -1248,7 +1248,6 @@ class ExperimentsTab(QWidget):
 
     experiment_changed  = Signal(str)        # emits runs_dir path
     scan_completed      = Signal()           # emits when a new scan is logged
-    run_files_needed    = Signal(list, str)  # (uid_list, local_runs_dir) — fetch from beamline
     start_requested    = Signal()
     pause_requested    = Signal()
     resume_requested   = Signal()
@@ -1264,12 +1263,6 @@ class ExperimentsTab(QWidget):
         self._devices: dict    = {}
         self._active_exp_path  = ""
         self._remote_exp_dir: str = ""   # Linux path on RE machine for detector files
-        self._run_dir_ok = None          # None = unchecked, True/False = RE machine can write run files
-        self._run_dir_warned: set = set()   # exp paths already warned about this session
-        self._run_file_warned = False
-        if worker is not None and hasattr(worker, "run_dir_checked"):
-            worker.run_dir_checked.connect(self._on_run_dir_checked)
-        self.experiment_changed.connect(lambda _p: QTimer.singleShot(2000, self.check_run_dir))
         self._esaf_info: dict  = {}      # esaf_id, pi_group, proposal_id, esaf_start_date
         self._logged_uids: set = set()
         self._logged_scan_nums: set = set()   # scan_nums already in plans_log.jsonl
@@ -2181,54 +2174,6 @@ class ExperimentsTab(QWidget):
 
         # _next_scan_num must still be kept in sync for _inject_metadata.
         self._next_scan_num = next_num
-
-    # ── Run-file location checks ──────────────────────────────────────────────
-    def check_run_dir(self):
-        """Ask the RE machine whether it can write run files into this experiment's runs/ folder."""
-        if not self.worker or not self._active_exp_path:
-            return
-        self._run_dir_ok = None
-        self.worker.check_run_dir(self._remote_exp_dir, self._active_exp_path)
-
-    def _on_run_dir_checked(self, res: dict):
-        ok, err = res.get("ok"), res.get("error", "")
-        if ok is None:      # could not check (busy / old startup script) — stay quiet, retry later
-            self._log(f"ℹ Run-file location not checked: {err}")
-            return
-        self._run_dir_ok = bool(ok)
-        if ok:
-            self._log(f"✓ Run files are saved to {res.get('path')}")
-            return
-        self._log(f"⚠ Run files can NOT be saved to the experiment folder: {err}")
-        if self._active_exp_path not in self._run_dir_warned:
-            self._run_dir_warned.add(self._active_exp_path)
-            QMessageBox.warning(
-                self, "Run files cannot be saved to the experiment folder",
-                "The RE Manager machine cannot write run (.jsonl) files into this experiment's "
-                "runs/ folder:\n\n" + err + "\n\n"
-                "Set the remote data root in Connection settings (the experiment folder as the "
-                "beamline machine sees it) and make sure the folder is writable. Until then, run "
-                "files go to an emergency folder on the beamline machine and will not appear here.")
-
-    def _schedule_run_file_check(self, run_uids):
-        """~10 s after a run finished, verify its .jsonl is visible in the local runs/ folder."""
-        uids = [u for u in (run_uids or []) if u]
-        exp = self._active_exp_path
-        if uids and exp:
-            QTimer.singleShot(10_000, lambda: self._verify_run_file(exp, uids[0]))
-
-    def _verify_run_file(self, exp: str, uid: str):
-        if (Path(exp) / "runs" / f"{uid}.jsonl").exists():
-            return
-        self._log(f"⚠ Run file {uid[:8]}….jsonl is not in {exp}/runs — the RE machine wrote it "
-                  f"somewhere else (check the remote data root)")
-        if not self._run_file_warned:
-            self._run_file_warned = True
-            QMessageBox.warning(
-                self, "Run file not found in the experiment folder",
-                f"A finished run ({uid[:8]}…) has no .jsonl file in\n{exp}/runs\n\n"
-                "Either the shared folder is not the same on both machines (check the remote data "
-                "root in Connection settings) or NFS is slow. Use Local Data → Sync to fetch it.")
 
     def _inject_metadata(self, result_item: dict):
         """Inject experiment/sample metadata into a plan item's md key."""
@@ -3942,8 +3887,6 @@ class ExperimentsTab(QWidget):
         # fill in title, PI, dates, status, etc.)
         if self._esaf_info and (not self._doi_value or len(self._esaf_info) < 5):
             self._start_doi_polling()
-        if self.worker and hasattr(self.worker, "set_doc_writer_exp_dir"):
-            self.worker.set_doc_writer_exp_dir(path)
         self._logged_uids          = set()
         self._start_doc_cache      = {}
         self._shown_error_uids     = set()  # reset so old errors don't re-appear
@@ -4857,7 +4800,6 @@ class ExperimentsTab(QWidget):
             sn_str = f"#{scan_num} " if scan_num is not None else ""
             self._log(f"✓ Plan Log: {sn_str}{plan_name} ({exit_status})")
             self._prepend_plan_log_entry(entry)
-            self._schedule_run_file_check(entry.get("run_uids"))
             self.scan_completed.emit()
         except Exception as exc:
             self._log(f"⚠ Plans Log write error (ZMQ): {exc}")
@@ -5007,7 +4949,6 @@ class ExperimentsTab(QWidget):
                     # than re-reading the NFS file (avoids resetting _logged_uids
                     # with stale data that would allow duplicate writes later).
                     self._prepend_plan_log_entry(entry)
-                    self._schedule_run_file_check(entry.get("run_uids"))
                     changed = True
                     continue
                 with open(log_file, "a") as f:
@@ -5034,7 +4975,6 @@ class ExperimentsTab(QWidget):
                 # file because macOS NFS attribute caching can return stale data
                 # on an immediate open/read after a write (new entry invisible).
                 self._prepend_plan_log_entry(entry)
-                self._schedule_run_file_check(entry.get("run_uids"))
             except Exception as _exc:
                 self._log(f"⚠ Plans Log write error (uid {uid[:8]}): {_exc}")
 
@@ -5053,17 +4993,6 @@ class ExperimentsTab(QWidget):
 
         if changed:
             self.scan_completed.emit()
-            # Emit any run UIDs whose JSONL files are not yet in the local runs/ dir
-            if self._active_exp_path:
-                runs_dir = str(Path(self._active_exp_path) / "runs")
-                from .run_sync import missing_run_uids
-                missing = missing_run_uids(runs_dir, (
-                    ruid
-                    for item in items
-                    for ruid in (item.get("result") or {}).get("run_uids", [])
-                ))
-                if missing:
-                    self.run_files_needed.emit(missing, runs_dir)
 
         if has_pending and self.worker:
             # History entries exist but exit_status not yet populated (queueserver

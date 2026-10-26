@@ -333,38 +333,8 @@ class _LocalDocWriter:
             self.event_queue.put_nowait(doc.get("seq_num", 0))
         if name in ("start", "stop"):
             self.doc_queue.put_nowait((name, doc))
-
-        exp_dir = self._get_exp_dir()
-        if exp_dir is None:
-            return
-
-        uid = doc.get("uid") if name == "start" else doc.get("run_start")
-        if not uid:
-            return
-
-        if name == "start" and uid not in self._open_fhs:
-            try:
-                exp_dir.mkdir(parents=True, exist_ok=True)
-                self._open_fhs[uid] = open(exp_dir / f"{uid}.jsonl", "a")
-            except Exception:
-                return
-
-        fh = self._open_fhs.get(uid)
-        if fh is None:
-            return
-
-        try:
-            fh.write(json.dumps([name, doc]) + "\n")
-            fh.flush()
-        except Exception:
-            pass
-
-        if name == "stop":
-            try:
-                fh.close()
-            except Exception:
-                pass
-            self._open_fhs.pop(uid, None)
+        # The app no longer writes run files itself: run files are the RE machine's backup copy
+        # and the HDF5 export (from MongoDB or those files) is the way to save data locally.
 
 
 _USER_SCRIPTS_DIR = Path.home() / ".easy_bluesky" / "scripts"
@@ -505,47 +475,6 @@ class _DeviceStatusReader(QThread):
             self.read_error.emit(str(e))
 
 
-class _RunDirChecker(QThread):
-    """Background thread: calls check_run_dir() via function_execute (can the RE machine write
-    run files into the experiment folder?). Emits {"ok", "path", "error"}."""
-    checked = Signal(dict)
-
-    def __init__(self, rm, rm_lock, remote_exp_dir: str, exp_dir: str, parent=None):
-        super().__init__(parent)
-        self._rm, self._rm_lock = rm, rm_lock
-        self._remote, self._local = remote_exp_dir, exp_dir
-
-    def run(self):
-        try:
-            from bluesky_queueserver_api import BFunc
-            with self._rm_lock:
-                r = self._rm.function_execute(item=BFunc(
-                    "check_run_dir", remote_exp_dir=self._remote, exp_dir=self._local))
-            if not r.get("success"):
-                msg = r.get("msg", "function_execute failed")
-                if "not found in the worker namespace" in msg or "not allowed" in msg:
-                    msg = "RE Manager needs a restart to load the updated startup script (check_run_dir)"
-                self.checked.emit({"ok": None, "path": "", "error": msg})
-                return
-            task_uid = r["task_uid"]
-            deadline = time.monotonic() + 15.0
-            while time.monotonic() < deadline:
-                time.sleep(0.3)
-                with self._rm_lock:
-                    res = self._rm.task_result(task_uid=task_uid)
-                if res.get("status", "") == "completed":
-                    result = res.get("result", {})
-                    if not result.get("success", True):
-                        self.checked.emit({"ok": None, "path": "",
-                                           "error": str(result.get("return_value", ""))[:300]})
-                    else:
-                        self.checked.emit(dict(result.get("return_value") or {}))
-                    return
-            self.checked.emit({"ok": None, "path": "", "error": "check_run_dir timed out"})
-        except Exception as e:
-            self.checked.emit({"ok": None, "path": "", "error": str(e)})
-
-
 class _SimDeviceSetter(QThread):
     """Background thread: calls set_sim_device() via function_execute and polls for completion."""
     done  = Signal(str, bool, str)   # dev_name, success, message
@@ -626,7 +555,6 @@ class ZMQWorker(QObject):
     device_read_error       = Signal(str)
     pv_names_ready          = Signal(dict)
     pv_names_error          = Signal(str)
-    run_dir_checked         = Signal(dict)   # result of check_run_dir()
     sim_device_set_done     = Signal(str, bool, str)  # dev_name, success, msg
     error_occurred          = Signal(str)
     connected       = Signal()
@@ -1137,10 +1065,6 @@ class ZMQWorker(QObject):
                         self.disconnected.emit()
             time.sleep(self._poll_interval)
 
-    def set_doc_writer_exp_dir(self, path: str):
-        """Tell the local doc writer where to save JSONL files."""
-        self._doc_writer.set_exp_dir(path)
-
     def disconnect(self):
         """Drop the ZMQ connection immediately without stopping the poll loop."""
         self._console_mon.stop()
@@ -1386,17 +1310,6 @@ class ZMQWorker(QObject):
         self._sim_device_setter.done.connect(self.sim_device_set_done)
         self._sim_device_setter.finished.connect(lambda: self._clear_task(f"set_sim_device({name})"))
         self._sim_device_setter.start()
-
-    def check_run_dir(self, remote_exp_dir: str, exp_dir: str):
-        """Ask the RE environment whether run files can be written to the experiment folder.
-        Emits run_dir_checked({"ok": bool|None, "path", "error"}); ok=None means 'could not check'."""
-        if self.rm is None or self._last_manager_state in ("executing_plan", "executing_queue"):
-            return
-        if getattr(self, "_run_dir_checker", None) is not None and self._run_dir_checker.isRunning():
-            return
-        self._run_dir_checker = _RunDirChecker(self.rm, self._rm_lock, remote_exp_dir, exp_dir)
-        self._run_dir_checker.checked.connect(self.run_dir_checked)
-        self._run_dir_checker.start()
 
     def fetch_scan_log(self, remote_path: str):
         """Fetch scans_log.json from the remote machine via SFTP.

@@ -70,7 +70,6 @@ from .devices_plans_tab import DevicesPlansTab
 from .pv_watchdog import PVWatchdogTab
 from .mongo_browser import MongoDataBrowserTab
 from .hdf5_browser import HDF5BrowserTab
-from .local_data_browser import LocalDataBrowserTab
 from .re_console import REConsoleWidget
 from .ai_assistant import AIAssistantWindow
 
@@ -1024,112 +1023,6 @@ class _OperatorLockChecker(QThread):
         self.result.emit(holder)
 
 
-class _JsonlSyncThread(QThread):
-    """Background thread: copy missing JSONL run files from the beamline computer.
-
-    Searches only a few known folders (shallow listing); the slow deep search runs
-    only when *deep* is set (manual Sync). Files come over as one streamed tar.gz
-    per chunk. Runs not found are remembered (run_sync negative cache).
-    """
-    done    = Signal(int, int)   # (n_copied, n_total)
-    message = Signal(str)        # progress / error messages for logging
-
-    CHUNK = 60                   # files per tar stream
-
-    def __init__(self, profile: dict, uid_list: list, runs_dir: str,
-                 deep: bool = False, parent=None):
-        super().__init__(parent)
-        self._profile  = profile
-        self._uid_list = uid_list
-        self._runs_dir = runs_dir
-        self._deep     = deep
-
-    def _list_remote(self, ssh, find_args: str, wanted: set, timeout: int) -> dict:
-        """{uid: remote_path} for wanted run files found by `find <find_args>`."""
-        cmd = f"timeout {timeout} find {find_args} -name '*.jsonl' 2>/dev/null"
-        _, stdout, _ = ssh.exec_command(cmd)
-        found = {}
-        for line in stdout.read().decode().splitlines():   # read before waiting (no buffer deadlock)
-            base = line.rsplit("/", 1)[-1]
-            uid = base[:-6]
-            if uid in wanted and uid not in found:
-                found[uid] = line
-        return found
-
-    def _fetch(self, ssh, found: dict) -> int:
-        """Stream the found files as tar.gz, grouped by remote folder. Returns files copied."""
-        import io, os, shlex, tarfile
-        by_dir = {}
-        for uid, rpath in found.items():
-            d, _, base = rpath.rpartition("/")
-            by_dir.setdefault(d or "/", []).append(base)
-        os.makedirs(self._runs_dir, exist_ok=True)
-        n = 0
-        total = len(found)
-        for d, names in by_dir.items():
-            for i in range(0, len(names), self.CHUNK):
-                chunk = names[i:i + self.CHUNK]
-                cmd = f"cd {shlex.quote(d)} && tar czf - " + " ".join(shlex.quote(c) for c in chunk)
-                _, stdout, _ = ssh.exec_command(cmd)
-                data = stdout.read()
-                try:
-                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-                        for m in tf.getmembers():
-                            if not m.isfile() or "/" in m.name:
-                                continue
-                            with tf.extractfile(m) as src, open(
-                                    os.path.join(self._runs_dir, m.name), "wb") as dst:
-                                dst.write(src.read())
-                            n += 1
-                except Exception as exc:
-                    self.message.emit(f"  ✗ transfer from {d} failed: {exc}")
-                self.message.emit(f"  … {n}/{total} run file(s) copied")
-        return n
-
-    def run(self):
-        from .ssh_manager import _get_client
-        from .run_sync import record_missing, missing_run_uids
-        p    = self._profile
-        host = p.get("host", "")
-        n_copied = 0
-        try:
-            ssh = _get_client(p)
-            wanted = set(self._uid_list)
-            self.message.emit(f"SSH connected to {host}; looking for {len(wanted)} run file(s)")
-
-            extra = p.get("jsonl_search_dirs", "") or []
-            if isinstance(extra, str):
-                extra = [d.strip() for d in extra.replace(";", ",").split(",") if d.strip()]
-            import shlex
-            # Known folders only, one level (each holds <uid>.jsonl directly).
-            dirs = ["$HOME/.easy_bluesky/data/runs", "$HOME/.easy_bluesky/data"] \
-                   + [shlex.quote(d) for d in extra]
-            found = self._list_remote(ssh, " ".join(dirs) + " -maxdepth 1", wanted, 30)
-            if self._deep and len(found) < len(wanted):
-                left = wanted - set(found)
-                self.message.emit(f"Deep search for {len(left)} remaining run file(s) (up to 2 min)…")
-                found.update(self._list_remote(
-                    ssh, " ".join(["$HOME", "/tmp"] + [shlex.quote(d) for d in extra]) + " -maxdepth 14",
-                    left, 120))
-
-            if found:
-                n_copied = self._fetch(ssh, found)
-            ssh.close()
-
-            got = set(self._uid_list) - set(missing_run_uids(self._runs_dir, self._uid_list))
-            missing = [u for u in self._uid_list if u not in got]
-            if missing:
-                record_missing(host, missing)
-                self.message.emit(
-                    f"  ✗ {len(missing)} run file(s) not found on the beamline computer "
-                    f"(first: {missing[0]}). Not retried automatically for 24 h; the Sync button "
-                    f"does a deep search. Locate with: find / -name '{missing[0]}.jsonl' 2>/dev/null "
-                    f"and add that folder to 'jsonl_search_dirs' in the profile.")
-        except Exception as exc:
-            self.message.emit(f"SSH/SFTP error: {exc}")
-        self.done.emit(n_copied, len(self._uid_list))
-
-
 def _ai_settings(conn: dict) -> dict:
     return {
         "provider":          conn.get("ai_provider", "anthropic"),
@@ -1205,9 +1098,6 @@ class MainWindow(QMainWindow):
         self.watchdog_tab       = PVWatchdogTab()
         self.mongo_browser      = MongoDataBrowserTab(self._conn_settings)
         self.hdf5_viewer        = HDF5BrowserTab(self._conn_settings)
-        self.local_data_browser = LocalDataBrowserTab()
-        self.local_data_browser.sync_requested.connect(self._sync_jsonl_from_beamline)
-        self.local_data_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
         # Set initial profile so _load_active_experiment reads the right slot.
         initial_profile = get_active_profile_name(self._conn_settings)
@@ -1225,7 +1115,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.devices_plans_tab, "🔬  Devices & Plans")
         self.tabs.addTab(self.watchdog_tab,      "🔭  PV Watchdog")
         self.tabs.addTab(self.mongo_browser,     "📊  MongoDB Browser")
-        self.tabs.addTab(self.local_data_browser,"📂  Local Data")
         self.tabs.addTab(self.hdf5_viewer,       "🗄  HDF5 Viewer")
         self.tabs.addTab(self.re_console,        "🖥  RE Console")
 
@@ -1490,7 +1379,6 @@ class MainWindow(QMainWindow):
             )
         )
         self.experiments_tab.scan_completed.connect(self.mongo_browser.refresh)
-        self.experiments_tab.run_files_needed.connect(self._sync_jsonl_from_beamline)
         self.mongo_browser.move_requested.connect(self._on_mongo_move_requested)
         self.experiments_tab.live_viewer.move_requested.connect(self._on_mongo_move_requested)
         self.mongo_browser.move_2d_requested.connect(self._on_map_move_2d_requested)
@@ -2532,7 +2420,6 @@ class MainWindow(QMainWindow):
             self.re_bar.set_disconnected()
         self.experiments_tab.live_viewer.restart_zmq(doc)
         self.mongo_browser.update_settings(self._conn_settings)
-        self.local_data_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
         self.experiments_tab.set_profile(name)
         self.watchdog_tab.load_for_profile(name)
@@ -2815,7 +2702,6 @@ class MainWindow(QMainWindow):
         active = get_active_profile_name(self._conn_settings)
         self.re_bar.update_profiles(names, active)
         self.mongo_browser.update_settings(self._conn_settings)
-        self.local_data_browser.update_settings(self._conn_settings)
         self.experiments_tab.update_settings(self._conn_settings)
         _all_names = [p.get("name", "") for p in self._conn_settings.get("profiles", [])]
         self.watchdog_tab.update_profiles(_all_names)
@@ -2827,56 +2713,6 @@ class MainWindow(QMainWindow):
         self._refresh_recent_menu()
         exp_dir = str(Path(runs_dir).parent)
         self.mongo_browser.set_active_experiment(exp_dir)
-        self.local_data_browser.open_folder(exp_dir)
-
-    def _sync_jsonl_from_beamline(self, uid_list: list, runs_dir: str, deep: bool = False):
-        """Fetch missing JSONL run files from the beamline computer.
-
-        Automatic calls (deep=False) skip runs recently not found and fetch at most
-        AUTO_LIMIT runs; the manual Sync button (deep=True) retries everything.
-        """
-        # Ignore if a sync is already in flight
-        if getattr(self, "_jsonl_sync_thread", None) and self._jsonl_sync_thread.isRunning():
-            return
-        from .run_sync import drop_known_missing, forget_missing, AUTO_LIMIT
-        _host = get_active_profile(self._conn_settings).get("host") or self._conn_settings.get("host", "")
-        if deep:
-            forget_missing(_host)
-        else:
-            uid_list = drop_known_missing(_host, list(uid_list))
-            if len(uid_list) > AUTO_LIMIT:
-                self._log(f"[{self._ts()}] [JSONL sync] {len(uid_list)} run files missing locally — "
-                          f"fetching the first {AUTO_LIMIT}; use Sync in Local Data for the rest")
-                uid_list = uid_list[:AUTO_LIMIT]
-        if not uid_list:
-            return
-        from .ssh_manager import _settings_for_profile
-        settings = self._conn_settings
-        if not settings.get("ssh_user"):
-            from qtpy.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Not Connected",
-                                "SSH user not configured. "
-                                "Open Connection Settings and set SSH User.")
-            return
-        active   = get_active_profile(settings)
-        # Merge active profile's host override (if any) into the top-level settings
-        ssh_cfg  = dict(_settings_for_profile(settings, active))
-        ssh_cfg["jsonl_search_dirs"] = (active.get("jsonl_search_dirs")
-                                        or settings.get("jsonl_search_dirs", ""))
-        self._jsonl_sync_thread = _JsonlSyncThread(ssh_cfg, uid_list, runs_dir, deep=deep, parent=self)
-        self._jsonl_sync_thread.message.connect(
-            lambda msg: self._log(f"[{self._ts()}] [JSONL sync] {msg}")
-        )
-        self._jsonl_sync_thread.message.connect(
-            self.local_data_browser.set_sync_message
-        )
-        self._jsonl_sync_thread.done.connect(self.local_data_browser.on_sync_done)
-        self._jsonl_sync_thread.done.connect(
-            lambda n, t: self._log(
-                f"[{self._ts()}] ✓ JSONL sync: fetched {n}/{t} run file(s) from beamline"
-            ) if n > 0 else None
-        )
-        self._jsonl_sync_thread.start()
 
     def _on_mongo_move_requested(self, motor: str, position: float):
         if not self.worker:

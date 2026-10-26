@@ -440,27 +440,27 @@ python -m easy_bluesky
 - **Run block**: Actions has a `run` container (`bps.open_run(md=md)` … `bps.close_run()`) for manual runs around
   `trigger & read`; validation warns on scan blocks inside it (scans open their own run). Legacy separate open/close blocks still load.
 
-## Run files (.jsonl): where they are written, checks, sync
-- **Writer** (`_jsonl_run_factory`, re_startup_mongo.py): `<remote_exp_dir>/runs` (path on the RE machine, shared with the
-  app over NFS; set via the connection's remote data root) → `<exp_dir>/runs` (submitter's path, valid only if the submitter
-  runs on the RE machine) → emergency copy in `~/.easy_bluesky/data/runs` plus a loud `!!!` console line. Normal operation
-  never uses the emergency folder, so no sync is needed.
-- **Warnings**: `check_run_dir()` (function_execute; `worker.check_run_dir` → `ExperimentsTab.check_run_dir`) runs 2 s after an
-  experiment is activated and warns (popup once per experiment + console) if the RE machine cannot write there or
-  `remote_exp_dir` is unset. `_schedule_run_file_check` verifies 10 s after each logged run that `<exp>/runs/<uid>.jsonl`
-  is visible locally (one stat), warning once per session otherwise.
-- **Sync** (`_JsonlSyncThread`, `run_sync.py`) is only a safety net for old/emergency runs: local presence = one `os.listdir`
-  (`missing_run_uids`), never a stat per run (NFS stat storms froze the UI); not-found UIDs are remembered 24 h
-  (`jsonl_not_on_remote.json`); automatic syncs fetch ≤ `AUTO_LIMIT` (40) runs; searches only
-  `~/.easy_bluesky/data[/runs]` + optional profile key `jsonl_search_dirs`; the deep `find` runs only for the manual Sync
-  button (`sync_requested(…, deep=True)`); files are transferred as streamed tar.gz chunks.
+## Saving data: MongoDB + HDF5 export (no local run files)
+- The app writes **no** run files and has **no** local data viewer or sync (Local Data tab, `run_sync.py`, the sync thread and the
+  run-dir / run-file warnings were removed). Past runs are viewed in the **MongoDB Browser** (live source) or the **HDF5 Viewer**
+  (an exported file).
+- **Backup**: the RE machine still writes `<remote_exp_dir>/runs/<uid>.jsonl` (`_jsonl_run_factory` in re_startup_mongo.py:
+  `remote_exp_dir/runs` → `exp_dir/runs` → emergency `~/.easy_bluesky/data/runs`). Quiet safety net for profiles without
+  MongoDB; nothing in the app syncs or warns about it. `check_run_dir()` still exists in the startup script, unused.
+- **Export HDF5** (Experiments tab, MongoDB Browser buttons): `hdf5_export.py` — `run_from_mongo(db, uid)` or
+  `run_from_jsonl(path)` (used when no MongoDB is configured; reads `<exp>/runs/*.jsonl` over the shared folder) +
+  `write_run(grp, run)`. One `scan_NNNN` group per run: legacy flat primary datasets, `streams/<name>/` (all streams incl.
+  baseline, with `data_keys` attrs), attrs `start_doc`/`stop_doc`/`peak_stats`/`streams` (JSON). `read_streams`/`read_docs` read it.
+- **HDF5 Viewer** = `HDF5BrowserTab` (`hdf5_browser.py`), a subclass of `MongoDataBrowserTab` that swaps only the data source
+  (`_fetch_runs`, `_schedule_data_fetch`, `_on_run_double_clicked`, exports copy scan groups), so it has every MongoDB Browser
+  feature. Old exports (flat datasets only) still open with the primary stream.
 
 ## Baseline stream (positioner values at scan start/end)
 - `re_startup_mongo.py` appends `_baseline_preprocessor` to `RE.preprocessors`: bluesky's `baseline_wrapper` reads **all
   connected positioners** (`PositionerBase` or settable + `.position`, incl. nested ones; `_collect_positioners`) right after
-  `open_run` and before `close_run` into a `baseline` stream (2 events). Saved in JSONL + MongoDB like any stream. Disable with
+  `open_run` and before `close_run` into a `baseline` stream (2 events). Saved in MongoDB (and the backup JSONL) like any stream. Disable with
   env `EASY_BLUESKY_BASELINE=0`; per plan via `md["baseline"]=False` (Experiments tab "Record baseline" checkbox, stored in ui_prefs, injected by `_build_metadata`). Takes effect after an RE Manager restart (script re-upload).
 - Everything that reads run documents must ignore non-primary streams: `run_docs.PrimaryOnly` (app readers: live viewer, JSONL
-  parsers, queue manager table, progress counter) and the `skip` sets in the RE-side callbacks (console table, PeakStats, scans log).
+  parsers, queue manager table, progress counter; exports keep all streams) and the `skip` sets in the RE-side callbacks (console table, PeakStats, scans log).
 - MongoDB Browser → **Baseline…** (`_BaselineDialog`): signal × (run start/end) table, filter, setpoints toggle, "only rows that
   differ", copy.
