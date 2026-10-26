@@ -69,7 +69,7 @@ from .experiments_tab import ExperimentsTab, _same_experiment as _same_exp_dirs
 from .devices_plans_tab import DevicesPlansTab
 from .pv_watchdog import PVWatchdogTab
 from .mongo_browser import MongoDataBrowserTab
-from .hdf5_viewer import HDF5Viewer
+from .hdf5_browser import HDF5BrowserTab
 from .local_data_browser import LocalDataBrowserTab
 from .re_console import REConsoleWidget
 from .ai_assistant import AIAssistantWindow
@@ -1204,7 +1204,7 @@ class MainWindow(QMainWindow):
         self.devices_plans_tab.set_plan_catalog(self._plan_catalog)
         self.watchdog_tab       = PVWatchdogTab()
         self.mongo_browser      = MongoDataBrowserTab(self._conn_settings)
-        self.hdf5_viewer        = HDF5Viewer()
+        self.hdf5_viewer        = HDF5BrowserTab(self._conn_settings)
         self.local_data_browser = LocalDataBrowserTab()
         self.local_data_browser.sync_requested.connect(self._sync_jsonl_from_beamline)
         self.local_data_browser.update_settings(self._conn_settings)
@@ -1496,6 +1496,7 @@ class MainWindow(QMainWindow):
         self.mongo_browser.move_2d_requested.connect(self._on_map_move_2d_requested)
         self.experiments_tab.live_viewer.move_2d_requested.connect(self._on_map_move_2d_requested)
         self.hdf5_viewer.move_2d_requested.connect(self._on_map_move_2d_requested)
+        self.hdf5_viewer.move_requested.connect(self._on_mongo_move_requested)
 
         self._connect_requested.connect(self.worker.connect)
 
