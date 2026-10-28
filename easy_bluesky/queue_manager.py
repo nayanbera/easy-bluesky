@@ -29,9 +29,11 @@ def _is_motion_only(name: str, kwargs: dict) -> bool:
 class RunDetailDialog(QDialog):
     """Shows full plan metadata + run data from the saved JSONL file."""
 
-    def __init__(self, item: dict, worker=None, plans=None, devices=None, parent=None):
+    def __init__(self, item: dict, worker=None, plans=None, devices=None, parent=None,
+                 prepare=None):
         super().__init__(parent)
         self._item    = item
+        self._prepare = prepare      # callable(item) -> item: refreshes exp_dir/scan_num for the active experiment
         self._worker  = worker
         self._plans   = plans  or {}
         self._devices = devices or {}
@@ -279,7 +281,8 @@ class RunDetailDialog(QDialog):
         # fields (e.g. detectors not stored when plan used server defaults)
         dlg = PlanDialog(self._plans, self._devices, item=base, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-            ok, result = self._worker.add_item(dlg.result_item)
+            queued = self._prepare(dlg.result_item) if self._prepare else dlg.result_item
+            ok, result = self._worker.add_item(queued)
             msg = "Plan added to queue" if ok else result
             QMessageBox.information(self, "Re-queue", f"{'✓' if ok else '✗'} {msg}")
 

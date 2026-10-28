@@ -2639,7 +2639,8 @@ class ExperimentsTab(QWidget):
         if not item:
             return
         dlg = RunDetailDialog(item, worker=self.worker,
-                              plans=self._plans, devices=self._devices, parent=self)
+                              plans=self._plans, devices=self._devices, parent=self,
+                              prepare=self._inject_metadata)
         dlg.exec()
 
     def _on_plan_log_selection_for_detail(self, current, _previous):
@@ -5300,5 +5301,6 @@ class ExperimentsTab(QWidget):
             },
         }
         dlg = RunDetailDialog(item, worker=self.worker,
-                              plans=self._plans, devices=self._devices, parent=self)
+                              plans=self._plans, devices=self._devices, parent=self,
+                              prepare=self._inject_metadata)
         dlg.exec()
