@@ -1980,6 +1980,26 @@ class MainWindow(QMainWindow):
                     msg_box.exec()
                     if msg_box.clickedButton() != btn_start:
                         return
+        # Sample guard: queued plans carry the sample they were queued with
+        if active_exp:
+            manager_state = self._last_status.get("manager_state", "")
+            mism = self.experiments_tab.queued_sample_mismatches() if manager_state != "executing_queue" else []
+            if mism:
+                mb = QMessageBox(self)
+                mb.setIcon(QMessageBox.Icon.Warning)
+                mb.setWindowTitle("Sample Mismatch")
+                mb.setText(self.experiments_tab.format_sample_mismatch(
+                    mism, self.experiments_tab._sample_name)
+                    + "\n\nThe data will be saved with the sample metadata stored in each plan.")
+                b_upd = mb.addButton("Use current sample && Start", QMessageBox.ButtonRole.AcceptRole)
+                b_go  = mb.addButton("Start anyway", QMessageBox.ButtonRole.AcceptRole)
+                b_no  = mb.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                mb.setDefaultButton(b_no)
+                mb.exec()
+                if mb.clickedButton() is b_no or mb.clickedButton() is None:
+                    return
+                if mb.clickedButton() is b_upd:
+                    self.experiments_tab.apply_current_sample_to_queue(mism)
         self.devices_plans_tab.pause_sim_poll()
         # Ensure loop mode matches checkbox state before start
         if not self.experiments_tab._server_loop_active:

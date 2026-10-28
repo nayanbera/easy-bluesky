@@ -3923,6 +3923,47 @@ class ExperimentsTab(QWidget):
         self._apply_re_history_range()
         QTimer.singleShot(0, self._offer_queue_exp_update)
 
+    def queued_sample_mismatches(self) -> list:
+        """[(item, queued_sample_name)] for queued scan plans whose sample_name/description
+        differs from the sample currently entered in the Experiments tab."""
+        cur_n = (self._sample_name or "").strip()
+        cur_d = (self._sample_description or "").strip()
+        out = []
+        for it in list(self._current_queue_items):
+            if it.get("item_type", "plan") != "plan":
+                continue
+            kw = it.get("kwargs") or {}
+            md = kw.get("md")
+            if not isinstance(md, dict) or _is_motion_only(it.get("name", ""), kw):
+                continue
+            qn = (md.get("sample_name") or "").strip()
+            qd = (md.get("sample_description") or "").strip()
+            if qn != cur_n or qd != cur_d:
+                out.append((it, qn))
+        return out
+
+    def apply_current_sample_to_queue(self, mism: list):
+        import copy as _copy
+        n = 0
+        for it, _ in mism:
+            patched = _copy.deepcopy(it)
+            md = patched["kwargs"]["md"]
+            for k, v in (("sample_name", self._sample_name), ("sample_description", self._sample_description)):
+                if v:
+                    md[k] = v
+                else:
+                    md.pop(k, None)
+            ok, _m = self.worker.update_item(patched)
+            n += bool(ok)
+        self._log(f"✓ Set current sample on {n}/{len(mism)} queued plan(s)")
+
+    @staticmethod
+    def format_sample_mismatch(mism: list, current: str) -> str:
+        names = sorted({(n or "(none)") for _, n in mism})
+        return (f"{len(mism)} queued plan(s) carry a different sample than the one now "
+                f"entered ('{current or '(none)'}'):  " + ", ".join(f"'{n}'" for n in names[:6])
+                + ("…" if len(names) > 6 else ""))
+
     def _offer_queue_exp_update(self):
         """After switching experiments, offer to move already-queued plans of another
         experiment to the active one (exp_dir, remote_exp_dir, ESAF/DOI metadata)."""
@@ -3942,7 +3983,9 @@ class ExperimentsTab(QWidget):
             f"{len(foreign)} plan(s) in the queue belong to another experiment "
             f"('{other}'); they would save their data there.\n\n"
             f"Move them to the active experiment '{Path(self._active_exp_path).name}'?\n"
-            "(exp_dir, remote_exp_dir and ESAF metadata are replaced; scan numbers are renumbered.)")
+            "(exp_dir, remote_exp_dir and ESAF metadata are replaced; scan numbers are renumbered. "
+            "The sample metadata is NOT changed.)"
+            + (("\n\n⚠ " + self.format_sample_mismatch(sm, self._sample_name)) if (sm := self.queued_sample_mismatches()) else ""))
         b_yes = box.addButton("Move to active experiment", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Keep as is", QMessageBox.ButtonRole.RejectRole)
         box.exec()
