@@ -708,7 +708,7 @@ def _ask_move_position(parent, motor_name, x_clicked, cen, com, x_field=""):
 
     _btn(f"Clicked position  ({x_clicked:.6g})", x_clicked)
     if cen is not None:
-        _btn(f"CEN  ({cen:.6g})", cen, "#ffdd00")
+        _btn(f"CEN  ({cen:.6g})", cen, "#e08a00")
     if com is not None:
         _btn(f"COM  ({com:.6g})", com, "#00ccff")
 
