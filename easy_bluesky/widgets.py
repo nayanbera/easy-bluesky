@@ -1341,6 +1341,11 @@ class PlanDialog(QDialog):
                 break
         if found and name in self.plans:
             self._on_plan_changed(name)
+        if not hasattr(self, "param_form"):
+            # Plan not in the allowed list (RE environment closed, or plan removed/renamed)
+            self.desc_label.setText(
+                f"⚠ Plan '{name}' is not available in the RE Manager — pick a plan from the list.")
+            return
         args   = item.get("args", [])
         kwargs = {k: v for k, v in item.get("kwargs", {}).items() if k != "md"}
         self.param_form.set_values(args, kwargs)
