@@ -3921,6 +3921,51 @@ class ExperimentsTab(QWidget):
         self.exp_date_label.setText(f"Created: {created[:10]}" if created else "")
         self._load_plan_log(path)
         self._apply_re_history_range()
+        QTimer.singleShot(0, self._offer_queue_exp_update)
+
+    def _offer_queue_exp_update(self):
+        """After switching experiments, offer to move already-queued plans of another
+        experiment to the active one (exp_dir, remote_exp_dir, ESAF/DOI metadata)."""
+        if not self.worker or not self._active_exp_path:
+            return
+        foreign = [it for it in list(self._current_queue_items)
+                   if it.get("item_type", "plan") == "plan"
+                   and ((it.get("kwargs") or {}).get("md") or {}).get("exp_dir")
+                   and not _same_experiment(((it.get("kwargs") or {}).get("md") or {})["exp_dir"],
+                                            self._active_exp_path)]
+        if not foreign:
+            return
+        other = Path(foreign[0]["kwargs"]["md"]["exp_dir"]).name
+        box = QMessageBox(self)
+        box.setWindowTitle("Queued plans from another experiment")
+        box.setText(
+            f"{len(foreign)} plan(s) in the queue belong to another experiment "
+            f"('{other}'); they would save their data there.\n\n"
+            f"Move them to the active experiment '{Path(self._active_exp_path).name}'?\n"
+            "(exp_dir, remote_exp_dir and ESAF metadata are replaced; scan numbers are renumbered.)")
+        b_yes = box.addButton("Move to active experiment", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Keep as is", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not b_yes:
+            return
+        import copy as _copy
+        auto = self._build_metadata()
+        exp_keys = ("exp_dir", "remote_exp_dir", "esaf_id", "pi_name", "pi_institution",
+                    "proposal_id", "esaf_start_date", "esaf_end_date", "doi",
+                    "esaf_title", "esaf_beamline", "esaf_technique")
+        n_ok = 0
+        for it in foreign:
+            patched = _copy.deepcopy(it)
+            md = patched["kwargs"]["md"]
+            for k in exp_keys:
+                md.pop(k, None)
+            md.update({k: auto[k] for k in exp_keys if k in auto})
+            ok, _ = self.worker.update_item(patched)
+            n_ok += bool(ok)
+        self._log(f"✓ Moved {n_ok}/{len(foreign)} queued plan(s) to the active experiment")
+        # renumber from a fresh queue snapshot (a stale one would write the old exp_dir back)
+        self._needs_renumber = False
+        QTimer.singleShot(2000, self._renumber_queue)
 
     def _on_exp_dir_changed(self, _changed_path: str):
         """Called by QFileSystemWatcher when the experiment directory changes.
