@@ -21,12 +21,18 @@ multi-client safety layer provides operator locking, real-time client visibility
 status disambiguation when multiple workstations share the same queue-server. Experiment
 Safety Assessment Form (ESAF) integration automates folder creation and injects proposal
 metadata into every plan. An integrated Visual Plan Composer assembles measurement
-sequences from graphical building blocks without requiring the user to write Python. A
-Live Viewer displays scan data in real time as bluesky documents arrive over ZMQ; for
-two-dimensional scans it renders a colour-mapped intensity map with adjustable histogram
-LUT and supports direct motor moves by double-clicking a pixel. An interactive
-curve-fitting module with per-dataset parameter memory supports rapid analysis within the
-same interface used for data collection. A dedicated MCA Viewer supports multi-channel
+sequences from graphical building blocks without requiring the user to write Python. Every
+plan is stamped with experiment, sample and proposal metadata at queue time, and safeguards
+prevent re-queued or carried-over plans from writing into the wrong experiment or with the
+wrong sample. Run documents are stored in MongoDB together with an automatic *baseline*
+stream recording the position of every positioner at the start and end of each scan; a
+complete, self-describing HDF5 export carries all of this to the experimenter's own
+computer, where an offline viewer with the full feature set of the live database browser
+reads it. A Live Viewer displays scan data and peak statistics in real time as bluesky
+documents arrive over ZMQ; for two-dimensional scans it renders a colour-mapped intensity
+map with adjustable histogram LUT and supports direct motor moves by double-clicking a
+pixel. An interactive curve-fitting module with per-dataset parameter memory supports
+rapid analysis within the same interface used for data collection. A dedicated MCA Viewer supports multi-channel
 analyser detectors with ROI-based channel browsing, real-time EPICS CA readback, and
 automated Fe-55 energy calibration by fitting Mn Kα/Kβ Gaussian peaks. EasyBluesky is
 implemented in Python using PyQt6 or PySide6 (via the qtpy compatibility layer) and
@@ -118,14 +124,18 @@ pyepics CA thread are forwarded to the Qt main thread via queued signals and coa
 a 100 ms flush timer, ensuring rapid PV changes produce a single tree repaint rather than
 per-callback redraws.
 
-**Data storage.** The startup script subscribes two callbacks in the RunEngine: a
-`suitcase.jsonl` writer via a `RunRouter` that creates per-run JSONL files in the active
-experiment directory (or a local fallback), and a MongoDB writer. Both run unconditionally
-so that run data is preserved even when MongoDB is unavailable. A third ZMQ PUB
-subscription on a configurable document port feeds the Live Viewer. The application
-additionally maintains a lightweight `plans_log.jsonl` index on the client machine,
-recording plan name, parameters, run UID, and scan number for every completed run in the
-active experiment.
+**Data storage.** The startup script registers a RunEngine preprocessor and three
+subscriptions. The preprocessor (bluesky's `baseline_wrapper`) adds a `baseline` stream
+holding the values of all connected positioners at the start and end of every run (§3.2).
+A MongoDB writer stores every document generically in collections named after the bluesky
+document types. A `RunRouter`-based JSONL writer additionally keeps a per-run backup file
+in the experiment directory on the RE machine; it is a quiet safety net that also serves
+profiles without a MongoDB instance and is never read by the client during normal
+operation. A third, ZMQ PUB subscription on a configurable document port feeds the Live
+Viewer. The client application itself writes no run files. The application maintains only
+a lightweight `plans_log.jsonl` index on the client machine, recording plan name,
+parameters, run UID, and scan number for every completed run in the active experiment;
+portable copies of the data are produced on demand by HDF5 export (§3.2).
 
 **Thread model summary.**
 
@@ -205,20 +215,23 @@ inspection accessible without a separate dialog.
 Two automation options reduce the manual steps required during a measurement session.
 The **Auto-start** checkbox causes EasyBluesky to start the queue automatically as soon
 as the first plan is added, provided the RunEngine is idle and the environment is open —
-useful during unattended operation. The **Loop** control re-runs the complete queue a
-specified number of times (zero selects infinite looping), re-adding all items from a
-snapshot taken at the time the queue was started. The loop count spinbox is live: changing
-it during a run adjusts the number of remaining iterations immediately, and the current
-iteration is displayed next to the control.
+useful during unattended operation. The **Loop** control uses the queue-server's native loop mode, so each completed plan is
+moved to the back of the queue by the server itself; the cycle count is finite or infinite,
+completed plans receive fresh sequential scan numbers, and the queue progress bar reports
+the current cycle. **Skip**, **Stop Queue** and **Ignore Failures** allow the current plan
+to be dropped, the queue to halt after the running plan, or execution to continue past a
+failed plan, respectively.
 
 ### 3.2 Experiment and Data Management
 
 EasyBluesky organises measurements into named experiments. Each experiment is a directory
-on the local machine that accumulates JSONL run files written by a `suitcase.jsonl`
-subscriber running inside the RunEngine environment. A plans log (`plans_log.jsonl`)
-tracks every completed plan, recording start time, plan name, parameters, and the unique
-run UID. The MongoDB Browser tab reads run data from a locally accessible MongoDB instance
-and filters the view automatically to the active experiment using run UIDs from the plans
+on the local machine holding the plans log (`plans_log.jsonl`), the experiment description
+and the RE console log; the corresponding data directory as seen by the RE machine
+(`remote_exp_dir`) is derived from the local path by exchanging the profile's local data
+root for its remote data root, so that both machines address the same shared folder. The
+plans log tracks every completed plan, recording start time, plan name, parameters, and the
+unique run UID. The MongoDB Browser tab reads run data from the MongoDB instance and
+filters the view automatically to the active experiment using run UIDs from the plans
 log; a regex fallback is used when the log is empty. Multiple runs can be selected
 simultaneously for overlay plotting, with automatic detection of common X and Y fields.
 Auto-plotting triggers without button presses when the selection or axis choices change.
@@ -240,8 +253,49 @@ Scan # column is consistent with the Plan Log even when a custom plan wrapper do
 forward `md["scan_num"]` into the bluesky `run_start` document, and regardless of how
 many runs from other experiments appear in the same MongoDB collection.
 
-A tabular data browser allows experimenters to open HDF5 archives from any completed run.
-Background filesystem monitoring detects if the active experiment folder is deleted or
+**Metadata integrity.** Every plan carries, in its `md` dictionary, the experiment
+directory, remote directory, sample name and description, ESAF fields, submitting host,
+scan number and a baseline switch, all assigned at queue time. Because queued plans execute
+later, possibly after the operator has changed experiment or sample, three safeguards
+prevent mis-filed data. (i) Re-queuing a plan from any history view (RE History, Plans Log,
+run-detail dialog, loop copy) discards the stored experiment paths, host and scan number
+and replaces them with those of the active experiment. (ii) When the active experiment is
+switched while plans remain in the queue, the application asks whether the plans belonging
+to the previous experiment should be moved to the new one (paths, ESAF and DOI fields are
+replaced and scan numbers renumbered); nothing is rewritten without confirmation. (iii) On
+starting the queue, a warning is shown if queued plans belong to a different experiment or
+carry a sample name or description that differs from the one currently entered, offering to
+apply the current sample, start unchanged, or cancel. A stall watchdog additionally reports
+in the experiment log when a started scan produces no data, directing the operator to the
+RE console.
+
+**Baseline stream.** For every run the RunEngine reads all connected positioners
+(including nested components of composite devices) immediately after the run opens and
+again before it closes, and stores the result as a second event stream named `baseline`.
+The record therefore documents the full instrument configuration — including motors that
+are not scanned — at the start and end of each measurement, and any motor drift during the
+scan appears as a difference between the two events. A *Record baseline* checkbox in the
+Experiments tab switches the stream on or off per plan, and the stream can be disabled
+globally by an environment variable. All consumers of live run documents (plots, progress
+counters, peak statistics, console tables) ignore non-primary streams so that the baseline
+never interferes with scan display. In the MongoDB Browser, a *Baseline* view and a tab in
+the run-detail dialog present the positioner values as a signal-by-(start/end) table with
+filtering, an option to show only positioners that changed, and clipboard export.
+
+**Data export and offline viewing.** The application deliberately does not write a local
+copy of the data during acquisition: HDF5 files lack journaling and are vulnerable to
+corruption on interrupted writes or unreliable network file locking, and any file write
+performed inside a RunEngine callback would stall data acquisition. Instead, experimenters
+export runs on demand, individually or for the whole experiment, to a single HDF5 file with
+one group per scan. The export reads MongoDB or, for profiles without a database, the
+backup run files over the shared folder, and contains every stream (primary, baseline and
+any others), the complete start and stop documents, stored peak statistics and the
+per-signal PV, units and data type, in addition to flat datasets of the primary stream for
+compatibility with generic HDF5 tools. The HDF5 Viewer is the MongoDB Browser with its data
+source exchanged for such a file: all of its functions — stream selection, overlays,
+derivatives, two-dimensional maps, curve fitting, baseline inspection, the run-detail
+window and motor-position reproduction — work identically offline, without a beamline
+connection, and files can be re-exported as subsets. Background filesystem monitoring detects if the active experiment folder is deleted or
 the NFS mount is lost while the app is running, pausing running scans automatically and
 alerting the user. RE Manager console output is appended to `<exp_dir>/console.log`
 for the duration of each session, providing a permanent record alongside the run data.
@@ -281,7 +335,7 @@ action (*File → Generate Sim Devices*) parses the real devices file and genera
 corresponding `devices_sim.py` that instantiates ophyd `SynAxis` and `SynGauss`
 surrogates for each real motor and detector. A dedicated connection profile pointing at
 this devices file starts a queue-server that executes plans against the synthetic devices,
-exercising the full Bluesky data pipeline and producing JSONL output indistinguishable in
+exercising the full Bluesky data pipeline and producing run documents indistinguishable in
 structure from real data. This capability is particularly valuable for training new users
 and for verifying complex multi-step sequences before committing to scarce beamtime.
 
@@ -318,7 +372,7 @@ databases via a bundled FastAPI REST server, local PDF parsing, or manual entry
 directory in a standard hierarchy (`<PI group>/<ESAF ID>_<date>/`) and registers PI name,
 proposal title, ESAF identifier, user list, and institution as metadata fields. These
 fields are injected into the `md` (metadata) dictionary of every plan added to the queue,
-so they appear verbatim in run documents stored in MongoDB and in JSONL run files.
+so they appear verbatim in run documents stored in MongoDB, in the backup run files and in HDF5 exports.
 
 A technique dropdown in the ESAF picker narrows results to the relevant measurement
 modality, and a client-side regex field searches across all record fields — PI name,
@@ -387,7 +441,7 @@ from being incorrectly disabled during sub-second device polls from a second cli
 
 ### 3.9 Integrated Curve Fitting
 
-The MongoDB Browser and HDF5 Viewer tabs provide an interactive curve-fitting module
+The MongoDB Browser and HDF5 Viewer tabs (the latter being the former reading an exported file) provide an interactive curve-fitting module
 built on the lmfit library (Newville *et al.*, 2014). The fit dialog is non-modal and
 displays a live preview curve on the plot immediately when opened, updating in real time
 as parameters are adjusted. Five peak models (Gaussian, Lorentzian, Voigt, pseudo-Voigt,
@@ -420,8 +474,11 @@ operations or device monitoring.
 **1D scans.** Incoming event documents are accumulated into a buffer keyed by detector
 field name. Autodetection of the scan motor from the `hints` field of the `run_start`
 document selects the X axis without user configuration. The plot updates at each event;
-on receipt of a `stop` document the final curve is retained and can be interacted with
-using the standard pan/zoom tools. A crosshair readout follows the mouse cursor and
+peak statistics (centroid, FWHM and centre of mass) and the corresponding marker lines
+are recomputed during the scan, with a short throttle, so the operator can judge peak
+position while the scan is still running; on receipt of a `stop` document the final curve
+is retained and can be interacted with using the standard pan/zoom tools. Non-primary
+streams such as the baseline are ignored for plotting. A crosshair readout follows the mouse cursor and
 displays the interpolated position and signal value. Double-clicking a point on the
 completed curve sends a motor-move command (`bps.mv`) to the queue-server, positioning
 the motor at the clicked X coordinate; this allows the operator to follow up a coarse
@@ -520,6 +577,14 @@ operation of Bluesky-controlled beamlines. The simulation mode enables beamtime
 preparation on personal hardware and supports user training independent of beamline
 availability.
 
+Data integrity is addressed at the points where graphical operation could otherwise
+introduce errors. Metadata are stamped on every plan at queue time, re-queued and carried-over
+plans are refreshed or explicitly migrated to the active experiment, and mismatched samples
+are flagged before the queue starts. A baseline stream records the state of every
+positioner for each scan, and a complete HDF5 export together with an offline viewer
+sharing the code of the database browser lets experimenters take fully annotated data
+home without any change to the acquisition path.
+
 Queue management and experiment history are unified in a single Experiments tab, reducing
 panel-switching during active data collection. The Plans Log and RE History sub-tabs give
 users simultaneous access to experiment-specific completed scans and the full RunEngine
@@ -613,7 +678,7 @@ signal recorded at each point was [*detector/channel*]. The peak at [*position a
 units*] corresponds to [*physical meaning — e.g. the rocking curve maximum, the
 knife-edge midpoint*]. The scan was defined and submitted to the queue entirely through
 the EasyBluesky graphical interface without user interaction with a Python interpreter.
-Data were written automatically to a JSONL run file and are shown here as plotted by
+Data were stored automatically in the MongoDB run database and are shown here as plotted by
 [*your plotting tool — e.g. the integrated data browser / matplotlib*].
 
 ---
@@ -654,5 +719,5 @@ Virtanen, P. *et al.* (2020). SciPy 1.0: Fundamental algorithms for scientific c
 in Python. *Nature Methods*, **17**, 261–272.
 https://doi.org/10.1038/s41592-019-0686-2
 
-[*Add suitcase.jsonl / event-model reference if published*]
+[*Add event-model reference if published*]
 [*Add MongoDB reference if needed by journal style*]
