@@ -4,12 +4,12 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 
 ## Features
 
-- **Experiments** — Create and manage experiments with sample metadata and plan log. Supports ESAF-based folder structure (`PI group / ESAF / run`) or free-form manual paths. A live ESAF server health indicator (coloured dot) shows connection status at a glance. The Plan Log header shows a **Next scan: #N** label (recalculates on every queue change). A **"Now Running" banner** shows the active plan name, scan number, and sample name while a scan is executing — green for plans you queued, amber when the running plan was submitted by another client. `scan_num` is computed fresh from `plans_log.jsonl` and `queued_scans.jsonl` on every plan addition, so numbers stay unique and monotone even when two clients share the same queue. Each plan carries the submitter's metadata and is never silently rewritten when the active experiment changes.
+- **Experiments** — Create and manage experiments with sample metadata and plan log. Supports ESAF-based folder structure (`PI group / ESAF / run`) or free-form manual paths. A live ESAF server health indicator (coloured dot) shows connection status at a glance. The Plan Log header shows a **Next scan: #N** label (recalculates on every queue change). A **"Now Running" banner** shows the active plan name, scan number, and sample name while a scan is executing — green for plans you queued, amber when the running plan was submitted by another client. `scan_num` is computed fresh from `plans_log.jsonl` and `queued_scans.jsonl` on every plan addition, so numbers stay unique and monotone even when two clients share the same queue. Each plan carries the metadata of the experiment it was queued in, and it is never rewritten silently: re-queuing a plan from another experiment (history, Plans Log, run-detail dialog) always refreshes `exp_dir`, `remote_exp_dir` and the scan number to the active experiment, and when you switch experiments with plans already queued the app **asks** whether to move them to the new experiment. A **Record baseline** checkbox controls the per-plan baseline stream (see [Baseline](#baseline-positioner-values-at-scan-start-and-end)). Starting the queue warns when queued plans carry a different **sample** than the one currently entered, with the option to apply the current sample. If a started scan produces no data for a while, a stall message in the experiment log points you to the RE Console.
 - **Queue Manager** — Add, reorder, and delete plans (with confirmation). Each queued plan shows its assigned scan number (`#N`) instead of a queue position. Full RE controls: open environment, **Start**, **Pause**, **Resume**, **Skip** (drop the current plan without aborting), **Stop Queue** (finish the current plan then halt), **Abort**, and **Ignore Failures** (keep the queue running after a failed or aborted plan). The Start button is disabled whenever the RE Manager is busy (`manager_state ≠ idle`). Enable **Loop** mode to have the queueserver automatically re-queue each completed plan at the back; choose a finite number of cycles (e.g. `3 cycles`) or set to `∞` for continuous repetition. Scan numbers in loop mode are assigned fresh sequential numbers as plans cycle around; after an abort the returned plan and all remaining queue items are automatically renumbered.
 - **Plan Builder** — Two-panel interface: a **Visual Composer** for assembling scan sequences from drag-and-drop blocks (no Python required), and a **Code Editor** for full custom plans with syntax highlighting, auto-indent, and templates.
-- **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ. Crosshair cursor, point-hover tooltip, double-click motor move, screenshot. 2D grid-scan maps with interactive intensity histogram (draggable min/max handles), equal aspect ratio, centerline overlay, and double-click motor move to any map point.
-- **MongoDB Browser** — Browse completed runs stored in MongoDB. Filters automatically to the active experiment (UID-based, not regex); select multiple runs for overlay plotting with common-column intersection; auto-plots when selection or axis choices change; 1st and 2nd derivative transforms (`np.gradient`, no x-shift) with error propagation applied to data and fit overlays; double-click the plot to move the motor; screenshot; HDF5 export. 2D grid-scan maps with interactive histogram LUT, equal aspect ratio, centerline overlay toggle, and double-click motor move.
-- **HDF5 Viewer** — Open exported HDF5 archives, browse scans, overlay plots, view metadata. 2D grid-scan maps with interactive histogram LUT and double-click motor move.
+- **Live Viewer** — Real-time pyqtgraph plots streamed over ZMQ; peak statistics (`cen / FWHM / COM`) and the cen/COM marker lines update **during** the scan (throttled), not only at the end. Crosshair cursor, point-hover tooltip, double-click motor move, screenshot. 2D grid-scan maps with interactive intensity histogram (draggable min/max handles), equal aspect ratio, centerline overlay, and double-click motor move to any map point.
+- **MongoDB Browser** — Browse completed runs stored in MongoDB. Filters automatically to the active experiment (UID-based, not regex); select multiple runs for overlay plotting with common-column intersection; auto-plots when selection or axis choices change; **Baseline…** button and a Baseline tab in the double-click detail window show the positioner values at scan start/end; 1st and 2nd derivative transforms (`np.gradient`, no x-shift) with error propagation applied to data and fit overlays; double-click the plot to move the motor; screenshot; HDF5 export. 2D grid-scan maps with interactive histogram LUT, equal aspect ratio, centerline overlay toggle, and double-click motor move.
+- **HDF5 Viewer** — The MongoDB Browser reading from an exported `.h5` file instead of a database: every feature (all streams, the **Baseline** view, double-click detail window, overlays, derivatives, 2D maps, curve fitting, motor-position reproduction, re-export) works offline, with no beamline connection. This is the local data viewer — the app writes no run files of its own.
 - **Microfluidics Centerline Extraction** — Extract the channel centerline from any 2D intensity map. Uses distance-transform medial axis followed by Zhang-Suen morphological thinning and a double-BFS tree-diameter algorithm that reliably traces serpentine channels without getting stuck at U-bends. Otsu auto-threshold, configurable mask polarity and center sensitivity, spur pruning, arc-length resampling, and a start-point marker. The extracted path overlays on the 2D map in the Live Viewer, MongoDB Browser, and HDF5 Viewer with a Hide/Show toggle.
 - **RE Console** — Live console output from the RE Manager (color-coded for errors/warnings/success).
 - **Instance Profiles** — Run multiple named RE Manager instances simultaneously (e.g. `ASWAXS`, `SURF`, `Sim`) each with its own device set and auto-assigned ports. Switch profiles from the toolbar.
@@ -25,7 +25,7 @@ A PyQt6 desktop application for controlling and monitoring Bluesky experiments v
 - **Remote Data Root** — Per-profile setting for the Linux RE machine's data root directory. Automatically propagated to every plan as `remote_exp_dir` so area detectors can write HDF files to the correct network path without manual entry each run.
 - **Experiment Console Log** — RE Manager console output is automatically appended to `<exp_dir>/console.log` for the duration of each session. The log opens when an experiment is set and closes cleanly when the experiment changes or the app exits.
 - **Experiment Folder Monitoring** — A background filesystem watcher detects if the active experiment folder is deleted or becomes inaccessible while the app is running. A modal dialog notifies the user; if a scan is running it is paused automatically. NFS mount failures (ESTALE, EIO, ENOTCONN) are reported with a distinct message. All filesystem probes run in daemon threads — the Qt event loop is never blocked.
-- **Multi-client awareness** — When two or more EasyBluesky instances connect to the same RE Manager (e.g. Mac + Windows at the same beamline), a **connected-clients chip** in the toolbar shows the count in real time (green for sole operator, amber when sharing). Hovering shows each client's IP address. If a second client is already connected when you launch, a warning dialog appears before the experiment selection dialog so you know to coordinate. The first client is also notified the moment a second joins. An amber **BUSY (ext)** chip distinguishes external RE Manager activity (device polling from another client) from your own running tasks; a 1.5-second debounce suppresses transient flicker. The **"Now Running" banner** turns amber when a plan queued by a different client is executing, and the RE Console emits a one-time warning when a completed plan from a different experiment is skipped while updating the plan log. Plans always run with the metadata supplied at queue time — switching your active experiment never silently alters queued plans from another client.
+- **Multi-client awareness** — When two or more EasyBluesky instances connect to the same RE Manager (e.g. Mac + Windows at the same beamline), a **connected-clients chip** in the toolbar shows the count in real time (green for sole operator, amber when sharing). Hovering shows each client's IP address. If a second client is already connected when you launch, a warning dialog appears before the experiment selection dialog so you know to coordinate. The first client is also notified the moment a second joins. An amber **BUSY (ext)** chip distinguishes external RE Manager activity (device polling from another client) from your own running tasks; a 1.5-second debounce suppresses transient flicker. The **"Now Running" banner** turns amber when a plan queued by a different client is executing, and the RE Console emits a one-time warning when a completed plan from a different experiment is skipped while updating the plan log. Plans always run with the metadata supplied at queue time — switching your active experiment only offers (never forces) to move queued plans, and the Start-time guards warn about plans from another experiment or with a different sample.
 - **Operator lock** — Network-level exclusive-control mechanism for shared beamlines. On connect, EasyBluesky checks whether another host holds the operator lock. If so, you can either take control (with a warning that the other operator is not notified) or continue in read-only mode where Start and Stop Manager are blocked. The lock is released automatically on disconnect or app quit.
 - **Remote Control** — Start, stop, and restart any RE Manager instance on a remote host via SSH key authentication (no passwords stored).
 - **Single-instance enforcement** — Only one app window per profile is allowed on the same computer. Profiles in use by another window are shown greyed out at startup.
@@ -741,22 +741,21 @@ Click **Screenshot** to save the current plot as a PNG. A file dialog lets you c
 
 ### HDF5 export
 
-Select one or more runs and click **Export HDF5…** to save them as a portable `.h5` file. The file is compatible with the **HDF5 Viewer** tab:
+Select one or more runs and click **Export HDF5…** to save them as a portable `.h5` file, or **Export Exp…** to export **all runs of the active experiment** in one step. The export contains everything the MongoDB Browser shows for a run — all streams (primary, **baseline**, …), the complete start and stop documents (sample, ESAF, `md` extras), stored peak statistics, and each signal's PV, units and dtype. The **HDF5 Viewer** reopens it with the full MongoDB Browser feature set.
 
 ```
 my_export.h5
-├── metadata/          # global attrs: n_scans
-│   └── (attrs)
-├── scan_0001/         # one group per scan
-│   ├── (attrs)        # plan_name, uid, exit_status, timestamp, duration_s, motor, detectors
-│   ├── time           # dataset: timestamps
-│   ├── motor_pos      # dataset: motor positions
-│   └── det_counts     # dataset: detector readings
-└── scan_0002/
-    └── ...
+├── metadata/                 # global attrs: n_scans, experiment_name, …
+└── scan_0001/                # one group per run
+    ├── time, <field> …       # flat float datasets of the primary stream (legacy layout, readable by simple tools)
+    ├── attrs                 # plan_name, scan_num, uid, exit_status, timestamp, duration_s, sample_name, …
+    │                         #   start_doc / stop_doc / peak_stats / streams  (JSON)
+    └── streams/
+        ├── primary/          # time + one dataset per field;  attrs: data_keys (JSON: PV, units, dtype, …)
+        └── baseline/         # positioner values at run start / end (if recorded)
 ```
 
-Click **Export Exp…** (next to the run-count label) to export **all runs belonging to the active experiment** in one step — useful for handing off a complete dataset to a user. The output file is compatible with the HDF5 Viewer.
+The same export is available from the **Experiments tab** (`Export HDF5…`). It reads MongoDB when configured; for profiles **without MongoDB** it reads the `.jsonl` run files from `<exp_dir>/runs/` over the shared folder (see [Data Storage](#data-storage)).
 
 ### Curve fitting
 
@@ -829,51 +828,28 @@ The legend auto-positions to the emptiest corner of the view at the end of each 
 
 ## HDF5 Viewer
 
-The **HDF5 Viewer** tab opens exported HDF5 archives and allows offline analysis — no beamline connection required. This makes it the primary tool for users who take data home after a beamline session.
+The **HDF5 Viewer** is the [MongoDB Browser](#mongodb-browser) with a different data source: an exported `.h5` file. It has **every** MongoDB Browser feature — run table, multi-run overlay, X/Y/Norm selection, stream selector, log / derivative / error-bar options, peak statistics and cen/COM markers, 2D maps and centerline extraction, [curve fitting](#curve-fitting), motor-position reproduction, screenshots, the **Baseline…** view and the double-click detail window — and works with no network connection and no RE Manager. It is the local data viewer: the app itself writes no run files (see [Data Storage](#data-storage)).
 
 ### Opening a file
 
-Click **Open HDF5…** and select a `.h5` file produced by the MongoDB Browser's Export HDF5 function or the Experiments tab's Export HDF5 fallback. The scan list on the left is populated automatically.
+Click **Open HDF5…** and choose a `.h5` file written by **Export HDF5…** (MongoDB Browser or Experiments tab). The run table fills with the scans of the file. Files from older versions (flat primary datasets only) still open and show the primary stream.
 
-### Browsing scans
+### Exporting from the viewer
 
-Select one or more scans in the list. The app finds the common set of fields across all selected scans and populates the X, Y, and Norm dropdowns accordingly. Overlay up to 10 scans on the same plot.
+**Export HDF5…** / **Export Exp…** copy the selected / all scans into a new `.h5` file (e.g. to send a subset to a collaborator).
 
-### Controls
+### Keeping a file current
 
-| Control | Purpose |
-|---------|---------|
-| X combo | X-axis field |
-| Y list | One or more Y fields (multi-select) |
-| Norm by | Divide Y by this field |
-| Log Y | Logarithmic Y axis |
-| Fit | Open the Curve Fit dialog for the current plot |
-| Screenshot | Save plot as PNG |
-
-### Peak stats and marker lines
-
-When exactly one curve is plotted, peak statistics appear in the plot title (`cen / FWHM / COM`) and two dotted vertical lines are drawn: **yellow** for centroid (when defined) and **cyan** for center of mass. The lines clear automatically when multiple curves are overlaid.
-
-On first load (no saved selection), the viewer pre-selects only the **first** non-motor numeric signal, producing a clean single-curve plot.
-
-### Metadata
-
-Select a single scan to view its metadata (plan name, UID, exit status, timestamp, motor, detectors) in the panel below the scan list.
+An HDF5 file contains only what was exported — it does not update itself after later scans. Export again to refresh it.
 
 ### Offline use
-
-The HDF5 Viewer works with no network connection and no RE Manager running. Install the package on any computer:
 
 ```bash
 pip install easy-bluesky
 easy-bluesky
 ```
 
-Open the **HDF5 Viewer** tab — everything else can be ignored. Users at the beamline export their data once (`Export HDF5…` in the MongoDB Browser or Experiments tab), copy the `.h5` file to a USB drive or network share, and open it at home.
-
-### Plot legend
-
-The legend auto-positions to the emptiest corner of the view after each scan selection change. Drag it to any position to override the automatic placement.
+Open the **HDF5 Viewer** tab; everything else can be ignored. Users at the beamline export their data once, copy the `.h5` file to a USB drive or network share, and open it at home.
 
 ---
 
@@ -1474,8 +1450,18 @@ Every plan added to the queue from an ESAF-linked experiment automatically recei
 | `esaf_start_date` | `"2026-08-01"` | ESAF beam time start |
 | `exp_dir` | `"/Users/…/run_name"` | Local experiment path |
 | `remote_exp_dir` | `"/home/…/run_name"` | Remote RE machine path |
+| `sample_name`, `sample_description` | `"AgBeh"` | Sample fields of the Experiments tab |
+| `scan_num` | `12` | Next free scan number, locked at queue time |
+| `client_host` | `"mac-lab"` | Submitting computer |
+| `baseline` | `true` | Record-baseline checkbox |
 
-These appear in every run's MongoDB `run_start` document and JSONL file, enabling facility-level reporting of usage by PI group.
+These appear in every run's MongoDB `run_start` document and in the backup run file, enabling facility-level reporting of usage by PI group.
+
+#### Re-queuing and switching experiments
+
+- **Re-queue** (RE history, Plans Log, run-detail dialog, loop copies): the stored `exp_dir`, `remote_exp_dir`, `scan_num`, `client_host` and `baseline` are discarded and replaced by the **active** experiment's values, so a re-queued plan never writes into its old folder.
+- **Switching experiments with plans in the queue**: the app asks *"Move N queued plan(s) to the active experiment?"* — **Move** replaces `exp_dir`, `remote_exp_dir` and the ESAF/DOI fields and renumbers the scans; **Keep as is** leaves them. Sample metadata is not changed by this step.
+- **Start queue guards**: a *Experiment Mismatch* warning when queued plans belong to another experiment, and a *Sample Mismatch* warning (**Use current sample & Start** / **Start anyway** / **Cancel**) when their `sample_name`/`sample_description` differ from the sample currently entered.
 
 ---
 
@@ -1489,7 +1475,7 @@ Remote Data Directory: /home/chem_epics/data
 
 A **Browse…** button opens an SFTP directory browser that connects to the remote host and lets you navigate the filesystem without a terminal. The selected path is stored in the profile and used to auto-populate the remote path whenever you create a new experiment (both in Manual and From ESAF modes).
 
-The remote path is injected into every plan as `remote_exp_dir`. `re_startup_mongo.py` reads this field and calls `os.makedirs(remote_exp_dir, exist_ok=True)` on the RE machine before writing detector HDF files, solving the `PermissionError` that occurs when the detector plugin tries to create directories on the client Mac path.
+In the **manual** new-experiment dialog the remote path is derived from the local one: the local data root of the profile is swapped for the remote data root (you can still edit it). The remote path is injected into every plan as `remote_exp_dir`. `re_startup_mongo.py` reads this field and calls `os.makedirs(remote_exp_dir, exist_ok=True)` on the RE machine before writing detector HDF files, solving the `PermissionError` that occurs when the detector plugin tries to create directories on the client Mac path.
 
 ---
 
@@ -1593,9 +1579,13 @@ Documents are stored in collections that match bluesky document names:
 
 The `exp_dir` field in `run_start` links each run to an experiment and is used by the MongoDB Browser's experiment filter.
 
-### JSONL run files (always-on fallback)
+### HDF5 export (the local copy of your data)
 
-Every run is **also** written to a per-run JSONL file by `re_startup_mongo.py`, regardless of whether MongoDB is configured. Each file is named `<uid>.jsonl` and written to `<exp_dir>/runs/` (over NFS/shared filesystem) or `~/.easy_bluesky/data/runs/` on the RE machine when the experiment path is not accessible.
+The app writes **no** data files of its own and has no local-data viewer or sync. Take data home with **Export HDF5…** and review it in the [HDF5 Viewer](#hdf5-viewer). Nothing is auto-saved; export when you want a file (HDF5 has no journaling, so it is deliberately not written from inside the RunEngine).
+
+### Backup `.jsonl` run files (RE machine, quiet safety net)
+
+`re_startup_mongo.py` still writes every run to `<remote_exp_dir>/runs/<uid>.jsonl` on the RE machine (falling back to `<exp_dir>/runs`, then `~/.easy_bluesky/data/runs/`), whether or not MongoDB is configured. Nothing in the app syncs or warns about these files. They matter for profiles **without MongoDB**: the Experiments tab's **Export HDF5…** reads them over the shared folder (e.g. surf2).
 
 Each line is a JSON array `[doc_type, doc_body]`:
 
@@ -1606,7 +1596,15 @@ Each line is a JSON array `[doc_type, doc_body]`:
 ["stop",       {"uid": "jkl012", "exit_status": "success", ...}]
 ```
 
-The **Experiments tab** uses these JSONL files directly when MongoDB is not configured. Click **Export HDF5…** in the Experiments tab to bundle all JSONL runs from the active experiment into a portable `.h5` file — no MongoDB required.
+### Baseline (positioner values at scan start and end)
+
+`re_startup_mongo.py` adds a RunEngine preprocessor (bluesky's `baseline_wrapper`) that reads **all connected positioners** (including nested ones) right after `open_run` and again before `close_run` into a `baseline` stream (two events). It is stored like any other stream (MongoDB, backup `.jsonl`, HDF5 export).
+
+- **Per plan:** the **Record baseline** checkbox in the Experiments tab (on by default) sets `md["baseline"]`.
+- **Globally:** set `EASY_BLUESKY_BASELINE=0` in the RE Manager environment to disable.
+- **Viewing:** MongoDB Browser / HDF5 Viewer → **Baseline…** (signal × start/end table with filter, setpoint toggle, "only rows that differ", copy) and the **Baseline** tab of the double-click detail window.
+- Plots, the progress bar, peak statistics and the live console table ignore non-primary streams, so the baseline never appears in scan plots.
+- Takes effect after an RE Manager restart (the startup script is re-uploaded on every restart).
 
 ### Experiment folder layout
 
@@ -1618,7 +1616,7 @@ experiments/<name>/
 ├── plans_log.jsonl         # lightweight plan execution log (scan IDs, status, timestamps)
 ├── console.log             # RE Manager console output (appended each session)
 └── runs/
-    ├── <uid1>.jsonl        # per-run JSONL data files (NFS-accessible)
+    ├── <uid1>.jsonl        # backup run files, written by the RE machine
     └── <uid2>.jsonl
 ```
 
@@ -1661,7 +1659,7 @@ experiments/
 }
 ```
 
-`plans_log.jsonl` is a fast local index. Full data lives in MongoDB (when configured) and is also mirrored to JSONL run files. Use **Export HDF5…** in the MongoDB Browser (requires MongoDB) or the Experiments tab (JSONL fallback) to produce a portable `.h5` file.
+`plans_log.jsonl` is a fast local index. Full data lives in MongoDB (when configured); `runs/*.jsonl` is the RE-side backup. Use **Export HDF5…** (MongoDB Browser, or the Experiments tab — which falls back to the `.jsonl` files without MongoDB) to produce a portable `.h5` file.
 
 ---
 
@@ -1756,7 +1754,9 @@ easy-bluesky/
 │   ├── widgets.py            # Shared widgets (ScanArgsWidget, ParamForm, …)
 │   ├── live_viewer.py        # Live Viewer (ZMQ + pyqtgraph, screenshot)
 │   ├── mongo_browser.py      # MongoDB Browser (multi-run, auto-plot, motor move, screenshot)
-│   ├── hdf5_viewer.py        # HDF5 Viewer tab
+│   ├── hdf5_browser.py       # HDF5 Viewer tab (MongoDB Browser subclass reading an .h5 file)
+│   ├── hdf5_export.py        # Complete HDF5 export (MongoDB or .jsonl source) + reader
+│   ├── run_docs.py           # PrimaryOnly filter: ignore non-primary (baseline) streams
 │   ├── devices_plans_tab.py  # Devices & Plans tab (CA monitor, sim monitor, tweak, search)
 │   ├── peak_fit.py           # lmfit models (peaks, steps, background polynomials) + auto-guess
 │   ├── curve_fit_dialog.py   # Interactive parameter dialog (initial values, bounds, algorithm)
@@ -1805,6 +1805,21 @@ easy-bluesky/
 ---
 
 ## Changelog
+
+### 2026-10-28 / 2026-10-30 (data model, baseline, re-queue safety)
+
+- **Refactor: HDF5 is the local data path** — Removed the Local Data tab, the app-side `.jsonl` writing, the sync from the beamline, and the run-file warnings. The HDF5 Viewer is now the MongoDB Browser reading an exported `.h5` file (all features, including streams, Baseline and the detail window). The RE machine still writes backup `.jsonl` files quietly (used for export on profiles without MongoDB).
+- **Feat: Complete HDF5 export** — Exports all streams (incl. baseline), full start/stop documents, peak statistics and `data_keys`, from MongoDB or from `.jsonl` files. Old exports still open.
+- **Feat: Baseline stream** — All connected positioners are recorded at scan start/end (RE-side preprocessor); per-plan **Record baseline** checkbox; **Baseline…** view and a Baseline tab in the MongoDB Browser detail window.
+- **Feat: Live peak statistics** — The Live Viewer updates `cen / FWHM / COM` and the marker lines during the scan.
+- **Feat: Stall message** — If a started scan yields no data for a while, the experiment log says so.
+- **Feat: Plan list refreshes after uploading custom plans** — no app restart needed.
+- **Fix: Scan counter** resets to 1 in a new experiment; manual-experiment remote path mirrors the local path (local root → remote root); no false "plans_log.jsonl not found" popup; a re-created folder no longer inherits old plan history; stale `remote_exp_dir` in re-queued plans no longer sends run files to the old folder.
+- **Fix: Re-queue from the run-detail dialog** refreshes `exp_dir`/`remote_exp_dir`/`scan_num` like every other re-queue path.
+- **Feat: Move queued plans on experiment switch** — prompt to move already-queued plans of another experiment to the active one.
+- **Feat: Sample mismatch warning** — Start-queue guard (with *Use current sample & Start*) and a note in the experiment-switch prompt.
+- **Fix: PlanDialog crash** when re-queuing a plan that is not in the allowed-plans list now shows a notice instead.
+- **Style:** CEN button in the move-motor dialog is amber for readability.
 
 ### 2026-10-12 (server-side loop)
 

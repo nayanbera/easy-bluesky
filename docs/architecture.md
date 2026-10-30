@@ -9,10 +9,10 @@ easy-bluesky
 │   ├── REControlBar        — RE state toolbar (start/pause/abort/env/profile)
 │   ├── QueueManager        — queue list, history, plan detail panel
 │   ├── PlanBuilder         — Visual Composer + Code Editor
-│   ├── ExperimentsTab      — experiment lifecycle, plan log, HDF5 export
+│   ├── ExperimentsTab      — experiment lifecycle, plan log, queue metadata, HDF5 export
 │   ├── LiveViewer          — ZMQ doc subscriber + pyqtgraph live plots
 │   ├── MongoDataBrowserTab — browse/plot/export runs from MongoDB
-│   ├── HDF5Viewer          — open and browse exported HDF5 files
+│   ├── HDF5BrowserTab      — MongoDB Browser subclass reading an exported HDF5 file
 │   ├── DevicesPlansTab     — live device tree (CA monitor + sim monitor)
 │   ├── REConsole           — SSH log tail (live RE output)
 │   └── PVWatchdog          — PV alarm monitor
@@ -24,7 +24,8 @@ easy-bluesky
 │
 ├── Data Layer
 │   ├── MongoDB             — primary run store (via pymongo, written by RE Manager)
-│   ├── <uid>.jsonl files   — per-run JSONL fallback, always written by RE Manager
+│   ├── <uid>.jsonl files   — quiet RE-side backup (used for export when no MongoDB)
+│   ├── HDF5 export         — hdf5_export.py: all streams + documents (manual, no autosave)
 │   ├── plans_log.jsonl     — lightweight experiment plan index (local); UID→scan_num map
 │   ├── queued_scans.jsonl  — audit log of queued items (written; NOT read for scan_num)
 │   └── device_metadata.json— cached PV units/descriptions for sim mode
@@ -84,12 +85,41 @@ RE Manager
 
 ```
 RE Manager
+  ├── RE.preprocessors: _baseline_preprocessor (baseline_wrapper over all positioners)
+  │     → extra "baseline" stream (2 events) in every run unless md["baseline"] is False
   ├── _mongo_write() (re_startup_mongo.py)
   │     → MongoDB collections: run_start, run_stop, event_descriptor, event/event_page
   │     → MongoDataBrowserTab reads via pymongo on background QThreads
-  └── _JSONLRunWriter (re_startup_mongo.py) — always-on, regardless of MongoDB
-        → <exp_dir>/runs/<uid>.jsonl  (or ~/.easy_bluesky/data/runs/ fallback)
-        → ExperimentsTab reads for HDF5 export when MongoDB is not configured
+  └── _jsonl_run_factory — quiet backup, regardless of MongoDB
+        → <remote_exp_dir>/runs/<uid>.jsonl (→ exp_dir/runs → ~/.easy_bluesky/data/runs)
+
+App (Mac)
+  ├── writes NO run files, no local viewer, no sync
+  ├── hdf5_export.run_from_mongo(db, uid) | run_from_jsonl(path)  → write_run(group, run)
+  │     one scan_NNNN group per run: flat primary datasets + streams/<name>/ + JSON attrs
+  └── HDF5BrowserTab (subclass of MongoDataBrowserTab) reads the file via read_streams/read_docs
+```
+
+All code that consumes run documents live (Live Viewer, progress counter, queue table, JSONL parsers) filters with `run_docs.PrimaryOnly`, and the RE-side callbacks (console table, PeakStats, scan log) skip non-primary streams, so the baseline stream never reaches plots or statistics.
+
+### Queue metadata on re-queue and experiment switch
+
+```
+Re-queue (history / Plans Log / run-detail dialog / loop copy)
+→ ExperimentsTab._inject_metadata(item)
+      pops scan_num, exp_dir, remote_exp_dir, client_host, baseline from the old md
+      merges _build_metadata() (active exp_dir, remote_exp_dir, sample, ESAF, client_host, baseline)
+      locks a fresh scan_num
+→ worker.add_item()
+
+Experiment switch (_set_active_experiment)
+→ QTimer(0) → _offer_queue_exp_update()
+      queued plans whose md.exp_dir is another experiment → Yes/No prompt
+      Yes: update_item() with new exp_dir / remote_exp_dir / ESAF+DOI keys, then renumber from a fresh snapshot
+
+Start queue (main._on_start_requested)
+→ experiment-mismatch guard (existing) and sample-mismatch guard
+      ExperimentsTab.queued_sample_mismatches() → Use current sample & Start | Start anyway | Cancel
 ```
 
 ### Queue control
@@ -360,9 +390,9 @@ pyepics calls CA callbacks on a background CA thread. All callbacks immediately 
 
 `peak_fit.py` uses `lmfit` rather than `scipy.optimize.curve_fit` directly. lmfit wraps scipy minimisers but adds parameter bounds, fixed/free flags, derived expressions (e.g. `fwhm = 2.355 * sigma`), multiple minimisation methods, and composite model arithmetic (`Model + Model`). The auto-guess logic (`auto_guess()`) returns a fully configured `lmfit.Parameters` object that `FitParamsDialog` displays and the user can override before fitting. Background polynomials use `lmfit.models.PolynomialModel(prefix="bg_")` so their parameter names (`bg_c0`, `bg_c1`, …) never collide with signal parameters.
 
-### JSONL always-on fallback
+### JSONL backup, HDF5 export, no local run files
 
-`re_startup_mongo.py` subscribes a `RunRouter`-based JSONL writer (`_jsonl_run_factory`) unconditionally — before the MongoDB section. Even when MongoDB is fully operational, every run produces a `<uid>.jsonl` file. This means the Experiments tab's **Export HDF5** always works without a database connection, and users can take JSONL files home on a USB drive. The JSONL writer tries `<exp_dir>/runs/` first (accessible over NFS on shared filesystems) and falls back to `~/.easy_bluesky/data/runs/` on the RE machine.
+`re_startup_mongo.py` subscribes a `RunRouter`-based JSONL writer (`_jsonl_run_factory`) unconditionally. It is a quiet safety net on the RE machine: profiles without MongoDB (e.g. surf2, which has a shared folder) can still export HDF5 from these files, and nothing else in the app reads, syncs or warns about them. The app deliberately has no auto-saved local copy: HDF5 has no journaling, SWMR cannot add groups, NFS locking is unreliable, and any write inside a RunEngine callback blocks the RE — so HDF5 is written only on explicit export, from the app.
 
 ### Sim mode auto-detection
 
@@ -409,7 +439,7 @@ Every plan wraps its body in `bpp.finalize_wrapper(_body(), _cleanup())` so the 
 
 ### Smart legend positioning
 
-`plot_tools.smart_legend_position(plot_widget)` is called at the end of `_plot()` / `_update_plot()` / `_replot()` in `live_viewer.py`, `mongo_browser.py`, and `hdf5_viewer.py`. It divides the current view into four quadrants, counts data points per quadrant (subsampled to 500 pts for performance), and calls `legend.setOffset()` with the corner offsets that correspond to the emptiest quadrant. Users can override the automatic position by dragging the legend (pyqtgraph 0.12+ legends are already draggable by default).
+`plot_tools.smart_legend_position(plot_widget)` is called at the end of `_plot()` / `_update_plot()` / `_replot()` in `live_viewer.py` and `mongo_browser.py` (the HDF5 Viewer inherits it). It divides the current view into four quadrants, counts data points per quadrant (subsampled to 500 pts for performance), and calls `legend.setOffset()` with the corner offsets that correspond to the emptiest quadrant. Users can override the automatic position by dragging the legend (pyqtgraph 0.12+ legends are already draggable by default).
 
 ## Adding New Features
 
