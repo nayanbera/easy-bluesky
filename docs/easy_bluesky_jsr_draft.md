@@ -15,7 +15,7 @@ an open-source, cross-platform desktop application that exposes the full capabil
 Bluesky queue-server through an intuitive graphical user interface. EasyBluesky manages
 the complete lifecycle of the remote RunEngine Manager — from SSH-based start-up and
 environment control to experiment logging and live data visualization — without requiring
-the user to interact with a terminal. A simulation mode allows plan development and testing
+the user to interact with a terminal or a jupyter notebook. A simulation mode allows plan development and testing
 against synthetic ophyd devices before committing to beamtime. For shared beamlines, a
 multi-client safety layer provides operator locking, real-time client visibility, and
 status disambiguation when multiple workstations share the same queue-server. Experiment
@@ -49,33 +49,81 @@ Python, queue-server, synchrotron, EPICS
 Modern synchrotron beamlines generate data at rates and volumes that demand automated,
 reproducible data acquisition workflows. The Bluesky ecosystem (Allan *et al.*, 2019)
 has emerged as a community standard for this purpose, offering a run engine that
-orchestrates hardware through ophyd device abstractions (Brookhaven National Laboratory, 2014) 
-and records provenance-rich experimental metadata. The bluesky-queueserver extension
-(Contribute *et al.*, 2021) further decouples the RunEngine from the user interface,
-exposing it over a ZMQ network interface that permits remote control from any machine on
-the network.
+orchestrates hardware through ophyd device abstractions (Brookhaven National Laboratory, 2014)
+and records provenance-rich experimental metadata in a documented, streaming data model.
+The bluesky-queueserver extension (Caswell *et al.*, 2021) further decouples the RunEngine
+from the user interface, exposing it over a ZMQ network interface that permits remote
+control from any machine on the network.
 
-Despite this technical maturity, the day-to-day operation of a Bluesky-controlled beamline
-still demands a working knowledge of Python, IPython, and the command-line tools used to
-start, configure, and monitor the RunEngine. This requirement effectively restricts
-self-directed operation to researchers with software experience — a constraint that is
-increasingly at odds with the broad scientific user base of synchrotron facilities, which
-includes chemists, biologists, and materials scientists who are domain experts but not
-programmers.
+Despite this technical maturity, adopting Bluesky and operating it day to day demands
+skills that most of the people at a beamline do not have, and the two main groups of people
+who work there lack them for different reasons.
+
+**The beamline scientist** knows the instrument in depth: which motor drives which optical
+element, which EPICS records belong to which device, how detectors are triggered and
+what safe operating limits apply. This knowledge, however, has to be translated into
+software before Bluesky can use it. Every motor, scaler, shutter and area detector must be
+described as an ophyd device with the correct signal hierarchy, units, and configuration;
+scan procedures must be written as Python generator plans with correct staging and cleanup
+(for example, restoring an exposure time after an aborted scan); the queue-server, its
+permission files and its start-up scripts must be deployed, started on the right host and
+restarted after every change; and metadata, folder layouts and storage back-ends must be
+configured so that data end up in a consistent, retrievable form. Beamline scientists are
+typically experts in physics, chemistry or instrumentation rather than in software
+engineering, and the effort of building and maintaining this infrastructure competes
+directly with the time available to run and improve the beamline. Where it is neglected,
+the beamline continues to rely on ad hoc scripts and macros that are hard to share,
+reproduce or hand over.
+
+**The beamline user** — the researcher who arrives with samples for a few days of allocated
+beam time — faces the opposite problem. Users are domain experts, such as chemists,
+biologists and materials scientists, with at best limited knowledge of the beamline
+hardware: motor names, device hierarchies and detector settings are unfamiliar, a
+mistyped argument can move the wrong axis or leave a detector in a state that spoils
+subsequent measurements, and the Python and command-line environment in which Bluesky is
+normally operated is an additional obstacle on top of a short and expensive allocation of
+beam time. Users nevertheless need to define scans, queue them for several samples,
+follow progress, check that the data are sensible, and leave with data that are
+unambiguously attributed to the right sample, proposal and safety form. Today this either
+makes users depend on beamline staff for every change of plan, or exposes the instrument
+to errors by operators who cannot see what the software is about to do.
+
+A further gap, common to both groups, is data visualisation. Bluesky itself concentrates
+on acquisition and on emitting documents; it provides a basic live table and plotting
+callbacks for use inside an IPython session, but no integrated way to watch a scan evolve
+on a screen away from that session, to inspect peak positions and widths while the scan
+is still running, to overlay and fit earlier scans, to look at two-dimensional maps and
+act on them, or to browse the stored data of the whole experiment afterwards. Yet this
+feedback is indispensable: an alignment or a survey scan is only useful if the operator can
+judge it immediately and decide on the next move, and a measurement is only trustworthy if
+the state of the instrument at the time of the scan can be checked later. In practice
+beamlines therefore assemble separate tools for control, live plotting, data browsing and
+bookkeeping, each with its own configuration and learning curve.
 
 Several graphical tools for Bluesky exist, including the Bluesky Widgets library and
 PyDM-based displays used at individual beamlines, but these are typically tightly coupled
 to specific facility configurations and require significant local customisation before
-deployment. A general-purpose, self-contained application that can be installed by an end
-user and pointed at any Bluesky queue-server over SSH has not previously been available.
+deployment. A general-purpose, self-contained application that covers the whole chain —
+from starting the queue-server and describing the hardware, through composing, queueing
+and monitoring plans and on-the-fly visualisation, to the storage, review and export of
+data — and that can be installed by an end user and pointed at any Bluesky queue-server
+over SSH has not previously been available.
 
-Here we describe EasyBluesky (version 0.2.0), a PyQt6/PySide6 desktop application that provides
-a complete graphical interface to a Bluesky queue-server running on a remote beamline
-computer. EasyBluesky targets the common scenario in which an experimenter works at a
-local workstation — or carries their own laptop — while the RunEngine executes on
-dedicated beamline hardware. The application has been developed and deployed at the
-ASWAXS beamline [*your beamline details*] and is made available as open-source software
-for adoption at other facilities.
+Here we describe EasyBluesky (version 0.2.0), a PyQt6/PySide6 desktop application that
+provides this in a single package. For beamline scientists it manages the remote
+RunEngine Manager lifecycle without a terminal, edits and uploads device and plan files,
+generates a simulated copy of the real hardware for developing and testing plans before
+beam time, and records experiment, sample and proposal metadata consistently. For users it
+offers a form- and block-based way to define and queue scans without writing code, a live
+device monitor, safeguards against mis-filed or mis-attributed data, and the same
+interface for acquisition, real-time visualisation, analysis and export. For both it
+provides live one- and two-dimensional plots with on-the-fly peak statistics, a data
+browser with curve fitting, and a portable HDF5 export with an offline viewer.
+EasyBluesky targets the common scenario in which an experimenter works at a local
+workstation — or carries their own laptop — while the RunEngine executes on dedicated
+beamline hardware. The application has been developed and deployed at the ASWAXS beamline
+[*your beamline details*] and is made available as open-source software for adoption at
+other facilities.
 
 ---
 
@@ -84,8 +132,8 @@ for adoption at other facilities.
 ### 2.1 Architecture
 
 EasyBluesky follows a client–server architecture in which all hardware interaction occurs
-on the remote beamline computer and the graphical application runs locally on the
-experimenter's workstation (Fig. 1). The design separates concerns across three
+on any beamline computer in the network and the graphical application runs locally on the
+experimenter's workstation (Fig. 1) in the same network. The design separates concerns across three
 communication channels: ZMQ sockets for queue-server control and status polling, SSH for
 process lifecycle management and log streaming, and EPICS Channel Access (CA) for
 direct, low-latency device readback.
