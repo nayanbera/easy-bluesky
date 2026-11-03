@@ -126,6 +126,19 @@ Stored at `~/.easy_bluesky/connection.json`. Key fields per profile:
    cells. Units and descriptions are also cached to
    `~/.easy_bluesky/device_metadata.json` for reuse in sim mode.
 
+### Live PV updates toggle + auto-pause
+`DevicesPlansTab` header checkbox **Live PV updates** (shown only when real EPICS PVs exist) plus auto-pause:
+- Paused = `_epics_monitor.clear()` (all CA subscriptions + DESC PVs closed → no CA traffic/callbacks/GUI updates);
+  resume = `setup()` again from `_active_epics_map` (no `function_execute` round trip), then the 4 s stuck-PV fallback re-arms.
+- `_ca_wanted()` = checkbox on **and** `isVisible()`. `showEvent`/`hideEvent` call `_apply_ca_state()` (not the
+  `set_tab_active` hook, which only fires on tab switches and only gates sim polling). Manual off suspends at once;
+  hidden tab suspends after a 3 s grace (`_auto_pause_timer`) so quick tab flicks don't reconnect everything.
+- While paused: Value cells show `⏸ <old value>` (grey) / `⏸ paused`; on resume they become `○ Connecting…` until a fresh
+  value arrives. `_on_pv_changed/_connected/_desc_changed` ignore late queued callbacks (`_ca_suspended`).
+- **Tweak safety**: ◀/▶ on EPICS motors refuse to step while the device is in `_stale_devs` (filled on suspend,
+  cleared by the first fresh readback) — otherwise a click would step from a stale position.
+- Not covered: AD/MCA/XRF viewers, PV watchdog and velocity lookups open their own CA connections.
+
 ### Sim monitoring flow
 Triggered when `pv_map` has zero total PVs (all devices are `ophyd.sim` objects):
 1. `setup_epics_monitors` detects sim mode, adds Tweak widgets for `SynAxis` devices,

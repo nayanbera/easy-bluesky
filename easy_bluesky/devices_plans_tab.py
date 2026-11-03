@@ -416,6 +416,16 @@ class DevicesPlansTab(QWidget):
         self._pv_names_retry_count: int = 0
         self._sim_timer: QTimer | None = None
         self._tab_active: bool = False   # set by MainWindow via set_tab_active()
+        # Live-PV pause: CA subscriptions are closed while the user has "Live PV
+        # updates" off or the tab is hidden, and re-opened from the cached map.
+        self._live_updates: bool = True       # user toggle
+        self._ca_suspended: bool = False      # monitors currently closed by a pause
+        self._active_epics_map: dict = {}     # last PV map handed to the monitor
+        self._stale_devs: set = set()         # tweak devices without a fresh readback
+        self._auto_pause_timer = QTimer(self)
+        self._auto_pause_timer.setSingleShot(True)
+        self._auto_pause_timer.setInterval(3000)   # grace so quick tab flicks don't reconnect
+        self._auto_pause_timer.timeout.connect(self._on_auto_pause_timeout)
         # Persistent cache of units/desc from real EPICS so sim mode can show them
         self._metadata_cache: dict = {}   # dev_name → {"units": str, "desc": str}
         self._metadata_save_timer = QTimer(self)
@@ -523,6 +533,15 @@ class DevicesPlansTab(QWidget):
         self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
         status_row.addWidget(self._status_lbl)
         status_row.addStretch()
+        self._chk_live = QCheckBox("Live PV updates")
+        self._chk_live.setChecked(True)
+        self._chk_live.setVisible(False)
+        self._chk_live.setToolTip(
+            "Off: close all EPICS subscriptions of this tree (no CA traffic, no GUI updates).\n"
+            "Also paused automatically while this tab is hidden."
+        )
+        self._chk_live.toggled.connect(self._on_live_toggled)
+        status_row.addWidget(self._chk_live)
         self._chk_poll_sim = QCheckBox("Poll Sim Devices")
         self._chk_poll_sim.setChecked(False)
         self._chk_poll_sim.setToolTip("Enable automatic 0.2-second polling of sim device values")
@@ -680,6 +699,7 @@ class DevicesPlansTab(QWidget):
         self._tweak_buttons.clear()
         self._device_classes.clear()
         self._epics_monitor.clear()
+        self._reset_ca_pause_state()
 
         if not devices:
             self._last_devices_fp = ""
@@ -688,6 +708,7 @@ class DevicesPlansTab(QWidget):
             self._refresh_btn.setEnabled(True)
             self._refresh_btn.setText("⟳ Reconnect")
             self._chk_poll_sim.setVisible(False)
+            self._chk_live.setVisible(False)
             return
 
         groups: dict = {}
@@ -773,6 +794,7 @@ class DevicesPlansTab(QWidget):
             return
 
         self._epics_monitor.clear()
+        self._reset_ca_pause_state()
         self._signal_items.clear()
         self._primary_signal.clear()
         self._tweak_pvnames.clear()
@@ -866,7 +888,7 @@ class DevicesPlansTab(QWidget):
             self._status_lbl.setText("● Sim — polling device values…")
         elif sim_dev_set:
             # Mixed: real EPICS devices + polled sim/pseudo devices
-            self._epics_monitor.setup(epics_pv_map)
+            self._start_monitors(epics_pv_map)
             self._sim_device_names = sim_dev_set
             self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
             self._status_lbl.setText(
@@ -874,15 +896,17 @@ class DevicesPlansTab(QWidget):
             )
         else:
             # Pure EPICS: all devices have real PVs
-            self._epics_monitor.setup(epics_pv_map)
+            self._start_monitors(epics_pv_map)
             self._status_lbl.setStyleSheet("font-size: 11px; color: #2ca02c;")
             self._status_lbl.setText(f"● Live — monitoring {total} PV(s)")
+
+        self._chk_live.setVisible(total > 0)
 
         # ── Fallback: read any PVs still "Connecting…" after 4 s ────────
         # auto_monitor's initial callback can be missed for MCA field PVs
         # (e.g. .R0) when the MCA is idle.  _do_fetch (queued signal) handles
         # most cases; this timer catches anything that slipped through.
-        if total > 0:
+        if total > 0 and not self._ca_suspended:
             self._fallback_attempt = 0
             QTimer.singleShot(4000, self._fallback_read_stuck_pvs)
 
@@ -907,6 +931,8 @@ class DevicesPlansTab(QWidget):
         # Column 5 (Tweak): resizeColumnToContents ignores setItemWidget sizes,
         # so enforce a minimum wide enough for ◀ / step / ▶.
         self.devices_tree.setColumnWidth(5, max(self.devices_tree.columnWidth(5), 170))
+        if self._ca_suspended:
+            self._refresh_ca_status()
 
     def on_pv_names_error(self, msg: str):
         _m = msg.lower()
@@ -1068,6 +1094,8 @@ class DevicesPlansTab(QWidget):
     # ── Internal ────────────────────────────────────────────────────────────────
 
     def _on_pv_connected(self, dev_name: str, sig_name: str, connected: bool):
+        if self._ca_suspended:
+            return   # late queued callback from before the pause
         grey = QColor("#888888")
         red  = QColor("#e05050")
 
@@ -1096,6 +1124,8 @@ class DevicesPlansTab(QWidget):
                     dev_item.setText(3, "")
 
     def _on_pv_changed(self, dev_name: str, sig_name: str, value, units: str):
+        if self._ca_suspended:
+            return   # late queued callback from before the pause
         # Buffer — tree setText() calls are flushed at 10 Hz by _flush_pv_updates
         self._pending_pv_updates[(dev_name, sig_name)] = (value, units)
         # Track numeric readback immediately (used for tweak calculations).
@@ -1106,6 +1136,7 @@ class DevicesPlansTab(QWidget):
         ):
             try:
                 self._readback_values[dev_name] = float(value)
+                self._stale_devs.discard(dev_name)
             except (TypeError, ValueError):
                 pass
         # Cache units (no Qt tree ops)
@@ -1114,6 +1145,8 @@ class DevicesPlansTab(QWidget):
             self._metadata_save_timer.start()
 
     def _on_desc_changed(self, dev_name: str, sig_name: str, desc: str):
+        if self._ca_suspended:
+            return
         # Buffer — applied at 10 Hz by _flush_pv_updates
         self._pending_desc_updates[(dev_name, sig_name)] = desc
         if desc:
@@ -1267,6 +1300,16 @@ class DevicesPlansTab(QWidget):
             btn.setFixedHeight(22)
 
         def _move(sign: int):
+            if setpoint_pvname is not None and dev_name in self._stale_devs:
+                # Readback is stale after a pause — don't step from an old position.
+                self._status_lbl.setText(
+                    f"⚠ Tweak {dev_name}: waiting for a live readback…"
+                    if not self._ca_suspended else
+                    "⚠ Tweak disabled while live PV updates are paused"
+                )
+                self._status_lbl.setStyleSheet("font-size: 11px; color: #e05050;")
+                QTimer.singleShot(3000, self._restore_status_label)
+                return
             cur = self._readback_values.get(dev_name)
             if cur is None:
                 # No CA callback yet — try to read the displayed value from the tree.
@@ -1319,6 +1362,120 @@ class DevicesPlansTab(QWidget):
     def set_tab_active(self, active: bool) -> None:
         """Called by MainWindow when this tab is shown or hidden."""
         self._tab_active = active
+
+    # ── Live-PV pause (user toggle + auto-pause while hidden) ──────────────────
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_ca_state()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._apply_ca_state()
+
+    def _ca_wanted(self) -> bool:
+        return self._live_updates and self.isVisible()
+
+    def _reset_ca_pause_state(self):
+        self._auto_pause_timer.stop()
+        self._ca_suspended = False
+        self._active_epics_map = {}
+        self._stale_devs.clear()
+        self._pending_pv_updates.clear()
+        self._pending_desc_updates.clear()
+
+    def _start_monitors(self, epics_pv_map: dict):
+        """Open CA monitors now, or defer them if updates are paused / tab hidden."""
+        self._active_epics_map = epics_pv_map
+        self._stale_devs.clear()
+        if self._ca_wanted():
+            self._ca_suspended = False
+            self._epics_monitor.setup(epics_pv_map)
+        else:
+            self._epics_monitor.clear()
+            self._suspend_ca()
+
+    def _suspend_ca(self):
+        self._epics_monitor.clear()
+        self._ca_suspended = True
+        self._pending_pv_updates.clear()
+        self._pending_desc_updates.clear()
+        self._stale_devs = set(self._tweak_pvnames)
+        self._mark_paused_cells()
+        self._refresh_ca_status()
+
+    def _resume_ca(self):
+        self._ca_suspended = False
+        self._unmark_paused_cells()
+        self._epics_monitor.setup(self._active_epics_map)
+        self._fallback_attempt = 0
+        QTimer.singleShot(4000, self._fallback_read_stuck_pvs)
+        self._refresh_ca_status()
+
+    def _apply_ca_state(self):
+        if not self._active_epics_map:
+            return
+        if self._ca_wanted():
+            self._auto_pause_timer.stop()
+            if self._ca_suspended:
+                self._resume_ca()
+        elif not self._ca_suspended:
+            if not self._live_updates:
+                self._suspend_ca()
+            elif not self._auto_pause_timer.isActive():
+                self._auto_pause_timer.start()
+
+    def _on_auto_pause_timeout(self):
+        if not self._ca_suspended and not self._ca_wanted():
+            self._suspend_ca()
+
+    def _on_live_toggled(self, checked: bool):
+        self._live_updates = checked
+        self._apply_ca_state()
+
+    def _refresh_ca_status(self):
+        if not self._ca_suspended:
+            if self._active_epics_map:
+                self._restore_status_label()
+            return
+        if not self._live_updates:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #e8a44a;")
+            self._status_lbl.setText("⏸ Live PV updates paused — values frozen")
+        else:
+            self._status_lbl.setStyleSheet("font-size: 11px; color: #888;")
+            self._status_lbl.setText("⏸ PV monitoring paused (tab hidden)")
+
+    def _paused_items(self):
+        for item in self._signal_items.values():
+            yield item
+        for dev in self._active_epics_map:
+            item = self._device_items.get(dev)
+            if item is not None:
+                yield item
+
+    def _mark_paused_cells(self):
+        grey = QColor("#777777")
+        self.devices_tree.setUpdatesEnabled(False)
+        try:
+            for item in self._paused_items():
+                t = item.text(2)
+                if t.startswith("⏸"):
+                    continue
+                item.setText(2, "⏸ paused" if t in ("", "○ Connecting…") else f"⏸ {t}")
+                item.setForeground(2, grey)
+        finally:
+            self.devices_tree.setUpdatesEnabled(True)
+
+    def _unmark_paused_cells(self):
+        grey = QColor("#aaaaaa")
+        self.devices_tree.setUpdatesEnabled(False)
+        try:
+            for item in self._paused_items():
+                if item.text(2).startswith("⏸"):
+                    item.setText(2, "○ Connecting…")
+                    item.setForeground(2, grey)
+        finally:
+            self.devices_tree.setUpdatesEnabled(True)
 
     def _on_sim_poll(self):
         """Timer callback — only emit when the tab is visible to avoid unnecessary function_execute traffic."""
@@ -1458,6 +1615,9 @@ class DevicesPlansTab(QWidget):
 
     def _restore_status_label(self):
         """Restore the status label to its normal connected/sim state."""
+        if self._ca_suspended:
+            self._refresh_ca_status()
+            return
         if self._sim_mode:
             self._status_lbl.setStyleSheet("font-size: 11px; color: #ff7f0e;")
             self._status_lbl.setText("● Sim — polling device values…")
