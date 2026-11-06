@@ -21,21 +21,21 @@ C_TEXT   = "#212121"
 C_DIM    = "#607d8b"
 
 # ── figure size ────────────────────────────────────────────────────────────────
-FW, FH = 18.0, 13.0
+FW, FH = 16.6, 13.0
 fig, ax = plt.subplots(figsize=(FW, FH))
-ax.set_xlim(0, FW); ax.set_ylim(0, FH)
+ax.set_xlim(0, FW); ax.set_ylim(0.95, 12.50)
 ax.axis("off")
 fig.patch.set_facecolor(C_BG)
 ax.set_facecolor(C_BG)
 
 # ── font sizes ─────────────────────────────────────────────────────────────────
-FS_TITLE  = 14.0   # box header titles
-FS_COMP   = 12.0   # component label (main text)
-FS_DIM    = 10.0   # right-aligned dim/port notes
-FS_STRIP  = 11.0   # channel strip labels
-FS_ARROW  = 9.5    # inter-box arrow labels
-FS_NOTE   = 10.0   # second-client notes
-FS_CAP    = 10.0   # figure caption
+FS_TITLE  = 16.5   # box header titles
+FS_COMP   = 14.0   # component label (main text)
+FS_DIM    = 11.5   # right-aligned dim/port notes
+FS_STRIP  = 13.0   # channel strip labels
+FS_ARROW  = 11.5   # inter-box arrow labels
+FS_NOTE   = 12.0   # second-client notes
+FS_CAP    = 12.0   # figure caption
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -88,16 +88,16 @@ ROWS = [
 ]
 
 # Outer box geometry
-CB = 1.30                # bottom y
+CB = 1.15                # bottom y
 TITLE_H = 0.70           # title bar height
-NOTE_H  = 0.74           # second-client note height
+NOTE_H  = 0.80           # second-client note height
 NOTE_Y  = CB + 0.12      # note bottom y
 CH = 11.42 + 0.14 + TITLE_H - CB   # outer box height (rows top + pad + title - base)
-CL, CW = 0.40, 7.80
-SL, SW = 9.80, 7.80
+CL, CW = 0.40, 6.90
+SL, SW = 9.20, 6.90
 
 # Channel-label strip (inside left of client box)
-STRIP_W  = 1.12
+STRIP_W  = 1.25
 COMP_PAD = 0.20
 CI_L = CL + STRIP_W + COMP_PAD
 CI_W = CW - STRIP_W - COMP_PAD - 0.20
@@ -158,39 +158,39 @@ def comp_box(side, row_i, l1, d1, l2=None, d2=None):
 
 # Client
 comp_box("client", 0,
-         "ZMQWorker  — 1 Hz status poll (REQ/REP)",     "ctrl port 60615",
-         "ZMQDocThread  — live document subscriber",     "doc port 60630  (SUB)")
+         "ZMQWorker  — 1 Hz poll",              "ctrl 60615",
+         "ZMQDocThread  — live docs",           "doc 60630 (SUB)")
 comp_box("client", 1,
-         "_SSHLogTailer  — streams RE Manager log",      "tail -f log  (PTY)",
-         "SSH lifecycle commands + SFTP upload",         "start / stop / restart")
+         "_SSHLogTailer  — log stream",         "tail -f (PTY)",
+         "SSH lifecycle + SFTP upload",         "start / stop")
 comp_box("client", 2,
-         "pyepics CA monitor  — DBR_CTRL subscriptions", "direct to EPICS IOC")
+         "pyepics CA monitor",                  "DBR_CTRL subs")
 comp_box("client", 3,
-         "MongoDB Browser  — pymongo run queries",       "TCP 27017")
+         "MongoDB Browser  — pymongo",          "TCP 27017")
 comp_box("client", 4,
-         "Operator lock checker / writer",               "/tmp/…operator  (SSH)",
-         "Client heartbeat file writer",                "/tmp/…client_<host>.json")
+         "Operator lock check / write",         "/tmp/…operator",
+         "Client heartbeat writer",             "/tmp/…client_<host>.json")
 comp_box("client", 5,
-         "plans_log.jsonl  ·  device_metadata.json",    "local disk",
-         "~/.easy_bluesky/connection.json  (profiles)",  "local disk")
+         "connection.json  ·  plans_log.jsonl", "local disk",
+         "HDF5 export / viewer  (.h5)",         "MongoDB or .jsonl")
 
 # Server
 comp_box("server", 0,
-         "bluesky-queueserver  v0.0.25",                "ctrl 60615  info 60625",
-         "RunEngine  +  ophyd devices",                 "doc PUB 60630")
+         "bluesky-queueserver  v0.0.25  +  Redis", "ctrl 60615  info 60625",
+         "RunEngine  +  ophyd  +  baseline",       "doc PUB 60630")
 comp_box("server", 1,
-         "RE Manager process  (procServ wrapper)",       "PID file + crash restart",
-         "RE Manager log  /tmp/re-manager-*.log",       "tail target")
+         "RE Manager  (procServ wrapper)",      "procServ port + PID",
+         "RE Manager log  /tmp/re-manager-*.log", "tail target")
 comp_box("server", 2,
-         "EPICS IOC  — motors, detectors, scalers",     "CA / PVA")
+         "EPICS IOC  — motors, detectors",      "CA / PVA")
 comp_box("server", 3,
-         "MongoDB  — run_start / event / run_stop",     "suitcase + writer")
+         "MongoDB  — run documents",            "host configurable")
 comp_box("server", 4,
-         "/tmp/.easy_bluesky_<slug>.operator",           "operator lock",
+         "/tmp/.easy_bluesky_<slug>.operator",  "operator lock",
          "/tmp/.easy_bluesky_<slug>_client_<host>.json", "heartbeats")
 comp_box("server", 5,
-         "~/.easy_bluesky/scripts/  (startup, devices)", "SFTP target",
-         "<exp_dir>/runs/<uid>.jsonl  (JSONL fallback)", "NFS / shared FS")
+         "~/.easy_bluesky/scripts/",            "SFTP: startup, devices, plans",
+         "<remote_exp_dir>/runs/<uid>.jsonl  (backup)", "NFS / shared FS")
 
 
 # ── channel-label strips ───────────────────────────────────────────────────────
@@ -220,25 +220,15 @@ for row_i, color, style, ls, label in arrow_defs:
 # ── second-client notes ────────────────────────────────────────────────────────
 rbox(CL+0.14, NOTE_Y, CW-0.28, NOTE_H, "#fff3e0", C_SSH, lw=1.3, r=0.16, zorder=3)
 t(CL+CW/2, NOTE_Y+NOTE_H/2,
-  "A second client may connect to the same ZMQ ports simultaneously.\n"
-  "Operator lock + connected-clients chip coordinate concurrent access.",
+  "A second client may connect to the same ZMQ ports.\n"
+  "Operator lock + connected-clients chip coordinate access.",
   fs=FS_NOTE, color=C_SSH, ha="center", zorder=4)
 
 rbox(SL+0.14, NOTE_Y, SW-0.28, NOTE_H, "#fff3e0", C_SSH, lw=1.3, r=0.16, zorder=3)
 t(SL+SW/2, NOTE_Y+NOTE_H/2,
-  "ss -tn queries active ZMQ TCP connections every 30 s;\n"
+  "ss -tn lists active ZMQ TCP connections every 30 s;\n"
   "combined with client heartbeat files for robustness.",
   fs=FS_NOTE, color=C_SSH, ha="center", zorder=4)
-
-
-# ── figure caption ─────────────────────────────────────────────────────────────
-t(FW/2, 0.38,
-  "Figure 1.  EasyBluesky client–server architecture.  "
-  "Three independent channels link the workstation to the beamline computer: "
-  "ZMQ (queue control and live run documents), SSH/SFTP (process lifecycle, "
-  "log streaming, and multi-client safety files), and EPICS CA "
-  "(direct low-latency device readback, bypassing the queue-server).",
-  fs=FS_CAP, color=C_DIM, style="italic", ha="center")
 
 
 plt.subplots_adjust(left=0, right=1, top=1, bottom=0)

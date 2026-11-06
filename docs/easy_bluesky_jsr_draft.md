@@ -133,12 +133,14 @@ other facilities.
 
 EasyBluesky follows a client–server architecture in which all hardware interaction occurs
 on any beamline computer in the network and the graphical application runs locally on the
-experimenter's workstation (Fig. 1) in the same network. The design separates concerns across three
+experimenter's workstation (Fig. 1) in the same network. The design separates concerns across four
 communication channels: ZMQ sockets for queue-server control and status polling, SSH for
-process lifecycle management and log streaming, and EPICS Channel Access (CA) for
-direct, low-latency device readback.
+process lifecycle management and log streaming, EPICS Channel Access (CA) for
+direct, low-latency device readback, and MongoDB for run storage and browsing.
 
-![Figure 1. EasyBluesky client–server architecture. Three independent channels link the workstation to the beamline computer: ZMQ (queue control and live run documents), SSH/SFTP (process lifecycle, log streaming, and multi-client safety files), and EPICS CA (direct low-latency device readback, bypassing the queue-server).](figures/fig1_architecture.pdf)
+![Figure 1](figures/fig1_architecture.png)
+
+**Figure 1.** Architecture of the EasyBluesky client–server system. The desktop application runs on the experimenter's local workstation (Mac or PC) and communicates with the bluesky-queueserver running on a dedicated beamline Linux computer via four independent channels. (i) ZMQ REQ/REP sockets (control port 60615, info port 60625) are used by the `ZMQWorker` poll thread for queue operations and 1 Hz status polling; a separate ZMQ SUB socket on the document port feeds the Live Viewer with run documents in real time. (ii) SSH (Paramiko, key-pair only) is used by a persistent `_SSHLogTailer` thread to stream the RE Manager log via `tail -f`, and by explicit commands for lifecycle operations (start, stop, restart) and SFTP upload of the startup script, permissions file, and devices file. (iii) EPICS Channel Access (CA) subscriptions are established directly from the local machine to the beamline control system, bypassing the queue-server entirely for low-latency, sub-millisecond device readback. PV names are fetched once per environment open via `function_execute`. (iv) MongoDB (pymongo, default port 27017; the host is configurable per profile) holds every run document written by the RunEngine, including the baseline stream, and is queried directly by the MongoDB Browser and HDF5 export; a per-run JSONL backup is kept in the experiment directory on the beamline computer. For shared-beamline deployments, an operator lock file and client heartbeat files are maintained on the remote machine via the SSH channel; active TCP connections to the ZMQ ports are additionally queried via `ss -tn` to provide a second, independent view of the connected-client count. All blocking operations (pymongo queries, HDF5 export, PV name retrieval, SFTP upload) run in `QThread` worker objects; the Qt main thread handles only widget updates and user actions.
 
 **ZMQ layer.** The background `ZMQWorker` thread polls the bluesky-queueserver at
 approximately 1 Hz using REQ/REP messages to the control port (default 60615) and reads
@@ -174,7 +176,7 @@ per-callback redraws.
 
 **Data storage.** The startup script registers a RunEngine preprocessor and three
 subscriptions. The preprocessor (bluesky's `baseline_wrapper`) adds a `baseline` stream
-holding the values of all connected positioners at the start and end of every run (§3.2).
+holding the values of all connected positioners at the start and end of every run (Section 3.2).
 A MongoDB writer stores every document generically in collections named after the bluesky
 document types. A `RunRouter`-based JSONL writer additionally keeps a per-run backup file
 in the experiment directory on the RE machine; it is a quiet safety net that also serves
@@ -183,7 +185,7 @@ operation. A third, ZMQ PUB subscription on a configurable document port feeds t
 Viewer. The client application itself writes no run files. The application maintains only
 a lightweight `plans_log.jsonl` index on the client machine, recording plan name,
 parameters, run UID, and scan number for every completed run in the active experiment;
-portable copies of the data are produced on demand by HDF5 export (§3.2).
+portable copies of the data are produced on demand by HDF5 export (Section 3.2).
 
 **Thread model summary.**
 
@@ -211,7 +213,7 @@ the RunEngine Manager as a subprocess on the same machine, assigns ports automat
 from a free-port range, and terminates the process cleanly on application exit. Local
 profiles require no SSH configuration and are the recommended starting point for new
 users. A **simulation profile** pairs a local or remote RunEngine Manager with an
-auto-generated `devices_sim.py` devices file (§3.4). A startup dialog lists all configured
+auto-generated `devices_sim.py` devices file (Section 3.4). A startup dialog lists all configured
 profiles, greying out any profile already open in another application window to enforce
 single-instance-per-profile operation.
 
@@ -228,7 +230,7 @@ generated simulation devices file (if present) are uploaded at step (3) so that 
 local edits propagate to the remote automatically.
 
 The RE console output is streamed to the interface via `tail -f` over SSH and displayed
-in a live console widget (§2.1), giving experimenters the same visibility they would have
+in a live console widget (Section 2.1), giving experimenters the same visibility they would have
 at a terminal without requiring direct shell access. The `BestEffortCallback` subscriber
 in the startup script prints a live scan table to the RE Manager log at each data point,
 making per-point progress visible in the console widget during running scans.
@@ -371,7 +373,7 @@ inline tweak widget (◀ step ▶) for manual positioning without opening a sepa
 screen. Mouse-wheel events on the step spinbox are suppressed to prevent accidental motor
 moves during scrolling.
 
-In simulation mode (§3.4), the device tree polls the RunEngine environment at 2 Hz via
+In simulation mode (Section 3.4), the device tree polls the RunEngine environment at 2 Hz via
 `read_devices_status` and draws units and descriptions from the local cache. A search bar
 filters the tree by device name, class, or description in real time.
 
@@ -669,26 +671,6 @@ documentation are available at https://github.com/nayanbera/easy-bluesky.
 ---
 
 ## Figure Captions
-
-**Figure 1.** Architecture of the EasyBluesky client–server system. The desktop
-application runs on the experimenter's local workstation (Mac or PC) and communicates
-with the bluesky-queueserver running on a dedicated beamline Linux computer via three
-independent channels. (i) ZMQ REQ/REP sockets (control port 60615, info port 60625) are
-used by the `ZMQWorker` poll thread for queue operations and 1 Hz status polling; a
-separate ZMQ SUB socket on the document port feeds the Live Viewer with run documents in
-real time. (ii) SSH (Paramiko, key-pair only) is used by a persistent `_SSHLogTailer`
-thread to stream the RE Manager log via `tail -f`, and by explicit commands for lifecycle
-operations (start, stop, restart) and SFTP upload of the startup script, permissions
-file, and devices file. (iii) EPICS Channel Access (CA) subscriptions are established
-directly from the local machine to the beamline control system, bypassing the
-queue-server entirely for low-latency, sub-millisecond device readback. PV names are
-fetched once per environment open via `function_execute`. For shared-beamline deployments,
-an operator lock file and client heartbeat files are maintained on the remote machine via
-the SSH channel; active TCP connections to the ZMQ ports are additionally queried via
-`ss -tn` to provide a second, independent view of the connected-client count. All
-blocking operations (pymongo queries, HDF5 export, PV name retrieval, SFTP upload) run in
-`QThread` worker objects; the Qt main thread handles only widget updates and user
-actions.
 
 **Figure 2.** EasyBluesky graphical interface. *(a)* Main application window showing the
 tab-based layout: Experiments, Plan Builder, Available Devices & Plans, Code Editor,
