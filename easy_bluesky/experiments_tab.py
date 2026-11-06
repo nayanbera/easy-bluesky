@@ -2176,8 +2176,12 @@ class ExperimentsTab(QWidget):
         # _next_scan_num must still be kept in sync for _inject_metadata.
         self._next_scan_num = next_num
 
-    def _inject_metadata(self, result_item: dict):
-        """Inject experiment/sample metadata into a plan item's md key."""
+    def _inject_metadata(self, result_item: dict, keep_scan_num=None):
+        """Inject experiment/sample metadata into a plan item's md key.
+
+        ``keep_scan_num``: reuse this scan number instead of reserving a new one
+        (used when editing an already-queued plan in place).
+        """
         auto_md = self._build_metadata()
         if not auto_md:
             return result_item
@@ -2201,7 +2205,9 @@ class ExperimentsTab(QWidget):
         merged = {**auto_md, **existing_md}   # user-supplied md wins
         # Lock in scan_num at queue time so custom_plans.py doesn't need to
         # read scans_log.json at execution time (avoids stale-file off-by-one).
-        if self._active_exp_path:
+        if keep_scan_num is not None:
+            merged["scan_num"] = keep_scan_num
+        elif self._active_exp_path:
             merged["scan_num"] = self._next_scan_num
             self._next_scan_num += 1
         # Preserve the queue item's registered plan name so on_scan_start_doc can
@@ -2347,7 +2353,9 @@ class ExperimentsTab(QWidget):
             return
         dlg = PlanDialog(self._plans, self._devices, item=item, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_item:
-            updated = self._inject_metadata(dlg.result_item)
+            # Editing in place keeps the plan's reserved scan number.
+            old_sn = ((item.get("kwargs") or {}).get("md") or {}).get("scan_num")
+            updated = self._inject_metadata(dlg.result_item, keep_scan_num=old_sn)
             ok, msg = self.worker.update_item(updated)
             self._log(f"{'✓' if ok else '✗'} Update plan: {msg}")
 
