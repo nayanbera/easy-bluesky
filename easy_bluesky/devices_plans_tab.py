@@ -11,6 +11,7 @@ from .widgets import NoScrollDoubleSpinBox
 import json
 from pathlib import Path
 
+import queue
 import threading
 
 from qtpy.QtCore import Qt, Signal, QObject, QThread, QTimer
@@ -240,6 +241,9 @@ class _EPICSMonitor(QObject):
         self._desc_pvs: dict = {}   # record.DESC → epics.PV  (one per record base)
         self._desc_map: dict = {}   # record.DESC → [(dev_name, sig_name), ...]
         self._alive: bool    = True  # guards callbacks after Qt C++ deletion
+        self._fetch_q        = queue.Queue()   # PVs awaiting their on-connect caget
+        self._fetch_thread   = None
+        self._gen: int       = 0     # bumped by clear(); stops stale fetch workers
         # Queued connection ensures the slot always runs in the main Qt thread,
         # even when the signal is emitted from the CA background thread.
         self._fetch_on_connect.connect(
@@ -296,6 +300,12 @@ class _EPICSMonitor(QObject):
 
     def clear(self):
         self._alive = False   # block in-flight CA callbacks from emitting
+        self._gen += 1        # retire the on-connect fetch worker
+        try:
+            while True:
+                self._fetch_q.get_nowait()
+        except queue.Empty:
+            pass
         for pv in list(self._pvs.values()) + list(self._desc_pvs.values()):
             try:
                 pv.clear_callbacks()
@@ -331,9 +341,36 @@ class _EPICSMonitor(QObject):
                 pass
 
     def _do_fetch(self, pvname: str):
+        # Runs on the Qt main thread (queued signal): never do CA I/O here — a
+        # flaky/offline IOC would block the GUI for caget's full timeout per PV.
+        # Hand the PV to a single background worker instead.
+        if not self._alive:
+            return
+        self._fetch_q.put(pvname)
+        if self._fetch_thread is None or not self._fetch_thread.is_alive():
+            self._fetch_thread = threading.Thread(
+                target=self._fetch_worker, args=(self._gen,), daemon=True)
+            self._fetch_thread.start()
+
+    def _fetch_worker(self, gen: int):
+        try:
+            import epics as _epics
+            _epics.ca.use_initial_context()   # same CA context as the monitors
+        except Exception:
+            return
+        while self._alive and gen == self._gen:
+            try:
+                pvname = self._fetch_q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if self._alive and gen == self._gen:
+                self._fetch_one(pvname)
+
+    def _fetch_one(self, pvname: str):
         # On connection, fetch the current value via caget (native DBR) and
         # attempt a separate DBR_CTRL get to retrieve engineering units.
         # DBR_CTRL is tried but ignored on failure (e.g. MCA .Rn fields).
+        # Runs on the fetch worker thread; results reach the GUI via signals.
         if not self._alive:
             return
         pv = self._pvs.get(pvname)
