@@ -13,6 +13,7 @@ from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtGui import QColor, QFont
 from .config import SUCCESS, DANGER, DATA_RUNS_DIR, EXPERIMENTS_DIR
 from .widgets import PlanDialog
+from .plan_summary import plan_tooltip
 
 _MOTION_PLANS = frozenset({
     "mv", "mvr", "abs_set", "rel_set", "move", "sleep", "rd", "set",
@@ -669,11 +670,12 @@ class QueueManager(QWidget):
             args   = item.get("args", []) or []
             kwargs = item.get("kwargs", {}) or {}
             uid    = item.get("item_uid", "")
-            summary = self._plan_summary(name, kwargs, args)
+            summary = self._plan_summary(name, kwargs, args, self.plans.get(name))
             label   = f"{i+1:2d}.  {name}{summary}"
             li = QListWidgetItem(label)
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
+            li.setToolTip(plan_tooltip(item, self.plans.get(name)))
             self.queue_list.addItem(li)
             if uid == current_uid:
                 self.queue_list.setCurrentItem(li)
@@ -685,105 +687,9 @@ class QueueManager(QWidget):
         self.queue_count.setText(f"{len(items)} item{'s' if len(items) != 1 else ''}")
 
     @staticmethod
-    def _plan_summary(name: str, kwargs: dict, args: list = None) -> str:  # noqa: C901
-        args    = list(args or [])
-        parts   = []
-        name_lc = name.lower()
-
-        # ── mv / mvr: flat [motor, pos, motor, pos, ...] ─────────────────────
-        if name_lc in ("mv", "mvr"):
-            pairs = [(args[i], args[i + 1]) for i in range(0, len(args) - 1, 2)]
-            if pairs:
-                mot_strs = []
-                for mot, pos in pairs:
-                    try:
-                        mot_strs.append(f"{mot} → {float(pos):.4g}")
-                    except (TypeError, ValueError):
-                        mot_strs.append(f"{mot} → {pos}")
-                parts.append("mot: " + ",  ".join(mot_strs))
-            return ("  " + "  |  ".join(parts)) if parts else ""
-
-        # ── Detectors ─────────────────────────────────────────────────────────
-        dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
-        if isinstance(dets, str):
-            dets = [dets]
-        if not dets and args and isinstance(args[0], list):
-            dets = args[0]
-        # Flat positional format: [det_str, motor, start, stop, ...]
-        if not dets and len(args) >= 3 and isinstance(args[0], str) and isinstance(args[1], str):
-            try:
-                float(args[2])
-                dets = [args[0]]
-                args = args[1:]
-            except (TypeError, ValueError):
-                pass
-        if dets:
-            parts.append("det: [" + ", ".join(str(d) for d in dets) + "]")
-
-        # ── Motor(s) with range ───────────────────────────────────────────────
-        motor  = kwargs.get("motor")
-        motors = kwargs.get("motors")
-        start  = kwargs.get("start")
-        stop   = kwargs.get("stop")
-        num    = kwargs.get("num")
-        mot_parts = []
-
-        if motor and start is not None and stop is not None:
-            s = f"{motor} [{start:.4g} → {stop:.4g}"
-            if num is not None:
-                s += f", {num} pts"
-                num = None
-            mot_parts.append(s + "]")
-        elif motor:
-            mot_parts.append(str(motor))
-        elif isinstance(motors, list) and motors:
-            mot_parts = [str(m) for m in motors]
-        else:
-            # Parse from positional args: [dets_list, motor, start, stop, ..., num?]
-            # grid_scan:                  [dets_list, motor, start, stop, num_per_axis, ...]
-            rest = args[1:] if (args and isinstance(args[0], list)) else args
-            is_grid = "grid" in name_lc
-            chunk = 4 if is_grid else 3
-            i = 0
-            while i + chunk <= len(rest):
-                mot_candidate = rest[i]
-                if not isinstance(mot_candidate, str):
-                    break
-                try:
-                    s_val = float(rest[i + 1])
-                    e_val = float(rest[i + 2])
-                    seg = f"{mot_candidate} [{s_val:.4g} → {e_val:.4g}"
-                    if is_grid:
-                        seg += f", {int(rest[i + 3])} pts"
-                    seg += "]"
-                    mot_parts.append(seg)
-                    i += chunk
-                except (TypeError, ValueError, IndexError):
-                    break
-            # Remaining single item after triplets is global num for non-grid scans
-            if not is_grid and i < len(rest) and not mot_parts:
-                try:
-                    num = int(rest[i])
-                except (TypeError, ValueError):
-                    pass
-            elif not is_grid and mot_parts and i < len(rest):
-                try:
-                    num = int(rest[i])
-                except (TypeError, ValueError):
-                    pass
-
-        if mot_parts:
-            parts.append("mot: " + ",  ".join(mot_parts))
-
-        # ── num pts / delay ───────────────────────────────────────────────────
-        num_shown = any("pts" in p for p in parts)
-        if num is not None and not num_shown:
-            parts.append(f"{num} pts")
-        delay = kwargs.get("delay")
-        if delay is not None:
-            parts.append(f"delay={delay:.4g} s")
-
-        return "  " + "  |  ".join(parts) if parts else ""
+    def _plan_summary(name: str, kwargs: dict, args: list = None, spec: dict = None) -> str:
+        from .plan_summary import plan_summary
+        return plan_summary(name, kwargs, args, spec)
 
     def _filter_history(self, text: str):
         q = text.strip().lower()
@@ -856,7 +762,7 @@ class QueueManager(QWidget):
             else:
                 color = DANGER if is_cur else "#aa6644"
 
-            summary = self._plan_summary(name, kwargs, args)
+            summary = self._plan_summary(name, kwargs, args, self.plans.get(name))
             label   = f"{icon}  {t_str}  {name}{summary}{dur_str}"
             li = QListWidgetItem(label)
             li.setForeground(QColor(color))

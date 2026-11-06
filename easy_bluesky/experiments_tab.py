@@ -36,6 +36,7 @@ from .config import (
 from .plan_timing import PlanTimingDB
 from .live_viewer import LiveViewer
 from .widgets import PlanDialog
+from .plan_summary import plan_tooltip
 from .queue_manager import RunDetailDialog
 from .report_generator import generate_report
 
@@ -2556,7 +2557,7 @@ class ExperimentsTab(QWidget):
             else:
                 color = DANGER if is_cur else "#aa6644"
 
-            summary = self._plan_summary(name, kwargs, args)
+            summary = self._plan_summary(name, kwargs, args, self._plans.get(name))
             label   = f"{icon}  {t_str}  {name}{summary}{dur_str}"
             li = QListWidgetItem(label)
             li.setForeground(QColor(color))
@@ -4126,105 +4127,9 @@ class ExperimentsTab(QWidget):
     # ── Plan log ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _plan_summary(name: str, kwargs: dict, args: list = None) -> str:  # noqa: C901
-        args    = list(args or [])
-        parts   = []
-        name_lc = name.lower()
-
-        # ── mv / mvr: flat [motor, pos, motor, pos, ...] ─────────────────────
-        if name_lc in ("mv", "mvr"):
-            pairs = [(args[i], args[i + 1]) for i in range(0, len(args) - 1, 2)]
-            if pairs:
-                mot_strs = []
-                for mot, pos in pairs:
-                    try:
-                        mot_strs.append(f"{mot} → {float(pos):.4g}")
-                    except (TypeError, ValueError):
-                        mot_strs.append(f"{mot} → {pos}")
-                parts.append("mot: " + ",  ".join(mot_strs))
-            return ("  " + "  |  ".join(parts)) if parts else ""
-
-        # ── Detectors ─────────────────────────────────────────────────────────
-        dets = kwargs.get("detectors") or kwargs.get("detector_list", [])
-        if isinstance(dets, str):
-            dets = [dets]
-        if not dets and args and isinstance(args[0], list):
-            dets = args[0]
-        # Flat positional format: [det_str, motor, start, stop, ...]
-        if not dets and len(args) >= 3 and isinstance(args[0], str) and isinstance(args[1], str):
-            try:
-                float(args[2])
-                dets = [args[0]]
-                args = args[1:]
-            except (TypeError, ValueError):
-                pass
-        if dets:
-            parts.append("det: [" + ", ".join(str(d) for d in dets) + "]")
-
-        # ── Motor(s) with range ───────────────────────────────────────────────
-        motor  = kwargs.get("motor")
-        motors = kwargs.get("motors")
-        start  = kwargs.get("start")
-        stop   = kwargs.get("stop")
-        num    = kwargs.get("num")
-        mot_parts = []
-
-        if motor and start is not None and stop is not None:
-            s = f"{motor} [{start:.4g} → {stop:.4g}"
-            if num is not None:
-                s += f", {num} pts"
-                num = None
-            mot_parts.append(s + "]")
-        elif motor:
-            mot_parts.append(str(motor))
-        elif isinstance(motors, list) and motors:
-            mot_parts = [str(m) for m in motors]
-        else:
-            # Parse from positional args: [dets_list, motor, start, stop, ..., num?]
-            # grid_scan:                  [dets_list, motor, start, stop, num_per_axis, ...]
-            rest = args[1:] if (args and isinstance(args[0], list)) else args
-            is_grid = "grid" in name_lc
-            chunk = 4 if is_grid else 3
-            i = 0
-            while i + chunk <= len(rest):
-                mot_candidate = rest[i]
-                if not isinstance(mot_candidate, str):
-                    break
-                try:
-                    s_val = float(rest[i + 1])
-                    e_val = float(rest[i + 2])
-                    seg = f"{mot_candidate} [{s_val:.4g} → {e_val:.4g}"
-                    if is_grid:
-                        seg += f", {int(rest[i + 3])} pts"
-                    seg += "]"
-                    mot_parts.append(seg)
-                    i += chunk
-                except (TypeError, ValueError, IndexError):
-                    break
-            # Remaining single item after triplets is global num for non-grid scans
-            if not is_grid and i < len(rest) and not mot_parts:
-                try:
-                    num = int(rest[i])
-                except (TypeError, ValueError):
-                    pass
-            elif not is_grid and mot_parts and i < len(rest):
-                try:
-                    num = int(rest[i])
-                except (TypeError, ValueError):
-                    pass
-
-        if mot_parts:
-            parts.append("mot: " + ",  ".join(mot_parts))
-
-        # ── num pts / delay ───────────────────────────────────────────────────
-        num_shown = any("pts" in p for p in parts)
-        if num is not None and not num_shown:
-            parts.append(f"{num} pts")
-        delay = kwargs.get("delay")
-        if delay is not None:
-            parts.append(f"delay={delay:.4g} s")
-
-        return "  " + "  |  ".join(parts) if parts else ""
+    def _plan_summary(name: str, kwargs: dict, args: list = None, spec: dict = None) -> str:
+        from .plan_summary import plan_summary
+        return plan_summary(name, kwargs, args, spec)
 
     def _entry_belongs_here(self, entry: dict) -> bool:
         """True when this entry's timestamp falls within the experiment's lifetime."""
@@ -4571,7 +4476,7 @@ class ExperimentsTab(QWidget):
                 t_str    = ts[11:19] if len(ts) >= 19 else ts[:19]
                 dur      = entry.get("duration_s")
                 scan_num = entry.get("scan_num")
-                summary  = self._plan_summary(name, kwargs, args)
+                summary  = self._plan_summary(name, kwargs, args, self._plans.get(name))
                 dur_str  = f"  ({dur:.1f}s)" if dur is not None else ""
                 prefix   = f"#{scan_num:<3} " if scan_num is not None else "     "
                 li = QListWidgetItem(
@@ -4641,7 +4546,7 @@ class ExperimentsTab(QWidget):
             icon  = "✓" if ok else ("⊘" if aborted else ("✗" if e.get("exit_status") else "?"))
             li.setText(
                 f"{f'#{sn:<3} ' if sn is not None else '     '}{icon}  {t_str}  {e.get('name', '?')}"
-                f"{self._plan_summary(e.get('name', '?'), e['kwargs'], e['args'])}"
+                f"{self._plan_summary(e.get('name', '?'), e['kwargs'], e['args'], self._plans.get(e.get('name')))}"
                 f"{f'  ({dur:.1f}s)' if dur is not None else ''}"
             )
             patched[e.get("uid", "")] = (e["args"], e["kwargs"])
@@ -4693,7 +4598,7 @@ class ExperimentsTab(QWidget):
         t_str    = ts[11:19] if len(ts) >= 19 else ts[:19]
         dur      = entry.get("duration_s")
         scan_num = entry.get("scan_num")
-        summary  = self._plan_summary(name, kwargs, args)
+        summary  = self._plan_summary(name, kwargs, args, self._plans.get(name))
         dur_str  = f"  ({dur:.1f}s)" if dur is not None else ""
         prefix   = f"#{scan_num:<3} " if scan_num is not None else "     "
         li = QListWidgetItem(f"{prefix}{icon}  {t_str}  {name}{summary}{dur_str}")
@@ -5175,7 +5080,7 @@ class ExperimentsTab(QWidget):
             args    = item.get("args", []) or []
             kwargs  = item.get("kwargs", {}) or {}
             uid     = item.get("item_uid", "")
-            summary  = self._plan_summary(name, kwargs, args)
+            summary  = self._plan_summary(name, kwargs, args, self._plans.get(name))
             md       = kwargs.get("md", {}) or {}
             scan_num = md.get("scan_num")
             prefix   = f"#{scan_num}" if scan_num is not None else f"{i + 1}."
@@ -5183,9 +5088,12 @@ class ExperimentsTab(QWidget):
             li.setData(Qt.ItemDataRole.UserRole,     uid)
             li.setData(Qt.ItemDataRole.UserRole + 1, item)
             client_host = md.get("client_host", "")
-            if client_host and client_host != socket.gethostname():
+            foreign = bool(client_host and client_host != socket.gethostname())
+            if foreign:
                 li.setForeground(QColor("#e8a44a"))
-                li.setToolTip(f"Queued from: {client_host}")
+            li.setToolTip(plan_tooltip(
+                item, self._plans.get(name),
+                f"Queued from: {client_host}" if foreign else ""))
             self.queue_compact.addItem(li)
             if uid and uid in selected_uids:
                 li.setSelected(True)
