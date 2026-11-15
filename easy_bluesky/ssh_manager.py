@@ -255,7 +255,7 @@ def restart_re_manager(settings: dict, profile: dict) -> tuple:
 
         # Upload bundled config files so the remote always has the latest versions.
         _scripts_pkg = Path(__file__).parent / "scripts"
-        _always_upload = [startup_script, "user_group_permissions.yaml"]
+        _always_upload = [startup_script, "easy_bluesky_common.py", "user_group_permissions.yaml"]
         for _fname in _always_upload:
             _local = _scripts_pkg / _fname
             if _remote_scripts_dir and _local.exists():

@@ -344,6 +344,7 @@ _BUNDLED_FILES = [
     "existing_plans_and_devices.yaml",
     "user_group_permissions.yaml",
     "re_startup_mongo.py",
+    "easy_bluesky_common.py",
     "re_startup_sim.py",
     "devices.py",
     "start_re_managers.sh",

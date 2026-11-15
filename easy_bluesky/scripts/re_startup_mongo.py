@@ -123,6 +123,16 @@ else:
 if _mod is not None:
     globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
 
+# ── Shared helpers (scan numbering, @eb_plan) — importable from every plans file ──
+_scripts_here = str(Path(__file__).parent)
+if _scripts_here not in sys.path:
+    sys.path.insert(0, _scripts_here)
+try:
+    import easy_bluesky_common as _ebc
+except Exception as _e_ebc:
+    _ebc = None
+    print(f"[re_startup_mongo] WARNING: easy_bluesky_common not available: {_e_ebc}")
+
 # ── Profile plans (from EASY_BLUESKY_PLANS_DIR or legacy user_plans.py) ──────
 _plans_dir = os.getenv("EASY_BLUESKY_PLANS_DIR", "").strip()
 if _plans_dir and os.path.isdir(_plans_dir):
@@ -252,6 +262,39 @@ if os.getenv("EASY_BLUESKY_BASELINE", "1") != "0":
               + (" …" if len(_baseline_devices) > 12 else ""))
     except Exception as _e_bl:
         print(f"[re_startup_mongo] WARNING: baseline stream not enabled: {_e_bl}")
+
+
+# ── Scan numbers: replace a stale md["scan_num"] at open_run ────────────────────
+# A plan the queueserver re-queues (loop mode, abort) carries the number it already
+# used.  Only runs queued by EasyBluesky (md has _queue_plan_name) are touched, and only
+# when a finished run already used the number.  Disable with EASY_BLUESKY_SCANNUM_FIX=0.
+if _ebc is not None and os.getenv("EASY_BLUESKY_SCANNUM_FIX", "1") != "0":
+    try:
+        import bluesky.preprocessors as _bpp_sn
+        from bluesky.utils import single_gen as _sg_sn
+
+        def _scan_num_preprocessor(plan):
+            def _insert(msg):
+                if msg.command != "open_run":
+                    return None, None
+                try:
+                    kw = msg.kwargs or {}
+                    if kw.get("_queue_plan_name") and kw.get("scan_num") is not None:
+                        new = _ebc.fresh_scan_num(kw)
+                        if new is not None and new != kw["scan_num"]:
+                            print(f"[re_startup_mongo] scan_num {kw['scan_num']} already used"
+                                  f" -> {new}")
+                            return _sg_sn(msg._replace(kwargs={**kw, "scan_num": new})), None
+                except Exception as _e_sn:
+                    print(f"[re_startup_mongo] scan_num check failed: {_e_sn}")
+                return None, None
+
+            return _bpp_sn.plan_mutator(plan, _insert)
+
+        RE.preprocessors.append(_scan_num_preprocessor)
+        print("[re_startup_mongo] scan_num stale-number fix enabled")
+    except Exception as _e_snp:
+        print(f"[re_startup_mongo] WARNING: scan_num fix not enabled: {_e_snp}")
 
 
 def prime_detector(det):
@@ -980,6 +1023,9 @@ class _ScanLogCallback(_CallableCB):
         self._plan_name  = start_doc.get("plan_name", "") or ""
         self._sample     = start_doc.get("sample_name", "")
         self._start_time = start_doc.get("time", 0.0)
+        self._scan_num   = start_doc.get("scan_num")
+        if _ebc is not None:
+            _ebc.record_used(exp_path, self._scan_num, self._uid)
         self._motors     = list(start_doc.get("motors",    []) or [])
         self._detectors  = list(start_doc.get("detectors", []) or [])
         self._plan_args  = list(start_doc.get("plan_args",   []) or [])
@@ -1007,6 +1053,7 @@ class _ScanLogCallback(_CallableCB):
         entry = {
             "uid":         self._uid,
             "scan_id":     self._scan_id,
+            "scan_num":    self._scan_num,
             "plan_name":   self._plan_name,
             "sample_name": self._sample,
             "start_time":  self._start_time,
