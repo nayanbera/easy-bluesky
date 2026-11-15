@@ -170,6 +170,59 @@ def _read_scan_num_json(exp_path: str) -> int:
     return _next_scan_num_for(exp_path) - 1
 
 
+def _jsonl_dicts(path: Path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except Exception:
+        return
+
+
+def _max_reserved_scan_num(exp_path: str) -> int:
+    """Highest scan_num in queued_scans.jsonl (reservations by any client + RE-side
+    replacements of stale loop numbers).  0 when the file is missing."""
+    best = 0
+    for e in _jsonl_dicts(Path(exp_path) / "queued_scans.jsonl"):
+        try:
+            best = max(best, int(e.get("scan_num")))
+        except (TypeError, ValueError):
+            pass
+    return best
+
+
+def _reserve_scan_num(exp_path: str, scan_num: int, name: str = "") -> None:
+    """Record a queue-time reservation so the RE side and other clients skip the number."""
+    try:
+        with open(Path(exp_path) / "queued_scans.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"scan_num": int(scan_num), "name": name,
+                                 "client_host": socket.gethostname(),
+                                 "queued_at": time.time()}) + "\n")
+    except Exception:
+        pass
+
+
+def _actual_scan_num(exp_path: str, run_uids) -> "int | None":
+    """scan_num a finished run really used, from scan_nums.jsonl (written by the RE
+    machine when the run starts).  It differs from the queued md value when the RE side
+    replaced a stale number (loop re-queue, aborted plan put back).  None if unknown."""
+    wanted = {u for u in (run_uids or []) if u}
+    if not wanted or not exp_path:
+        return None
+    for e in _jsonl_dicts(Path(exp_path) / "scan_nums.jsonl"):
+        if e.get("uid") in wanted:
+            try:
+                return int(e.get("scan_num"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _write_scan_num_json(exp_path: str, scan_num: int):
     """Atomically update last_completed in scan_num.json (never decreases)."""
     try:
@@ -2170,6 +2223,7 @@ class ExperimentsTab(QWidget):
                 patched = _copy.deepcopy(item)
                 patched.setdefault("kwargs", {}).setdefault("md", {})["scan_num"] = next_num
                 self.worker.update_item(patched)
+                _reserve_scan_num(self._active_exp_path, next_num, item.get("name", ""))
 
             next_num += 1
 
@@ -2208,8 +2262,12 @@ class ExperimentsTab(QWidget):
         if keep_scan_num is not None:
             merged["scan_num"] = keep_scan_num
         elif self._active_exp_path:
-            merged["scan_num"] = self._next_scan_num
-            self._next_scan_num += 1
+            # Skip numbers other clients (or the RE side, replacing a stale loop number)
+            # have already reserved in the shared experiment folder.
+            _sn = max(self._next_scan_num, _max_reserved_scan_num(self._active_exp_path) + 1)
+            merged["scan_num"] = _sn
+            self._next_scan_num = _sn + 1
+            _reserve_scan_num(self._active_exp_path, _sn, plan_name)
         # Preserve the queue item's registered plan name so on_scan_start_doc can
         # use the correct name regardless of what bluesky puts in plan_name
         # (custom plans that yield from rel_scan appear as "rel_scan" in start docs).
@@ -4901,6 +4959,11 @@ class ExperimentsTab(QWidget):
                     scan_num = int(md_sn) if md_sn is not None else self._next_scan_num
                 except (ValueError, TypeError):
                     scan_num = self._next_scan_num
+                # The number the run really used (the RE side replaces a stale queued
+                # number, e.g. a loop re-queue) wins over the queued md value.
+                _real_sn = _actual_scan_num(self._active_exp_path, run_uids)
+                if _real_sn is not None:
+                    scan_num = _real_sn
 
             # Skip re-runs with a scan_num already in plans_log.jsonl.  This
             # can happen when a previous session's history was never written
@@ -5078,6 +5141,7 @@ class ExperimentsTab(QWidget):
                 ok, err = self.worker.update_item(patched)
                 if ok:
                     self._loop_patched_uids.add(uid)
+                    _reserve_scan_num(self._active_exp_path, new_sn, patch_item.get("name", ""))
                     self._next_scan_num = max(self._next_scan_num, new_sn + 1)
                 else:
                     self._log(f"⚠ Loop scan_num patch failed: {err}")
