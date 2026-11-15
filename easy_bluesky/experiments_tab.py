@@ -1340,6 +1340,7 @@ class ExperimentsTab(QWidget):
         self._console_log      = None   # open file handle for <exp_dir>/console.log
         self._doi_value: str   = ""     # empty until DOI is fetched and confirmed
         self._running_scan_num: int    = 0   # scan_num of currently executing plan
+        self._active_run_sn = None   # (run_uid, scan_num) of the started, not yet stopped run
         self._doi_poller       = None   # _ESAFDoiPoller instance
         self._doi_timer        = QTimer()
         self._doi_timer.setInterval(3_600_000)   # re-poll every hour
@@ -2912,7 +2913,7 @@ class ExperimentsTab(QWidget):
         self._current_running_item = item or {}
         # Cache running scan_num so _renumber_queue bases queued plans after it.
         run_sn = ((item or {}).get("kwargs", {}) or {}).get("md", {}).get("scan_num")
-        if run_sn is not None:
+        if run_sn is not None and not self._active_run_sn:
             try:
                 self._running_scan_num = int(run_sn)
             except (ValueError, TypeError):
@@ -2920,13 +2921,14 @@ class ExperimentsTab(QWidget):
         self._update_progress_bars()
 
         if not item:
+            self._active_run_sn = None
             self._running_banner.setVisible(False)
             return
         name   = item.get("name", "?")
         kwargs = item.get("kwargs", {}) or {}
         args   = item.get("args",   []) or []
         md     = kwargs.get("md", {}) or {}
-        scan_n = md.get("scan_num")
+        scan_n = self._displayed_scan_num(md.get("scan_num"))
         scan_prefix = f"#{scan_n} · " if scan_n is not None else ""
         parts  = []
         sample = md.get("sample_name", "")
@@ -3163,7 +3165,7 @@ class ExperimentsTab(QWidget):
         item   = self._current_running_item or {}
         name   = item.get("name", "plan")
         kw     = item.get("kwargs", {}) or {}
-        sn     = (kw.get("md") or {}).get("scan_num")
+        sn     = self._displayed_scan_num((kw.get("md") or {}).get("scan_num"))
         extra  = [f"{k}={kw[k]}" for k in ("acquire_time", "settle_time", "delay") if k in kw]
         if self._completed_points == 0:
             what = ("no data point yet — the plan is probably waiting for a motor to reach its "
@@ -4681,6 +4683,12 @@ class ExperimentsTab(QWidget):
 
     # ── Public update slots ────────────────────────────────────────────────────
 
+    def _displayed_scan_num(self, queued_sn):
+        """Scan number of the running plan: the one in its start document (the RE side
+        replaces a stale queued number, e.g. a loop re-queue) while that run is active,
+        otherwise the queued md value."""
+        return self._active_run_sn[1] if self._active_run_sn else queued_sn
+
     def on_scan_start_doc(self, doc: dict) -> None:
         """Cache start-document metadata for Plans Log correlation with stop doc."""
         run_uid = doc.get("uid", "")
@@ -4690,6 +4698,12 @@ class ExperimentsTab(QWidget):
         # update_running_item fires every ~1 s; the ZMQ start doc usually arrives
         # within 1-2 poll ticks so _current_running_item is typically correct.
         running = self._current_running_item or {}
+        try:
+            _sn = int(doc.get("scan_num"))
+            self._active_run_sn = (run_uid, _sn)
+            self._running_scan_num = _sn
+        except (TypeError, ValueError):
+            self._active_run_sn = None
         self._start_doc_cache[run_uid] = {
             "scan_num":   doc.get("scan_num"),
             "exp_dir":    doc.get("exp_dir", ""),
@@ -4717,6 +4731,8 @@ class ExperimentsTab(QWidget):
         run_uid    = doc.get("run_start", "")
         exit_status = doc.get("exit_status", "")
         self._log(f"[ZMQ stop] run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}")
+        if self._active_run_sn and self._active_run_sn[0] == run_uid:
+            self._active_run_sn = None
         if not self._active_exp_path:
             return
         if not run_uid or not exit_status:
