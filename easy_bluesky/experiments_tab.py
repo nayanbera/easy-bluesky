@@ -2817,11 +2817,18 @@ class ExperimentsTab(QWidget):
                 and self._server_loop_n_cycles > 0
                 and self._server_loop_cycle_size > 0):
             done = max(0, self._current_history_count - self._server_loop_history_start)
-            completed_cycles = done // self._server_loop_cycle_size
-            if completed_cycles >= self._server_loop_n_cycles:
-                self._log(f"Loop complete — {completed_cycles} cycle(s) done, disabling loop.")
+            total_plans = self._server_loop_n_cycles * self._server_loop_cycle_size
+            # Switch the loop off while the LAST needed plan is still running (done + the
+            # running one).  Waiting for it to finish is too late: the server re-queues it
+            # and starts the next plan before the history count reaches the total.
+            if done + (1 if self._running_item_uid else 0) >= total_plans:
+                completed_cycles = self._server_loop_n_cycles
+                self._log(f"Loop complete — last of {completed_cycles} cycle(s) "
+                          f"{'running' if self._running_item_uid else 'done'}, disabling loop.")
                 if self.worker:
                     self.worker.queue_mode_set({"loop": False})
+                    # The re-queued copies left in the queue would run as extra scans.
+                    self.worker.clear_queue()
                 self._clear_loop_state()
                 self.chk_loop.blockSignals(True)
                 self.chk_loop.setChecked(False)
