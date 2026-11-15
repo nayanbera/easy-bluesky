@@ -3458,8 +3458,9 @@ class ExperimentsTab(QWidget):
         """Called by main.py when queue is successfully started."""
         self._history_count_at_loop_start    = history_count
         self._server_loop_history_start      = history_count
-        self._loop_started_uids.clear()
-        self._loop_stopped_uids.clear()
+        # Start/Resume of a loop that was only interrupted (Stop Queue, Abort, Skip's
+        # auto-restart, a failed plan) keeps counting; a fresh loop starts at zero because
+        # enabling the loop (or ending it) already cleared the counts.
         self._loop_patched_uids.clear()
         self._update_progress_bars()
 
