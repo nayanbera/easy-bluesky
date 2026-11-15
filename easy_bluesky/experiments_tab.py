@@ -1394,6 +1394,8 @@ class ExperimentsTab(QWidget):
         self._server_loop_cycle_size: int = 0    # plans per cycle (queue size at loop enable)
         self._server_loop_n_cycles: int   = 0    # requested cycles (0=∞)
         self._server_loop_history_start: int = 0 # items_in_history when loop was enabled
+        self._loop_started_uids: set = set()     # run uids whose ZMQ start doc arrived in this loop
+        self._loop_stopped_uids: set = set()     # run uids whose ZMQ stop doc arrived in this loop
         self._loop_patched_uids: set = set()     # item_uids already patched with new scan_num
         self._loop_mode_lost_warned: bool = False  # guard for one-time warning per loss event
         self._history_count_at_loop_start: int = 0  # items_in_history when queue started
@@ -2816,14 +2818,14 @@ class ExperimentsTab(QWidget):
         if (queue_running and self._server_loop_active
                 and self._server_loop_n_cycles > 0
                 and self._server_loop_cycle_size > 0):
-            done = max(0, self._current_history_count - self._server_loop_history_start)
             total_plans = self._server_loop_n_cycles * self._server_loop_cycle_size
             # Switch the loop off as soon as finished + running + already-queued plans reach
             # the target.  From then on the server adds no more re-queued copies, so the queue
             # simply drains (nothing to clear).  Waiting until the last plan finishes is too
             # late: the server re-queues it and starts another one first.
-            running_n = 1 if self._running_item_uid else 0
-            if done + running_n + len(self._current_queue_items) >= total_plans:
+            # Runs finished or started are counted from the ZMQ stop/start documents.
+            committed = max(len(self._loop_started_uids), len(self._loop_stopped_uids))
+            if committed + self._loop_queued_runs() >= total_plans:
                 completed_cycles = self._server_loop_n_cycles
                 self._log(f"Loop: all {total_plans} plan(s) of {completed_cycles} cycle(s) are "
                           f"done, running or queued — disabling loop (no more re-queueing).")
@@ -3289,7 +3291,7 @@ class ExperimentsTab(QWidget):
                 # Finite loop — show cycle-based progress instead of plan counts.
                 cycle_size  = max(self._server_loop_cycle_size, 1)
                 n_cycles    = self._server_loop_n_cycles
-                done_plans  = max(0, self._current_history_count - self._server_loop_history_start)
+                done_plans  = self._loop_done()
                 total_plans = n_cycles * cycle_size
                 cur_cycle   = min(done_plans // cycle_size + 1, n_cycles)
                 q_frac      = min(done_plans / total_plans, 1.0) if total_plans > 0 else 0.0
@@ -3372,7 +3374,9 @@ class ExperimentsTab(QWidget):
         """Enable server-side loop mode."""
         if not self.worker:
             return
-        self._server_loop_cycle_size = len(self._current_queue_items)
+        self._server_loop_cycle_size = self._loop_queued_runs()
+        self._loop_started_uids.clear()
+        self._loop_stopped_uids.clear()
         self._server_loop_n_cycles   = self.spin_loop.value()
         self._server_loop_history_start = self._current_history_count
         self._loop_patched_uids.clear()
@@ -3402,6 +3406,8 @@ class ExperimentsTab(QWidget):
         self._server_loop_cycle_size = 0
         self._server_loop_n_cycles   = 0
         self._server_loop_history_start = 0
+        self._loop_started_uids.clear()
+        self._loop_stopped_uids.clear()
         self._loop_patched_uids.clear()
         self._loop_mode_lost_warned  = False
 
@@ -3437,7 +3443,7 @@ class ExperimentsTab(QWidget):
         self._loop_drag_lbl.setVisible(self._server_loop_active)
         # Update iteration label
         if self._server_loop_active and self._server_loop_cycle_size > 0:
-            done = max(0, self._current_history_count - self._server_loop_history_start)
+            done = self._loop_done()
             cur  = done // self._server_loop_cycle_size + 1
             n    = self._server_loop_n_cycles
             if n == 0:
@@ -3452,6 +3458,8 @@ class ExperimentsTab(QWidget):
         """Called by main.py when queue is successfully started."""
         self._history_count_at_loop_start    = history_count
         self._server_loop_history_start      = history_count
+        self._loop_started_uids.clear()
+        self._loop_stopped_uids.clear()
         self._loop_patched_uids.clear()
         self._update_progress_bars()
 
@@ -4690,6 +4698,15 @@ class ExperimentsTab(QWidget):
 
     # ── Public update slots ────────────────────────────────────────────────────
 
+    def _loop_done(self) -> int:
+        """Loop plans finished, counted from ZMQ stop documents (the history count lags)."""
+        return len(self._loop_stopped_uids)
+
+    def _loop_queued_runs(self) -> int:
+        """Queued items that will open a run (motion-only plans emit no start/stop doc)."""
+        return sum(1 for it in self._current_queue_items
+                   if not _is_motion_only(it.get("name", ""), it.get("kwargs", {}) or {}))
+
     def _displayed_scan_num(self, queued_sn):
         """Scan number of the running plan: the one in its start document (the RE side
         replaces a stale queued number, e.g. a loop re-queue) while that run is active,
@@ -4705,6 +4722,8 @@ class ExperimentsTab(QWidget):
         # update_running_item fires every ~1 s; the ZMQ start doc usually arrives
         # within 1-2 poll ticks so _current_running_item is typically correct.
         running = self._current_running_item or {}
+        if self._server_loop_active:
+            self._loop_started_uids.add(run_uid)
         try:
             _sn = int(doc.get("scan_num"))
             self._active_run_sn = (run_uid, _sn)
@@ -4740,6 +4759,8 @@ class ExperimentsTab(QWidget):
         self._log(f"[ZMQ stop] run={run_uid[:8] if run_uid else '?'} status={exit_status or '?'}")
         if self._active_run_sn and self._active_run_sn[0] == run_uid:
             self._active_run_sn = None
+        if self._server_loop_active and run_uid:
+            self._loop_stopped_uids.add(run_uid)
         if not self._active_exp_path:
             return
         if not run_uid or not exit_status:
