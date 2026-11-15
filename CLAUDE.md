@@ -306,6 +306,21 @@ After abort the server pushes the plan back to the queue front with the same sca
 ### main.py guards
 Three call sites in main.py previously called `queue_mode_set({"loop": False})` unconditionally before `queue_start()` (leftover from client-side loop). Each is now guarded with `if not self.experiments_tab._server_loop_active:` — `_on_start_requested`, `_retry_start_queue`, and the `_loop_mode_reset_pending` idle block.
 
+### RE-side stale scan_num fix (single-plan loops, re-queued/aborted plans)
+The GUI cannot patch a single-plan loop: the server's re-queued copy starts before any queue poll sees it. The RE machine
+therefore replaces a *stale* number (already used by a started run) at run time:
+- `scripts/easy_bluesky_common.py` (uploaded on every RE restart with `re_startup_mongo.py`): `used_scan_nums`,
+  `fresh_scan_num(md)`, `@eb_plan`. Used = `scan_nums.jsonl` ∪ `plans_log.jsonl` ∪ `scans_log.json` (entries without `scan_num`
+  count as 1..N). Stale/missing → `max(used ∪ reserved)+1`, appended to `queued_scans.jsonl`. Out-of-order runs keep their number.
+- `re_startup_mongo.py`: `_scan_num_preprocessor` rewrites `scan_num` in `open_run` (only if md has `_queue_plan_name`; kill switch
+  `EASY_BLUESKY_SCANNUM_FIX=0`); `_ScanLogCallback` appends `{scan_num, uid}` to `scan_nums.jsonl` at run start and stores `scan_num`
+  in `scans_log.json`.
+- Files in the experiment folder: `queued_scans.jsonl` (reservations: GUI at queue time, RE replacements; `_inject_metadata` takes
+  `max(_next_scan_num, max reserved+1)`), `scan_nums.jsonl` (used, uid → number). The plan log takes the number from
+  `scan_nums.jsonl` via `_actual_scan_num(exp, run_uids)`, falling back to the queued md value.
+- `custom_plans.py` uses `_resolve_scan_num` (falls back to the old behaviour if the helper module is missing); new plan files start from
+  `scripts/custom_plans_template.py`. `custom_plans.py` is still uploaded manually. Untested against a live queueserver: verify on the sim profile.
+
 ## Queue progress bar (experiments_tab.py)
 
 The queue bar uses ZMQ document counts, not poll-loop state:
