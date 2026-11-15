@@ -300,6 +300,11 @@ All three viewers now select only the **first** non-motor numeric signal on firs
 ### Scan_num patching (pair-comparison, update_compact_queue)
 The server appends re-queued plans with their original (lower) scan_num. Detection strategy for N ≥ 2 plans: if `sn_entries[-2].sn > sn_entries[-1].sn`, the last item is the stale re-queued copy → assign `prev_sn + 1`. For N = 1 (single-plan loop), falls back to checking `_logged_scan_nums`. Race-condition-free — no disk reads.
 
+### Loop stop rule (update_re_status)
+The loop is switched off (`queue_mode_set({"loop": False})`, `_clear_loop_state`) as soon as `done + running + len(queue) >= n_cycles * cycle_size`
+(`done` = history count since loop start). After that the server adds no more re-queued copies and the queue drains by itself (no queue
+clearing). Waiting for the last plan to *finish* is too late: the server re-queues it and starts another plan first (one extra scan).
+
 ### Abort scan_num renumber
 After abort the server pushes the plan back to the queue front with the same scan_num. `on_scan_stop_doc` sets `_needs_renumber = True` and schedules `QTimer.singleShot(1500, self._renumber_queue)` for `exit_status in ("abort", "fail")`. The 1.5 s delay closes the race where `queue_updated` fires before the ZMQ stop doc (leaving `_needs_renumber` unconsumed). `_renumber_queue()` clears `_needs_renumber` itself at call time.
 

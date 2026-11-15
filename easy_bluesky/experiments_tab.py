@@ -2818,17 +2818,17 @@ class ExperimentsTab(QWidget):
                 and self._server_loop_cycle_size > 0):
             done = max(0, self._current_history_count - self._server_loop_history_start)
             total_plans = self._server_loop_n_cycles * self._server_loop_cycle_size
-            # Switch the loop off while the LAST needed plan is still running (done + the
-            # running one).  Waiting for it to finish is too late: the server re-queues it
-            # and starts the next plan before the history count reaches the total.
-            if done + (1 if self._running_item_uid else 0) >= total_plans:
+            # Switch the loop off as soon as finished + running + already-queued plans reach
+            # the target.  From then on the server adds no more re-queued copies, so the queue
+            # simply drains (nothing to clear).  Waiting until the last plan finishes is too
+            # late: the server re-queues it and starts another one first.
+            running_n = 1 if self._running_item_uid else 0
+            if done + running_n + len(self._current_queue_items) >= total_plans:
                 completed_cycles = self._server_loop_n_cycles
-                self._log(f"Loop complete — last of {completed_cycles} cycle(s) "
-                          f"{'running' if self._running_item_uid else 'done'}, disabling loop.")
+                self._log(f"Loop: all {total_plans} plan(s) of {completed_cycles} cycle(s) are "
+                          f"done, running or queued — disabling loop (no more re-queueing).")
                 if self.worker:
                     self.worker.queue_mode_set({"loop": False})
-                    # The re-queued copies left in the queue would run as extra scans.
-                    self.worker.clear_queue()
                 self._clear_loop_state()
                 self.chk_loop.blockSignals(True)
                 self.chk_loop.setChecked(False)
