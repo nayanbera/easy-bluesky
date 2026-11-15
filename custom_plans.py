@@ -39,6 +39,23 @@ def _scan_num_from_log(exp_dir: str) -> int:
     return 1
 
 
+try:  # shared RE-side helpers, uploaded with re_startup_mongo.py
+    from easy_bluesky_common import fresh_scan_num as _fresh_scan_num
+except Exception:
+    _fresh_scan_num = None
+
+
+def _resolve_scan_num(md: dict, exp_dir: str) -> int:
+    """Scan number for this run: the queued md["scan_num"] unless a finished run already
+    used it (loop re-queue, aborted plan put back) -- then the next free number.
+    Falls back to the old behaviour when easy_bluesky_common is not on the RE machine."""
+    if _fresh_scan_num is not None:
+        n = _fresh_scan_num(md, exp_dir)
+        if n is not None:
+            return n
+    return md.get("scan_num") or _scan_num_from_log(exp_dir)
+
+
 def _exp_dir_from_md(md: dict) -> str:
     """Return the experiment directory path to use on the RE machine.
 
@@ -393,7 +410,7 @@ def count_w_time(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     def per_shot(detectors):
@@ -498,7 +515,7 @@ def scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -561,7 +578,7 @@ def rel_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -621,7 +638,7 @@ def grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -681,7 +698,7 @@ def rel_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -741,7 +758,7 @@ def list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -801,7 +818,7 @@ def rel_list_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -861,7 +878,7 @@ def list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -921,7 +938,7 @@ def rel_list_grid_scan_w_time_n_delay(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
@@ -1002,7 +1019,7 @@ def list_scan_w_time_n_delay_from_csv(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     header, columns = load_multi_motor_csv(csv_file)
@@ -1256,7 +1273,7 @@ def aswaxs_energy_scan(
     shutter = _resolve_device(shutter)
     _dir    = _exp_dir_from_md(md)
     _sample = md.get("sample_name", "sample")
-    _scan_n = md.get("scan_num") or _scan_num_from_log(_dir)
+    _scan_n = _resolve_scan_num(md, _dir)
     md["scan_num"] = _scan_n
 
     saved = {}
