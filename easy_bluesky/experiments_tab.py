@@ -2392,17 +2392,32 @@ class ExperimentsTab(QWidget):
         if not isinstance(items, list):
             QMessageBox.critical(self, "Invalid Format", "Queue file must contain a JSON array.")
             return
+        if not self.worker:
+            QMessageBox.warning(self, "Not Connected", "Connect to the queue-server first.")
+            return
         added = failed = 0
         for item in items:
             if not isinstance(item, dict) or "name" not in item:
                 failed += 1
                 continue
             item.setdefault("item_type", "plan")
+            # The file carries the scan numbers and experiment fields of the session
+            # it was saved in.  Refresh them like Duplicate does: _inject_metadata drops
+            # the old scan_num/exp_dir/client_host and reserves the next free number, in
+            # file order, so imported plans line up with the current logs.
+            for k in ("item_uid", "status", "result", "msg"):
+                item.pop(k, None)
+            md = (item.get("kwargs") or {}).get("md") or {}
+            for k in ("_loop_n_cycles", "_loop_cycle_num", "_loop_cycle_size"):
+                md.pop(k, None)
+            item = self._inject_metadata(item)
             ok, _ = self.worker.add_item(item)
             if ok:
                 added += 1
             else:
                 failed += 1
+        if added:
+            self._needs_renumber = True
         self._log(f"{'✓' if not failed else '⚠'} Loaded queue: {added} added"
                   + (f", {failed} failed" if failed else ""))
 
