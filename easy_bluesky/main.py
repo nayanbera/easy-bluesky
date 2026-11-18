@@ -1279,6 +1279,7 @@ class MainWindow(QMainWindow):
         self.worker.queue_updated.connect(self.experiments_tab.update_compact_queue)
 
         self.worker.plans_updated.connect(self.devices_plans_tab.update_plans)
+        self.worker.plan_origins_ready.connect(self._on_plan_origins)
         self.worker.devices_updated.connect(self.devices_plans_tab.update_devices)
         self.worker.pv_names_ready.connect(self.devices_plans_tab.setup_epics_monitors)
         self.worker.pv_names_ready.connect(self.experiments_tab.set_pv_map)
@@ -1842,6 +1843,15 @@ class MainWindow(QMainWindow):
 
     def _on_plans_updated(self, plans):
         self.plan_builder.update_plans(plans)
+        # Where/when each plan was uploaded (answered by get_plan_origins in the RE worker).
+        self.worker.request_plan_origins()
+
+    def _on_plan_origins(self, origins: dict):
+        from .plans_manager import get_catalog
+        cat = get_catalog()
+        if cat is not None:
+            cat.set_origins(origins)
+        self.devices_plans_tab.refresh_plan_origins()
 
     def _on_devices_updated(self, devices):
         self.plan_builder.update_devices(devices)
@@ -1851,6 +1861,7 @@ class MainWindow(QMainWindow):
             self._reupload_after_open = True
 
     def _on_pv_names_ready_reupload(self, _pv_map: dict):
+        self.worker.request_plan_origins()
         if self._reupload_after_open:
             self._reupload_after_open = False
             self.plan_builder.reupload_local_plans()

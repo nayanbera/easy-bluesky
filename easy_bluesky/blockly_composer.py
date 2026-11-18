@@ -200,10 +200,24 @@ class BlocklyComposerWidget(QWidget):
         if not self.worker or not getattr(self.worker, "rm", None):
             QMessageBox.warning(self, "Not connected", "Connect to the RE Manager to add the plan.")
             return
-        ok, msg = self.worker.upload_script(code)
+        from .plan_provenance import plan_names_in, find_overwrites, confirm_overwrite
+        from .plans_manager import get_catalog
+        cat = get_catalog()
+        if any(n in self._plans for n in plan_names_in(code)):
+            origins = self.worker.fetch_plan_origins()
+            if origins is not None and cat is not None:
+                cat.set_origins(origins)
+            known = origins is not None or (cat is not None and cat.origins_known())
+            if origins is None and cat is not None:
+                origins = cat._origins
+            conflicts = find_overwrites(plan_names_in(code), self._plans, origins, cat)
+            if not confirm_overwrite(self, conflicts, known, "Adding this plan"):
+                return
+        ok, msg = self.worker.upload_script(code, source=f"<Blockly Composer: {name}>")
         if not ok:
             QMessageBox.warning(self, "Upload failed", msg or "unknown error")
             return
+        self.worker.request_plan_origins()
         QTimer.singleShot(300, self.worker.reload_plans_devices)
         item = dlg.result_item
         QTimer.singleShot(1500, lambda: self.add_plan_requested.emit(item))   # let the plan list refresh

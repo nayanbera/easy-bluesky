@@ -15,6 +15,14 @@ experiment directory (shared with the app over NFS):
     scans_log.json     one entry per finished run (legacy entries have no scan_num)
     plans_log.jsonl    the app's plan log
 
+Plan origins
+------------
+Every plan upload made by the app ends with a call to ``record_plan_upload`` (appended
+to the uploaded code), so the RE side knows which computer, user and source file a plan
+came from.  Records are kept in memory and appended to ``plan_uploads.jsonl`` (default
+``~/.easy_bluesky/plan_uploads.jsonl``, override with ``EASY_BLUESKY_PLAN_LOG``);
+``get_plan_origins`` in re_startup_mongo.py hands them to every client.
+
 Use ``@eb_plan`` on plans that need the final number before ``open_run`` (e.g. to
 build a file name).  Plans that only pass ``md`` on to a scan need nothing: the
 RE preprocessor in re_startup_mongo.py corrects the number at ``open_run``.
@@ -158,3 +166,59 @@ def eb_plan(fn):
         return (yield from fn(*args, **kwargs))
 
     return wrapper
+
+
+# ── Plan upload provenance ───────────────────────────────────────────────────
+
+_PLAN_ORIGINS: dict = {}
+_ORIGINS_LOADED = False
+
+
+def plan_log_path() -> str:
+    return (os.environ.get("EASY_BLUESKY_PLAN_LOG")
+            or os.path.join(os.path.expanduser("~"), ".easy_bluesky", "plan_uploads.jsonl"))
+
+
+def _apply_upload(names, e: dict) -> None:
+    """Fold one upload record into the in-memory registry (latest wins; the previous
+    upload from a different host or source is kept as ``previous``)."""
+    for n in names:
+        rec = {"host": e.get("host", ""), "user": e.get("user", ""),
+               "source": e.get("source", ""), "time": e.get("time")}
+        prev = _PLAN_ORIGINS.get(n)
+        if prev:
+            if (prev.get("host"), prev.get("source")) != (rec["host"], rec["source"]):
+                rec["previous"] = {k: prev.get(k) for k in ("host", "user", "source", "time")}
+            elif prev.get("previous"):
+                rec["previous"] = prev["previous"]
+        _PLAN_ORIGINS[n] = rec
+
+
+def _load_plan_origins() -> None:
+    global _ORIGINS_LOADED
+    if _ORIGINS_LOADED:
+        return
+    _ORIGINS_LOADED = True
+    for e in _jsonl(plan_log_path()):
+        _apply_upload(e.get("names") or [], e)
+
+
+def record_plan_upload(names, host: str = "", user: str = "", source: str = "") -> None:
+    """Remember that *names* were uploaded from *host* (by *user*, from *source*)."""
+    try:
+        _load_plan_origins()
+        e = {"time": time.time(), "host": host, "user": user, "source": source,
+             "names": list(names)}
+        _apply_upload(e["names"], e)
+        _append_jsonl(plan_log_path(), e)
+    except Exception:
+        pass
+
+
+def plan_origins() -> dict:
+    """{plan_name: {host, user, source, time[, previous]}} for every recorded upload."""
+    try:
+        _load_plan_origins()
+    except Exception:
+        pass
+    return {k: dict(v) for k, v in _PLAN_ORIGINS.items()}

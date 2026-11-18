@@ -431,6 +431,50 @@ class _PVNamesReader(QThread):
             self.read_error.emit(str(e))
 
 
+def _fetch_plan_origins(rm, rm_lock, timeout: float = 10.0):
+    """Call get_plan_origins() in the RE worker; returns {plan: origin} or None when the
+    function is unavailable (RE Manager not restarted yet), busy, or timed out."""
+    try:
+        from bluesky_queueserver_api import BFunc
+        with rm_lock:
+            r = rm.function_execute(item=BFunc("get_plan_origins"))
+        if not r.get("success"):
+            return None
+        task_uid = r["task_uid"]
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            with rm_lock:
+                res = rm.task_result(task_uid=task_uid)
+            state = res.get("status", "")
+            if state == "completed":
+                result = res.get("result", {})
+                if not result.get("success", True):
+                    return None
+                rv = result.get("return_value", {})
+                return rv if isinstance(rv, dict) else None
+            if state in ("failed", "aborted", "not_found"):
+                return None
+    except Exception:
+        pass
+    return None
+
+
+class _PlanOriginsReader(QThread):
+    """Background thread: fetches the plan upload origins for the plan table."""
+    origins_ready = Signal(dict)
+
+    def __init__(self, rm, rm_lock, parent=None):
+        super().__init__(parent)
+        self._rm      = rm
+        self._rm_lock = rm_lock
+
+    def run(self):
+        rv = _fetch_plan_origins(self._rm, self._rm_lock, timeout=15.0)
+        if rv is not None:
+            self.origins_ready.emit(rv)
+
+
 class _DeviceStatusReader(QThread):
     """Background thread: calls read_devices_status() via function_execute and waits for result."""
     readings_ready = Signal(dict)
@@ -556,6 +600,7 @@ class ZMQWorker(QObject):
     device_read_error       = Signal(str)
     pv_names_ready          = Signal(dict)
     pv_names_error          = Signal(str)
+    plan_origins_ready      = Signal(dict)   # {plan: origin} from get_plan_origins
     sim_device_set_done     = Signal(str, bool, str)  # dev_name, success, msg
     error_occurred          = Signal(str)
     connected       = Signal()
@@ -1243,7 +1288,29 @@ class ZMQWorker(QObject):
         except Exception as e:
             return False, str(e)
 
-    def upload_script(self, script):
+    def request_plan_origins(self):
+        """Fetch where/when each plan was uploaded; emits plan_origins_ready."""
+        if self.rm is None:
+            return
+        if getattr(self, "_origins_reader", None) is not None and self._origins_reader.isRunning():
+            return
+        if self._last_manager_state in ("executing_plan", "executing_queue"):
+            return
+        self._origins_reader = _PlanOriginsReader(self.rm, self._rm_lock)
+        self._origins_reader.origins_ready.connect(self.plan_origins_ready)
+        self._origins_reader.start()
+
+    def fetch_plan_origins(self, timeout: float = 8.0):
+        """Blocking variant for the overwrite check; None if it cannot be determined."""
+        if self.rm is None or self._last_manager_state in ("executing_plan", "executing_queue"):
+            return None
+        return _fetch_plan_origins(self.rm, self._rm_lock, timeout)
+
+    def upload_script(self, script, source=None):
+        """Upload *script*; *source* (a file path or label) is recorded as its origin."""
+        if source is not None:
+            from .plan_provenance import with_provenance
+            script = with_provenance(script, source)
         self._current_task = "script_upload"
         try:
             with self._rm_lock:
@@ -1254,12 +1321,17 @@ class ZMQWorker(QObject):
             self._current_task = ""
             return False, str(e)
 
-    def upload_scripts(self, scripts: list) -> list:
+    def upload_scripts(self, scripts: list, sources: list = None) -> list:
         """Upload multiple Python script strings via script_upload.
 
-        Returns a list of (ok, msg) tuples, one per script.
-        Stops on the first failure and fills remaining entries with (False, "skipped").
+        *sources* gives the origin (file path) of each script.  Returns a list of
+        (ok, msg) tuples, one per script.  Stops on the first failure and fills
+        remaining entries with (False, "skipped").
         """
+        if sources:
+            from .plan_provenance import with_provenance
+            scripts = [with_provenance(c, sources[i] if i < len(sources) else "")
+                       for i, c in enumerate(scripts)]
         self._current_task = "script_upload"
         results = []
         for script in scripts:

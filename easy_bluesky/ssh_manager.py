@@ -577,6 +577,25 @@ def write_remote_plan_file(settings: dict, profile: dict,
         path = f"{plans_dir}/{filename}"
         with sftp.open(path, "w") as fh:
             fh.write(content.encode("utf-8"))
+        # Record who saved the file, next to the script_upload records (best effort).
+        try:
+            import json as _json
+            import time as _time
+            from .plan_provenance import plan_names_in, this_host, this_user
+            names = plan_names_in(content)
+            if names:
+                log_dir = f"{remote_home}/.easy_bluesky"
+                try:
+                    sftp.mkdir(log_dir)
+                except OSError:
+                    pass
+                line = _json.dumps({"time": _time.time(), "host": this_host(),
+                                    "user": this_user(), "source": path,
+                                    "names": names}) + "\n"
+                with sftp.open(f"{log_dir}/plan_uploads.jsonl", "a") as fh:
+                    fh.write(line.encode("utf-8"))
+        except Exception:
+            pass
         sftp.close()
         client.close()
         return True, f"Saved to remote:{path}"

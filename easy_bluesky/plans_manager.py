@@ -53,6 +53,7 @@ class PlanCatalog:
     def __init__(self):
         self._types:   dict = {}   # plan_name → PLAN_TYPE_* constant
         self._sources: dict = {}   # plan_name → file path or module string
+        self._origins: dict = {}   # plan_name → upload origin from the RE worker
 
     # ── Population ──────────────────────────────────────────────────────────────
 
@@ -112,6 +113,17 @@ class PlanCatalog:
 
     def get_source(self, plan_name: str) -> str:
         return self._sources.get(plan_name, "")
+
+    def set_origins(self, origins: dict) -> None:
+        """Replace the upload origins reported by the RE worker (get_plan_origins)."""
+        self._origins = dict(origins or {})
+
+    def get_origin(self, plan_name: str):
+        """Upload origin record of *plan_name*, or None when none is recorded."""
+        return self._origins.get(plan_name)
+
+    def origins_known(self) -> bool:
+        return bool(self._origins)
 
 
 # ── User plan folder config ──────────────────────────────────────────────────────

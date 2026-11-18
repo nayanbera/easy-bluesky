@@ -1386,6 +1386,37 @@ class PlanBuilder(QWidget):
             self.editor.setPlainText(templates[name])
             self.tmpl_combo.setCurrentIndex(0)
 
+    def _editor_source(self) -> str:
+        """Origin recorded for code uploaded from the editor: the file path if it has one."""
+        if self._file_tier == "local" and self._file_name:
+            src = self._file_name
+        elif self._file_tier == "remote" and self._file_name:
+            src = f"remote:{self._file_name}"
+        else:
+            return "<plan editor, unsaved>"
+        return src + (" (unsaved edits)" if self._dirty else "")
+
+    def _confirm_overwrites(self, code: str, what: str) -> bool:
+        """Ask before *code* replaces plans this computer did not upload; True = proceed."""
+        from .plan_provenance import plan_names_in, find_overwrites, confirm_overwrite
+        from .plans_manager import get_catalog
+        names = [n for n in plan_names_in(code) if n in (self.plans or {})]
+        if not names or not self.worker:
+            return True
+        cat = get_catalog()
+        origins = self.worker.fetch_plan_origins()
+        if origins is not None and cat is not None:
+            cat.set_origins(origins)
+        known = origins is not None or (cat is not None and cat.origins_known())
+        if origins is None and cat is not None:
+            origins = cat._origins
+        conflicts = find_overwrites(names, self.plans, origins, cat)
+        for c in conflicts:
+            if c["own"]:
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.output.appendPlainText(f"[{ts}] ↻ Updating {c['name']} (your earlier upload)")
+        return confirm_overwrite(self.window(), conflicts, known, what)
+
     def _upload_script(self):
         script = self.editor.toPlainText().strip()
         if not script:
@@ -1403,8 +1434,13 @@ class PlanBuilder(QWidget):
             self.output.appendPlainText(f"[{ts}] ✗ Not connected to RE Manager")
             return
 
+        if not self._confirm_overwrites(script, "This upload"):
+            self.output.appendPlainText(f"[{ts}] Upload cancelled — no plans replaced")
+            return
         self.output.appendPlainText(f"[{ts}] Uploading to RE Manager…")
-        ok, msg = self.worker.upload_script(script)
+        ok, msg = self.worker.upload_script(script, source=self._editor_source())
+        if ok:
+            self.worker.request_plan_origins()
         ts = datetime.now().strftime("%H:%M:%S")
         if ok:
             self.output.appendPlainText(
@@ -1587,6 +1623,9 @@ class PlanBuilder(QWidget):
 
     def _save_remote(self, content: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
+        if not self._confirm_overwrites(content, f"Saving {self._file_name} to the RE computer"):
+            self.output.appendPlainText(f"[{ts}] Save to remote cancelled")
+            return
         self.output.appendPlainText(f"[{ts}] Saving {self._file_name} to remote…")
         from .connection_settings import get_active_profile
         profile = get_active_profile(self._conn_settings)
@@ -1620,9 +1659,14 @@ class PlanBuilder(QWidget):
             self.output.appendPlainText(f"[{ts}] ✗ Save failed: {e}")
             return
         if self.worker and self.worker.rm:
-            ok, msg = self.worker.upload_script(content)
+            if not self._confirm_overwrites(content, "This upload"):
+                self.output.appendPlainText(f"[{ts}] Upload cancelled — file saved locally only")
+                return
+            ok, msg = self.worker.upload_script(content, source=self._file_name)
             self.output.appendPlainText(
                 f"[{ts}] {'✓ Uploaded' if ok else '✗ Upload failed'}: {msg}")
+            if ok:
+                self.worker.request_plan_origins()
 
     def reupload_local_plans(self, _attempt: int = 0) -> None:
         """Re-upload all local user-dir plan files via script_upload.
@@ -1648,12 +1692,21 @@ class PlanBuilder(QWidget):
         if not scripts:
             return
         if _attempt == 0:
+            self._reupload_skip = self._other_computer_conflicts(paths)
+        skip = getattr(self, "_reupload_skip", set())
+        if skip:
+            keep = [i for i, (pth, _c) in enumerate(paths) if pth not in skip]
+            scripts = [scripts[i] for i in keep]
+            paths   = [paths[i] for i in keep]
+            if not scripts:
+                return
+        if _attempt == 0:
             ts = datetime.now().strftime("%H:%M:%S")
             n = len(scripts)
             self.output.appendPlainText(f"[{ts}] ↻ Uploading {n} local plan file(s)…")
             self.plans_uploading.emit(
                 f"uploading {n} plan file{'s' if n > 1 else ''}")
-        results = self.worker.upload_scripts(scripts)
+        results = self.worker.upload_scripts(scripts, sources=[pth for pth, _c in paths])
         catalog = get_catalog()
         n_ok    = 0
         busy    = False
@@ -1677,6 +1730,7 @@ class PlanBuilder(QWidget):
 
         if n_ok:
             self.worker.reload_plans_devices()
+            self.worker.request_plan_origins()
 
         if failed and _attempt == 0:
             QTimer.singleShot(0, lambda: self._prompt_remove_bad_plans(failed))
@@ -1687,6 +1741,41 @@ class PlanBuilder(QWidget):
             self.output.appendPlainText(
                 f"  [busy] RE Manager not idle — retry #{_attempt + 1} in {delay // 1000} s")
             QTimer.singleShot(delay, lambda: self.reupload_local_plans(_attempt + 1))
+
+    def _other_computer_conflicts(self, paths: list) -> set:
+        """Files whose plans would replace an upload from another computer (the user is
+        asked once; the files they decline are skipped).  Own and file-based plans are
+        replaced silently, as before."""
+        from .plan_provenance import plan_names_in, find_overwrites, confirm_overwrite
+        from .plans_manager import get_catalog
+        if not self.plans or not self.worker:
+            return set()
+        names_of = {pth: plan_names_in(code) for pth, code in paths}
+        if not any(n in self.plans for ns in names_of.values() for n in ns):
+            return set()
+        origins = self.worker.fetch_plan_origins()
+        cat = get_catalog()
+        if origins is None:
+            return set()
+        if cat is not None:
+            cat.set_origins(origins)
+        risky, risky_files = [], set()
+        for pth, names in names_of.items():
+            for c in find_overwrites(names, self.plans, origins, cat):
+                rec = c["rec"]
+                if rec and "file" not in rec and not c["own"]:
+                    risky.append(c)
+                    risky_files.add(pth)
+        if not risky:
+            return set()
+        ok = confirm_overwrite(self.window(), risky, True,
+                               "Re-uploading your local plan files")
+        if ok:
+            return set()
+        ts = datetime.now().strftime("%H:%M:%S")
+        for pth in sorted(risky_files):
+            self.output.appendPlainText(f"[{ts}] ↷ Skipped {Path(pth).name} (would replace another computer's plans)")
+        return risky_files
 
     def _prompt_remove_bad_plans(self, failed: dict) -> None:
         """Show one dialog per folder that had upload errors, offering removal."""

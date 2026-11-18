@@ -336,6 +336,48 @@ def prime_detector(det):
     yield from _bps.null()
 
 
+def get_plan_origins():
+    """Return {plan_name: origin} for the user plans in this worker.
+
+    A plan defined in a real file on this machine reports ``file`` and ``file_mtime``
+    (plus ``saved_by`` when the app saved that file here).  A plan injected with
+    script_upload reports the recorded upload: ``host``, ``user``, ``source``, ``time``
+    and, if a different computer or file replaced it, ``previous``.  Bluesky library
+    plans are left out.  Origins are recorded by easy_bluesky_common.record_plan_upload.
+    """
+    import inspect as _insp
+    import os as _os
+    try:
+        recs = _ebc.plan_origins()
+    except Exception:
+        recs = {}
+    ns = globals()
+    out = {}
+    for name in set(recs) | {n for n, o in ns.items() if _insp.isgeneratorfunction(o)}:
+        obj = ns.get(name)
+        if name.startswith("_") or not callable(obj):
+            continue
+        if (getattr(obj, "__module__", "") or "").startswith("bluesky."):
+            continue
+        try:
+            code = getattr(_insp.unwrap(obj), "__code__", None)
+        except Exception:
+            code = getattr(obj, "__code__", None)
+        fname = getattr(code, "co_filename", "") or ""
+        if fname and _os.path.isfile(fname):
+            entry = {"file": fname, "file_mtime": _os.path.getmtime(fname)}
+            rec = recs.get(name)
+            try:
+                if rec and _os.path.realpath(rec.get("source", "")) == _os.path.realpath(fname):
+                    entry["saved_by"] = {k: rec.get(k) for k in ("host", "user", "time")}
+            except Exception:
+                pass
+            out[name] = entry
+        elif name in recs:
+            out[name] = recs[name]
+    return out
+
+
 def get_device_pvnames():
     """Return {dev_name: {sig_name: pv_name}} for all top-level ophyd devices.
 

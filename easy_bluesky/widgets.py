@@ -1307,13 +1307,15 @@ class PlanDialog(QDialog):
                 ptype = cat.get_type(name)
                 color = PLAN_COLORS.get(ptype, "#888")
                 label = PLAN_TYPE_LABELS.get(ptype, ptype)
+                from html import escape as _esc
+                from .plan_provenance import describe_origin
+                from .plans_manager import PLAN_TYPE_BUILTIN
+                origin = _esc(describe_origin(cat.get_origin(name),
+                                              ptype == PLAN_TYPE_BUILTIN)).replace("\n", "<br>")
+                head = f'<span style="color:{color}">■ {label}</span>'
                 if src:
-                    self._source_label.setText(
-                        f'<span style="color:{color}">■ {label}</span>'
-                        f' &nbsp; Source: <tt>{src}</tt>')
-                else:
-                    self._source_label.setText(
-                        f'<span style="color:{color}">■ {label}</span>')
+                    head += f' &nbsp; Source: <tt>{_esc(src)}</tt>'
+                self._source_label.setText(f"{head}<br>{origin}")
             else:
                 self._source_label.setText("")
         except Exception:

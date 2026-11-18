@@ -19,7 +19,7 @@ from qtpy.QtGui import QBrush, QColor, QFont
 
 from .config import ACCENT
 from .plans_manager import (
-    PlanCatalog, PLAN_COLORS, PLAN_TYPE_LABELS,
+    PlanCatalog, PLAN_COLORS, PLAN_TYPE_LABELS, PLAN_TYPE_BUILTIN,
     plan_type_from_module,
 )
 from .plan_builder import PlanFileTreePanel
@@ -666,11 +666,13 @@ class DevicesPlansTab(QWidget):
 
         # ── Plans tree ────────────────────────────────────────────────────────
         self.plans_tree = QTreeWidget()
-        self.plans_tree.setColumnCount(3)
-        self.plans_tree.setHeaderLabels(["Plan", "Type", "Description"])
+        self.plans_tree.setColumnCount(5)
+        self.plans_tree.setHeaderLabels(["Plan", "Type", "Uploaded from", "Updated", "Description"])
         self.plans_tree.header().setStretchLastSection(True)
         self.plans_tree.header().resizeSection(0, 180)
         self.plans_tree.header().resizeSection(1, 72)
+        self.plans_tree.header().resizeSection(2, 190)
+        self.plans_tree.header().resizeSection(3, 130)
         self.plans_tree.setMaximumHeight(230)
         self.plans_tree.setRootIsDecorated(False)
         self.plans_tree.setSortingEnabled(False)
@@ -1030,9 +1032,10 @@ class DevicesPlansTab(QWidget):
             color      = QBrush(QColor(PLAN_COLORS.get(ptype, "#cccccc")))
             desc       = (info.get("description") or "").split("\n")[0].strip()
 
-            item = QTreeWidgetItem([name, type_label, desc])
-            for col in range(3):
+            item = QTreeWidgetItem([name, type_label, "", "", desc])
+            for col in range(5):
                 item.setForeground(col, color)
+            self._set_plan_origin(item, name, ptype)
             self.plans_tree.addTopLevelItem(item)
 
         # Restore previous selection
@@ -1043,6 +1046,32 @@ class DevicesPlansTab(QWidget):
                     break
 
         self._apply_plan_filter()
+
+    def _set_plan_origin(self, item, name: str, ptype=None) -> None:
+        """Fill the 'Uploaded from' / 'Updated' columns and the row tooltip of a plan."""
+        from .plan_provenance import origin_columns, describe_origin
+        cat = self._plan_catalog
+        if ptype is None and cat is not None:
+            ptype = cat.get_type(name)
+        builtin = ptype == PLAN_TYPE_BUILTIN
+        rec = None if (builtin or cat is None) else cat.get_origin(name)
+        origin, updated = ("", "") if builtin else origin_columns(rec)
+        if not builtin and not rec:
+            origin = "—"
+        item.setText(2, origin)
+        item.setText(3, updated)
+        tip = f"{name}\n\n{describe_origin(rec, builtin)}"
+        for col in range(5):
+            item.setToolTip(col, tip)
+
+    def refresh_plan_origins(self) -> None:
+        """Re-read the catalog's upload origins into the existing plan rows."""
+        for i in range(self.plans_tree.topLevelItemCount()):
+            item = self.plans_tree.topLevelItem(i)
+            self._set_plan_origin(item, item.text(0))
+        cur = self.plans_tree.currentItem()
+        if cur is not None:
+            self._on_plan_selected(cur, None)
 
     _MAX_FALLBACK_ATTEMPTS = 3   # after 4 s + 3×6 s ≈ 22 s, give up
 
@@ -1704,6 +1733,10 @@ class DevicesPlansTab(QWidget):
             if src:
                 lines.append(f"Source: {src}")
                 lines.append("")
+            from .plan_provenance import describe_origin
+            builtin = self._plan_catalog.get_type(name) == PLAN_TYPE_BUILTIN
+            lines.append(describe_origin(self._plan_catalog.get_origin(name), builtin))
+            lines.append("")
 
         if params:
             lines.append("Parameters:")
@@ -2031,9 +2064,10 @@ class DevicesPlansTab(QWidget):
             item      = self.plans_tree.topLevelItem(i)
             name      = item.text(0).lower()
             type_lbl  = item.text(1)
-            desc      = item.text(2).lower()
+            desc      = item.text(4).lower()
+            origin    = item.text(2).lower()
 
-            text_match = not text or (text in name or text in desc)
+            text_match = not text or (text in name or text in desc or text in origin)
             type_match = type_filter == "All Types" or type_lbl == type_filter
 
             item.setHidden(not (text_match and type_match))
